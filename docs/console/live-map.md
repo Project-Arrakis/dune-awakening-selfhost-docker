@@ -392,9 +392,13 @@ Basin has no lettered sectors.
 - **Labels follow the viewport.** Above about 2x zoom a cell is wider than the
   frame, so each label sits at the centre of the *visible part* of its cell and is
   hidden when too little of the cell is on screen.
-- **Tilted**, the grid is projected through the camera: lines are laid on the
-  sand, so a marker near a boundary stays on the right side of it, and are cut
-  where rock covers them.
+- **Tilted**, the terrain draws the lines itself, on whatever surface each pixel
+  shows: across the sand, over rock tops and down cliff faces. Anything standing
+  in front hides them, by the same depth test as the terrain. Widths stay 1 px
+  (2 px for the outer edge) from how fast the grid coordinate changes across a
+  pixel. Only the labels are still projected by the panel, at the pivot height.
+  Measured: the grid's per-frame work in the panel went from 0.6-1.8 ms to under
+  0.1 ms, with no measurable change in draw time.
 
 ### Tilt and rotation
 
@@ -468,8 +472,7 @@ when the terrain at its spot is both nearer the eye and more than 30 m above it
   hide it.
 - **Never hidden:** the selected marker, a player being dragged, and everything
   while the search box has text in it. Searching is how to find a covered marker.
-- Sector grid lines are cut the same way, tested at a single texel. Sector labels
-  are not hidden.
+- Sector labels are not hidden. Grid lines need no test: the terrain draws them.
 - The read-back is asynchronous, so a marker is hidden a frame or two after it
   passes behind something.
 
@@ -548,7 +551,7 @@ draws but loses something. Both are standard on desktop GPUs.
 
 | GPU capability | what is lost without it |
 |---|---|
-| `EXT_color_buffer_float` | a slightly flatter blend; and, tilted, picking from the terrain (the pick falls back to the sand) and hiding markers and grid lines behind rock |
+| `EXT_color_buffer_float` | a slightly flatter blend; and, tilted, picking from the terrain (the pick falls back to the sand) and hiding markers behind rock |
 | `WEBGL_compressed_texture_s3tc` | the rock textures; rock draws in its flat per-instance tone |
 
 ## Player teleport
@@ -593,7 +596,7 @@ Feature-level changes to the Live Map, newest first.
 
 | Release | Date | Change |
 |---|---|---|
-| Unreleased | 2026-10 | **Tilt and rotation** of the Deep Desert terrain, with perspective: Tilt slider, Top-Down reset, right-drag, and a compass. Markers and the sector grid are projected through the camera, and markers and grid lines are hidden where rock covers them. |
+| Unreleased | 2026-10 | **Tilt and rotation** of the Deep Desert terrain, with perspective: Tilt slider, Top-Down reset, right-drag, and a compass. Markers are projected through the camera and hidden where rock covers them; the sector grid is drawn on the terrain itself, over rock and cliffs. |
 | Unreleased | 2026-10 | The tilted view draws past the map's edge, out to 375,000 uu: the shield walls outside the square, hand-placed pieces included, with the wall's floating upper tiers closed down to the ground, on the game's own sand for the first 90,000 uu and a level plain beyond. |
 | Unreleased | 2026-10 | Rock meshes are sealed at load, rock is lit as a solid and its cliffs textured from the side when tilted, and the camera's eye stays above the rock at high zoom. |
 | Unreleased | 2026-10 | Rock is painted with the game's own textures, with the game's normal map baked into the two big wall shapes. Terrain instances are culled per frame, and the depth pass stops before shading. Assets are 1.9 MB smaller: delta-coded mesh indices, and placements every layout shares shipped once. |

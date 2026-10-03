@@ -33,11 +33,11 @@ const terrain = vi.hoisted(() => ({
   sandHeight: 1000,
   // Height above which the fake terrain "hides" a point: nothing, unless a test sets it.
   hidesBelow: -Infinity,
-  props: [] as { tilt?: number; yaw?: number }[]
+  props: [] as { tilt?: number; yaw?: number; sectorGrid?: boolean }[]
 }));
 vi.mock("./terrain/DeepDesertTerrain", () => ({
-  default: ({ onReady, onTerrainApi, tilt, yaw }: { onReady?: () => void; onTerrainApi?: (api: unknown) => void; tilt?: number; yaw?: number }) => {
-    terrain.props.push({ tilt, yaw });
+  default: ({ onReady, onTerrainApi, tilt, yaw, sectorGrid }: { onReady?: () => void; onTerrainApi?: (api: unknown) => void; tilt?: number; yaw?: number; sectorGrid?: boolean }) => {
+    terrain.props.push({ tilt, yaw, sectorGrid });
     useEffect(() => {
       if (!terrain.signalsReady) return undefined;
       onTerrainApi?.({
@@ -849,7 +849,7 @@ it("places markers by height once tilted, and exactly as before while top-down",
   fireEvent.click(screen.getByRole("button", { name: "Top-Down" }));
   expect(parseFloat(low.style.top)).toBe(flatTop);
   expect(high.style.top).toBe(low.style.top);
-  expect(terrain.props.at(-1)).toEqual({ tilt: 0, yaw: 0 });
+  expect(terrain.props.at(-1)).toMatchObject({ tilt: 0, yaw: 0 });
 });
 
 it("picks a location from the terrain under the cursor when tilted", async () => {
@@ -951,7 +951,7 @@ it("shows a compass only off top-down, which turns the view back to north", asyn
   expect(screen.queryByRole("button", { name: /^Facing/ })).toBeNull();
 });
 
-it("keeps the sector grid while tilted, projected, and puts the flat one back after", async () => {
+it("hands the sector grid's lines to the terrain while tilted, keeps its labels, and puts the flat one back after", async () => {
   useTwoHeights();
   const { container } = renderPanel();
   await screen.findByRole("button", { name: "Base: Low" });
@@ -962,9 +962,9 @@ it("keeps the sector grid while tilted, projected, and puts the flat one back af
   fireEvent.change(slider, { target: { value: "45" } });
   const tilted = container.querySelector("svg.live-map-sector-grid.is-3d");
   expect(tilted).not.toBeNull();
-  // Drawn as paths in the viewport, not as the flat grid's straight lines.
-  expect(container.querySelectorAll("svg.live-map-sector-grid line")).toHaveLength(0);
-  expect(tilted!.querySelectorAll("path").length).toBeGreaterThan(0);
+  // The terrain draws the lines; the overlay keeps only the labels.
+  expect(terrain.props.at(-1)!.sectorGrid).toBe(true);
+  expect(container.querySelectorAll("svg.live-map-sector-grid line, svg.live-map-sector-grid path")).toHaveLength(0);
   expect(tilted!.querySelectorAll("text").length).toBeGreaterThan(0);
   // Sized to the viewport, not to the scaled map.
   expect(Number(tilted!.getAttribute("width"))).toBeGreaterThan(0);
@@ -974,6 +974,7 @@ it("keeps the sector grid while tilted, projected, and puts the flat one back af
   // The toggle still governs it.
   fireEvent.click(screen.getByRole("checkbox", { name: "Sector Grid" }));
   expect(container.querySelector("svg.live-map-sector-grid")).toBeNull();
+  expect(terrain.props.at(-1)!.sectorGrid).toBe(false);
   fireEvent.click(screen.getByRole("checkbox", { name: "Sector Grid" }));
 
   fireEvent.click(screen.getByRole("button", { name: "Top-Down" }));
@@ -1025,24 +1026,4 @@ it("shows a marker the terrain is covering once it is searched for", async () =>
 
   fireEvent.change(search, { target: { value: "" } });
   expect(screen.queryByRole("button", { name: "Base: Low" })).toBeNull();
-});
-
-it("cuts the sector grid's lines where the tilted terrain covers them, and keeps its labels", async () => {
-  useTwoHeights();
-  const { container } = renderPanel();
-  await screen.findByRole("button", { name: "Base: Low" });
-  const slider = await screen.findByRole("slider", { name: "Tilt" });
-  sizeFrame(container);
-  fireEvent.change(slider, { target: { value: "45" } });
-  const drawn = () => container.querySelectorAll("svg.live-map-sector-grid.is-3d path").length;
-  const labels = () => container.querySelectorAll("svg.live-map-sector-grid.is-3d text").length;
-  const open = drawn();
-  const named = labels();
-  expect(open).toBeGreaterThan(0);
-
-  // The fake terrain now covers everything at sand height, which is where the lines lie.
-  terrain.hidesBelow = 5000;
-  fireEvent.change(slider, { target: { value: "46" } });
-  expect(drawn()).toBe(0);
-  expect(labels()).toBe(named);
 });

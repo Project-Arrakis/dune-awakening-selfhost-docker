@@ -3211,11 +3211,9 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
    so the grid stays the same weight at every zoom rather than thickening as you
    zoom in. Kept hairline-thin and dark: it is a reference overlay, and terrain
    detail has to stay readable through it. */
-.live-map-sector-grid .lines line,
-.live-map-sector-grid .lines path { stroke: rgba(16, 11, 4, .8); stroke-width: 1; vector-effect: non-scaling-stroke; fill: none; }
-.live-map-sector-grid .lines line.edge,
-.live-map-sector-grid .lines path.edge { stroke: rgba(16, 11, 4, .95); stroke-width: 2; }
-/* Tilted, the grid is drawn in viewport pixels and cut at the view's edge. */
+.live-map-sector-grid .lines line { stroke: rgba(16, 11, 4, .8); stroke-width: 1; vector-effect: non-scaling-stroke; fill: none; }
+.live-map-sector-grid .lines line.edge { stroke: rgba(16, 11, 4, .95); stroke-width: 2; }
+/* Tilted, only the labels are here, in viewport pixels: the terrain draws the lines. */
 .live-map-sector-grid.is-3d { overflow: hidden; max-width: none; }
 /* font-size is set inline as viewBox units divided by zoom, so the label stays
    a constant size on screen. Sizing it in viewBox units alone would scale it

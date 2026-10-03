@@ -1,6 +1,7 @@
 import type { LiveMapConfig } from "../../api/liveMap";
 import { worldToLiveMapPoint } from "./liveMapGeometry";
 import { cullRectForCamera, projectToScreen, scaleAt, type TerrainCamera } from "./terrain/terrainCamera";
+import type { SectorGridSpec } from "./terrain/types";
 
 /**
  * The Deep Desert's 9x9 lettered sector grid.
@@ -21,6 +22,9 @@ const CENTRE_Y = -52066;
 const HALF = 1125000;
 const CELL = 250000;
 const DIVISIONS = 9;
+
+/** The grid as the terrain draws it while tilted. */
+export const SECTOR_GRID: SectorGridSpec = { x0: CENTRE_X - HALF, y0: CENTRE_Y - HALF, cell: CELL, divisions: DIVISIONS };
 
 export type SectorGridLine = { x1: number; y1: number; x2: number; y2: number; edge: boolean };
 /**
@@ -123,18 +127,12 @@ export function sectorGridFor(config: LiveMapConfig): { lines: SectorGridLine[];
   return { lines, labels };
 }
 
-/** The grid as the tilted view draws it: paths and labels in viewport CSS pixels. */
-export type SectorGrid3D = {
-  paths: { d: string; edge: boolean }[];
-  labels: { text: string; sx: number; sy: number }[];
-};
+/** A cell label as the tilted view draws it, in viewport CSS pixels. */
+export type SectorLabel3D = { text: string; sx: number; sy: number };
 
 // Perspective depth below which a point counts as behind the view. Anything on
 // screen is far above it, so this only cuts geometry off-screen toward the eye.
 const NEAR_DEPTH = 0.1;
-// Lines are sampled this often on screen, and twice as often when being cut.
-const SAMPLE_PX = 12;
-const MAX_SAMPLES = 256;
 
 type Vec = { x: number; y: number };
 
@@ -155,81 +153,15 @@ function clipPolygon<T extends Vec>(points: T[], inside: (p: T) => number, mix: 
 const mixVec = (a: Vec, b: Vec, t: number): Vec => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
 
 /**
- * The sector grid seen through the 3D camera, in viewport CSS pixels. Lines are
- * laid on the sand (`heightAt`) so they stay on the right side of markers, and
- * each label sits at the centre of the visible part of its cell. `hidden`, when
- * given, cuts lines where terrain covers them; labels are never hidden.
+ * The sector labels seen through the 3D camera, in viewport CSS pixels: each at
+ * the centre of the visible part of its cell. The lines are drawn by the terrain
+ * itself (`SECTOR_GRID`), on whatever surface they cross.
  */
-export function projectSectorGrid(
-  camera: TerrainCamera,
-  heightAt: (x: number, y: number) => number,
-  padding: number,
-  minArea: number,
-  hidden?: (x: number, y: number, z: number) => boolean
-): SectorGrid3D {
+export function projectSectorLabels(camera: TerrainCamera, padding: number, minArea: number): SectorLabel3D[] {
   const depth = (x: number, y: number, z: number) => scaleAt(camera, x, y, z) / camera.scale;
   // What the camera can see of the ground, generously: dunes stay well inside this band.
   const seen = cullRectForCamera(camera, camera.cz - 40000, camera.cz + 40000);
-  const step = Math.max((hidden ? SAMPLE_PX / 2 : SAMPLE_PX) * camera.scale, 1);
-  const maxSamples = hidden ? MAX_SAMPLES * 2 : MAX_SAMPLES;
-  const margin = 64;
-  const onScreen = (ax: number, ay: number, bx: number, by: number) => (
-    Math.max(ax, bx) >= -margin && Math.min(ax, bx) <= camera.width + margin
-    && Math.max(ay, by) >= -margin && Math.min(ay, by) <= camera.height + margin
-  );
-  const fmt = (v: number) => (Math.round(v * 10) / 10).toString();
-
-  const paths: SectorGrid3D["paths"] = [];
-  const trace = (fixed: number, lo: number, hi: number, alongX: boolean, edge: boolean) => {
-    // Only the stretch the camera can see is sampled.
-    const from = Math.max(lo, alongX ? seen.minX : seen.minY);
-    const to = Math.min(hi, alongX ? seen.maxX : seen.maxY);
-    const across = alongX ? [seen.minY, seen.maxY] : [seen.minX, seen.maxX];
-    if (to <= from || fixed < across[0] || fixed > across[1]) return;
-    const count = Math.min(maxSamples, Math.max(1, Math.ceil((to - from) / step)));
-    let d = "";
-    let pen = false;
-    let prev: { x: number; y: number; z: number; w: number; covered: boolean } | null = null;
-    for (let i = 0; i <= count; i++) {
-      const v = from + ((to - from) * i) / count;
-      const x = alongX ? v : fixed;
-      const y = alongX ? fixed : v;
-      const z = heightAt(x, y);
-      const w = depth(x, y, z);
-      const cur = { x, y, z, w, covered: !!hidden && w >= NEAR_DEPTH && hidden(x, y, z) };
-      if (prev && !prev.covered && !cur.covered && (prev.w >= NEAR_DEPTH || cur.w >= NEAR_DEPTH)) {
-        // Cut the segment where it passes behind the view, rather than dropping it whole.
-        let a = prev;
-        let b = cur;
-        if (a.w < NEAR_DEPTH || b.w < NEAR_DEPTH) {
-          const t = (NEAR_DEPTH - a.w) / (b.w - a.w);
-          const cut = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, z: a.z + (b.z - a.z) * t, w: NEAR_DEPTH, covered: false };
-          if (a.w < NEAR_DEPTH) a = cut; else b = cut;
-        }
-        const sa = projectToScreen(camera, a.x, a.y, a.z);
-        const sb = projectToScreen(camera, b.x, b.y, b.z);
-        if (onScreen(sa.sx, sa.sy, sb.sx, sb.sy)) {
-          if (!pen || a !== prev) d += `M${fmt(sa.sx)} ${fmt(sa.sy)}`;
-          d += `L${fmt(sb.sx)} ${fmt(sb.sy)}`;
-          pen = b === cur;
-        } else {
-          pen = false;
-        }
-      } else {
-        pen = false;
-      }
-      prev = cur;
-    }
-    if (d) paths.push({ d, edge });
-  };
-  for (let i = 0; i <= DIVISIONS; i++) {
-    const edge = i === 0 || i === DIVISIONS;
-    const offset = -HALF + i * CELL;
-    trace(CENTRE_X + offset, CENTRE_Y - HALF, CENTRE_Y + HALF, false, edge);
-    trace(CENTRE_Y + offset, CENTRE_X - HALF, CENTRE_X + HALF, true, edge);
-  }
-
-  const labels: SectorGrid3D["labels"] = [];
+  const labels: SectorLabel3D[] = [];
   const z = camera.cz;
   for (let row = 0; row < DIVISIONS; row++) {
     for (let column = 0; column < DIVISIONS; column++) {
@@ -268,5 +200,5 @@ export function projectSectorGrid(
       labels.push({ text: `${String.fromCharCode(65 + row)}${column + 1}`, sx: cx / (3 * area), sy: cy / (3 * area) });
     }
   }
-  return { paths, labels };
+  return labels;
 }

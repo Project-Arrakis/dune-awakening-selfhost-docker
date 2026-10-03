@@ -6,7 +6,7 @@ import type { CulledDraw } from "./terrainGeometry";
 import { cameraClipMatrix, cullRectForCamera, scaleAt, screenToWorldAtZ } from "./terrainCamera";
 import type { TerrainCamera } from "./terrainCamera";
 import type { LayoutAssets, SharedAssets } from "./terrainAssets";
-import type { TerrainDrawCall, TerrainView } from "./types";
+import type { SectorGridSpec, TerrainDrawCall, TerrainView } from "./types";
 
 /**
  * The Deep Desert terrain renderer: framework-free WebGL2. Ported from the
@@ -75,12 +75,13 @@ export type DeepDesertRenderer = {
   /**
    * Whether terrain stands between a world point and the eye, from a recent
    * frame's depth (`onOcclusion` fires when it is renewed). Tilted views only.
-   * `reach`: depth texels round the point that must be covered (default 1).
    */
-  occluded(x: number, y: number, z: number, reach?: number): boolean;
+  occluded(x: number, y: number, z: number): boolean;
   readonly canPick: boolean;
   /** Faint elevation banding on rock and sand. Off by default. */
   setElevationLines(on: boolean): void;
+  /** The sector grid, drawn on the terrain through the 3D camera only; null for none. */
+  setSectorGrid(grid: SectorGridSpec | null): void;
   draw(): void;
   dispose(): void;
 };
@@ -174,7 +175,7 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     con: u(terrain, "uCon"), conStep: u(terrain, "uConStep"), conStepS: u(terrain, "uConStepS"),
     rock: u(terrain, "uRock"), texOn: u(terrain, "uTexOn"), texLayer: u(terrain, "uTexLayer"), pick: u(terrain, "uPick"),
     texGain: u(terrain, "uTexGain"), apron: u(terrain, "uApron"),
-    sideLit: u(terrain, "uSideLit")
+    sideLit: u(terrain, "uSideLit"), grid: u(terrain, "uGrid"), gridPx: u(terrain, "uGridPx")
   };
   const r = { tex: u(resolve, "uT"), texel: u(resolve, "uTexel"), ss: u(resolve, "uSS") };
   const b = { vp: u(backdrop, "uVP"), c: u(backdrop, "uC"), half: u(backdrop, "uHalf"), z: u(backdrop, "uZ") };
@@ -299,6 +300,7 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
   let lost = false;
   let pixelRatio = 1;
   let elevationLines = false;
+  let sectorGrid: SectorGridSpec | null = null;
 
   let bPos: WebGLBuffer | null = null;
   let bNrm: WebGLBuffer | null = null;
@@ -785,6 +787,10 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     gl.uniform1f(t.con, elevationLines ? 1 : 0);
     gl.uniform1f(t.conStep, rockStep);
     gl.uniform1f(t.conStepS, sandStep);
+    // Flat, the panel draws the grid itself.
+    if (camera && sectorGrid) gl.uniform4f(t.grid, sectorGrid.x0, sectorGrid.y0, sectorGrid.cell, sectorGrid.divisions);
+    else gl.uniform4f(t.grid, 0, 0, 1, 0);
+    gl.uniform1f(t.gridPx, fw / Math.max(cssWidth, 1));
     gl.activeTexture(gl.TEXTURE6);
     gl.bindTexture(gl.TEXTURE_2D, texHf);
     gl.uniform1i(t.hf, 6);
@@ -899,11 +905,14 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     pick(sx: number, sy: number) {
       return pickAt(sx, sy);
     },
-    occluded(x: number, y: number, z: number, reach?: number) {
-      return !lost && occlusion ? isOccluded(occlusion, x, y, z, OCCLUSION_TOLERANCE, reach) : false;
+    occluded(x: number, y: number, z: number) {
+      return !lost && occlusion ? isOccluded(occlusion, x, y, z, OCCLUSION_TOLERANCE) : false;
     },
     setElevationLines(on: boolean) {
       elevationLines = on;
+    },
+    setSectorGrid(grid: SectorGridSpec | null) {
+      sectorGrid = grid;
     },
     draw,
     dispose() {

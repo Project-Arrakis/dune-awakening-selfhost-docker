@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { LiveMapConfig } from "../../../api/liveMap";
 import { liveMapCamera, terrainViewport, visibleWorldRect } from "../liveMapGeometry";
+import { SECTOR_GRID } from "../liveMapSectorGrid";
 import { createDeepDesertRenderer, type DeepDesertRenderer } from "./renderer";
 import { joinShared, loadLayoutAssets, loadSharedAssets } from "./terrainAssets";
 import { interpolateHeightField } from "./terrainGeometry";
@@ -29,6 +30,8 @@ export type DeepDesertTerrainProps = {
   onUnavailable: (reason: string) => void;
   /** Faint elevation banding on rock and sand, so height reads from overhead. */
   elevationLines?: boolean;
+  /** The sector grid, drawn on the terrain while tilted or turned. Flat, the panel draws it. */
+  sectorGrid?: boolean;
   /** Lean back from top-down, radians. With `yaw`, non-zero draws through the 3D camera. */
   tilt?: number;
   /** Rotation about the vertical, radians. */
@@ -54,8 +57,8 @@ export type TerrainApi = {
   pivotZ: number;
   /** The top of the tallest thing in the layout, which the 3D camera's eye stays above. */
   topZ: number;
-  /** Whether the terrain hides a world point, as of a frame just drawn. Only ever true while tilted. `reach`: see the renderer. */
-  occluded: (x: number, y: number, z: number, reach?: number) => boolean;
+  /** Whether the terrain hides a world point, as of a frame just drawn. Only ever true while tilted. */
+  occluded: (x: number, y: number, z: number) => boolean;
 };
 
 export default function DeepDesertTerrain({
@@ -65,6 +68,7 @@ export default function DeepDesertTerrain({
   frameRef,
   onUnavailable,
   elevationLines = false,
+  sectorGrid = false,
   tilt = 0,
   yaw = 0,
   onTerrainApi,
@@ -148,7 +152,7 @@ export default function DeepDesertTerrain({
           heightAt: (x, y) => interpolateHeightField(field, meta, x, y),
           pivotZ: pivotRef.current,
           topZ: topRef.current,
-          occluded: (x, y, z, reach) => rendererRef.current?.occluded(x, y, z, reach) ?? false
+          occluded: (x, y, z) => rendererRef.current?.occluded(x, y, z) ?? false
         });
         setReady(true);
         // The panel holds the flat image up until this point: the canvas is
@@ -204,6 +208,7 @@ export default function DeepDesertTerrain({
         renderer.setView(rect);
       }
       renderer.setElevationLines(elevationLines);
+      renderer.setSectorGrid(sectorGrid ? SECTOR_GRID : null);
       renderer.draw();
     };
     const schedule = () => {
@@ -221,7 +226,7 @@ export default function DeepDesertTerrain({
       if (frameCallback.current) cancelAnimationFrame(frameCallback.current);
       frameCallback.current = 0;
     };
-  }, [config, zoom, ready, frameRef, elevationLines, tilt, yaw]);
+  }, [config, zoom, ready, frameRef, elevationLines, sectorGrid, tilt, yaw]);
 
   return <canvas className="live-map-terrain" ref={canvasRef} aria-hidden="true" />;
 }

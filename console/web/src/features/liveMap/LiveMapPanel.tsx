@@ -22,7 +22,7 @@ import {
 } from "./liveMapGeometry";
 import { MAX_TILT, projectToScreen, screenToWorldAtZ, type TerrainCamera } from "./terrain/terrainCamera";
 import type { TerrainApi } from "./terrain/DeepDesertTerrain";
-import { labelAnchorInView, projectSectorGrid, sectorForWorldPoint, sectorGridFor } from "./liveMapSectorGrid";
+import { labelAnchorInView, projectSectorLabels, sectorForWorldPoint, sectorGridFor } from "./liveMapSectorGrid";
 import { LiveMapCompass } from "./LiveMapCompass";
 
 // On-screen size of a sector label, in CSS pixels. The SVG is drawn in map-pixel
@@ -717,15 +717,9 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
     };
     // is3D: the flat grid is unmounted while tilted and re-placed on the way back.
   }, [showSectorGrid, sectorGrid, zoom, is3D]);
-  // Tilted, the grid is projected each render instead, and cut where terrain covers it.
-  const sectorGrid3d = view3d && terrainApi && showSectorGrid && sectorGrid
-    ? projectSectorGrid(
-      view3d.camera,
-      terrainApi.heightAt,
-      SECTOR_LABEL_PX * 1.6,
-      SECTOR_LABEL_PX * SECTOR_LABEL_PX * 4,
-      tilt > 0 ? (x, y, z) => terrainApi.occluded(x, y, z, 0) : undefined
-    )
+  // Tilted, the terrain draws the lines; only the labels are projected here, each render.
+  const sectorLabels3d = view3d && showSectorGrid && sectorGrid
+    ? projectSectorLabels(view3d.camera, SECTOR_LABEL_PX * 1.6, SECTOR_LABEL_PX * SECTOR_LABEL_PX * 4)
     : null;
 
   const zoomMaxPercent = Math.round(MAX_LIVE_MAP_ZOOM * 100);
@@ -1500,7 +1494,7 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
               ? <>
                   {!terrainReady && activeMap.image && <img className="live-map-image" src={activeMap.image} alt={activeMap.label} draggable={false} />}
                   <Suspense fallback={null}>
-                    <DeepDesertTerrain config={activeMap} layout={coriolisLayout as number} zoom={zoom} frameRef={frameRef} onUnavailable={handleTerrainUnavailable} onReady={handleTerrainReady} elevationLines={showElevationLines} tilt={tilt} yaw={yaw} onTerrainApi={handleTerrainApi} onOcclusion={handleTerrainOcclusion} />
+                    <DeepDesertTerrain config={activeMap} layout={coriolisLayout as number} zoom={zoom} frameRef={frameRef} onUnavailable={handleTerrainUnavailable} onReady={handleTerrainReady} elevationLines={showElevationLines} sectorGrid={showSectorGrid} tilt={tilt} yaw={yaw} onTerrainApi={handleTerrainApi} onOcclusion={handleTerrainOcclusion} />
                   </Suspense>
                 </>
               : activeMap.image ? <img className="live-map-image" src={activeMap.image} alt={activeMap.label} draggable={false} /> : <div className="live-map-placeholder">{activeMap.label}</div>}
@@ -1512,12 +1506,9 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
                 {sectorGrid.labels.map((label) => <text key={label.text} x={label.px} y={label.py} fontSize={SECTOR_LABEL_PX / Math.max(zoom, 0.01)}>{label.text}</text>)}
               </g>
             </svg>}
-            {sectorGrid3d && view3d && <svg className="live-map-sector-grid is-3d" style={{ left: view3d.viewport.left, top: view3d.viewport.top }} width={view3d.viewport.width} height={view3d.viewport.height} aria-hidden="true">
-              <g className="lines">
-                {sectorGrid3d.paths.map((path, index) => <path key={index} d={path.d} className={path.edge ? "edge" : ""} />)}
-              </g>
+            {sectorLabels3d && view3d && <svg className="live-map-sector-grid is-3d" style={{ left: view3d.viewport.left, top: view3d.viewport.top }} width={view3d.viewport.width} height={view3d.viewport.height} aria-hidden="true">
               <g className="labels">
-                {sectorGrid3d.labels.map((label) => <text key={label.text} x={label.sx} y={label.sy} fontSize={SECTOR_LABEL_PX}>{label.text}</text>)}
+                {sectorLabels3d.map((label) => <text key={label.text} x={label.sx} y={label.sy} fontSize={SECTOR_LABEL_PX}>{label.text}</text>)}
               </g>
             </svg>}
             <div className="live-map-marker-layer" style={view3d ? { inset: "auto", left: view3d.viewport.left, top: view3d.viewport.top, width: view3d.viewport.width, height: view3d.viewport.height } : undefined}>

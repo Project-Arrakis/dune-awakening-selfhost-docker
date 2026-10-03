@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { LiveMapConfig } from "../../api/liveMap";
-import { labelAnchorInView, projectSectorGrid, sectorForWorldPoint, sectorGridFor } from "./liveMapSectorGrid";
+import { labelAnchorInView, projectSectorLabels, SECTOR_GRID, sectorForWorldPoint, sectorGridFor } from "./liveMapSectorGrid";
 import { liveMapCamera, terrainViewport } from "./liveMapGeometry";
 import { projectToScreen, screenToWorldAtZ } from "./terrain/terrainCamera";
 
@@ -173,7 +173,28 @@ describe("labels survive being zoomed out", () => {
   });
 });
 
-describe("projectSectorGrid", () => {
+describe("SECTOR_GRID", () => {
+  it("is the grid the sector lookup uses: its lines are where the sector changes", () => {
+    const { x0, y0, cell, divisions } = SECTOR_GRID;
+    expect(divisions).toBe(9);
+    for (let k = 0; k < divisions; k++) {
+      const mid = (v0: number) => v0 + (k + 0.5) * cell;
+      // Either side of a vertical line, one column apart; either side of a horizontal one, one row.
+      const left = sectorForWorldPoint(x0 + (k + 1) * cell - 1, mid(y0))!;
+      const right = sectorForWorldPoint(x0 + (k + 1) * cell + 1, mid(y0));
+      if (k < divisions - 1) expect(Number(right!.slice(1))).toBe(Number(left.slice(1)) + 1);
+      else expect(right).toBeNull();
+      const above = sectorForWorldPoint(mid(x0), y0 + (k + 1) * cell - 1)!;
+      const below = sectorForWorldPoint(mid(x0), y0 + (k + 1) * cell + 1);
+      if (k < divisions - 1) expect(below![0].charCodeAt(0)).toBe(above[0].charCodeAt(0) - 1);
+      else expect(below).toBeNull();
+    }
+    expect(sectorForWorldPoint(x0 - 1, y0 + 1)).toBeNull();
+    expect(sectorForWorldPoint(x0 + 1, y0 + 1)).toBe("I1");
+  });
+});
+
+describe("projectSectorLabels", () => {
   const deg = (d: number) => (d * Math.PI) / 180;
   const W = 900;
   const H = 700;
@@ -183,32 +204,13 @@ describe("projectSectorGrid", () => {
     const viewport = terrainViewport(DEEP_DESERT, zoom, px * zoom - W / 2, py * zoom - H / 2, W, H);
     return liveMapCamera(DEEP_DESERT, zoom, viewport, deg(tiltDeg), deg(yawDeg), PIVOT)!;
   }
-  const flatSand = () => PIVOT;
-  /** Every vertex of every path, as numbers. */
-  const vertices = (d: string) => [...d.matchAll(/[ML](-?[\d.]+) (-?[\d.]+)/g)].map((m) => [Number(m[1]), Number(m[2])]);
-  /** Distance from a point to the nearest segment of a path. */
-  function distanceToPath(d: string, x: number, y: number) {
-    let best = Infinity;
-    let prev: number[] | null = null;
-    for (const m of d.matchAll(/([ML])(-?[\d.]+) (-?[\d.]+)/g)) {
-      const cur = [Number(m[2]), Number(m[3])];
-      if (m[1] === "L" && prev) {
-        const vx = cur[0] - prev[0];
-        const vy = cur[1] - prev[1];
-        const t = Math.max(0, Math.min(1, ((x - prev[0]) * vx + (y - prev[1]) * vy) / Math.max(vx * vx + vy * vy, 1e-9)));
-        best = Math.min(best, Math.hypot(x - prev[0] - vx * t, y - prev[1] - vy * t));
-      }
-      prev = cur;
-    }
-    return best;
-  }
 
   it("labels each sector with the sector that is actually under the label", () => {
     for (const [zoom, tilt, yaw] of [[0.2, 0, 35], [0.2, 45, 0], [0.5, 60, 130], [2, 55, -70], [8, 60, 20]]) {
       const camera = cameraAt(zoom, 2048, 2048, tilt, yaw);
-      const grid = projectSectorGrid(camera, flatSand, 20, 900);
-      expect(grid.labels.length).toBeGreaterThan(0);
-      for (const label of grid.labels) {
+      const labels = projectSectorLabels(camera, 20, 900);
+      expect(labels.length).toBeGreaterThan(0);
+      for (const label of labels) {
         const ground = screenToWorldAtZ(camera, label.sx, label.sy, PIVOT);
         expect(sectorForWorldPoint(ground.x, ground.y)).toBe(label.text);
         // ...and it is inside the viewport, clear of its edge.
@@ -222,108 +224,7 @@ describe("projectSectorGrid", () => {
 
   it("still labels the sector in view when one cell is larger than the viewport", () => {
     // Zoom 8, centred in E5's middle: the cell's edges are all off-screen.
-    const grid = projectSectorGrid(cameraAt(8, 2048, 2048, 50, 25), flatSand, 20, 900);
-    expect(grid.labels.map((label) => label.text)).toEqual(["E5"]);
-  });
-
-  it("draws the lines through the grid's own intersections", () => {
-    const camera = cameraAt(0.6, 1900, 2100, 50, 40);
-    const grid = projectSectorGrid(camera, flatSand, 20, 900);
-    let checked = 0;
-    for (let i = 0; i <= 9; i++) for (let j = 0; j <= 9; j++) {
-      const s = projectToScreen(camera, CENTRE_X - HALF + i * CELL, CENTRE_Y - HALF + j * CELL, PIVOT);
-      if (s.sx < 0 || s.sx > W || s.sy < 0 || s.sy > H) continue;
-      checked++;
-      // Two lines cross at every intersection: one path of each direction passes within rounding.
-      const near = grid.paths.filter((path) => distanceToPath(path.d, s.sx, s.sy) < 0.2);
-      expect(near.length).toBeGreaterThanOrEqual(2);
-    }
-    expect(checked).toBeGreaterThan(3);
-  });
-
-  it("lays the lines on the sand, not on a flat plane", () => {
-    const camera = cameraAt(1, 2048, 2048, 55, 0);
-    const flat = projectSectorGrid(camera, flatSand, 20, 900);
-    const raised = projectSectorGrid(camera, () => PIVOT + 12000, 20, 900);
-    // Higher ground draws further up the screen once tilted.
-    const top = (paths: { d: string }[]) => Math.min(...paths.flatMap((path) => vertices(path.d).map((v) => v[1])));
-    expect(top(raised.paths)).toBeLessThan(top(flat.paths) - 5);
-    // A point on a dune sits on the line drawn over that dune.
-    const x = CENTRE_X - HALF + 4 * CELL;
-    const dune = (px: number, py: number) => PIVOT + 6000 * Math.sin(py / 30000) + 0 * px;
-    const draped = projectSectorGrid(camera, dune, 20, 900);
-    const y = camera.cy + 20000;
-    const s = projectToScreen(camera, x, y, dune(x, y));
-    expect(Math.min(...draped.paths.map((path) => distanceToPath(path.d, s.sx, s.sy)))).toBeLessThan(1.5);
-    // The flat-plane line misses it by a visible amount.
-    expect(Math.min(...flat.paths.map((path) => distanceToPath(path.d, s.sx, s.sy)))).toBeGreaterThan(3);
-  });
-
-  it("stays finite where lines run behind the view", () => {
-    // Steep and zoomed in: most of every line is off-screen, some of it behind the eye.
-    for (const yaw of [0, 90, 180, 270, 33]) {
-      const grid = projectSectorGrid(cameraAt(8, 1500, 1700, 60, yaw), flatSand, 20, 900);
-      for (const path of grid.paths) {
-        for (const [x, y] of vertices(path.d)) {
-          expect(Number.isFinite(x) && Number.isFinite(y)).toBe(true);
-          expect(Math.abs(x)).toBeLessThan(20000);
-          expect(Math.abs(y)).toBeLessThan(20000);
-        }
-      }
-    }
-  });
-
-  describe("where the terrain covers it", () => {
-    const camera = cameraAt(0.6, 2048, 2048, 50, 0);
-    // The grid line just nearer the viewer than the view's middle; horizontal on screen at yaw 0.
-    const lineY = CENTRE_Y + CELL / 2;
-    const rowSy = projectToScreen(camera, camera.cx, lineY, PIVOT).sy;
-    const onRow = (paths: { d: string }[]) => paths.flatMap((path) => vertices(path.d)).filter(([, y]) => Math.abs(y - rowSy) < 1);
-    const sxOf = (x: number) => projectToScreen(camera, x, lineY, PIVOT).sx;
-
-    it("breaks a line there, and nowhere else", () => {
-      const open = projectSectorGrid(camera, flatSand, 20, 900);
-      // A rock across the middle of the view: everything within 60,000 uu of the centre line.
-      const cut = projectSectorGrid(camera, flatSand, 20, 900, (x) => Math.abs(x - camera.cx) < 60000);
-      const left = sxOf(camera.cx - 60000);
-      const right = sxOf(camera.cx + 60000);
-      const inBand = (paths: { d: string }[]) => onRow(paths).filter(([x]) => x > left + 1 && x < right - 1);
-      // Uncovered, the line runs through the band; covered, nothing of it is drawn there...
-      expect(inBand(open.paths).length).toBeGreaterThan(5);
-      expect(inBand(cut.paths)).toHaveLength(0);
-      // ...it is broken, not dropped...
-      const moves = (paths: { d: string }[]) => paths.reduce((n, path) => n + (path.d.match(/M/g) || []).length, 0);
-      expect(moves(cut.paths)).toBeGreaterThan(moves(open.paths));
-      // ...and it still runs on both sides.
-      const xs = onRow(cut.paths).map(([x]) => x);
-      expect(Math.min(...xs)).toBeLessThan(left - 20);
-      expect(Math.max(...xs)).toBeGreaterThan(right + 20);
-      // Labels are not hidden by it.
-      expect(cut.labels).toEqual(open.labels);
-    });
-
-    it("stops within half the usual sampling distance of the rock", () => {
-      const edge = camera.cx - 60000;
-      const cut = projectSectorGrid(camera, flatSand, 20, 900, (x) => x > edge);
-      const edgeSx = sxOf(edge);
-      const last = Math.max(...onRow(cut.paths).map(([x]) => x));
-      // Never into the rock, and no more than a 6 px sample short of it.
-      expect(last).toBeLessThanOrEqual(edgeSx + 0.1);
-      expect(edgeSx - last).toBeLessThanOrEqual(7);
-    });
-
-    it("is not sampled, or cut, when nothing says what is covered", () => {
-      const open = projectSectorGrid(camera, flatSand, 20, 900);
-      const never = projectSectorGrid(camera, flatSand, 20, 900, () => false);
-      // The same lines either way; only finer when being tested.
-      expect(never.paths).toHaveLength(open.paths.length);
-      expect(onRow(never.paths).length).toBeGreaterThan(onRow(open.paths).length);
-    });
-  });
-
-  it("marks the four outer lines as the edge", () => {
-    const grid = projectSectorGrid(cameraAt(0.2, 2048, 2048, 30, 10), flatSand, 20, 900);
-    expect(grid.paths.filter((path) => path.edge)).toHaveLength(4);
-    expect(grid.paths).toHaveLength(20);
+    const labels = projectSectorLabels(cameraAt(8, 2048, 2048, 50, 25), 20, 900);
+    expect(labels.map((label) => label.text)).toEqual(["E5"]);
   });
 });

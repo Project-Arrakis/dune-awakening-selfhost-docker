@@ -3,6 +3,7 @@ import { createRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LiveMapConfig } from "../../../api/liveMap";
 import DeepDesertTerrain from "./DeepDesertTerrain";
+import { SECTOR_GRID } from "../liveMapSectorGrid";
 
 // The assets are 15 MB of binary behind fetch; the component's job is lifecycle,
 // not loading, so the loader is stubbed out.
@@ -38,6 +39,7 @@ function fakeRenderer() {
     pick: vi.fn(() => ({ x: 1, y: 2, z: 3 })),
     occluded: vi.fn((_x: number, _y: number, z: number) => z < 100),
     setElevationLines: vi.fn(),
+    setSectorGrid: vi.fn(),
     draw: vi.fn(),
     dispose: vi.fn()
   };
@@ -102,6 +104,17 @@ describe("DeepDesertTerrain", () => {
     const on = mount({ elevationLines: true });
     await waitFor(() => expect(on.renderer.setElevationLines).toHaveBeenCalled());
     expect(on.renderer.setElevationLines.mock.calls.at(-1)![0]).toBe(true);
+  });
+
+  it("hands the renderer the sector grid only when asked for it", async () => {
+    const off = mount();
+    await waitFor(() => expect(off.renderer.setSectorGrid).toHaveBeenCalled());
+    expect(off.renderer.setSectorGrid.mock.calls.at(-1)![0]).toBeNull();
+    document.body.innerHTML = "";
+
+    const on = mount({ sectorGrid: true });
+    await waitFor(() => expect(on.renderer.setSectorGrid).toHaveBeenCalled());
+    expect(on.renderer.setSectorGrid.mock.calls.at(-1)![0]).toEqual(SECTOR_GRID);
   });
 
   it("draws the world rect the panel is showing, not the whole map", async () => {

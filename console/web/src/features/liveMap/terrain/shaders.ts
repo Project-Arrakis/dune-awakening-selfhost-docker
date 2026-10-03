@@ -157,6 +157,8 @@ uniform vec3 uL; uniform float uZlo, uZhi;
 uniform vec2 uC; uniform float uHalf;
 // Elevation lines: on/off weight, and the banding intervals for rock and sand.
 uniform float uCon, uConStep, uConStepS;
+// Sector grid: min corner, cell size and cell count (0 = off); line width in buffer pixels.
+uniform vec4 uGrid; uniform float uGridPx;
 out vec4 o;
 void main(){
   // Hard-clip everything to the square so the mapped area has a crisp edge.
@@ -286,6 +288,23 @@ void main(){
       float fade = 1.0 - smoothstep(0.75, 1.60, dens);
       c *= mix(1.0, 0.82, edge*fade*uCon);
     }
+  }
+  // Sector grid, tilted only. Drawn on whatever surface is here, so it runs over
+  // rock and down cliffs, and whatever stands in front hides it. Widths are in
+  // screen pixels, from how fast the grid coordinate changes across the pixel.
+  if(uGrid.w > 0.0){
+    vec2 g = (vXY - uGrid.xy) / uGrid.z;
+    vec2 fw = max(fwidth(g), vec2(1e-6));
+    vec2 k = clamp(floor(g + 0.5), 0.0, uGrid.w);
+    vec2 edge = vec2(k.x == 0.0 || k.x == uGrid.w, k.y == 0.0 || k.y == uGrid.w);
+    vec2 halfW = uGridPx * mix(vec2(0.5), vec2(1.0), edge);
+    vec2 cov = 1.0 - smoothstep(halfW - 0.5, halfW + 0.5, abs(g - k) / fw);
+    // A line runs only across the grid, reaching just past it to close the corners.
+    vec2 slack = fw * halfW;
+    float inX = step(-slack.x, g.x) * step(g.x, uGrid.w + slack.x);
+    float inY = step(-slack.y, g.y) * step(g.y, uGrid.w + slack.y);
+    vec2 a = cov * mix(vec2(0.8), vec2(0.95), edge);
+    c = mix(c, vec3(0.063, 0.043, 0.016), max(a.x * inY, a.y * inX));
   }
   float w = vWS;
   if(uFeather>0.0){
