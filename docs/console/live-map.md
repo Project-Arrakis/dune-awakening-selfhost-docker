@@ -319,6 +319,9 @@ lazy-loaded so a Hagga Basin user never downloads it.
 - **That translation is clamped to the map's extent, and the clamp must stay.** A
   transform counts toward the frame's scrollable width, so an unclamped one
   inflates the scroll area and leaves the map stuck off-centre after zooming out.
+  The one exception is tilted with the map narrower than the frame (a wide window
+  at fit zoom): the canvas is widened to the frame, which it never reaches past
+  (`terrainViewport`'s `fill`).
 - **Only what is in view is drawn.** A layout is 18-26 million triangles per pass.
   Each frame draws the instances whose bounding circle touches the view and is at
   least half a pixel in radius. Not one pixel: POI hulls are assembled from
@@ -374,16 +377,16 @@ straight overhead.
 The lines are bands, not true isolines: the rock is terraced, and an isoline
 vanishes across a flat tread. The elevation is banded and a line drawn where the
 band index changes between neighbouring pixels. The interval is 200 uu zoomed in
-and coarsens with zoom-out in a 1-2-5 sequence (1,000 uu at 100%, 5,000 at the
-whole map). Sand uses an interval eight times coarser, capped at 2,500 uu, and
+and coarsens with zoom-out in a 1-2-5 sequence (1,000 uu at 100%, 2,000-5,000 at
+the whole map, depending on the window's size). Sand uses an interval eight times coarser, capped at 2,500 uu, and
 fades its lines on steep dune flanks.
 
 ### Sector grid
 
 **Sector Grid**, in the Layers panel and on by default, overlays the Deep
 Desert's 9x9 lettered grid: 250,000 uu cells spanning +/-1,125,000 uu about the
-map centre. It draws over the rendered terrain and the flat image alike. Hagga
-Basin has no lettered sectors.
+map centre. Top-down it is drawn over the rendered terrain or the flat image;
+tilted, the terrain draws it (below). Hagga Basin has no lettered sectors.
 
 - **I is at the top and A at the bottom.** World +Y draws downward, so the letter
   runs opposite to screen-down. This matches the game's own map art and is pinned
@@ -410,7 +413,9 @@ controls are absent on Hagga Basin and on the flat fallback image.
 A **compass** shows in the map's top-right corner whenever the view is tilted or
 turned. Its needle points at north (the map's top edge, sector row I), and its
 label names the way the view faces. It turns with the view but stays round
-while tilted. Clicking it turns the view back to face north and keeps the tilt.
+while tilted, so between the four main directions its needle can be a few
+degrees off the grid's lines (up to about 8 at 45 degrees of tilt). Clicking it
+turns the view back to face north and keeps the tilt.
 
 The map frame spans the panel's width but is never taller than the window less
 the toolbar, so the whole map fits without scrolling the page. In a wide window
@@ -596,11 +601,7 @@ Feature-level changes to the Live Map, newest first.
 
 | Release | Date | Change |
 |---|---|---|
-| Unreleased | 2026-10 | **Tilt and rotation** of the Deep Desert terrain, with perspective: Tilt slider, Top-Down reset, right-drag, and a compass. Markers are projected through the camera and hidden where rock covers them; the sector grid is drawn on the terrain itself, over rock and cliffs. |
-| Unreleased | 2026-10 | The tilted view draws past the map's edge, out to 375,000 uu: the shield walls outside the square, hand-placed pieces included, with the wall's floating upper tiers closed down to the ground, on the game's own sand for the first 90,000 uu and a level plain beyond. |
-| Unreleased | 2026-10 | Rock meshes are sealed at load, rock is lit as a solid and its cliffs textured from the side when tilted, and the camera's eye stays above the rock at high zoom. |
-| Unreleased | 2026-10 | Rock is painted with the game's own textures, with the game's normal map baked into the two big wall shapes. Terrain instances are culled per frame, and the depth pass stops before shading. Assets are 1.9 MB smaller: delta-coded mesh indices, and placements every layout shares shipped once. |
-| Unreleased | 2026-09 | **Elevation Lines** layer. Rock is lit with its authored normals and given a per-instance tone. |
+| Unreleased | 2026-10 | **Tilt and rotation** of the Deep Desert terrain, with perspective: Tilt slider, Top-Down reset, right-drag and a compass. Markers are projected through the camera and hidden where rock covers them; the sector grid is drawn on the terrain, over rock and cliffs. Tilted, the view reaches 375,000 uu past the map's edge: the shield walls outside the square, hand-placed pieces included and floating upper tiers closed down to the ground, on the game's own sand for the first 90,000 uu and a level plain beyond. **Elevation Lines** layer. Rock is painted with the game's own textures (its normal map baked into the two big wall shapes), lit with its authored normals and a per-instance tone, sealed at load, lit as a solid and textured from the side when tilted; the camera's eye stays above the rock at high zoom. The map frame fits the window's height. Terrain instances are culled per frame and the depth pass stops before shading; assets are 1.9 MB smaller (delta-coded mesh indices, shared placements shipped once). |
 | v1.4.35 | 2026-09-20 | The Coriolis block is read from the game log by pattern instead of from a tail, so the layout no longer goes missing on long-running servers. |
 | v1.4.23 | 2026-09-17 | Spice and Flour Sand layers fixed after the game changed `resourcefield_state`. |
 | v1.4.7 | 2026-09-02 | **Rendered Deep Desert terrain** for the live Coriolis layout, with the flat image as fallback. **Sector Grid** overlay. Map rect corrected to the sector square. A double-clicked location opens as an overlay. |

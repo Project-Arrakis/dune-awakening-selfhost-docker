@@ -3152,22 +3152,15 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 }
 .live-map-frame {
   position: relative;
-  /* Both maps are square (4096x4096) -- keeping the box itself square
-     (rather than width:100%; height:82vh independently) is what makes
-     "contain" fit actually fill it with no blank top/bottom margin.
-     width:min(100%, 82vh) picks whichever of the column's width or the
-     82vh height budget is tighter, and aspect-ratio derives the other
-     dimension from that, so it still grows with available space (the
-     original ask) without reintroducing letterboxing (found live on
-     dune2 after the 920px cap was dropped: the frame got taller than
-     wide, so the square map no longer reached the frame's edges). */
+  /* Both maps are square (4096x4096), so the box is square at the column's
+     full width -- never taller than wide, which left the map short of the
+     frame's edges -- but capped at the window's height less the toolbar
+     above it, so the whole map fits without scrolling the page. A wide window
+     then centres the flat map at fit; tilted, the extra width shows past the edge. */
   width: 100%;
   aspect-ratio: 1 / 1;
   min-width: 560px;
   min-height: 560px;
-  /* Full width, but never taller than the window less the toolbar above it,
-     so the whole map fits without scrolling the page. A wide window then
-     letterboxes the flat map at fit; tilted, the extra width shows past the edge. */
   max-height: calc(100vh - 110px);
   max-height: calc(100dvh - 110px);
   overflow: hidden;
