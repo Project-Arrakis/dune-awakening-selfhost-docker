@@ -131,3 +131,53 @@ describe("update diagnostics retention", () => {
     expect(loadPersistedUpdateTask(GAME_UPDATE_TASK_KEY)).toBeNull();
   });
 });
+
+describe("sidebar version badge sync", () => {
+  const api = updatesApi as unknown as Record<string, unknown>;
+  const checkTask = (lines: string[], status = "succeeded") => ({ task: { ...task, operation: "selfUpdateCheck", status, logLines: lines.map((line) => ({ timestamp: "", stream: "stdout", line })) } });
+  function renderWithSync(onStackStatus: (status: Record<string, string>) => void, installedConsoleVersion = "") {
+    return render(<UpdatesPanel
+      onStackStatus={onStackStatus}
+      installedConsoleVersion={installedConsoleVersion}
+      confirmAction={vi.fn().mockResolvedValue(false)}
+      waitForTask={(async (t: unknown) => t) as never}
+      parseKeyValueText={() => ({})}
+      formatTimerStatus={(v: string) => v}
+      commandStatusSummary={() => ({ status: "", reason: "" })}
+      taskTechnicalDetails={() => ""}
+      formatResultTitle={(v: unknown) => String(v ?? "")}
+      formatResultMessage={(v: unknown) => String(v ?? "")}
+    />);
+  }
+  beforeEach(() => {
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+  });
+  afterEach(() => {
+    cleanup();
+    delete api.checkStack;
+  });
+
+  it("hands a completed console check to the sidebar", async () => {
+    api.checkStack = vi.fn().mockResolvedValue(checkTask(["Current stack version: v1.4.44", "Latest release:        v1.4.44", "You are already on the latest stack version."]));
+    const onStackStatus = vi.fn();
+    renderWithSync(onStackStatus);
+    await waitFor(() => expect(onStackStatus).toHaveBeenCalledWith(expect.objectContaining({ status: "Latest", current: "v1.4.44", latest: "v1.4.44" })));
+  });
+
+  it("does not replace a known sidebar version with a check that learned nothing", async () => {
+    api.checkStack = vi.fn().mockResolvedValue(checkTask([], "failed"));
+    const onStackStatus = vi.fn();
+    renderWithSync(onStackStatus);
+    await waitFor(() => expect(api.checkStack).toHaveBeenCalled());
+    await screen.findAllByText("Check Failed");
+    expect(onStackStatus).not.toHaveBeenCalled();
+  });
+
+  it("shows the installed console version when the check could not report one", async () => {
+    api.checkStack = vi.fn().mockResolvedValue(checkTask([], "failed"));
+    renderWithSync(vi.fn(), "1.4.44");
+    await screen.findAllByText("Check Failed");
+    expect(screen.getByText("Current Console Version").parentElement?.textContent).toContain("v1.4.44");
+  });
+});
