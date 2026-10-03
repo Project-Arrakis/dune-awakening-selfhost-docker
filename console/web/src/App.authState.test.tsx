@@ -1,4 +1,4 @@
-import { render, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { getAdminPort, getServerPorts, resetServerPortsForTests, setAdminPort } from "./api/serverPorts";
@@ -68,5 +68,21 @@ describe("App populates the shared serverPorts cache from /api/auth/state", () =
       expect(getServerPorts().postgres).toBe(15432);
     });
     expect(getAdminPort()).toBe(8088);
+  });
+});
+
+describe("sidebar version badge", () => {
+  it("shows the installed version from /api/auth/state when the update check fails", async () => {
+    const json = (body: unknown, status = 200) => Promise.resolve(new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((path: string) => {
+      const url = String(path);
+      if (url.includes("/api/auth/state")) return json({ authenticated: true, csrfToken: "t", config: { version: "1.4.44" } });
+      if (url.includes("/api/setup/state")) return json({ files: { complete: true }, config: {} });
+      return json({ error: "unavailable" }, 500);
+    }));
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Open Updates" }).textContent).toBe("v1.4.44"));
   });
 });

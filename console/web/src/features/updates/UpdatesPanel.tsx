@@ -19,7 +19,8 @@ import {
   stackReleaseNotesUrl,
   STACK_UPDATE_TASK_KEY,
   UPDATE_RESULT_DISMISS_MS,
-  updateDisplayValue
+  updateDisplayValue,
+  withInstalledVersion
 } from "./updateUtils";
 
 type HomeTaskResult = { status: "running" | "succeeded" | "failed" | "stopped"; title: string; message?: string; details?: string };
@@ -33,6 +34,7 @@ type UpdatesPanelProps = {
   onInstallGameFilesHandled?: () => void;
   // Keeps the sidebar version badge in step with checks made here.
   onStackStatus?: (status: Record<string, string>) => void;
+  installedConsoleVersion?: string;
   confirmAction: (message: string) => Promise<boolean>;
   waitForTask: (task: Task) => Promise<Task>;
   parseKeyValueText: (text: string) => Record<string, string>;
@@ -47,6 +49,7 @@ export function UpdatesPanel({
   installGameFilesRequest = 0,
   onInstallGameFilesHandled,
   onStackStatus,
+  installedConsoleVersion = "",
   confirmAction,
   waitForTask,
   parseKeyValueText,
@@ -508,7 +511,7 @@ export function UpdatesPanel({
       </section>
       <section className="action-section">
         <div className="panel-title"><h4>Console Update</h4><StatusPill value={stackStatus.status} /></div>
-        <KeyValueGrid items={[["Current Console Version", updateDisplayValue(stackStatus, "current", formatStackVersionLabel)], ["Latest Console Version", latestConsoleValue], ["Update Channel", qaStatus?.channel.label || "Public Release"], ["Status", stackStatus.status]]} />
+        <KeyValueGrid items={[["Current Console Version", updateDisplayValue(withInstalledVersion(stackStatus, installedConsoleVersion), "current", formatStackVersionLabel)], ["Latest Console Version", latestConsoleValue], ["Update Channel", qaStatus?.channel.label || "Public Release"], ["Status", stackStatus.status]]} />
         {qaAuthenticated && <div className="qa-build-row"><div><strong>Latest GitHub Pre-Release</strong><span>{qaBuild ? `${qaBuild.shortSha} · ${qaBuild.status}` : "Checking..."}</span>{qaBuild?.reason && !qaBuild.ready && <small>{qaBuild.reason}</small>}</div>{qaBuild?.commitUrl && <a href={qaBuild.commitUrl} target="_blank" rel="noreferrer">View Commit</a>}</div>}
         {stackStatus.status === "Check Failed" && stackStatus.reason && <p className="danger-note">{stackStatus.reason}</p>}
         {stackStatus.status === "Version details unavailable" && <p className="muted">{stackStatus.reason}</p>}

@@ -32,7 +32,7 @@ import {
   type HomeTaskResult,
   type RestartLifecycleState
 } from "./features/server/ServerPanels";
-import { parseUpdateTask, stackVersionButtonLabel, stackVersionButtonTitle } from "./features/updates/updateUtils";
+import { parseUpdateTask, stackVersionButtonLabel, stackVersionButtonTitle, withInstalledVersion } from "./features/updates/updateUtils";
 import { formatUiSentence, stripAnsi, summarizeCommandText, titleCase } from "./lib/display";
 import { useStaleBuildWatcher } from "./lib/staleBuildWatcher";
 
@@ -442,6 +442,8 @@ export function App() {
   const [homeRunningAction, setHomeRunningAction] = useState<"start" | "stop" | "restart" | "">("");
   const [homeRestartStarted, setHomeRestartStarted] = useState(false);
   const [stackVersionStatus, setStackVersionStatus] = useState<Record<string, string>>({ status: "Checking", current: "", latest: "" });
+  const [installedVersion, setInstalledVersion] = useState("");
+  const stackBadgeStatus = withInstalledVersion(stackVersionStatus, installedVersion);
   const stackActionStartedAt = useRef(0);
   const stackActionReadyPolls = useRef(0);
   const stackRestartLifecycle = useRef<RestartLifecycleState>(createRestartLifecycleState());
@@ -487,11 +489,12 @@ export function App() {
   }, [pinnedAddons]);
 
   useEffect(() => {
-    api<{ authenticated: boolean; csrfToken: string | null; config?: { ports?: Partial<ServerPorts>; port?: number } }>("/api/auth/state").then((state) => {
+    api<{ authenticated: boolean; csrfToken: string | null; config?: { ports?: Partial<ServerPorts>; port?: number; version?: string } }>("/api/auth/state").then((state) => {
       setAuth(state.authenticated);
       setCsrfToken(state.csrfToken);
       setServerPorts(state.config?.ports);
       setAdminPort(state.config?.port);
+      setInstalledVersion(String(state.config?.version || ""));
     }).catch(() => undefined);
   }, []);
 
@@ -800,7 +803,7 @@ export function App() {
           <button className="sidebar-home-button" type="button" onClick={() => { setRedeploySetupOpen(false); setTab("Home"); closeMobileNav(); }} title="Open Home">
             <h1>Dune Docker Console</h1>
           </button>
-          <button className="stack-version-button" title={stackVersionButtonTitle(stackVersionStatus)} aria-label={stackVersionButtonTitle(stackVersionStatus)} onClick={() => { setRedeploySetupOpen(false); setTab("Updates"); closeMobileNav(); }}>{stackVersionButtonLabel(stackVersionStatus)}</button>
+          <button className="stack-version-button" title={stackVersionButtonTitle(stackBadgeStatus)} aria-label={stackVersionButtonTitle(stackBadgeStatus)} onClick={() => { setRedeploySetupOpen(false); setTab("Updates"); closeMobileNav(); }}>{stackVersionButtonLabel(stackBadgeStatus)}</button>
           <button
             className="sidebar-menu-toggle"
             type="button"
@@ -915,6 +918,7 @@ export function App() {
             installGameFilesRequest={installGameFilesRequest}
             onInstallGameFilesHandled={() => setInstallGameFilesRequest(0)}
             onStackStatus={setStackVersionStatus}
+            installedConsoleVersion={installedVersion}
             confirmAction={confirmDialog}
             waitForTask={waitForTaskSilently}
             parseKeyValueText={parseKeyValueText}

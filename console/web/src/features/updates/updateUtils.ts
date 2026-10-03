@@ -74,6 +74,11 @@ export function stackVersionButtonLabel(status: Record<string, string>) {
   return formatStackVersionLabel(current || latest) || "Version";
 }
 
+// A check that learned nothing still leaves the installed version known.
+export function withInstalledVersion(status: Record<string, string>, installed: string) {
+  return status.current || !installed ? status : { ...status, current: installed };
+}
+
 export function stackVersionButtonTitle(status: Record<string, string>) {
   const current = String(status.current || "").trim();
   const latest = String(status.latest || "").trim();

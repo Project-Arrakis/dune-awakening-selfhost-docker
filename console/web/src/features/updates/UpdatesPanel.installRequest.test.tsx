@@ -135,9 +135,10 @@ describe("update diagnostics retention", () => {
 describe("sidebar version badge sync", () => {
   const api = updatesApi as unknown as Record<string, unknown>;
   const checkTask = (lines: string[], status = "succeeded") => ({ task: { ...task, operation: "selfUpdateCheck", status, logLines: lines.map((line) => ({ timestamp: "", stream: "stdout", line })) } });
-  function renderWithSync(onStackStatus: (status: Record<string, string>) => void) {
+  function renderWithSync(onStackStatus: (status: Record<string, string>) => void, installedConsoleVersion = "") {
     return render(<UpdatesPanel
       onStackStatus={onStackStatus}
+      installedConsoleVersion={installedConsoleVersion}
       confirmAction={vi.fn().mockResolvedValue(false)}
       waitForTask={(async (t: unknown) => t) as never}
       parseKeyValueText={() => ({})}
@@ -171,5 +172,12 @@ describe("sidebar version badge sync", () => {
     await waitFor(() => expect(api.checkStack).toHaveBeenCalled());
     await screen.findAllByText("Check Failed");
     expect(onStackStatus).not.toHaveBeenCalled();
+  });
+
+  it("shows the installed console version when the check could not report one", async () => {
+    api.checkStack = vi.fn().mockResolvedValue(checkTask([], "failed"));
+    renderWithSync(vi.fn(), "1.4.44");
+    await screen.findAllByText("Check Failed");
+    expect(screen.getByText("Current Console Version").parentElement?.textContent).toContain("v1.4.44");
   });
 });

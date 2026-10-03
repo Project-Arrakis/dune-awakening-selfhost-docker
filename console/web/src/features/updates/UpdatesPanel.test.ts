@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Task } from "../../api/setup";
 import { gameUpdateTerminalStatus, isDetachedStackUpdateTask, isUpdatedConsoleReady, summarizeStackUpdateProgress } from "./UpdatesPanel";
-import { gameAssetsMissing, gameAssetsMissingInText, parseUpdateTask, stackVersionButtonLabel } from "./updateUtils";
+import { gameAssetsMissing, gameAssetsMissingInText, parseUpdateTask, stackVersionButtonLabel, withInstalledVersion } from "./updateUtils";
 
 function detachedTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -147,5 +147,19 @@ describe("a check that outlives the poll window", () => {
     expect(status.status).toBe("Check Failed");
     expect(status.reason).toMatch(/did not finish in time/);
     expect(stackVersionButtonLabel(status)).toBe("Version");
+  });
+});
+
+describe("sidebar badge falls back to the installed version", () => {
+  it.each([
+    ["a timed-out check", parseUpdateTask(detachedTask({ operation: "selfUpdateCheck", status: "running", logLines: [] }))],
+    ["an unreachable check", { status: "Unavailable", current: "", latest: "" }]
+  ])("shows the installed version after %s", (_name, status) => {
+    expect(stackVersionButtonLabel(withInstalledVersion(status, "1.4.44"))).toBe("v1.4.44");
+  });
+
+  it("keeps Checking while the check is in flight, and prefers what a check reported", () => {
+    expect(stackVersionButtonLabel(withInstalledVersion({ status: "Checking", current: "", latest: "" }, "1.4.44"))).toBe("Checking");
+    expect(stackVersionButtonLabel(withInstalledVersion({ status: "Update Available", current: "v1.4.43", latest: "v1.4.44" }, "1.4.40"))).toBe("v1.4.43 > v1.4.44");
   });
 });
