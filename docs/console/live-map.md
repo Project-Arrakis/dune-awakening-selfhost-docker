@@ -403,6 +403,11 @@ turned. A **Tilt** slider and a **Top-Down** reset sit in the toolbar, and
 **right-dragging** the map does both: across rotates, up leans it back. The
 controls are absent on Hagga Basin and on the flat fallback image.
 
+A **compass** shows in the map's top-right corner whenever the view is tilted or
+turned. Its needle points at north (the map's top edge, sector row I), and its
+label names the way the view faces. It turns with the view but stays round
+while tilted. Clicking it turns the view back to face north and keeps the tilt.
+
 Top-down is not a special case of the tilted view. With no tilt and no rotation
 the original code path runs, and everything below is inactive.
 
@@ -584,7 +589,7 @@ Feature-level changes to the Live Map, newest first.
 
 | Release | Date | Change |
 |---|---|---|
-| Unreleased | 2026-10 | **Tilt and rotation** of the Deep Desert terrain, with perspective: Tilt slider, Top-Down reset, right-drag. Markers and the sector grid are projected through the camera, and markers and grid lines are hidden where rock covers them. |
+| Unreleased | 2026-10 | **Tilt and rotation** of the Deep Desert terrain, with perspective: Tilt slider, Top-Down reset, right-drag, and a compass. Markers and the sector grid are projected through the camera, and markers and grid lines are hidden where rock covers them. |
 | Unreleased | 2026-10 | The tilted view draws past the map's edge, out to 375,000 uu: the shield walls outside the square, hand-placed pieces included, with the wall's floating upper tiers closed down to the ground, on the game's own sand for the first 90,000 uu and a level plain beyond. |
 | Unreleased | 2026-10 | Rock meshes are sealed at load, rock is lit as a solid and its cliffs textured from the side when tilted, and the camera's eye stays above the rock at high zoom. |
 | Unreleased | 2026-10 | Rock is painted with the game's own textures, with the game's normal map baked into the two big wall shapes. Terrain instances are culled per frame, and the depth pass stops before shading. Assets are 1.9 MB smaller: delta-coded mesh indices, and placements every layout shares shipped once. |

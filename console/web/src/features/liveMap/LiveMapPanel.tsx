@@ -23,6 +23,7 @@ import {
 import { MAX_TILT, projectToScreen, screenToWorldAtZ, type TerrainCamera } from "./terrain/terrainCamera";
 import type { TerrainApi } from "./terrain/DeepDesertTerrain";
 import { labelAnchorInView, projectSectorGrid, sectorForWorldPoint, sectorGridFor } from "./liveMapSectorGrid";
+import { LiveMapCompass } from "./LiveMapCompass";
 
 // On-screen size of a sector label, in CSS pixels. The SVG is drawn in map-pixel
 // space and scaled by zoom, so the font size is divided back out to keep it
@@ -1455,6 +1456,7 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
           <span className="muted">Drag to Pan. Mouse Wheel Zooms. Double-click to pick a location.{can3D ? " Right-drag to tilt and rotate." : ""}</span>
         </div>
         {teleportResult && <HomeTaskResultCard result={teleportResult} />}
+        <div className="live-map-stage">
         <div className={`live-map-frame ${drag ? "dragging" : ""} ${playerDrag ? "dragging-player" : ""}`} ref={frameRef}
           onDoubleClick={handleMapDoubleClick}
           onContextMenu={(event) => { if (can3D) event.preventDefault(); }}
@@ -1627,6 +1629,8 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
               })}
             </div>
           </div> : <div className="empty">Loading map configuration...</div>}
+        </div>
+        {is3D && <LiveMapCompass yaw={yaw} onFaceNorth={() => setYaw(0)} />}
         </div>
       </div>
     </div>

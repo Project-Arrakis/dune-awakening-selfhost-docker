@@ -925,6 +925,27 @@ it("tilts and rotates on a right-drag, and leaves a left-drag panning", async ()
   expect(slider).toHaveValue("60");
 });
 
+it("shows a compass only off top-down, which turns the view back to north", async () => {
+  useTwoHeights();
+  const { container } = renderPanel();
+  await screen.findByRole("button", { name: "Base: Low" });
+  const slider = await screen.findByRole("slider", { name: "Tilt" });
+  const frame = sizeFrame(container);
+  expect(screen.queryByRole("button", { name: /^Facing/ })).toBeNull();
+
+  // Across 300 px turns the view 90 degrees; up 100 px leans it back 30.
+  fireEvent.mouseDown(frame, { button: 2, clientX: 300, clientY: 300 });
+  fireEvent.mouseMove(frame, { clientX: 600, clientY: 200 });
+  fireEvent.mouseUp(frame);
+  fireEvent.click(screen.getByRole("button", { name: /^Facing E \(90°\)/ }));
+  expect(terrain.props.at(-1)!.yaw).toBe(0);
+  expect(slider).toHaveValue("30");
+  expect(screen.getByRole("button", { name: /^Facing N \(0°\)/ })).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: "Top-Down" }));
+  expect(screen.queryByRole("button", { name: /^Facing/ })).toBeNull();
+});
+
 it("keeps the sector grid while tilted, projected, and puts the flat one back after", async () => {
   useTwoHeights();
   const { container } = renderPanel();
