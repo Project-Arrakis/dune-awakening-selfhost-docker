@@ -56,6 +56,12 @@ export class TaskManager {
         timeoutMs: taskTimeoutMs(config, "updateCheck")
       })
     });
+    this.consoleUpdateCheckCache = options.consoleUpdateCheckCache || createUpdateCheckCache(config, {
+      cacheMs: 5 * 60 * 1000, errorCacheMs: 5 * 60 * 1000, cacheFile: null,
+      collect: () => runDune(config, buildDuneArgs("selfUpdateCheck"), {
+        allowedExitCodes: [0, 100], timeoutMs: taskTimeoutMs(config, "selfUpdateCheck")
+      })
+    });
   }
 
   list() {
@@ -92,6 +98,8 @@ export class TaskManager {
     let cachedHit = null;
     if (operation === "updateCheck" && payload.fresh !== true) {
       cachedHit = this.updateCheckCache.peek();
+    } else if (operation === "selfUpdateCheck") {
+      cachedHit = this.consoleUpdateCheckCache.peek();
     }
 
     if (cachedHit) {
@@ -140,6 +148,9 @@ export class TaskManager {
         let result;
         if (operation === "updateCheck") {
           result = await this.readUpdateCheck(task, payload);
+        } else if (operation === "selfUpdateCheck") {
+          result = await this.consoleUpdateCheckCache.read();
+          this.recordUpdateCheckResult(task, result);
         } else {
           const args = buildDuneArgs(operation, payload);
           result = await runDune(this.config, args, {
@@ -168,10 +179,10 @@ export class TaskManager {
       const downloadFailure = downloadFailureMessage([
         ...task.logLines.map(line => line.line), error.stdout || "", error.stderr || ""
       ].join("\n"));
-      if (task.operation === "updateCheck") {
+      if (["updateCheck", "selfUpdateCheck"].includes(task.operation)) {
         if (error.stdout) this.append(task, error.stdout, "stdout");
         if (error.stderr) this.append(task, error.stderr, "stderr");
-        task.errorMessage = downloadFailure || updateCheckFailureMessage(error);
+        task.errorMessage = downloadFailure || (task.operation === "updateCheck" ? updateCheckFailureMessage(error) : error.message);
       } else {
         task.errorMessage = downloadFailure || error.message;
       }
@@ -219,6 +230,7 @@ export class TaskManager {
   }
 
   async runSelfUpdateHelperTask(task, payload) {
+    this.consoleUpdateCheckCache.invalidate();
     const args = buildDuneArgs(task.operation, payload);
     const helperName = `dune-web-self-update-${Date.now()}`;
     const composeProjectName = process.env.DUNE_COMPOSE_PROJECT_NAME || process.env.COMPOSE_PROJECT_NAME;
@@ -330,7 +342,7 @@ export class TaskManager {
     const ageSeconds = Math.max(0, Math.round((Date.now() - result.sampledAtMs) / 1000));
     this.append(task, result.fromCache
       ? `Reusing update check result from ${ageSeconds}s ago (cached).`
-      : "Ran a live Steam update check.", "stdout");
+      : `Ran a live ${task.operation === "selfUpdateCheck" ? "Console" : "Steam"} update check.`, "stdout");
     if (result.stdout) this.append(task, result.stdout, "stdout");
     if (result.stderr) this.append(task, result.stderr, "stderr");
   }
@@ -480,6 +492,7 @@ function shellQuote(value) {
 }
 
 export function taskTimeoutMs(config, operation) {
+  if (operation === "selfUpdateCheck") return Math.min(config.commandTimeoutMs, 120_000);
   // Depot downloads first: these are not restarts and must not inherit a floor
   // sized for one.
   if (["init", "updateApply", "updateInstallAssets"].includes(operation)) {

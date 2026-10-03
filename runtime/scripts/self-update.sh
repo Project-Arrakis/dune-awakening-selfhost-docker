@@ -251,6 +251,13 @@ github_curl_headers() {
 }
 
 api_curl_common_args() {
+  if [ "$cmd" = "check" ] || [ "$cmd" = "status" ]; then
+    # Two REST probes plus the existing 20s web fallback stay well inside the
+    # Console's polling window. Downloads/install retries remain unchanged.
+    printf '%s\n' --connect-timeout 10 --max-time 15 --retry 0
+    github_curl_headers
+    return
+  fi
   printf '%s\n' \
     --connect-timeout 15 \
     --max-time 60 \

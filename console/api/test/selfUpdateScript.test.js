@@ -21,6 +21,26 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
+test("read-only release checks have bounded curl time without changing install retries", () => {
+  const source = readFileSync(join(repoRoot, "runtime/scripts/self-update.sh"), "utf8");
+  const start = source.indexOf("api_curl_common_args() {");
+  const end = source.indexOf("\n}", start) + 2;
+  const fn = source.slice(start, end);
+  const run = cmd => spawnSync("bash", ["-c", `${fn}\ngithub_curl_headers() { :; }\ncmd="$1"\napi_curl_common_args`, "test", cmd], { encoding: "utf8" });
+  for (const cmd of ["check", "status"]) {
+    const result = run(cmd);
+    assert.equal(result.status, 0, result.stderr);
+    const args = result.stdout.trim().split("\n");
+    assert.equal(args[args.indexOf("--max-time") + 1], "15");
+    assert.equal(args[args.indexOf("--retry") + 1], "0");
+  }
+  const install = run("install");
+  assert.equal(install.status, 0, install.stderr);
+  const args = install.stdout.trim().split("\n");
+  assert.equal(args[args.indexOf("--max-time") + 1], "60");
+  assert.equal(args[args.indexOf("--retry") + 1], "2");
+});
+
 test("local-state backup snapshots active audit files and keeps archive failures fatal", () => {
   const root = mkdtempSync(join(tmpdir(), "arrakis-state-snapshot-"));
   try {
