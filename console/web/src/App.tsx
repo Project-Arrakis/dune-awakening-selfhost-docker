@@ -33,7 +33,7 @@ import {
   type HomeTaskResult,
   type RestartLifecycleState
 } from "./features/server/ServerPanels";
-import { parseUpdateTask, stackVersionButtonLabel, stackVersionButtonTitle } from "./features/updates/updateUtils";
+import { parseUpdateTask, stackVersionButtonLabel, preferKnownVersions, stackVersionButtonTitle, withInstalledVersion } from "./features/updates/updateUtils";
 import { formatUiSentence, stripAnsi, summarizeCommandText, titleCase } from "./lib/display";
 import { useStaleBuildWatcher } from "./lib/staleBuildWatcher";
 
@@ -452,6 +452,8 @@ export function App() {
   const [homeRunningAction, setHomeRunningAction] = useState<"start" | "stop" | "restart" | "">("");
   const [homeRestartStarted, setHomeRestartStarted] = useState(false);
   const [stackVersionStatus, setStackVersionStatus] = useState<Record<string, string>>({ status: "Checking", current: "", latest: "" });
+  const [installedVersion, setInstalledVersion] = useState("");
+  const stackBadgeStatus = withInstalledVersion(stackVersionStatus, installedVersion);
   const stackActionStartedAt = useRef(0);
   const stackActionReadyPolls = useRef(0);
   const stackRestartLifecycle = useRef<RestartLifecycleState>(createRestartLifecycleState());
@@ -507,7 +509,7 @@ export function App() {
   }, [pinnedAddons]);
 
   useEffect(() => {
-    api<{ authenticated: boolean; csrfToken: string | null; scope?: string | null; config?: { ports?: Partial<ServerPorts>; port?: number } }>("/api/auth/state").then((state) => {
+    api<{ authenticated: boolean; csrfToken: string | null; scope?: string | null; config?: { ports?: Partial<ServerPorts>; port?: number; version?: string } }>("/api/auth/state").then((state) => {
       // A reload or second tab during two-factor setup: the enrollment-scope
       // session is "authenticated" but can reach nothing except the setup
       // routes, so resume the setup screen instead of rendering a console
@@ -517,12 +519,14 @@ export function App() {
         setSetupMode(state.scope);
         setServerPorts(state.config?.ports);
         setAdminPort(state.config?.port);
+        setInstalledVersion(String(state.config?.version || ""));
         return;
       }
       setAuth(state.authenticated);
       setCsrfToken(state.csrfToken);
       setServerPorts(state.config?.ports);
       setAdminPort(state.config?.port);
+      setInstalledVersion(String(state.config?.version || ""));
     }).catch(() => undefined);
   }, []);
 
@@ -807,9 +811,9 @@ export function App() {
     void (async () => {
       try {
         const final = await waitForTaskSilently((await updatesApi.checkStack()).task);
-        if (!cancelled) setStackVersionStatus(parseUpdateTask(final));
+        if (!cancelled) setStackVersionStatus((previous) => preferKnownVersions(previous, parseUpdateTask(final)));
       } catch {
-        if (!cancelled) setStackVersionStatus({ status: "Unavailable", current: "", latest: "" });
+        if (!cancelled) setStackVersionStatus((previous) => preferKnownVersions(previous, { status: "Unavailable", current: "", latest: "" }));
       }
     })();
     return () => { cancelled = true; };
@@ -936,7 +940,7 @@ export function App() {
           <button className="sidebar-home-button" type="button" onClick={() => { setRedeploySetupOpen(false); setTab("Home"); closeMobileNav(); }} title="Open Home">
             <h1>Dune Docker Console</h1>
           </button>
-          <button className="stack-version-button" title={stackVersionButtonTitle(stackVersionStatus)} aria-label={stackVersionButtonTitle(stackVersionStatus)} onClick={() => { setRedeploySetupOpen(false); setTab("Updates"); closeMobileNav(); }}>{stackVersionButtonLabel(stackVersionStatus)}</button>
+          <button className="stack-version-button" title={stackVersionButtonTitle(stackBadgeStatus)} aria-label={stackVersionButtonTitle(stackBadgeStatus)} onClick={() => { setRedeploySetupOpen(false); setTab("Updates"); closeMobileNav(); }}>{stackVersionButtonLabel(stackBadgeStatus)}</button>
           <button
             className="sidebar-menu-toggle"
             type="button"
@@ -1050,6 +1054,8 @@ export function App() {
         {!redeploySetupOpen && tab === "Updates" && <LazyTabBoundary label="Loading Updates"><UpdatesPanel
             installGameFilesRequest={installGameFilesRequest}
             onInstallGameFilesHandled={() => setInstallGameFilesRequest(0)}
+            onStackStatus={setStackVersionStatus}
+            installedConsoleVersion={installedVersion}
             confirmAction={confirmDialog}
             waitForTask={waitForTaskSilently}
             parseKeyValueText={parseKeyValueText}
