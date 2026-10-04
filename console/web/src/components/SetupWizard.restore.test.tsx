@@ -131,6 +131,10 @@ describe("setup wizard restore path", () => {
     const picker = await walkToArchive();
     fireEvent.change(picker, { target: { files: [new File(["x"], "my-download (1).tar")] } });
     await waitFor(() => expect(apiUpload).toHaveBeenCalled());
+    // Starting the upload is not its completion; Next remains disabled until
+    // the server's stored archive name has reached the rendered wizard state.
+    await screen.findByText("dune-system-20260907-004052.tar.gz.enc");
+    await waitFor(() => expect(screen.getByText("Next")).toBeEnabled());
 
     fireEvent.click(screen.getByText("Next"));
     const field = await screen.findByLabelText("Archive passphrase");
