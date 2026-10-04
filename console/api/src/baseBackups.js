@@ -194,7 +194,6 @@ export class BaseBackupTimeoutError extends BaseBackupError {
   }
 }
 
-// Mirrors the pool's client-side query_timeout in db.js, for reporting only.
 // Maps an export/import failure to { status, body } for the HTTP routes.
 // Timeouts become 504 with the step that ran out of time; version refusals
 // 409 with both versions, so the UI can offer "Import Anyway".
@@ -209,9 +208,14 @@ export function baseBackupHttpError(error) {
   return { status: 500, body: { ok: false, error: message } };
 }
 
-function clientQueryTimeoutMs() {
-  const value = Number(process.env.ADMIN_DB_QUERY_TIMEOUT_MS || 15000);
-  return Number.isFinite(value) && value > 0 ? value : 15000;
+// Client-side bound for each statement of an export/import transaction. It sits
+// just above the server's statement_timeout so the server cancels first and the
+// failure is classified as a server timeout; the pool's own 15 s query_timeout
+// (ADMIN_DB_QUERY_TIMEOUT_MS) would otherwise end any statement longer than 15 s
+// long before the 120 s limit, which large bases need.
+const CLIENT_TIMEOUT_MARGIN_MS = 10000;
+export function clientQueryTimeoutMs() {
+  return statementTimeoutMs() + CLIENT_TIMEOUT_MARGIN_MS;
 }
 
 export function classifyTimeout(error) {
@@ -245,7 +249,7 @@ async function runTracked(db, operation, fn) {
     }
   };
   try {
-    return await db.transaction(async (tx) => fn(step(tx)));
+    return await db.transaction(async (tx) => fn(step(tx)), { queryTimeoutMs: clientQueryTimeoutMs() });
   } catch (error) {
     if (state.failure) throw new BaseBackupTimeoutError(state.failure);
     throw error;
