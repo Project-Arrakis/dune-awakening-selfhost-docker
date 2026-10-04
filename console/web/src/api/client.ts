@@ -44,9 +44,14 @@ export async function apiDownload(path: string, options: RequestInit = {}, csrfR
       if (data && typeof data === "object") body = data;
       message = typeof body.error === "string" && body.error ? body.error : message;
     } catch {
-      // A proxy's HTML error page, not a console response: show it as text.
-      // Capped first: the tag regex is quadratic on a body of unclosed tags.
-      message = text.slice(0, 20000).replace(/<(script|style)[\s\S]*?(<\/(script|style)>|$)/gi, " ").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 240)
+      // Parse a bounded, inert document instead of using backtracking tag
+      // expressions on an uncontrolled proxy response. Never attach it to the DOM.
+      const document = new DOMParser().parseFromString(text.slice(0, 20000), "text/html");
+      document.querySelectorAll("script, style").forEach((element) => element.remove());
+      const parts = [document.title];
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      while (walker.nextNode()) parts.push(walker.currentNode.textContent || "");
+      message = parts.join(" ").replace(/\s+/g, " ").trim().slice(0, 240)
         || `Request failed: ${response.status}`;
     }
     if (isSessionAuthFailure(response.status, message)) {

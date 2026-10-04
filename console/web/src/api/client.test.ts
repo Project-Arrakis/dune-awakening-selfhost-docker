@@ -106,6 +106,15 @@ describe("API authentication handling", () => {
     expect((huge as Error).message).toBe("Request failed: 502");
     expect(Date.now() - started).toBeLessThan(2000);
   });
+
+  it("decodes proxy error text without loading or exposing script and style contents", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(
+      '<h1>Service &amp; gateway unavailable</h1><p>Try again.</p><style>secret-style</style><script src="https://example.invalid/script">secret-script</script>',
+      { status: 503 }
+    )));
+    const failure = await apiDownload("/api/bases/1/export-backup").catch((error: Error) => error);
+    expect((failure as Error).message).toBe("Service & gateway unavailable Try again.");
+  });
 });
 
 describe("apiUpload settlement on abort and timeout", () => {
