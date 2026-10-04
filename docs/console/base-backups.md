@@ -241,12 +241,14 @@ Future format versions go through `upgradeEnvelope()` in `console/api/src/baseBa
 limit of 120 s (override with `ADMIN_BASE_BACKUP_STATEMENT_TIMEOUT_MS`, clamped
 100 ms - 10 min; now wired through docker-compose.web.yml so it works in a
 standard install). The console pool's own 15 s client-side query timeout
-(`ADMIN_DB_QUERY_TIMEOUT_MS`) also applies per statement. A timeout returns **504**
-code `"timeout"` naming the step (e.g. `"inserting building pieces"`), elapsed
-time and which limit fired; an import is rolled back completely. The UI shows
+(`ADMIN_DB_QUERY_TIMEOUT_MS`) also applies per statement. A timeout returns **503**
+(not 504, whose body a reverse proxy such as Cloudflare replaces with its own
+page), code `"timeout"` naming the step (e.g. `"inserting building pieces"`),
+elapsed time and which limit fired; an import is rolled back completely. The UI shows
 an "Import Timed Out"/"Export Timed Out" panel with those details as visible text
 that stays until dismissed. The largest measured base (589 pieces, 199 items)
-exported in about 1.6 s and imported in about 0.8 s.
+exports in about 0.4 s. Its import took about 0.8 s when last measured, before
+the reference rewrite was limited to rows that hold a tagged id.
 
 **Permissions:**
 - Listing uses `bases:read`.

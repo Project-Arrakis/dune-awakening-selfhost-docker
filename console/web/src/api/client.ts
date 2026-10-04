@@ -10,7 +10,7 @@ const INVALID_RESPONSE_MESSAGE = "The console received invalid data for this pag
 
 // A failed request. Still an Error with the same friendly message every caller
 // already shows; status and body are there for callers that need the server's
-// structured detail (a 409 offering an override, a 504 naming a step).
+// structured detail (a 409 offering an override, a 503 naming a step).
 export class ApiError extends Error {
   status: number;
   body: Record<string, unknown>;
@@ -43,7 +43,12 @@ export async function apiDownload(path: string, options: RequestInit = {}, csrfR
       const data = JSON.parse(text) as Record<string, unknown>;
       if (data && typeof data === "object") body = data;
       message = typeof body.error === "string" && body.error ? body.error : message;
-    } catch {}
+    } catch {
+      // A proxy's HTML error page, not a console response: show it as text.
+      // Capped first: the tag regex is quadratic on a body of unclosed tags.
+      message = text.slice(0, 20000).replace(/<(script|style)[\s\S]*?(<\/(script|style)>|$)/gi, " ").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 240)
+        || `Request failed: ${response.status}`;
+    }
     if (isSessionAuthFailure(response.status, message)) {
       if (response.status === 403 && !csrfRetried && await refreshCsrfToken()) return apiDownload(path, options, true);
       announceSessionExpired();

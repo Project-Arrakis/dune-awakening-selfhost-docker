@@ -125,13 +125,13 @@ test("BaseBackupTimeoutError names the step, the elapsed time and the limit", ()
   assert.equal(slow.message, "Base backup import timed out after 15.2s while inserting building pieces (limit 15s). Nothing was changed: the import was rolled back.");
   const fast = new BaseBackupTimeoutError({ operation: "export", step: "exporting stored items", kind: "client_timeout", elapsedMs: 61, limitMs: 60 });
   assert.equal(fast.message, "Base backup export timed out after 61ms while exporting stored items (limit 60ms). No file was produced.");
-  assert.equal(fast.statusCode, 504);
+  assert.equal(fast.statusCode, 503);
   assert.equal(fast.code, "timeout");
 });
 
 test("baseBackupHttpError maps failures to the statuses and bodies the UI reads", () => {
   const timeout = baseBackupHttpError(new BaseBackupTimeoutError({ operation: "import", step: "loading the file", kind: "server_timeout", elapsedMs: 2000, limitMs: 1000 }));
-  assert.equal(timeout.status, 504);
+  assert.equal(timeout.status, 503);
   assert.equal(timeout.body.code, "timeout");
   assert.equal(timeout.body.step, "loading the file");
   assert.equal(timeout.body.operation, "import");
@@ -280,7 +280,7 @@ test("importBaseBackup reports a server-side statement timeout with the step tha
     assert.equal(error.details.step, "inserting building pieces");
     assert.equal(error.details.timeoutKind, "server_timeout");
     assert.equal(error.details.limitMs, 120000);
-    assert.equal(baseBackupHttpError(error).status, 504);
+    assert.equal(baseBackupHttpError(error).status, 503);
     return true;
   });
 });
