@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import {
   BASE_BACKUP_NAME_MAX, BaseBackupError, BaseBackupTimeoutError, baseBackupHttpError, classifyTimeout, importBaseBackup,
   listBaseBackups, parseBaseBackupFile, updateBaseBackup, validateBaseBackupFile, validateBaseBackupName, versionComparison,
-  checkBaseBackupDeletable, deleteBaseBackup, exportLiveBase
+  checkBaseBackupDeletable, deleteBaseBackup, exportLiveBase, clientQueryTimeoutMs
 } from "../src/baseBackups.js";
 import { scopeAllowsAction } from "../src/apiKeyScopes.js";
 import { parseAppManifestBuildId, readSteamBuildId, steamAppId } from "../src/services/steamBuild.js";
@@ -179,7 +179,7 @@ function fakeDb({
     { table_name: "actors", column_name: "state", column_type: "text", is_array: false }
   ]
 } = {}) {
-  const calls = { transaction: 0, txSql: [], txParams: [] };
+  const calls = { transaction: 0, txSql: [], txParams: [], txOptions: [] };
   const db = {
     calls,
     async query(sql, params = []) {
@@ -199,8 +199,9 @@ function fakeDb({
       if (sql.includes("with base as")) return { rows: liveBase ? [liveBase] : [] };
       return { rows: [] };
     },
-    async transaction(fn) {
+    async transaction(fn, options = {}) {
       calls.transaction++;
+      calls.txOptions.push(options);
       const tx = {
         async query(sql, params = []) {
           calls.txSql.push(sql);
@@ -291,7 +292,8 @@ test("importBaseBackup reports a client-side query timeout too", async () => {
     assert.ok(error instanceof BaseBackupTimeoutError);
     assert.equal(error.details.step, "loading the file");
     assert.equal(error.details.timeoutKind, "client_timeout");
-    assert.equal(error.details.limitMs, 15000);
+    // The effective client bound for the transaction: statement timeout + margin.
+    assert.equal(error.details.limitMs, clientQueryTimeoutMs());
     return true;
   });
 });
@@ -536,6 +538,25 @@ test("exportLiveBase only reads: every write goes to its own temp tables", async
   assert.deepEqual(writes, []);
   assert.equal(db.calls.txSql.some((sql) => /for\s+(update|share)/i.test(sql)), false);
   assert.match(db.calls.txSql[0], /repeatable read/);
+});
+
+test("an export transaction's client query timeout sits above the statement timeout, not at the pool's 15 s", async () => {
+  const saved = process.env.ADMIN_BASE_BACKUP_STATEMENT_TIMEOUT_MS;
+  try {
+    delete process.env.ADMIN_BASE_BACKUP_STATEMENT_TIMEOUT_MS;
+    const db = fakeDb();
+    await exportLiveBase(db, 201, { gameBuild: "1" });
+    // The server cancels first (120 s) so the failure is classified as a server
+    // timeout; the client bound must never be the pool's 15 s default.
+    assert.equal(db.calls.txOptions.length, 1);
+    assert.equal(db.calls.txOptions[0].queryTimeoutMs, 130000);
+    assert.equal(clientQueryTimeoutMs(), 130000);
+    process.env.ADMIN_BASE_BACKUP_STATEMENT_TIMEOUT_MS = "600000";
+    assert.equal(clientQueryTimeoutMs(), 610000);
+  } finally {
+    if (saved === undefined) delete process.env.ADMIN_BASE_BACKUP_STATEMENT_TIMEOUT_MS;
+    else process.env.ADMIN_BASE_BACKUP_STATEMENT_TIMEOUT_MS = saved;
+  }
 });
 
 test("exportLiveBase exports what a pickup would take, not the live base's extras", async () => {

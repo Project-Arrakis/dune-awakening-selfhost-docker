@@ -240,11 +240,13 @@ Future format versions go through `upgradeEnvelope()` in `console/api/src/baseBa
 **Timeouts:** each export/import runs in one transaction with a per-statement
 limit of 120 s (override with `ADMIN_BASE_BACKUP_STATEMENT_TIMEOUT_MS`, clamped
 100 ms - 10 min; now wired through docker-compose.web.yml so it works in a
-standard install). The console pool's own 15 s client-side query timeout
-(`ADMIN_DB_QUERY_TIMEOUT_MS`) also applies per statement. A timeout returns **503**
-(not 504, whose body a reverse proxy such as Cloudflare replaces with its own
-page), code `"timeout"` naming the step (e.g. `"inserting building pieces"`),
-elapsed time and which limit fired; an import is rolled back completely. The UI shows
+standard install). The transaction's client-side query timeout is that limit plus
+10 s, so the server cancels first; the console pool's 15 s default
+(`ADMIN_DB_QUERY_TIMEOUT_MS`) does not apply to export/import statements, and
+without this a base that needs more than 15 s failed whatever the limit was set to.
+A timeout returns **503**, avoiding proxy handling of origin gateway-timeout responses,
+with code `"timeout"` naming the step (e.g. `"inserting building pieces"`), elapsed
+time and which limit fired; an import is rolled back completely. The UI shows
 an "Import Timed Out"/"Export Timed Out" panel with those details as visible text
 that stays until dismissed. The largest measured base (589 pieces, 199 items)
 exports in about 0.4 s. Its import took about 0.8 s when last measured, before
