@@ -436,6 +436,28 @@ main { padding: 22px; min-width: 0; }
   border-color: rgba(255, 208, 138, .24);
   backdrop-filter: blur(12px);
 }
+.panel.home-highlights { display: grid; grid-template-columns: minmax(0, .85fr) minmax(0, 1.65fr); min-width: 0; padding: 0; overflow: hidden; background: rgba(18, 20, 22, .88); border-color: rgba(255, 208, 138, .24); }
+.home-highlight-content { min-width: 0; padding: 18px; }
+.home-highlights-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
+.home-highlights-heading h2 { display: flex; align-items: center; gap: 8px; margin: 0; }
+.home-highlights-heading svg { color: #d7ad72; }
+.home-highlight-tag { color: #e2ba7e; background: rgba(191, 134, 59, .12); border: 1px solid rgba(191, 134, 59, .3); border-radius: 4px; padding: 3px 8px; font-size: 11px; }
+.home-highlight-art { position: relative; min-width: 0; overflow: hidden; background: #111315; }
+.home-highlight-art img { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: cover; object-position: center; }
+.home-highlight-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin: 0 0 12px; color: #f0ca91; font-size: 15px; }
+.home-highlight-title span { color: #b9ad9a; font-size: 11px; font-weight: 400; }
+.home-highlight-steps { display: grid; gap: 12px; padding: 0; margin: 0; list-style: none; }
+.home-highlight-steps li { display: flex; align-items: flex-start; gap: 11px; min-width: 0; }
+.home-highlight-step-number { display: grid; place-items: center; flex: 0 0 25px; height: 25px; border: 1px solid rgba(215, 173, 114, .35); border-radius: 50%; color: #e2ba7e; background: rgba(191, 134, 59, .1); font-size: 12px; }
+.home-highlight-steps strong { color: #e4c399; font-size: 13px; }
+.home-highlight-steps p { margin: 5px 0 0; color: #b9ad9a; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+@media (max-width: 900px) {
+  .panel.home-highlights { grid-column: 1 / -1; grid-template-columns: minmax(0, 1fr); }
+  .home-highlight-art { aspect-ratio: 1672 / 941; }
+}
+@media (min-width: 1600px) {
+  .panel.home-highlights { grid-template-columns: minmax(0, min(34%, 420px)) minmax(0, 1fr); }
+}
 .topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 18px; border-bottom: 1px solid #2f2a25; padding-bottom: 16px; }
 .topbar div { display: grid; gap: 4px; }
 .topbar > div:first-child span { color: #aa9c87; }
@@ -1834,7 +1856,28 @@ body.debug .technical-details { display: block; }
 .playerAdmin_iconRailButton.active[data-category="all_categories"] img { transform: rotate(-45deg); }
 .playerAdmin_iconRailButton.active img { filter: drop-shadow(0 0 5px rgba(154, 88, 162, .58)); }
 .playerAdmin_iconRailLabel { justify-self: start; min-height: 36px; display: inline-flex; align-items: center; justify-content: center; padding: 7px 14px; border: 1px solid rgba(255, 208, 138, .38); border-radius: 6px; background: #14171a; color: #ffd08a; font-size: 16px; font-weight: 700; white-space: nowrap; }
-.playerAdmin_spawnVehicleRow select { max-width: 190px; }
+.playerAdmin_spawnVehicleRow select { max-width: 100%; min-width: 0; }
+.playerAdmin_spawnVehicleRow select:first-of-type { flex: 0 1 210px; width: 210px; }
+.playerAdmin_spawnVehicleRow select:last-of-type { flex: 0 1 280px; width: 280px; }
+.experimental-features-section { margin: 20px 0; }
+.experimental-features-section > h3 { margin: 0 0 14px; color: var(--title); }
+.experimental-features-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 360px)); gap: 16px; align-items: start; }
+.experimental-feature-card { min-width: 0; border: 2px solid var(--border-strong); border-radius: 12px; background: var(--panel-soft); color: var(--muted-warm); transition: border-color .2s; }
+.experimental-feature-card.enabled { border-color: var(--success); }
+.experimental-feature-card.disabled { border-color: var(--danger); }
+.experimental-feature-image { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 10px 10px 0 0; background: var(--panel-muted); }
+.experimental-feature-content { display: grid; gap: 12px; padding: 16px; }
+.experimental-feature-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.experimental-feature-heading h4 { margin: 0; color: var(--title); font-size: 18px; }
+.experimental-feature-status { color: var(--muted-warm); font-size: 13px; font-weight: 600; }
+.experimental-feature-card.enabled .experimental-feature-status { color: var(--success-text); }
+.experimental-feature-card.disabled .experimental-feature-status { color: var(--danger-text); }
+.experimental-feature-button { width: 100%; justify-content: center; gap: 8px; }
+.experimental-feature-content .attention-text { margin: 0; }
+.experimental-feature-content .inline-task-result { min-width: 0; flex-wrap: wrap; }
+@media (max-width: 600px) {
+  .playerAdmin_spawnVehicleRow select:first-of-type, .playerAdmin_spawnVehicleRow select:last-of-type { flex: 1 1 100%; width: 100%; }
+}
 .specialization-tab { gap: 14px; }
 .specialization-header { display: grid; grid-template-columns: minmax(180px, 1fr) auto; align-items: center; gap: 10px 16px; }
 .specialization-header h4 { margin: 0; }

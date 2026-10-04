@@ -95,13 +95,20 @@ remove_container() {
 }
 
 remove_stale() {
-  local found=0
+  local found=0 map_name expected actual
   while IFS=$'\t' read -r name image; do
     [ -n "$name" ] || continue
     is_world_game_container "$name" || continue
-    if [ "$image" != "$TARGET_IMAGE" ]; then
+    map_name=""
+    case "$name" in
+      dune-server-survival-1|dune-server-survival-1-[0-9]*) map_name="Survival_1" ;;
+    esac
+    expected="$(resolve_game_server_image "$map_name")"
+    actual="$(docker inspect --format '{{.Image}}' "$name")"
+    expected="$(docker image inspect --format '{{.Id}}' "$expected")"
+    if [ "$actual" != "$expected" ]; then
       found=1
-      echo "Stale world server image detected: $name ($image != $TARGET_IMAGE)"
+      echo "Stale world server image detected: $name [$image] ($actual != $expected)"
       remove_container "$name"
     fi
   done < <(docker ps -a --format '{{.Names}}\t{{.Image}}')

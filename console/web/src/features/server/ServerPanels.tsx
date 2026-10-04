@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { HomeHighlights } from "./HomeHighlights";
 import type { Dispatch, SetStateAction } from "react";
 import { Play, Trash2 } from "lucide-react";
 import { serverApi, type PerformanceSnapshot, type RestartHistoryResponse, type RestartHistoryRow } from "../../api/server";
@@ -414,6 +415,7 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
         {taskResult && <HomeTaskResultCard result={taskResult} />}
         {localError && <p className="error">{localError}</p>}
       </article>
+      <HomeHighlights />
       <PerformanceCards performance={performance} error={performanceError} />
       <HomeHealthCards status={status} readiness={readiness} readinessWarning={readinessWarning} loading={loading} runningAction={runningAction} restartStartObserved={restartStartObserved} taskResult={taskResult} funcomTokenResult={funcomTokenResult} />
     </section>

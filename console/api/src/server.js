@@ -1376,6 +1376,14 @@ async function handleApi(req, res) {
   if (path === "/api/settings/public-directory" && req.method === "POST") return publicDirectorySettingsRoute(req, res);
   if (path === "/api/settings/public-directory/claim" && req.method === "POST") return publicDirectoryClaimRoute(req, res);
   if (path === "/api/settings/server-startup" && req.method === "POST") return serverStartupSettingsRoute(req, res);
+  if (path === "/api/settings/experimental-tanks" && req.method === "GET") {
+    const result = await runDune(config, buildDuneArgs("experimentalTanksStatus"));
+    if (result.code !== 0) return json(res, 503, { error: result.stderr || "Experimental Tank settings could not be read." });
+    return json(res, 200, JSON.parse(result.stdout));
+  }
+  if (path === "/api/settings/experimental-tanks" && req.method === "POST") {
+    return task(req, res, "settings", "experimentalTanksApply", await readJson(req));
+  }
   if (path === "/api/settings" && req.method === "POST") return writeConfig(req, res);
   if (path === "/api/settings") return json(res, 200, await setupState());
 
@@ -2232,7 +2240,9 @@ async function mapStatusRoute(res, url) {
         ["services", "servers"],
         ["readiness", "readiness"],
         ["autoscaler", "autoscalerStatus"]
-      ].map(async ([key, operation]) => [key, await safeCommand(operation, {}, statusCommandCache)])));
+      ].map(async ([key, operation]) => [key, await safeCommand(operation, {}, statusCommandCache, {
+        fresh: key === "services" || key === "readiness"
+      })])));
   return json(res, 200, buildMapStatusResponse(results, { includeRaw: includeRawStatus(url) }));
 }
 
@@ -2595,10 +2605,10 @@ async function marketItemsSaveRoute(req, res) {
   }
 }
 
-async function safeCommand(operation, payload = {}, cache = readCommandCache) {
+async function safeCommand(operation, payload = {}, cache = readCommandCache, cacheOptions = {}) {
   try {
     const args = buildDuneArgs(operation, payload);
-    const result = await cache.run(JSON.stringify(args), () => runDune(config, args));
+    const result = await cache.run(JSON.stringify(args), () => runDune(config, args), cacheOptions);
     return { operation, stdout: result.stdout, stderr: result.stderr, exitCode: result.code };
   } catch (error) {
     return { operation, stdout: redact(error.stdout || ""), stderr: redact(error.stderr || error?.message || "Unexpected error."), exitCode: error.code || 1 };

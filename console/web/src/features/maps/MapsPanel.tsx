@@ -820,17 +820,17 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     if (mapsRuntimeRefreshRef.current) return mapsRuntimeRefreshRef.current;
     mapsRuntimeRefreshRef.current = (async () => {
       const [status, memoryStatus] = await Promise.allSettled([
-        withTimeout(mapsApi.status(), 60000, "Refreshing map status timed out."),
-        withTimeout(mapsApi.memory(), 60000, "Refreshing map memory timed out.")
+        withTimeout(mapsApi.status(), 60000, "Refreshing map status timed out.").then((status) => {
+          setMapsText(String(status.maps?.stdout || ""));
+          setServersText(String(status.services?.stdout || ""));
+          setReadinessText(String(status.readiness?.stdout || ""));
+          return status;
+        }),
+        withTimeout(mapsApi.memory(), 60000, "Refreshing map memory timed out.").then((memoryStatus) => {
+          setMemoryText(memoryStatus.stdout);
+          return memoryStatus;
+        })
       ]);
-      if (status.status === "fulfilled") {
-        setMapsText(String(status.value.maps?.stdout || ""));
-        setServersText(String(status.value.services?.stdout || ""));
-        setReadinessText(String(status.value.readiness?.stdout || ""));
-      }
-      if (memoryStatus.status === "fulfilled") {
-        setMemoryText(memoryStatus.value.stdout);
-      }
       if (status.status === "fulfilled" || memoryStatus.status === "fulfilled") {
         setLoadError("");
       }
