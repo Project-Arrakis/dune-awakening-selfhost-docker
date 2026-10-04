@@ -79,6 +79,42 @@ describe("API authentication handling", () => {
     await expect(apiDownload("/api/backups/download")).rejects.toThrow(AUTH_SESSION_EXPIRED_MESSAGE);
     expect(expired).toHaveBeenCalledOnce();
   });
+
+  it("shows a proxy's HTML error page as short text, not markup, for a failed download", async () => {
+    const page = `<!DOCTYPE html><html><head><title>example.org | 502: Bad gateway</title><style>p { color: red }</style></head>
+      <body><h1>Bad gateway</h1><script>var a = "<b>";</script><p>${"The web server reported a bad gateway error. ".repeat(20)}</p></body></html>`;
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(page, { status: 502 })));
+
+    const failure = await apiDownload("/api/bases/1/export-backup").catch((error: Error) => error);
+    expect(failure).toBeInstanceOf(Error);
+    const message = (failure as Error).message;
+    expect(message).toMatch(/^example\.org \| 502: Bad gateway Bad gateway The web server reported/);
+    expect(message).not.toMatch(/[<>]|color: red|var a/);
+    expect(message.length).toBeLessThanOrEqual(240);
+  });
+
+  it("drops an unclosed script and stays fast on a huge body of unclosed tags", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(new Response("<h1>Bad gateway</h1><script>var token = 'x';", { status: 502 }))
+      .mockResolvedValueOnce(new Response("<script ".repeat(100000), { status: 502 })));
+
+    const unclosed = await apiDownload("/api/bases/1/export-backup").catch((error: Error) => error);
+    expect((unclosed as Error).message).toBe("Bad gateway");
+
+    const started = Date.now();
+    const huge = await apiDownload("/api/bases/1/export-backup").catch((error: Error) => error);
+    expect((huge as Error).message).toBe("Request failed: 502");
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  it("decodes proxy error text without loading or exposing script and style contents", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(
+      '<h1>Service &amp; gateway unavailable</h1><p>Try again.</p><style>secret-style</style><script src="https://example.invalid/script">secret-script</script>',
+      { status: 503 }
+    )));
+    const failure = await apiDownload("/api/bases/1/export-backup").catch((error: Error) => error);
+    expect((failure as Error).message).toBe("Service & gateway unavailable Try again.");
+  });
 });
 
 describe("apiUpload settlement on abort and timeout", () => {
