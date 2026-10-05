@@ -42,6 +42,10 @@ type VehicleTableProps = {
   // shipped), so PlayerVehiclesTab's mount is unaffected until these are
   // deliberately wired through there too.
   canDeleteVehicle?: boolean;
+  // Whether a Stored for Recovery vehicle can be deleted through the separate
+  // stored-delete route (capabilities.vehicleStoredDelete). Off, such a row
+  // keeps its disabled button like the other blocked states.
+  canDeleteStoredVehicle?: boolean;
   // Whether the server can read a vehicle's cargo hold at all
   // (capabilities.vehicleStorage). Off by default so a mount that does not
   // pass it through never offers a button that comes back unsupported.
@@ -104,6 +108,18 @@ function vehicleLifecycleLocation(row: VehicleRow) {
     default: return row.partition_id == null ? "Unassigned" : "";
   }
 }
+
+// The states the server refuses to delete through, led by the label
+// vehicleLifecycleLocation shows on the row. The same three states as
+// VEHICLE_BLOCKED_DELETE_MESSAGES in duneDb.js, shortened for a tooltip rather
+// than copied; the server check stays authoritative, and this only stops the
+// row offering a button that will fail. VehicleRecovery applies only where the
+// separate stored delete is unavailable -- see canDeleteStoredVehicle.
+const DELETE_BLOCKED_REASONS: Record<string, string> = {
+  Travel: "In Transit — cannot be deleted until it arrives",
+  VehicleBackup: "In Vehicle Backup — cannot be deleted until its owner takes it back out",
+  VehicleRecovery: "Stored for Recovery — cannot be deleted as an ordinary vehicle"
+};
 
 function formatMapPartition(row: VehicleRow, instanceNames: Map<string, string>) {
   const rawMap = String(row.map || "").trim();
@@ -192,7 +208,7 @@ function renderComponent(module: VehicleModule, index: number) {
 export function VehicleTable({
   rows, context = "global", emptyMessage = "No vehicles have been found yet.", sortColumn, sortDirection, onSort,
   canEditPermissions = false, onPermissionsSaved, focusVehicleId, focusNonce, confirmAction,
-  canDeleteVehicle = false, storageSupported = false, onError, queuedDeleteVehicleIds, deletingId, cancelingDeleteId, onDeleteVehicle, onCancelQueuedDelete
+  canDeleteVehicle = false, canDeleteStoredVehicle = false, storageSupported = false, onError, queuedDeleteVehicleIds, deletingId, cancelingDeleteId, onDeleteVehicle, onCancelQueuedDelete
 }: VehicleTableProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [expandedTab, setExpandedTab] = useState<"components" | "permissions">("components");
@@ -300,6 +316,8 @@ export function VehicleTable({
         const id = String(vehicle.id);
         const label = vehicle.name || `vehicle ${id}`;
         const queued = queuedDeleteVehicleIds?.has(id) ?? false;
+        const storedDelete = canDeleteStoredVehicle && vehicle.lifecycle_state === "VehicleRecovery";
+        const blockedReason = storedDelete ? "" : DELETE_BLOCKED_REASONS[String(vehicle.lifecycle_state || "")];
         return queued
           ? <span className="vehicles-queued-delete" title="Delete queued — applies when this map next restarts or stops">
               <Trash2 size={16} aria-label={`Delete queued for ${label}`} />
@@ -313,10 +331,14 @@ export function VehicleTable({
             </span>
           : <button
               className="icon-toggle-button danger"
-              title="Delete Vehicle"
-              aria-label={`Delete ${label}`}
+              title={blockedReason || (storedDelete ? "Delete Stored Vehicle" : "Delete Vehicle")}
+              aria-label={blockedReason ? `Cannot delete ${label}: ${blockedReason}` : `Delete ${storedDelete ? "stored vehicle " : ""}${label}`}
+              // aria-disabled, not disabled, for a blocked row: a natively
+              // disabled button drops out of the tab order, which would leave
+              // the reason reachable by mouse hover only.
+              aria-disabled={blockedReason ? true : undefined}
               disabled={deletingId === id}
-              onClick={(event) => { event.stopPropagation(); onDeleteVehicle?.(vehicle); }}
+              onClick={(event) => { event.stopPropagation(); if (!blockedReason) onDeleteVehicle?.(vehicle); }}
             ><Trash2 size={16} /></button>;
       } : undefined}
       secondaryActionPosition="start"

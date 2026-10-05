@@ -1067,7 +1067,8 @@ async function handleApi(req, res) {
     page: url.searchParams.get("page") || 0,
     pageSize: url.searchParams.get("pageSize") || 50,
     sortColumn: url.searchParams.get("sortColumn") || "name",
-    sortDirection: url.searchParams.get("sortDirection") || "asc"
+    sortDirection: url.searchParams.get("sortDirection") || "asc",
+    status: url.searchParams.get("status") || "all"
   }));
   if (path === "/api/vehicles/pending-deletes") return pendingVehicleDeletesRoute(res);
   if (path === "/api/vehicles/permission-candidates") return vehiclePermissionCandidatesRoute(res, url);
@@ -1079,6 +1080,7 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/vehicles\/[^/]+\/storage\/items$/) && req.method === "DELETE") return vehicleStorageItemsDeleteRoute(req, res, path);
   if (path.match(/^\/api\/vehicles\/[^/]+\/storage\/all-items$/) && req.method === "DELETE") return vehicleStorageAllItemsDeleteRoute(req, res, path);
   if (path.match(/^\/api\/vehicles\/[^/]+\/queued-delete$/) && req.method === "DELETE") return vehicleCancelQueuedDeleteRoute(req, res, path);
+  if (path.match(/^\/api\/vehicles\/[^/]+\/stored$/) && req.method === "DELETE") return vehicleStoredDeleteRoute(req, res, path);
   if (path.match(/^\/api\/vehicles\/[^/]+$/) && req.method === "DELETE") return vehicleDeleteRoute(req, res, path);
   if (path === "/api/admin/items/catalog") return json(res, 200, { rows: listCatalogItems(config.repoRoot, { q: url.searchParams.get("q") || "", limit: url.searchParams.get("limit") || 500 }) });
   if (path === "/api/admin/items/search") return commandJson(res, "adminItemSearch", { q: url.searchParams.get("q") || "" });
@@ -4761,8 +4763,10 @@ function vehicleDeletePending(vehicleId) {
 
 const VEHICLE_DELETE_PENDING_MESSAGE = "This vehicle has a pending delete queued and cannot be modified. Cancel the delete first.";
 
-// Mirrors baseDeleteRoute. No baseBackedUp equivalent to check -- a vehicle
-// has no "picked up" state.
+// Mirrors baseDeleteRoute. There is no baseBackedUp check here: the vehicle
+// equivalents (Vehicle Backup, Stored for Recovery) are actor lifecycle states
+// that deleteVehicleCompletely refuses itself. Stored for Recovery has its own
+// route below.
 async function vehicleDeleteRoute(req, res, path) {
   const vehicleId = Number(decodeURIComponent(path.split("/")[3]));
   if (!Number.isInteger(vehicleId) || vehicleId < 1 || vehicleId > Number.MAX_SAFE_INTEGER) {
@@ -4794,6 +4798,57 @@ async function vehicleDeleteRoute(req, res, path) {
       if (!queued) {
         try { duneDb.cancelQueuedVehicleDelete(config.repoRoot, vehicleId); } catch {}
       }
+    }
+  }, { vehicleId });
+}
+
+// Whether the authenticated principal holds an action, without writing a
+// response. requireAction is the gate; this is for shaping what a caller who
+// already passed the gate is told.
+function principalMay(req, action) {
+  const session = req.authSession;
+  if (!session || !evaluate(session, action)) return false;
+  return !req.authApiKey || apiKeys.allows(req.authApiKey, action);
+}
+
+// The admin override for a vehicle that is Stored for Recovery -- the one
+// lifecycle state with its own delete, since a stored vehicle is still held
+// for a player. Its own route so it can carry its own IAM action
+// (vehicles:stored-delete) and its own phrase -- an ordinary DELETE VEHICLE
+// request can never reach it. Never queued: a stored vehicle is on no map
+// partition, so there is no running map to write underneath. duneDb refuses
+// anything that is not VehicleRecovery, and refuses while anyone on the
+// owning account is online.
+async function vehicleStoredDeleteRoute(req, res, path) {
+  const vehicleId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isInteger(vehicleId) || vehicleId < 1 || vehicleId > Number.MAX_SAFE_INTEGER) {
+    return json(res, 400, { error: "Invalid vehicle ID" });
+  }
+  // A stored delete is still a vehicle delete. The route's own action
+  // (vehicles:stored-delete) is checked by the gate in handleApi; this adds
+  // vehicles:delete on top, so a policy that denies ordinary vehicle deletes
+  // but allows vehicles:* cannot reach the more destructive one, and an API
+  // key needs both. Additive only -- it can narrow access, never widen it.
+  if (!requireAction(req, res, "vehicles:delete")) return;
+  return directDbMutation(req, res, "vehicles.stored-delete", "DELETE STORED VEHICLE", async () => {
+    try {
+      // Refuse before the backup, not after it: see storedVehicleDeletePreflight.
+      await duneDb.storedVehicleDeletePreflight(db, vehicleId);
+      await runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "vehicle-delete" } });
+      const result = await duneDb.deleteVehicleCompletely(db, vehicleId, { storedRecoveryOnly: true });
+      // The vehicle may have been queued for an ordinary delete while it was
+      // still on a map. That entry can never apply now; drop it rather than
+      // leave a pending badge for a vehicle that no longer exists.
+      try { duneDb.cancelQueuedVehicleDelete(config.repoRoot, vehicleId); } catch {}
+      return { ...result, backupCreated: true };
+    } catch (error) {
+      // "X is online" tells the caller a named player's connection state.
+      // That is players:read information; a principal scoped to vehicles
+      // only is told the delete is unavailable, not why.
+      if (error?.code === duneDb.STORED_VEHICLE_OWNER_ONLINE && !principalMay(req, "players:read")) {
+        throw new Error("This stored vehicle cannot be deleted right now. Try again later.");
+      }
+      throw error;
     }
   }, { vehicleId });
 }

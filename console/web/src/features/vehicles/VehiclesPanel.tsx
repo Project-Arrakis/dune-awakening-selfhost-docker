@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { vehiclesApi, type VehicleRow } from "../../api/vehicles";
+import { vehiclesApi, type VehicleRow, type VehicleStatusFilter } from "../../api/vehicles";
+import { SegmentedControl, type SegmentOption } from "../../components/common/SegmentedControl";
 import type { SortDirection } from "../../components/common/DataTable";
 import { usePendingVehicleDeletes } from "../../lib/usePendingRefills";
 import { VehicleTable } from "./VehicleTable";
@@ -17,13 +18,21 @@ type VehiclesPanelProps = {
 const VEHICLES_AUTO_REFRESH_MS = 15 * 60_000; // 15 minutes — listVehicles is expensive
 const VEHICLES_PAGE_SIZES = [25, 50, 100, 200] as const;
 const VEHICLES_DEFAULT_PAGE_SIZE = 50;
+const VEHICLES_DEFAULT_STATUS: VehicleStatusFilter = "owned";
+// Short visible labels, with the full rule as the spoken name. "Owned" and
+// "Unowned" both leave out vehicles the game has put away, which have their
+// own two segments.
+const VEHICLES_STATUS_OPTIONS: ReadonlyArray<SegmentOption<VehicleStatusFilter>> = [
+  { value: "owned", label: "Owned", ariaLabel: "Owned: has an owner or is in transit, and is not stored for recovery or in vehicle backup" },
+  { value: "recovery", label: "Stored for Recovery" },
+  { value: "backup", label: "Vehicle Backup" },
+  { value: "unowned", label: "Unowned", ariaLabel: "Unowned: no owner and is not in transit, stored for recovery or in vehicle backup" },
+  { value: "all", label: "All", ariaLabel: "All vehicles" }
+];
 
-type VehiclesCache = {
-  q: string;
-  page: number;
-  pageSize: number;
-  sortColumn: string;
-  sortDirection: SortDirection;
+type VehiclesViewParams = { q: string; status: VehicleStatusFilter; page: number; pageSize: number; sortColumn: string; sortDirection: SortDirection };
+
+type VehiclesCache = VehiclesViewParams & {
   rows: VehicleRow[];
   totalCount: number;
   totalVehicles: number;
@@ -32,15 +41,54 @@ type VehiclesCache = {
   canDeleteVehicle: boolean;
   canQueueDeleteVehicle: boolean;
   storageSupported: boolean;
+  canDeleteStoredVehicle: boolean;
   reason: string;
   lastFetchedAt: number;
 };
 
 let vehiclesCache: VehiclesCache | null = null;
 
-function sameView(cache: VehiclesCache | null, q: string, page: number, pageSize: number, sortColumn: string, sortDirection: SortDirection) {
-  return !!cache && cache.q === q && cache.page === page && cache.pageSize === pageSize && cache.sortColumn === sortColumn && cache.sortDirection === sortDirection;
+// The cache outlives a mount on purpose, which makes one test's last view the
+// next test's first. Tests clear it so they do not depend on running order.
+export function _resetVehiclesCacheForTests() {
+  vehiclesCache = null;
+  handledFocusNonce = undefined;
 }
+
+// The last deep-link request already applied. App.tsx never clears its
+// focusRequest, and this panel unmounts whenever another tab is opened, so
+// without this every return to the Vehicles tab re-applied the old deep link:
+// search forced back to that vehicle's id and the status filter back to All,
+// discarding whatever the admin had since chosen. Module-level for the same
+// reason the cache is: it has to outlive the mount.
+let handledFocusNonce: number | undefined;
+
+function sameView(cache: VehiclesCache | null, view: VehiclesViewParams) {
+  return !!cache && cache.q === view.q && cache.status === view.status && cache.page === view.page && cache.pageSize === view.pageSize
+    && cache.sortColumn === view.sortColumn && cache.sortDirection === view.sortDirection;
+}
+
+// e.g. "Jul 2, 2026 (94 days ago)", in the viewer's locale. Counted in
+// calendar days, not elapsed 24-hour periods, so something stored yesterday
+// evening reads "yesterday" this morning rather than "today". The game's own
+// restore time limit is not in the database, so this can say how long ago,
+// never "expired".
+function formatStoredAt(value: string | null | undefined, now = Date.now()) {
+  const stored = value ? Date.parse(value) : NaN;
+  if (!Number.isFinite(stored)) return "Unknown";
+  const startOfDay = (time: number) => new Date(time).setHours(0, 0, 0, 0);
+  const days = Math.max(0, Math.round((startOfDay(now) - startOfDay(stored)) / 86_400_000));
+  const date = new Date(stored).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+  const ago = days === 0 ? "today" : days === 1 ? "yesterday" : `${days} days ago`;
+  return `${date} (${ago})`;
+}
+
+// dune.recoveredvehiclereason, in words. "Normal" is the everyday case and is
+// not shown at all.
+const STORED_REASON_LABELS: Record<string, string> = {
+  Migrated: "Migrated",
+  RecoveredFromLostState: "Recovered from a lost state"
+};
 
 function errorText(error: unknown) {
   return error instanceof Error ? error.message : String(error);
@@ -49,6 +97,7 @@ function errorText(error: unknown) {
 export function VehiclesPanel({ onError, confirmAction, focusRequest }: VehiclesPanelProps) {
   const [q, setQ] = useState(() => vehiclesCache?.q ?? "");
   const [submittedQ, setSubmittedQ] = useState(() => vehiclesCache?.q ?? "");
+  const [status, setStatus] = useState<VehicleStatusFilter>(() => vehiclesCache?.status ?? VEHICLES_DEFAULT_STATUS);
   const [page, setPage] = useState(() => vehiclesCache?.page ?? 0);
   const [pageSize, setPageSize] = useState<number>(() => vehiclesCache?.pageSize ?? VEHICLES_DEFAULT_PAGE_SIZE);
   const [sortColumn, setSortColumn] = useState(() => vehiclesCache?.sortColumn ?? "name");
@@ -61,6 +110,7 @@ export function VehiclesPanel({ onError, confirmAction, focusRequest }: Vehicles
   const [canDeleteVehicle, setCanDeleteVehicle] = useState(() => vehiclesCache?.canDeleteVehicle ?? false);
   const [canQueueDeleteVehicle, setCanQueueDeleteVehicle] = useState(() => vehiclesCache?.canQueueDeleteVehicle ?? false);
   const [storageSupported, setStorageSupported] = useState(() => vehiclesCache?.storageSupported ?? false);
+  const [canDeleteStoredVehicle, setCanDeleteStoredVehicle] = useState(() => vehiclesCache?.canDeleteStoredVehicle ?? false);
   const [reason, setReason] = useState(() => vehiclesCache?.reason ?? "");
   const [loading, setLoading] = useState(() => vehiclesCache === null);
   const [deletingId, setDeletingId] = useState("");
@@ -88,9 +138,14 @@ export function VehiclesPanel({ onError, confirmAction, focusRequest }: Vehicles
   useEffect(() => {
     const id = String(focusRequest?.vehicleId || "").trim();
     if (!id || !/^\d+$/.test(id)) return;
+    if (focusRequest?.nonce === handledFocusNonce) return;
+    handledFocusNonce = focusRequest?.nonce;
     vehiclesCache = null;
     setQ(id);
     setSubmittedQ(id);
+    // The deep-linked vehicle can be in any bucket (unowned, backed up), so
+    // the default "Owned" filter could hide the one row being asked for.
+    setStatus("all");
     setPage(0);
   }, [focusRequest?.nonce]);
 
@@ -101,6 +156,11 @@ export function VehiclesPanel({ onError, confirmAction, focusRequest }: Vehicles
   function handleClearSearch() {
     setQ("");
     setSubmittedQ("");
+  }
+
+  function changeStatus(nextStatus: VehicleStatusFilter) {
+    setStatus(nextStatus);
+    setPage(0);
   }
 
   function handleSort(column: string) {
@@ -118,7 +178,7 @@ export function VehiclesPanel({ onError, confirmAction, focusRequest }: Vehicles
     setPage(0);
   }
 
-  const load = useCallback(async (params: { q: string; page: number; pageSize: number; sortColumn: string; sortDirection: SortDirection }, options: { silent?: boolean } = {}) => {
+  const load = useCallback(async (params: VehiclesViewParams, options: { silent?: boolean } = {}) => {
     const requestId = ++requestIdRef.current;
     if (!options.silent) onError("");
     try {
@@ -130,7 +190,14 @@ export function VehiclesPanel({ onError, confirmAction, focusRequest }: Vehicles
       const nextCanDeleteVehicle = result.capabilities?.vehicleDelete === true;
       const nextCanQueueDeleteVehicle = result.capabilities?.vehicleDeleteQueue === true;
       const nextStorageSupported = result.capabilities?.vehicleStorage === true;
+      const nextCanDeleteStoredVehicle = result.capabilities?.vehicleStoredDelete === true;
       setRows(nextRows);
+      // A page past the end -- the last row of the last page was just deleted,
+      // or the filter shrank underneath it -- comes back empty. Step back to
+      // the real last page instead of showing an empty table at "Page 3 of 2".
+      if (!nextRows.length && params.page > 0) {
+        setPage(Math.max(0, Math.ceil((result.totalCount || 0) / params.pageSize) - 1));
+      }
       setTotalCount(result.totalCount || 0);
       setTotalVehicles(result.totalVehicles || 0);
       setSupported(nextSupported);
@@ -138,13 +205,10 @@ export function VehiclesPanel({ onError, confirmAction, focusRequest }: Vehicles
       setCanDeleteVehicle(nextCanDeleteVehicle);
       setCanQueueDeleteVehicle(nextCanQueueDeleteVehicle);
       setStorageSupported(nextStorageSupported);
+      setCanDeleteStoredVehicle(nextCanDeleteStoredVehicle);
       setReason(result.reason || "");
       vehiclesCache = {
-        q: params.q,
-        page: params.page,
-        pageSize: params.pageSize,
-        sortColumn: params.sortColumn,
-        sortDirection: params.sortDirection,
+        ...params,
         rows: nextRows,
         totalCount: result.totalCount || 0,
         totalVehicles: result.totalVehicles || 0,
@@ -153,6 +217,7 @@ export function VehiclesPanel({ onError, confirmAction, focusRequest }: Vehicles
         canDeleteVehicle: nextCanDeleteVehicle,
         canQueueDeleteVehicle: nextCanQueueDeleteVehicle,
         storageSupported: nextStorageSupported,
+        canDeleteStoredVehicle: nextCanDeleteStoredVehicle,
         reason: result.reason || "",
         lastFetchedAt: Date.now()
       };
@@ -166,8 +231,8 @@ export function VehiclesPanel({ onError, confirmAction, focusRequest }: Vehicles
   useEffect(() => {
     let cancelled = false;
     let timeoutId: number | undefined;
-    const params = { q: submittedQ, page, pageSize, sortColumn, sortDirection };
-    const cacheHit = sameView(vehiclesCache, submittedQ, page, pageSize, sortColumn, sortDirection) ? vehiclesCache : null;
+    const params = { q: submittedQ, status, page, pageSize, sortColumn, sortDirection };
+    const cacheHit = sameView(vehiclesCache, params) ? vehiclesCache : null;
 
     if (cacheHit) {
       setRows(cacheHit.rows);
@@ -178,6 +243,7 @@ export function VehiclesPanel({ onError, confirmAction, focusRequest }: Vehicles
       setCanDeleteVehicle(cacheHit.canDeleteVehicle);
       setCanQueueDeleteVehicle(cacheHit.canQueueDeleteVehicle);
       setStorageSupported(cacheHit.storageSupported);
+      setCanDeleteStoredVehicle(cacheHit.canDeleteStoredVehicle);
       setReason(cacheHit.reason);
       setLoading(false);
     }
@@ -196,7 +262,7 @@ export function VehiclesPanel({ onError, confirmAction, focusRequest }: Vehicles
     void load(params, { silent: Boolean(cacheHit) }).then(scheduleNext);
 
     const onVisibilityChange = () => {
-      const currentCache = sameView(vehiclesCache, submittedQ, page, pageSize, sortColumn, sortDirection) ? vehiclesCache : null;
+      const currentCache = sameView(vehiclesCache, params) ? vehiclesCache : null;
       if (document.visibilityState === "visible" && (!currentCache || Date.now() - currentCache.lastFetchedAt >= VEHICLES_AUTO_REFRESH_MS)) {
         void load(params, { silent: true }).then(scheduleNext);
       }
@@ -208,7 +274,51 @@ export function VehiclesPanel({ onError, confirmAction, focusRequest }: Vehicles
       window.clearTimeout(timeoutId);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [submittedQ, page, pageSize, sortColumn, sortDirection, load]);
+  }, [submittedQ, status, page, pageSize, sortColumn, sortDirection, load]);
+
+  // A vehicle Stored for Recovery still belongs to a player who can get it
+  // back, so its delete is a separate route, permission and dialog -- one that
+  // names who loses it. Never queued (a stored vehicle is on no running map),
+  // and the server refuses while the owner is online.
+  async function handleDeleteStoredVehicle(vehicle: VehicleRow) {
+    const id = String(vehicle.id);
+    const label = vehicle.name || `vehicle ${id}`;
+    const owner = vehicle.owner || "its owner";
+    const details: { label: string; value: string; tone?: "accent" | "success" | "danger" }[] = [
+      { label: "Owner", value: vehicle.owner || "—", tone: "danger" },
+      { label: "Stored", value: formatStoredAt(vehicle.stored_at) }
+    ];
+    if (vehicle.stored_reason && vehicle.stored_reason !== "Normal") {
+      details.push({ label: "Reason", value: STORED_REASON_LABELS[vehicle.stored_reason] || vehicle.stored_reason });
+    }
+    const confirmed = await confirmAction(
+      `Delete "${label}"? It is stored for recovery, and ${owner} will no longer be able to recover it. This permanently deletes the vehicle and everything stored in it.`,
+      {
+        title: "Delete Stored Vehicle",
+        confirmLabel: "Delete Stored Vehicle",
+        danger: true,
+        details,
+        warning: "A full database backup is taken automatically before the delete runs. The delete is refused while the owner is online."
+      }
+    );
+    if (!confirmed) return;
+    onError("");
+    setDeletingId(id);
+    try {
+      await vehiclesApi.deleteStoredVehicle(id);
+      setDeleteStatus(`Stored vehicle "${label}" was deleted.`);
+      setDeleteStatusKind("ok");
+      vehiclesCache = null;
+      await load({ q: submittedQ, status, page, pageSize, sortColumn, sortDirection });
+    } catch (error) {
+      const text = errorText(error);
+      setDeleteStatus(text);
+      setDeleteStatusKind("fail");
+      onError(text);
+    } finally {
+      setDeletingId("");
+    }
+  }
 
   // No component-count mention here the way Delete Base's dialog cites piece/
   // placeable counts: VehicleRow has no equivalent field, only the fitted
@@ -217,6 +327,7 @@ export function VehiclesPanel({ onError, confirmAction, focusRequest }: Vehicles
   // automatically and unconditionally before any delete SQL runs -- see
   // vehiclesApi.deleteVehicle and docs/console/vehicle-deletion.md.
   async function handleDeleteVehicle(vehicle: VehicleRow) {
+    if (canDeleteStoredVehicle && vehicle.lifecycle_state === "VehicleRecovery") return handleDeleteStoredVehicle(vehicle);
     const id = String(vehicle.id);
     const label = vehicle.name || `vehicle ${id}`;
     const confirmed = await confirmAction(
@@ -244,7 +355,7 @@ export function VehiclesPanel({ onError, confirmAction, focusRequest }: Vehicles
         setDeleteStatus(`"${label}" was deleted.`);
         setDeleteStatusKind("ok");
         vehiclesCache = null;
-        await load({ q: submittedQ, page, pageSize, sortColumn, sortDirection });
+        await load({ q: submittedQ, status, page, pageSize, sortColumn, sortDirection });
       }
     } catch (error) {
       const text = errorText(error);
@@ -304,11 +415,19 @@ export function VehiclesPanel({ onError, confirmAction, focusRequest }: Vehicles
       <div className="panel-title">
         <h2>Vehicles</h2>
         <div className="action-row">
-          <button onClick={() => void load({ q: submittedQ, page, pageSize, sortColumn, sortDirection })}>Refresh</button>
+          <button onClick={() => void load({ q: submittedQ, status, page, pageSize, sortColumn, sortDirection })}>Refresh</button>
         </div>
       </div>
+      {supported && <SegmentedControl
+        name="vehicles-status-filter"
+        ariaLabel="Vehicles shown"
+        value={status}
+        options={VEHICLES_STATUS_OPTIONS}
+        onChange={changeStatus}
+        groupClassName="segmented-control vehicles-status-segments"
+      />}
       {supported
-        ? <p className="action-help-note">Total Vehicles: {totalVehicles.toLocaleString()}</p>
+        ? <p className="action-help-note">Total Vehicles: {status === "all" && !submittedQ ? totalVehicles.toLocaleString() : `${totalCount.toLocaleString()} of ${totalVehicles.toLocaleString()}`}</p>
         : <p className="action-help-note">{reason || "Vehicles are unsupported by the detected database schema."}</p>}
       {deleteStatus && <p
         className={`inline-task-result${deleteStatusKind ? ` result-${deleteStatusKind}` : ""}`}
@@ -331,7 +450,7 @@ export function VehiclesPanel({ onError, confirmAction, focusRequest }: Vehicles
           sortColumn={sortColumn}
           sortDirection={sortDirection}
           onSort={handleSort}
-          emptyMessage="No vehicles have been found yet."
+          emptyMessage={status === "all" && !submittedQ ? "No vehicles have been found yet." : "No vehicles match this filter."}
           canEditPermissions={canEditPermissions}
           focusVehicleId={focusRequest?.vehicleId}
           focusNonce={focusRequest?.nonce}
@@ -341,10 +460,11 @@ export function VehiclesPanel({ onError, confirmAction, focusRequest }: Vehicles
           // pre-edit names.
           onPermissionsSaved={() => {
             vehiclesCache = null;
-            void load({ q: submittedQ, page, pageSize, sortColumn, sortDirection }, { silent: true });
+            void load({ q: submittedQ, status, page, pageSize, sortColumn, sortDirection }, { silent: true });
           }}
           canDeleteVehicle={canDeleteVehicle}
           storageSupported={storageSupported}
+          canDeleteStoredVehicle={canDeleteStoredVehicle}
           onError={onError}
           queuedDeleteVehicleIds={queuedDeleteVehicleIds}
           deletingId={deletingId}

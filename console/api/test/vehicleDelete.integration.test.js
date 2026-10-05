@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   deleteVehicleCompletely,
+  storedVehicleDeletePreflight,
   queueVehicleDelete,
   cancelQueuedVehicleDelete,
   listQueuedVehicleDeletes,
@@ -72,8 +73,32 @@ const SCHEMA = `
     template_id text not null,
     stack_size integer not null default 1
   );
-  create table dune.backup_vehicles (vehicle_id bigint not null references dune.vehicles(id) on delete cascade);
-  create table dune.recovered_vehicles (vehicle_id bigint not null references dune.vehicles(id) on delete cascade);
+  -- As on the live schema: player_state is a VIEW that hides non-Active
+  -- characters, online_status is an enum, and both stored-vehicle tables hold
+  -- a NOT NULL character_id whose FK targets encrypted_player_state(id), with
+  -- vehicle_id UNIQUE (and one backup per character).
+  create type dune.playerconnectionstatus as enum ('Offline', 'LoggingOut', 'Online');
+  create table dune.encrypted_player_state (
+    id bigint primary key,
+    account_id bigint not null,
+    character_name text,
+    online_status dune.playerconnectionstatus not null default 'Offline',
+    character_state text not null default 'Active'
+  );
+  create view dune.player_state as
+    select id, account_id, character_name, online_status
+    from dune.encrypted_player_state where character_state = 'Active';
+  create table dune.backup_vehicles (
+    vehicle_id bigint not null unique references dune.vehicles(id) on delete cascade,
+    character_id bigint not null unique references dune.encrypted_player_state(id) on update cascade on delete cascade
+  );
+  create type dune.recoveredvehiclereason as enum ('Normal', 'Migrated', 'RecoveredFromLostState');
+  create table dune.recovered_vehicles (
+    vehicle_id bigint not null unique references dune.vehicles(id) on delete cascade,
+    character_id bigint not null references dune.encrypted_player_state(id) on update cascade on delete cascade,
+    time_stored timestamptz not null default current_timestamp,
+    reason dune.recoveredvehiclereason not null default 'Normal'
+  );
   create table dune.overmap_players (
     player_id bigint primary key
   );
@@ -121,8 +146,11 @@ function seedVehicle(vehicleId, moduleIds, playerId, { claimed = true, withItems
     insert into dune.actors (id, map, partition_id) values (${vehicleId}, 'HaggaBasin', 3);
     insert into dune.vehicles (id) values (${vehicleId});
     ${moduleRows}
-    insert into dune.backup_vehicles (vehicle_id) values (${vehicleId});
-    insert into dune.recovered_vehicles (vehicle_id) values (${vehicleId});
+    -- Each seeded vehicle gets its own holding character (same id), so the
+    -- NOT NULL / UNIQUE character columns are satisfied.
+    insert into dune.encrypted_player_state (id, account_id, character_name) values (${vehicleId}, ${vehicleId}, 'Holder ${vehicleId}');
+    insert into dune.backup_vehicles (vehicle_id, character_id) values (${vehicleId}, ${vehicleId});
+    insert into dune.recovered_vehicles (vehicle_id, character_id) values (${vehicleId}, ${vehicleId});
     insert into dune.overmap_players (player_id) values (${vehicleId} * 100);
     ${claimed ? `
       insert into dune.permission_actor (actor_id, actor_name) values (${vehicleId}, 'Test Vehicle ${vehicleId}');
@@ -227,12 +255,14 @@ test("real PostgreSQL: deleteVehicleCompletely deletes an unclaimed vehicle clea
   });
 });
 
-for (const state of ["Travel", "VehicleBackup", "VehicleRecovery"]) {
+// The refusal names the state with the label the Vehicles list shows for it,
+// not the raw enum value.
+for (const [state, label] of [["Travel", /is In Transit and cannot be deleted/], ["VehicleBackup", /is in Vehicle Backup and cannot be deleted/], ["VehicleRecovery", /is Stored for Recovery and cannot be deleted/]]) {
   test(`real PostgreSQL: deleteVehicleCompletely refuses a vehicle in ${state} state`, async (t) => {
     await withDatabase(t, async (pool) => {
       await pool.query("update dune.actors set state = $2 where id = $1", [VEHICLE_ID, state]);
       const db = pgTransactionalDb(pool);
-      await assert.rejects(() => deleteVehicleCompletely(db, VEHICLE_ID), new RegExp(state));
+      await assert.rejects(() => deleteVehicleCompletely(db, VEHICLE_ID), label);
       assert.equal(await actorCount(pool, [VEHICLE_ID]), 1, "a blocked-state vehicle must not be touched");
     });
   });
@@ -375,6 +405,7 @@ test("real PostgreSQL: background flush retains a Travel-state vehicle without b
         assert.equal(result.flushed[0].ok, false);
         assert.equal(result.flushed[0].attempts, 0);
         assert.equal(result.flushed[0].dropped, false);
+        assert.match(result.flushed[0].error, /is In Transit and cannot be deleted/);
       }
       assert.equal(backupCalls, 0, "a predictably blocked retry must not create a database backup");
       assert.equal(listQueuedVehicleDeletes(repoRoot)[0].attempts, 0);
@@ -594,5 +625,177 @@ test("real PostgreSQL: a failed safety backup aborts the whole flush pass, leavi
       assert.equal(listQueuedVehicleDeletes(repoRoot).length, 2, "neither vehicle may be deleted without its safety backup");
       assert.equal(await actorCount(pool, [VEHICLE_ID, OTHER_VEHICLE_ID]), 2);
     });
+  });
+});
+
+// ---- Stored for Recovery override (DELETE /api/vehicles/{id}/stored) -------
+
+const OWNER_CHARACTER_ID = 71;
+const OWNER_ACCOUNT_ID = 7100;
+
+// Puts VEHICLE_ID into recovery the way the game leaves it: state flipped,
+// roster destroyed, owner recorded only on the recovery row.
+async function storeForRecovery(pool, { online = "Offline", altOnline = null } = {}) {
+  const insertCharacter = "insert into dune.encrypted_player_state (id, account_id, character_name, online_status) values ($1, $2, $3, $4::dune.playerconnectionstatus)";
+  await pool.query(insertCharacter, [OWNER_CHARACTER_ID, OWNER_ACCOUNT_ID, "Gurney", online]);
+  if (altOnline) await pool.query(insertCharacter, [OWNER_CHARACTER_ID + 1, OWNER_ACCOUNT_ID, "Gurney Alt", altOnline]);
+  await pool.query("select dune.permission_actor_destroy($1)", [VEHICLE_ID]);
+  await pool.query("update dune.actors set state = 'VehicleRecovery', partition_id = null where id = $1", [VEHICLE_ID]);
+  await pool.query("update dune.recovered_vehicles set character_id = $2, reason = 'RecoveredFromLostState' where vehicle_id = $1",
+    [VEHICLE_ID, OWNER_CHARACTER_ID]);
+}
+
+test("real PostgreSQL: the stored override deletes a recovered vehicle whose owner is offline", async (t) => {
+  await withDatabase(t, async (pool) => {
+    await storeForRecovery(pool);
+    const db = pgTransactionalDb(pool);
+    const result = await deleteVehicleCompletely(db, VEHICLE_ID, { storedRecoveryOnly: true });
+    assert.equal(result.ok, true);
+    assert.equal(result.storedOwner, "Gurney");
+    assert.equal(result.storedReason, "RecoveredFromLostState");
+    assert.match(result.storedAt, /^\d{4}-\d{2}-\d{2}T/);
+    assert.equal(await actorCount(pool, [VEHICLE_ID]), 0);
+    const left = await pool.query("select count(*)::int as n from dune.recovered_vehicles where vehicle_id = $1", [VEHICLE_ID]);
+    assert.equal(left.rows[0].n, 0, "the recovery record must go with the vehicle");
+    assert.equal(await actorCount(pool, [OTHER_VEHICLE_ID]), 1, "no other vehicle is touched");
+  });
+});
+
+for (const status of ["Online", "LoggingOut"]) {
+  test(`real PostgreSQL: the stored override refuses while the owner is ${status}`, async (t) => {
+    await withDatabase(t, async (pool) => {
+      await storeForRecovery(pool, { online: status });
+      const db = pgTransactionalDb(pool);
+      await assert.rejects(() => deleteVehicleCompletely(db, VEHICLE_ID, { storedRecoveryOnly: true }),
+        /Gurney is online\. A stored vehicle can only be deleted while its owner is offline\./);
+      assert.equal(await actorCount(pool, [VEHICLE_ID]), 1);
+    });
+  });
+}
+
+// Any character on the account can restore the vehicle in-game, so any of
+// them being online blocks the delete -- not just the one on the record.
+test("real PostgreSQL: the stored override refuses while another character on the owning account is online", async (t) => {
+  await withDatabase(t, async (pool) => {
+    await storeForRecovery(pool, { altOnline: "Online" });
+    const db = pgTransactionalDb(pool);
+    await assert.rejects(() => deleteVehicleCompletely(db, VEHICLE_ID, { storedRecoveryOnly: true }), /is online/);
+    assert.equal(await actorCount(pool, [VEHICLE_ID]), 1);
+  });
+});
+
+for (const [state, message] of [
+  ["Default", /is not Stored for Recovery\. Use Delete Vehicle instead\./],
+  ["Travel", /is In Transit and cannot be deleted/],
+  ["VehicleBackup", /is in Vehicle Backup and cannot be deleted/]
+]) {
+  test(`real PostgreSQL: the stored override refuses a ${state} vehicle`, async (t) => {
+    await withDatabase(t, async (pool) => {
+      await pool.query("update dune.actors set state = $2 where id = $1", [VEHICLE_ID, state]);
+      const db = pgTransactionalDb(pool);
+      await assert.rejects(() => deleteVehicleCompletely(db, VEHICLE_ID, { storedRecoveryOnly: true }), message);
+      assert.equal(await actorCount(pool, [VEHICLE_ID]), 1);
+    });
+  });
+}
+
+test("real PostgreSQL: the ordinary delete still refuses a recovered vehicle with an offline owner", async (t) => {
+  await withDatabase(t, async (pool) => {
+    await storeForRecovery(pool);
+    const db = pgTransactionalDb(pool);
+    await assert.rejects(() => deleteVehicleCompletely(db, VEHICLE_ID), /is Stored for Recovery and cannot be deleted/);
+    assert.equal(await actorCount(pool, [VEHICLE_ID]), 1);
+  });
+});
+
+// The preflight is what the route runs before the safety backup, so it has to
+// refuse exactly what the delete would refuse -- and touch nothing.
+test("real PostgreSQL: the stored-delete preflight passes for a recovered vehicle with an offline owner", async (t) => {
+  await withDatabase(t, async (pool) => {
+    await storeForRecovery(pool);
+    await storedVehicleDeletePreflight(pgTransactionalDb(pool), VEHICLE_ID);
+    assert.equal(await actorCount(pool, [VEHICLE_ID]), 1, "the preflight must not delete anything");
+  });
+});
+
+test("real PostgreSQL: the stored-delete preflight refuses everything the delete refuses", async (t) => {
+  await withDatabase(t, async (pool) => {
+    const db = pgTransactionalDb(pool);
+    await assert.rejects(() => storedVehicleDeletePreflight(db, 424242), /That vehicle was not found/);
+    await assert.rejects(() => storedVehicleDeletePreflight(db, VEHICLE_ID), /is not Stored for Recovery\. Use Delete Vehicle instead\./);
+    await pool.query("update dune.actors set state = 'VehicleBackup' where id = $1", [VEHICLE_ID]);
+    await assert.rejects(() => storedVehicleDeletePreflight(db, VEHICLE_ID), /is in Vehicle Backup and cannot be deleted/);
+    await pool.query("update dune.actors set state = 'Default' where id = $1", [VEHICLE_ID]);
+    await storeForRecovery(pool, { online: "Online" });
+    await assert.rejects(() => storedVehicleDeletePreflight(db, VEHICLE_ID), /Gurney is online\./);
+    assert.equal(await actorCount(pool, [VEHICLE_ID]), 1);
+  });
+});
+
+// A recovery record whose character was deleted has nobody left to restore
+// it, so it reads as offline and stays deletable.
+test("real PostgreSQL: the stored override deletes a recovered vehicle whose owning character is gone", async (t) => {
+  await withDatabase(t, async (pool) => {
+    await pool.query("update dune.actors set state = 'VehicleRecovery', partition_id = null where id = $1", [VEHICLE_ID]);
+    // The seeded holder is deleted in-game: the row stays, the view hides it.
+    await pool.query("update dune.encrypted_player_state set character_state = 'Deleted', online_status = 'Online' where id = $1", [VEHICLE_ID]);
+    const db = pgTransactionalDb(pool);
+    const result = await deleteVehicleCompletely(db, VEHICLE_ID, { storedRecoveryOnly: true });
+    assert.equal(result.storedOwner, "");
+    assert.equal(await actorCount(pool, [VEHICLE_ID]), 0);
+  });
+});
+
+// The owner check takes a FOR SHARE lock on the account's character rows, so a
+// login already in flight (an uncommitted online_status update) is waited for
+// and then seen. Without the lock the delete would read the pre-login
+// snapshot, go ahead, and leave an online player holding a recovery entry for
+// a vehicle that is gone.
+test("real PostgreSQL: the stored override waits for an in-flight login and then refuses", async (t) => {
+  await withDatabase(t, async (pool) => {
+    await storeForRecovery(pool);
+    const login = await pool.connect();
+    try {
+      await login.query("begin");
+      await login.query("update dune.encrypted_player_state set online_status = 'Online' where id = $1", [OWNER_CHARACTER_ID]);
+
+      let settled = false;
+      const attempt = deleteVehicleCompletely(pgTransactionalDb(pool), VEHICLE_ID, { storedRecoveryOnly: true })
+        .then(() => ({ deleted: true }), (error) => ({ error }))
+        .finally(() => { settled = true; });
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      assert.equal(settled, false, "the delete must wait on the owner's character row, not read past it");
+
+      await login.query("commit");
+      const outcome = await attempt;
+      assert.equal(outcome.deleted, undefined, "the delete went ahead while its owner was logging in");
+      assert.match(outcome.error.message, /Gurney is online\./);
+      assert.equal(outcome.error.code, "stored_owner_online");
+    } finally {
+      await login.query("rollback").catch(() => {});
+      login.release();
+    }
+    assert.equal(await actorCount(pool, [VEHICLE_ID]), 1);
+  });
+});
+
+// And a login that is rolled back (or any uncommitted change that ends up not
+// applying) does not block the delete for good.
+test("real PostgreSQL: the stored override proceeds once a blocking session rolls back", async (t) => {
+  await withDatabase(t, async (pool) => {
+    await storeForRecovery(pool);
+    const other = await pool.connect();
+    try {
+      await other.query("begin");
+      await other.query("update dune.encrypted_player_state set online_status = 'Online' where id = $1", [OWNER_CHARACTER_ID]);
+      const attempt = deleteVehicleCompletely(pgTransactionalDb(pool), VEHICLE_ID, { storedRecoveryOnly: true });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      await other.query("rollback");
+      const result = await attempt;
+      assert.equal(result.ok, true);
+    } finally {
+      other.release();
+    }
+    assert.equal(await actorCount(pool, [VEHICLE_ID]), 0);
   });
 });

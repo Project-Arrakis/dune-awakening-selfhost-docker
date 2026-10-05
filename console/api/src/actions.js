@@ -625,6 +625,16 @@ export const REGEX_ACTIONS_BY_METHOD_PATTERN = [
   // reversible; this is not, so it gets its own action rather than folding
   // into vehicles:mutate.
   { method: "DELETE", pattern: /^\/api\/vehicles\/[^/]+$/, action: "vehicles:delete" },
+  // DELETE /api/vehicles/{vehicleId}/stored — deleting a vehicle that is
+  // Stored for Recovery, i.e. one a player can still get back. Its own action
+  // so vehicles:delete (junk and abandoned vehicles) does not also grant
+  // taking a stored vehicle away from its owner. Named "stored-delete", not
+  // "delete-stored": no wildcard written against vehicles:delete... can
+  // bridge to it (issue #351's lesson again). Default tiers are unaffected:
+  // owner ("*") and admin ("vehicles:*") still match. Two further limits live
+  // outside this table: the route also requires vehicles:delete (server.js),
+  // and no API-key level covers it (LEVEL_EXCLUDED_ACTIONS).
+  { method: "DELETE", pattern: /^\/api\/vehicles\/[^/]+\/stored$/, action: "vehicles:stored-delete" },
   // DELETE /api/vehicles/{vehicleId}/queued-delete — cancelling a queued
   // delete, which is reversible, so it stays in vehicles:mutate like every
   // other vehicle mutation. Needs its own explicit pattern for the same

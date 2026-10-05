@@ -47,6 +47,11 @@ export const KEY_WRITE_DENIED_NAMESPACES = new Set(["updates", "addons"]);
 // and bases:delete-backup irreversibly removes the backup and everything in it.
 // A key stored as { "bases": "write" } was granted for per-base knobs; it must
 // not gain any of these on upgrade.
+//
+// vehicles:stored-delete takes a vehicle a player can still recover away from
+// them. A key stored as { "vehicles": "write" } was granted before that was
+// possible at all, and the action exists precisely so vehicles:delete does not
+// imply it.
 export const LEVEL_EXCLUDED_ACTIONS = new Set([
   "backups:download-system",
   "backups:import-system",
@@ -54,7 +59,8 @@ export const LEVEL_EXCLUDED_ACTIONS = new Set([
   "bases:import-backup",
   "bases:edit-backup",
   "bases:export-backup",
-  "bases:delete-backup"
+  "bases:delete-backup",
+  "vehicles:stored-delete"
 ]);
 
 // POST-shaped but read-only in effect, so reachable by a "read" grant. Keep

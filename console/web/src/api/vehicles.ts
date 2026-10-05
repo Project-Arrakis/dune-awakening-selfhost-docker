@@ -130,6 +130,10 @@ export type VehicleRow = {
   // Funcom's actor lifecycle. Non-default states explain vehicles that are
   // stored or in transit rather than deployed in the map shown by `map`.
   lifecycle_state?: "Default" | "Travel" | "VehicleBackup" | "VehicleRecovery" | "AbortedAuthorityTransfer" | string;
+  // Set only for a vehicle that is Stored for Recovery: when the game put it
+  // there, and why ("Normal" recoveries expire in-game; the others do not).
+  stored_at?: string | null;
+  stored_reason?: string | null;
   x: number | string | null;
   y: number | string | null;
   z: number | string | null;
@@ -143,7 +147,7 @@ export type VehiclesListResponse = {
   rows: VehicleRow[];
   totalCount: number;
   totalVehicles: number;
-  capabilities: { vehicles?: boolean; vehiclePermissions?: boolean; vehicleDelete?: boolean; vehicleDeleteQueue?: boolean; vehicleStorage?: boolean } & Record<string, unknown>;
+  capabilities: { vehicles?: boolean; vehiclePermissions?: boolean; vehicleDelete?: boolean; vehicleDeleteQueue?: boolean; vehicleStorage?: boolean; vehicleStoredDelete?: boolean } & Record<string, unknown>;
   reason?: string;
 };
 
@@ -221,14 +225,20 @@ export type SetVehiclePermissionsResult = {
   message: string;
 };
 
+// Which vehicles the list returns. "owned"/"unowned" both exclude vehicles the
+// game has put away (Vehicle Backup / Stored for Recovery), which have their
+// own buckets. The server treats an omitted status as "all".
+export type VehicleStatusFilter = "owned" | "recovery" | "backup" | "unowned" | "all";
+
 export const vehiclesApi = {
-  list: (params: { q?: string; page?: number; pageSize?: number; sortColumn?: string; sortDirection?: "asc" | "desc" } = {}) => {
+  list: (params: { q?: string; page?: number; pageSize?: number; sortColumn?: string; sortDirection?: "asc" | "desc"; status?: VehicleStatusFilter } = {}) => {
     const search = new URLSearchParams();
     if (params.q) search.set("q", params.q);
     if (params.page) search.set("page", String(params.page));
     if (params.pageSize) search.set("pageSize", String(params.pageSize));
     if (params.sortColumn) search.set("sortColumn", params.sortColumn);
     if (params.sortDirection) search.set("sortDirection", params.sortDirection);
+    if (params.status) search.set("status", params.status);
     const qs = search.toString();
     return api<VehiclesListResponse>(`/api/vehicles${qs ? `?${qs}` : ""}`);
   },
@@ -293,6 +303,17 @@ export const vehiclesApi = {
       };
       reason?: string;
     }>(`/api/vehicles/${encodeURIComponent(vehicleId)}`, { method: "DELETE", body: JSON.stringify({ confirmation: "DELETE VEHICLE" }) }),
+  // Deletes a vehicle that is Stored for Recovery -- one its owner can still
+  // get back. A separate route with its own permission and phrase; the server
+  // refuses anything not in recovery, and refuses while the owner is online.
+  // Never queued: a stored vehicle is on no running map.
+  deleteStoredVehicle: (vehicleId: string) =>
+    api<{
+      supported: boolean;
+      backupCreated: boolean;
+      result?: { ok: boolean; vehicleId: number; actorId?: string; deletedModuleCount?: number; storedOwner?: string; storedAt?: string; storedReason?: string };
+      reason?: string;
+    }>(`/api/vehicles/${encodeURIComponent(vehicleId)}/stored`, { method: "DELETE", body: JSON.stringify({ confirmation: "DELETE STORED VEHICLE" }) }),
   cancelQueuedDelete: (vehicleId: string) =>
     api<{ supported: boolean; result?: { ok: boolean; vehicleId: number; pending: number }; reason?: string }>(
       `/api/vehicles/${encodeURIComponent(vehicleId)}/queued-delete`, { method: "DELETE" }),
