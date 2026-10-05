@@ -3,6 +3,7 @@ import { Boxes, ChevronDown, ChevronUp, Trash2, X } from "lucide-react";
 import type { VehicleModule, VehicleRow, VehicleSharedEntry } from "../../api/vehicles";
 import { DataTable, type SortDirection } from "../../components/common/DataTable";
 import { cachedInstanceNames, resolveInstanceNames } from "../maps/instanceNames";
+import { sectorForWorldPoint } from "../liveMap/liveMapSectorGrid";
 import { friendlyMapName } from "../maps/mapNames";
 import { VehiclePermissionsTab } from "./VehiclePermissionsTab";
 import { VehicleStorageOverlay } from "./VehicleStorageOverlay";
@@ -126,9 +127,9 @@ function mapGridSector(row: VehicleRow): string | null {
   const x = toNumber(row.x);
   const y = toNumber(row.y);
   if (x === null || y === null) return null;
-  const letter = String.fromCharCode(65 + Math.max(0, Math.min(8, Math.floor((1125000 - y) / 250000))));
-  const number = Math.max(0, Math.min(8, Math.floor((x + 1125000) / 250000))) + 1;
-  return `${letter}-${number}`;
+  // Same grid as the Live Map; null outside it rather than a clamped edge cell.
+  const sector = sectorForWorldPoint(x, y);
+  return sector ? `${sector[0]}-${sector.slice(1)}` : null;
 }
 
 function formatDurability(value: unknown): string {

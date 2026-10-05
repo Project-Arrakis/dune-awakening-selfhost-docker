@@ -175,7 +175,7 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     con: u(terrain, "uCon"), conStep: u(terrain, "uConStep"), conStepS: u(terrain, "uConStepS"),
     rock: u(terrain, "uRock"), texOn: u(terrain, "uTexOn"), texLayer: u(terrain, "uTexLayer"), pick: u(terrain, "uPick"),
     texGain: u(terrain, "uTexGain"), apron: u(terrain, "uApron"),
-    sideLit: u(terrain, "uSideLit"), grid: u(terrain, "uGrid"), gridPx: u(terrain, "uGridPx")
+    sideLit: u(terrain, "uSideLit"), grid: u(terrain, "uGrid"), gridN: u(terrain, "uGridN"), gridPx: u(terrain, "uGridPx")
   };
   const r = { tex: u(resolve, "uT"), texel: u(resolve, "uTexel"), ss: u(resolve, "uSS") };
   const b = { vp: u(backdrop, "uVP"), c: u(backdrop, "uC"), half: u(backdrop, "uHalf"), z: u(backdrop, "uZ") };
@@ -788,8 +788,10 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     gl.uniform1f(t.conStep, rockStep);
     gl.uniform1f(t.conStepS, sandStep);
     // Flat, the panel draws the grid itself.
-    if (camera && sectorGrid) gl.uniform4f(t.grid, sectorGrid.x0, sectorGrid.y0, sectorGrid.cell, sectorGrid.divisions);
-    else gl.uniform4f(t.grid, 0, 0, 1, 0);
+    const grid = camera ? sectorGrid : null;
+    if (grid) gl.uniform4f(t.grid, grid.x0, grid.y0, grid.cellX, grid.cellY);
+    else gl.uniform4f(t.grid, 0, 0, 1, 1);
+    gl.uniform1f(t.gridN, grid ? grid.divisions : 0);
     gl.uniform1f(t.gridPx, fw / Math.max(cssWidth, 1));
     gl.activeTexture(gl.TEXTURE6);
     gl.bindTexture(gl.TEXTURE_2D, texHf);

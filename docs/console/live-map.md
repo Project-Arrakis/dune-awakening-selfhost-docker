@@ -384,9 +384,26 @@ fades its lines on steep dune flanks.
 ### Sector grid
 
 **Sector Grid**, in the Layers panel and on by default, overlays the Deep
-Desert's 9x9 lettered grid: 250,000 uu cells spanning +/-1,125,000 uu about the
-map centre. Top-down it is drawn over the rendered terrain or the flat image;
-tilted, the terrain draws it (below). Hagga Basin has no lettered sectors.
+Desert's 9x9 lettered grid. Top-down it is drawn over the rendered terrain or
+the flat image; tilted, the terrain draws it (below). Hagga Basin has no
+lettered sectors.
+
+The grid is the game's own, measured in game, and is not the map rect: cells are
+269,650 uu wide and 269,217 uu tall, spanning X -1,268,450 to 1,158,400 and
+Y -1,259,486 to 1,163,467. That is larger than the 2,250,000 uu terrain square
+and slightly off its centre, so the outer cells run past the map's edge.
+
+- **How it was measured.** A character was teleported to exact coordinates and
+  the in-game map's sector label read at each. Two grid crossings were narrowed
+  to a few hundred uu: columns 1/2 with rows A/B at about (-998,800, 894,250),
+  and columns 8/9 with rows G/H at about (888,750, -721,050). Cell size is good
+  to about 100 uu. The readings are pinned in the sector tests on both sides.
+- **The same grid labels everything**: Live Map markers, POIs and spice (API),
+  the picked location, and the Vehicles page.
+- **Top-down, lines and cells are cut to the map rect**, so the outer edge is not
+  drawn and an edge cell's label sits in the part of the cell that is on the map.
+- **The flat fallback image has its own grid burned in**, edge to edge. It does
+  not line up with the real grid; trust the drawn overlay.
 
 - **I is at the top and A at the bottom.** World +Y draws downward, so the letter
   runs opposite to screen-down. This matches the game's own map art and is pinned
@@ -601,6 +618,7 @@ Feature-level changes to the Live Map, newest first.
 
 | Release | Date | Change |
 |---|---|---|
+| Unreleased | 2026-10 | **Sector grid corrected** to the game's measured grid (about 269,650 x 269,217 uu cells, larger than the terrain square). It was 250,000 uu cells on the map rect, which mislabelled anything more than a fraction of a cell from the centre. The Vehicles page now uses the same grid. |
 | Unreleased | 2026-10 | **Tilt and rotation** of the Deep Desert terrain, with perspective: Tilt slider, Top-Down reset, right-drag and a compass. Markers are projected through the camera and hidden where rock covers them; the sector grid is drawn on the terrain, over rock and cliffs. Tilted, the view reaches 375,000 uu past the map's edge: the shield walls outside the square, hand-placed pieces included and floating upper tiers closed down to the ground, on the game's own sand for the first 90,000 uu and a level plain beyond. **Elevation Lines** layer. Rock is painted with the game's own textures (its normal map baked into the two big wall shapes), lit with its authored normals and a per-instance tone, sealed at load, lit as a solid and textured from the side when tilted; the camera's eye stays above the rock at high zoom. The map frame fits the window's height. Terrain instances are culled per frame and the depth pass stops before shading; assets are 1.9 MB smaller (delta-coded mesh indices, shared placements shipped once). |
 | v1.4.35 | 2026-09-20 | The Coriolis block is read from the game log by pattern instead of from a tail, so the layout no longer goes missing on long-running servers. |
 | v1.4.23 | 2026-09-17 | Spice and Flour Sand layers fixed after the game changed `resourcefield_state`. |

@@ -3398,11 +3398,9 @@ const LIVE_MAP_CONFIGS = {
     image: "/images/maps/deep-desert.png",
     width: 4096,
     height: 4096,
-    // The rect is the 9x9 sector square itself: 250,000 uu cells spanning
-    // +/-1,125,000 about the map centre, which is exactly what the image covers.
-    // It used to be ~8% wider, which stretched the picture across a rect it does
-    // not fill and drew every marker short of where the image puts it -- exact at
-    // the centre, 84,163 uu adrift at the edges, a third of a sector cell.
+    // The rect is the terrain square: +/-1,125,000 uu about the map centre. The
+    // sector grid is a separate, larger rectangle (see liveMapSector.js), so the
+    // grid burned into the flat fallback image does not line up with the real one.
     minX: -1177656,
     maxX: 1072344,
     minY: -1177066,
