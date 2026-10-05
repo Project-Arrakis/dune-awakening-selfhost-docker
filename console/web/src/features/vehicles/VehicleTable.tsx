@@ -42,9 +42,8 @@ type VehicleTableProps = {
   // shipped), so PlayerVehiclesTab's mount is unaffected until these are
   // deliberately wired through there too.
   canDeleteVehicle?: boolean;
-  // Whether a Stored for Recovery vehicle can be deleted through the separate
-  // stored-delete route (capabilities.vehicleStoredDelete). Off, such a row
-  // keeps its disabled button like the other blocked states.
+  // capabilities.vehicleStoredDelete. Off, a Stored for Recovery row stays
+  // blocked.
   canDeleteStoredVehicle?: boolean;
   // Whether the server can read a vehicle's cargo hold at all
   // (capabilities.vehicleStorage). Off by default so a mount that does not
@@ -109,12 +108,8 @@ function vehicleLifecycleLocation(row: VehicleRow) {
   }
 }
 
-// The states the server refuses to delete through, led by the label
-// vehicleLifecycleLocation shows on the row. The same three states as
-// VEHICLE_BLOCKED_DELETE_MESSAGES in duneDb.js, shortened for a tooltip rather
-// than copied; the server check stays authoritative, and this only stops the
-// row offering a button that will fail. VehicleRecovery applies only where the
-// separate stored delete is unavailable -- see canDeleteStoredVehicle.
+// States the server refuses to delete, as tooltips. VehicleRecovery applies
+// only when canDeleteStoredVehicle is off.
 const DELETE_BLOCKED_REASONS: Record<string, string> = {
   Travel: "In Transit — cannot be deleted until it arrives",
   VehicleBackup: "In Vehicle Backup — cannot be deleted until its owner takes it back out",
@@ -333,9 +328,8 @@ export function VehicleTable({
               className="icon-toggle-button danger"
               title={blockedReason || (storedDelete ? "Delete Stored Vehicle" : "Delete Vehicle")}
               aria-label={blockedReason ? `Cannot delete ${label}: ${blockedReason}` : `Delete ${storedDelete ? "stored vehicle " : ""}${label}`}
-              // aria-disabled, not disabled, for a blocked row: a natively
-              // disabled button drops out of the tab order, which would leave
-              // the reason reachable by mouse hover only.
+              // aria-disabled keeps the button focusable, so the reason is
+              // reachable by keyboard.
               aria-disabled={blockedReason ? true : undefined}
               disabled={deletingId === id}
               onClick={(event) => { event.stopPropagation(); if (!blockedReason) onDeleteVehicle?.(vehicle); }}

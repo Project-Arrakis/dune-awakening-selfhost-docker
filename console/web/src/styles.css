@@ -2509,18 +2509,10 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 
 /* Vehicles page */
 .vehicles-search-row { margin: 12px 0; }
-/* The status filter, on its own row under the heading. Segments are as wide
-   as their labels rather than .segmented-control's equal columns (five equal
-   columns would each be as wide as "Stored for Recovery"), and they WRAP onto
-   further rows when the panel is narrower than the control. Scrolling instead
-   was tried and dropped: a classic scrollbar sits inside the fixed 38px height
-   and clips the labels, and on a phone "All" ended up off-screen with nothing
-   to show it was there.
-   Every segment carries a left and top divider and is pulled 1px up and left,
-   so the outer ones fall under the container's overflow: hidden and only the
-   dividers between segments and between rows remain, however they wrap.
-   Extra classes on each selector: .segmented-control and
-   .segmented-control-segment:first-child are declared later in this file. */
+/* Label-width segments that wrap on a narrow panel. Each segment has a top and
+   left divider and is pulled 1px up and left, so the container's overflow:
+   hidden clips the outer ones. Extra classes because .segmented-control is
+   declared later at equal specificity. */
 .segmented-control.vehicles-status-segments {
   display: inline-flex;
   flex-wrap: wrap;
@@ -2534,9 +2526,8 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   border-top: 1px solid var(--border);
   border-left: 1px solid var(--border);
 }
-/* A Delete that is blocked for this row. aria-disabled rather than disabled
-   so it stays focusable and its reason can be read from the keyboard; styled
-   to match button:disabled, with the danger hover held off. */
+/* aria-disabled, not disabled, so it stays focusable; styled to match
+   button:disabled. */
 .vehicles-table .icon-toggle-button[aria-disabled="true"],
 .vehicles-table .icon-toggle-button[aria-disabled="true"]:hover {
   opacity: .45;

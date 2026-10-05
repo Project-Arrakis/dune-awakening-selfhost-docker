@@ -5367,21 +5367,16 @@ export async function supportsVehicleDeleteQueue(db, { vehicleDelete } = {}) {
 // guard only when neither schema exposes lifecycle state.
 const VEHICLE_DELETE_BLOCKED_STATES = new Set(["Travel", "VehicleBackup", "VehicleRecovery"]);
 
-// Worded with the labels the Vehicles list shows for these states (In Transit /
-// Vehicle Backup / Stored for Recovery), not the raw enum, so the refusal names
-// something the admin can see on the row. A stored vehicle still belongs to a
-// player -- see the owner fallbacks in listVehicles.
-//
-// The recovery wording does not promise "until its owner recovers it": a
-// Normal recovery expires in-game after a time limit the database does not
-// record, so the owner may never be able to.
+// Worded with the labels the Vehicles list shows, not the raw enum. The
+// recovery message does not say "until its owner recovers it": a Normal
+// recovery expires in-game after a limit the database does not record.
 const VEHICLE_BLOCKED_DELETE_MESSAGES = {
   Travel: "This vehicle is In Transit and cannot be deleted until it arrives.",
   VehicleBackup: "This vehicle is in Vehicle Backup and cannot be deleted until its owner takes it back out.",
   VehicleRecovery: "This vehicle is Stored for Recovery and cannot be deleted as an ordinary vehicle. Deleting a stored vehicle is a separate action."
 };
 
-// The same three states as a phrase, for the cargo guard's own message.
+// The same states as a phrase, for the cargo guard's message.
 const VEHICLE_BLOCKED_STATE_PHRASES = {
   Travel: "In Transit",
   VehicleBackup: "in Vehicle Backup",
@@ -5406,10 +5401,8 @@ async function vehicleBlockedDeleteState(db, actorId) {
   return VEHICLE_DELETE_BLOCKED_STATES.has(state) ? state : "";
 }
 
-// Deleting a vehicle that is Stored for Recovery takes a recoverable vehicle
-// away from a player, so it is a separate, separately-permissioned operation
-// with its own probe: it has to read who the vehicle is held for and whether
-// they are online, which the plain delete never needs.
+// Probes everything the stored delete reads: who the vehicle is held for and
+// whether they are online.
 export async function supportsStoredVehicleDelete(db, { vehicleDelete } = {}) {
   const supported = vehicleDelete !== undefined ? vehicleDelete : await supportsVehicleDelete(db);
   if (!supported) return false;
@@ -5420,21 +5413,14 @@ export async function supportsStoredVehicleDelete(db, { vehicleDelete } = {}) {
   return ["id", "account_id", "character_name", "online_status"].every((column) => playerState.has(column));
 }
 
-// Who a recovered vehicle is held for. The game lets ANY character on the
-// owning account restore it (load_recovered_vehicles matches on account), so
-// "online" means any of that account's characters -- and anything other than
-// Offline counts (LoggingOut included), failing closed. A recovery state with
-// no record, or a record whose character is gone, has nobody left to restore
-// it and reads as offline.
+// Who a recovered vehicle is held for. Any character on the owning account can
+// restore it in-game (load_recovered_vehicles matches on account), so "online"
+// means any of them, and any status other than Offline. No record, or a record
+// whose character is gone, reads as offline.
 //
-// With `lock`, every active character row on the owning account is locked FOR
-// SHARE first. A login is an UPDATE of online_status on one of those rows, so
-// it waits for this transaction; the status read below (a fresh READ COMMITTED
-// snapshot, taken after the lock is granted) then sees a login that was
-// already in flight. Without it a player could come online in the window
-// between the check and the commit and be left holding a recovery entry for a
-// vehicle that no longer exists. dune.player_state is a view; the lock lands
-// on the underlying rows.
+// `lock` takes FOR SHARE on that account's character rows first. A login
+// updates one of those rows, so it waits, and the read below then sees a login
+// that was already in flight.
 async function storedVehicleOwner(db, actorId, { lock = false } = {}) {
   if (lock) {
     await db.query(`
@@ -5470,9 +5456,7 @@ async function storedVehicleOwner(db, actorId, { lock = false } = {}) {
   };
 }
 
-// The two refusals of a stored delete, shared by the preflight below and the
-// delete transaction so they cannot drift: the vehicle must be Stored for
-// Recovery, and nobody on the owning account may be online.
+// Shared by the preflight and the delete transaction so the two cannot drift.
 export const STORED_VEHICLE_OWNER_ONLINE = "stored_owner_online";
 
 async function assertStoredVehicleDeletable(db, actorId, { lock = false } = {}) {
@@ -5484,8 +5468,7 @@ async function assertStoredVehicleDeletable(db, actorId, { lock = false } = {}) 
   }
   const stored = await storedVehicleOwner(db, actorId, { lock });
   if (stored.ownerOnline) {
-    // Coded so the route can withhold who is online from a caller that is not
-    // allowed to read players (server.js).
+    // Coded so the route can withhold the name from a caller without players:read.
     throw Object.assign(
       new Error(`${stored.ownerName || "The owner"} is online. A stored vehicle can only be deleted while its owner is offline.`),
       { code: STORED_VEHICLE_OWNER_ONLINE });
@@ -5496,12 +5479,9 @@ async function assertStoredVehicleDeletable(db, actorId, { lock = false } = {}) 
 const STORED_VEHICLE_DELETE_REQUIREMENT =
   "Deleting a stored vehicle requires dune.actors.state, dune.recovered_vehicles, and dune.player_state with online status.";
 
-// Run by the route BEFORE the mandatory safety backup. Without it a request
-// that is always going to be refused -- a vehicle that does not exist, is not
-// in recovery, or whose owner is online -- would still cost a full database
-// backup, and enough of them rotate the genuine pre-delete backups out of
-// their retention window. Advance notice only: deleteVehicleCompletely repeats
-// both checks under the row lock, and that is the authoritative one.
+// Run before the safety backup, so a request that will be refused does not
+// cost one (enough of them would rotate the real pre-delete backups out of
+// retention). Advisory: deleteVehicleCompletely repeats the checks under lock.
 export async function storedVehicleDeletePreflight(db, vehicleId) {
   await requireCapability(await supportsVehicleDelete(db),
     "Vehicle deletion requires dune.vehicles, dune.vehicle_modules, dune.actors, and the dune.permission_actor_destroy(bigint)/delete_actors(bigint[]) functions.");
@@ -5523,13 +5503,10 @@ export async function storedVehicleDeletePreflight(db, vehicleId) {
 // so an unclaimed junk vehicle resolves and deletes exactly like a claimed
 // one -- arguably the primary use case for this feature.
 //
-// storedRecoveryOnly is the admin override for a vehicle that is Stored for
-// Recovery. It is deliberately not a wider allowBlockedState: it deletes ONLY
-// a VehicleRecovery vehicle (Travel and Vehicle Backup still refuse, and so
-// does an ordinary vehicle, which belongs on the normal route), and only
-// while nobody on the owning account is online -- a running game server keeps
-// its own copy of an online player's recovery list and is not told about
-// this delete.
+// storedRecoveryOnly deletes only a VehicleRecovery vehicle, and only while
+// nobody on the owning account is online: a running game server keeps its own
+// copy of an online player's recovery list and is not told about the delete.
+// Unlike allowBlockedState, Travel and Vehicle Backup still refuse.
 export async function deleteVehicleCompletely(db, vehicleId, { allowBlockedState = false, storedRecoveryOnly = false } = {}) {
   await requireCapability(await supportsVehicleDelete(db),
     "Vehicle deletion requires dune.vehicles, dune.vehicle_modules, dune.actors, and the dune.permission_actor_destroy(bigint)/delete_actors(bigint[]) functions.");
@@ -5547,10 +5524,8 @@ export async function deleteVehicleCompletely(db, vehicleId, { allowBlockedState
     if (!locked.rowCount) throw new Error("That vehicle was not found.");
     let stored = null;
     if (storedRecoveryOnly) {
-      // Read under the actors row lock above: restore_recovered_vehicle
-      // updates that same row, so the owner cannot restore the vehicle
-      // between this check and the delete. `lock` closes the other half --
-      // the owner logging in between the check and the commit.
+      // The actors row lock above blocks restore_recovered_vehicle, which updates
+      // that row; `lock` blocks a login. See storedVehicleOwner.
       stored = await assertStoredVehicleDeletable(tx, actor.actorId, { lock: true });
     } else {
       const blockedState = await vehicleBlockedDeleteState(tx, actor.actorId);
@@ -8461,14 +8436,10 @@ const VEHICLE_STATUS_CTES_SQL = `${VEHICLE_MODULE_KNOWN_MAXIMA_SQL}, module_raw 
   group by generator_template
 )`;
 
-// The Vehicles page's status filter. Fixed SQL fragments keyed by an allowlist,
-// so the request value never reaches the query text. "Has an owner" matches
-// what the Owner column renders: the rank-1 / owning-account character name,
-// or the character a stored vehicle is held for.
-// A vehicle the game has put away (Vehicle Backup / Stored for Recovery) is
-// not on any map, so it belongs to its own bucket whether or not it is owned.
-// Travel is always "owned": the game only puts a vehicle in transit with a
-// player attached, so it is in use even when no owner name resolves.
+// Fixed fragments keyed by an allowlist, so the request value never reaches
+// the query text. "Owner" is what the Owner column shows. Stored vehicles are
+// their own buckets whether or not an owner resolves, and Travel always counts
+// as owned: the game only puts a vehicle in transit with a player attached.
 const VEHICLE_STORED_STATES_SQL = `('VehicleBackup', 'VehicleRecovery')`;
 const VEHICLE_STATUS_FILTERS = {
   all: "",
@@ -8484,7 +8455,7 @@ const VEHICLE_STATUS_FILTERS = {
 // out-of-range page — do NOT switch to count(*) over() inside the paged CTE),
 // and the listBases shared-with lateral (resolved only on the paged rows).
 // `status` defaults to "all" so the player-scoped list and existing API
-// callers keep seeing every vehicle; the Vehicles page asks for "owned".
+// callers are unchanged.
 export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortColumn = "name", sortDirection = "asc", playerId = "", status = "all" } = {}) {
   const requiredTables = [
     "vehicles", "vehicle_modules", "actors", "permission_actor",
@@ -8508,19 +8479,15 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
       ? `coalesce((select ast.state::text from dune.actor_state ast where ast.actor_id=v.id limit 1), 'Default')`
       : `'Default'::text`;
 
-  // Storing a vehicle for recovery destroys its permission roster so it stops
-  // counting toward the vehicle limit, and the game keeps the owner in
-  // recovered_vehicles.character_id instead (-> player_state.id). Without
-  // these fallbacks every recovered vehicle reads as unowned. backup_vehicles
-  // records its owner the same way. Each is probed by column, so an older
-  // schema simply omits the fallback rather than failing the whole list.
+  // The game clears a vehicle's roster when it stores it and keeps the owner
+  // on recovered_vehicles / backup_vehicles (character_id -> player_state.id).
+  // Probed by column so an older schema omits the fallback.
   const storedOwnerSql = [];
   let storedDetailSql = "null::timestamptz as stored_at, null::text as stored_reason";
   if ((await columnsFor(db, "player_state")).has("id")) {
     for (const table of ["recovered_vehicles", "backup_vehicles"]) {
       const columns = await columnsFor(db, table);
-      // When and why it was put in recovery, for the stored-delete
-      // confirmation. Scalar subqueries on the grouped vc.id.
+      // For the stored-delete confirmation.
       if (table === "recovered_vehicles" && ["vehicle_id", "time_stored", "reason"].every((column) => columns.has(column))) {
         storedDetailSql = `(select sv.time_stored from dune.recovered_vehicles sv where sv.vehicle_id=vc.id limit 1) as stored_at,
           (select sv.reason::text from dune.recovered_vehicles sv where sv.vehicle_id=vc.id limit 1) as stored_reason`;

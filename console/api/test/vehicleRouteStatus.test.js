@@ -160,10 +160,8 @@ test("vehicleStoredDeleteRoute sends its own confirmation phrase and audit actio
   assert.doesNotMatch(body, /"DELETE VEHICLE"/, "an ordinary DELETE VEHICLE phrase must never satisfy the stored route");
 });
 
-// The gate in handleApi checks the route's own action, vehicles:stored-delete.
-// This second check is what stops a policy of Deny vehicles:delete + Allow
-// vehicles:* from reaching the more destructive delete -- and it has to run
-// before directDbMutation, i.e. before the rate-limit tick and the backup.
+// Stops Deny vehicles:delete + Allow vehicles:* from reaching the stored
+// delete, and must run before the rate-limit tick and the backup.
 test("vehicleStoredDeleteRoute also requires vehicles:delete, before anything with a side effect", () => {
   const body = routeBody("vehicleStoredDeleteRoute");
   const gateAt = body.indexOf('if (!requireAction(req, res, "vehicles:delete")) return;');
@@ -205,9 +203,7 @@ test("vehicleStoredDeleteRoute drops a stale queued delete only after the delete
     "having no queued delete is the normal case and must not fail the request");
 });
 
-// Who is online is players:read information. A caller holding only the
-// vehicle actions is told the delete is unavailable, not that a named player
-// is connected.
+// Who is online is players:read information, so other callers are not told.
 test("vehicleStoredDeleteRoute withholds the owner's online state from a caller without players:read", () => {
   const body = routeBody("vehicleStoredDeleteRoute");
   assert.match(body, /error\?\.code === duneDb\.STORED_VEHICLE_OWNER_ONLINE && !principalMay\(req, "players:read"\)/);

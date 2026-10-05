@@ -3,23 +3,10 @@ import assert from "node:assert/strict";
 import { listVehicles } from "../src/duneDb.js";
 import { pgTransactionalDb, withIsolatedDatabase } from "../test-support/pgIntegrationDb.js";
 
-// db.test.js asserts listVehicles' status filter and stored-owner fallback as
-// SQL text against a mocked db. That proves the text was assembled, not that
-// Postgres accepts it or that the rows land in the right bucket -- the filter
-// sits in the WHERE of a GROUP BY query and references a lateral, and the
-// stored_at / stored_reason scalar subqueries sit in its select list. This
-// runs the real query.
-//
-// The schema follows the live one where it matters to those paths:
-//   - dune.player_state is a VIEW over encrypted_player_state that hides
-//     non-Active characters, so a recovery record held for a deleted
-//     character resolves to no owner.
-//   - online_status and actors.state are enums; actors.state is NOT NULL.
-//   - recovered_vehicles / backup_vehicles: vehicle_id UNIQUE, character_id
-//     NOT NULL with an FK to encrypted_player_state(id); backup_vehicles also
-//     has character_id UNIQUE (one backup per character).
-//   - Storing a vehicle for recovery destroys its roster and leaves
-//     actors.owner_account_id NULL, so only the recovery record names an owner.
+// Runs the real listVehicles query; db.test.js only asserts its SQL text.
+// The schema follows production where these paths depend on it: player_state
+// is a view hiding non-Active characters, and a stored vehicle has no roster
+// or owner_account_id, only the character on its recovery/backup record.
 const SCHEMA = `
   create schema dune;
 

@@ -130,8 +130,7 @@ export type VehicleRow = {
   // Funcom's actor lifecycle. Non-default states explain vehicles that are
   // stored or in transit rather than deployed in the map shown by `map`.
   lifecycle_state?: "Default" | "Travel" | "VehicleBackup" | "VehicleRecovery" | "AbortedAuthorityTransfer" | string;
-  // Set only for a vehicle that is Stored for Recovery: when the game put it
-  // there, and why ("Normal" recoveries expire in-game; the others do not).
+  // Set only for a Stored for Recovery vehicle.
   stored_at?: string | null;
   stored_reason?: string | null;
   x: number | string | null;
@@ -225,9 +224,7 @@ export type SetVehiclePermissionsResult = {
   message: string;
 };
 
-// Which vehicles the list returns. "owned"/"unowned" both exclude vehicles the
-// game has put away (Vehicle Backup / Stored for Recovery), which have their
-// own buckets. The server treats an omitted status as "all".
+// "owned" and "unowned" both exclude stored vehicles. Omitted means "all".
 export type VehicleStatusFilter = "owned" | "recovery" | "backup" | "unowned" | "all";
 
 export const vehiclesApi = {
@@ -303,10 +300,8 @@ export const vehiclesApi = {
       };
       reason?: string;
     }>(`/api/vehicles/${encodeURIComponent(vehicleId)}`, { method: "DELETE", body: JSON.stringify({ confirmation: "DELETE VEHICLE" }) }),
-  // Deletes a vehicle that is Stored for Recovery -- one its owner can still
-  // get back. A separate route with its own permission and phrase; the server
-  // refuses anything not in recovery, and refuses while the owner is online.
-  // Never queued: a stored vehicle is on no running map.
+  // For a Stored for Recovery vehicle only; the server refuses while its owner
+  // is online. Never queued.
   deleteStoredVehicle: (vehicleId: string) =>
     api<{
       supported: boolean;

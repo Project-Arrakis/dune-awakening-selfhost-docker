@@ -73,10 +73,8 @@ const SCHEMA = `
     template_id text not null,
     stack_size integer not null default 1
   );
-  -- As on the live schema: player_state is a VIEW that hides non-Active
-  -- characters, online_status is an enum, and both stored-vehicle tables hold
-  -- a NOT NULL character_id whose FK targets encrypted_player_state(id), with
-  -- vehicle_id UNIQUE (and one backup per character).
+  -- As on the live schema: player_state is a view hiding non-Active characters,
+  -- online_status is an enum, and character_id is NOT NULL.
   create type dune.playerconnectionstatus as enum ('Offline', 'LoggingOut', 'Online');
   create table dune.encrypted_player_state (
     id bigint primary key,
@@ -746,11 +744,8 @@ test("real PostgreSQL: the stored override deletes a recovered vehicle whose own
   });
 });
 
-// The owner check takes a FOR SHARE lock on the account's character rows, so a
-// login already in flight (an uncommitted online_status update) is waited for
-// and then seen. Without the lock the delete would read the pre-login
-// snapshot, go ahead, and leave an online player holding a recovery entry for
-// a vehicle that is gone.
+// The FOR SHARE lock makes the delete wait for a login already in flight and
+// then see it, instead of reading the pre-login snapshot.
 test("real PostgreSQL: the stored override waits for an in-flight login and then refuses", async (t) => {
   await withDatabase(t, async (pool) => {
     await storeForRecovery(pool);
@@ -779,8 +774,7 @@ test("real PostgreSQL: the stored override waits for an in-flight login and then
   });
 });
 
-// And a login that is rolled back (or any uncommitted change that ends up not
-// applying) does not block the delete for good.
+// A login that rolls back does not block the delete for good.
 test("real PostgreSQL: the stored override proceeds once a blocking session rolls back", async (t) => {
   await withDatabase(t, async (pool) => {
     await storeForRecovery(pool);

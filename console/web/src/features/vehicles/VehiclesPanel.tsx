@@ -19,9 +19,7 @@ const VEHICLES_AUTO_REFRESH_MS = 15 * 60_000; // 15 minutes — listVehicles is 
 const VEHICLES_PAGE_SIZES = [25, 50, 100, 200] as const;
 const VEHICLES_DEFAULT_PAGE_SIZE = 50;
 const VEHICLES_DEFAULT_STATUS: VehicleStatusFilter = "owned";
-// Short visible labels, with the full rule as the spoken name. "Owned" and
-// "Unowned" both leave out vehicles the game has put away, which have their
-// own two segments.
+// Short labels; the full rule is the spoken name.
 const VEHICLES_STATUS_OPTIONS: ReadonlyArray<SegmentOption<VehicleStatusFilter>> = [
   { value: "owned", label: "Owned", ariaLabel: "Owned: has an owner or is in transit, and is not stored for recovery or in vehicle backup" },
   { value: "recovery", label: "Stored for Recovery" },
@@ -48,19 +46,14 @@ type VehiclesCache = VehiclesViewParams & {
 
 let vehiclesCache: VehiclesCache | null = null;
 
-// The cache outlives a mount on purpose, which makes one test's last view the
-// next test's first. Tests clear it so they do not depend on running order.
+// The cache outlives a mount, so tests clear it to stay order-independent.
 export function _resetVehiclesCacheForTests() {
   vehiclesCache = null;
   handledFocusNonce = undefined;
 }
 
-// The last deep-link request already applied. App.tsx never clears its
-// focusRequest, and this panel unmounts whenever another tab is opened, so
-// without this every return to the Vehicles tab re-applied the old deep link:
-// search forced back to that vehicle's id and the status filter back to All,
-// discarding whatever the admin had since chosen. Module-level for the same
-// reason the cache is: it has to outlive the mount.
+// The last deep link applied. App.tsx never clears focusRequest and this panel
+// remounts on every tab switch, so without this each return re-applied it.
 let handledFocusNonce: number | undefined;
 
 function sameView(cache: VehiclesCache | null, view: VehiclesViewParams) {
@@ -68,11 +61,8 @@ function sameView(cache: VehiclesCache | null, view: VehiclesViewParams) {
     && cache.sortColumn === view.sortColumn && cache.sortDirection === view.sortDirection;
 }
 
-// e.g. "Jul 2, 2026 (94 days ago)", in the viewer's locale. Counted in
-// calendar days, not elapsed 24-hour periods, so something stored yesterday
-// evening reads "yesterday" this morning rather than "today". The game's own
-// restore time limit is not in the database, so this can say how long ago,
-// never "expired".
+// Calendar days, not 24-hour periods. The game's restore time limit is not in
+// the database, so this can say how long ago, never "expired".
 function formatStoredAt(value: string | null | undefined, now = Date.now()) {
   const stored = value ? Date.parse(value) : NaN;
   if (!Number.isFinite(stored)) return "Unknown";
@@ -83,8 +73,7 @@ function formatStoredAt(value: string | null | undefined, now = Date.now()) {
   return `${date} (${ago})`;
 }
 
-// dune.recoveredvehiclereason, in words. "Normal" is the everyday case and is
-// not shown at all.
+// "Normal" is not shown.
 const STORED_REASON_LABELS: Record<string, string> = {
   Migrated: "Migrated",
   RecoveredFromLostState: "Recovered from a lost state"
@@ -143,8 +132,7 @@ export function VehiclesPanel({ onError, confirmAction, focusRequest }: Vehicles
     vehiclesCache = null;
     setQ(id);
     setSubmittedQ(id);
-    // The deep-linked vehicle can be in any bucket (unowned, backed up), so
-    // the default "Owned" filter could hide the one row being asked for.
+    // The deep-linked vehicle may be in any bucket.
     setStatus("all");
     setPage(0);
   }, [focusRequest?.nonce]);
@@ -192,9 +180,7 @@ export function VehiclesPanel({ onError, confirmAction, focusRequest }: Vehicles
       const nextStorageSupported = result.capabilities?.vehicleStorage === true;
       const nextCanDeleteStoredVehicle = result.capabilities?.vehicleStoredDelete === true;
       setRows(nextRows);
-      // A page past the end -- the last row of the last page was just deleted,
-      // or the filter shrank underneath it -- comes back empty. Step back to
-      // the real last page instead of showing an empty table at "Page 3 of 2".
+      // A page past the end (its last row was just deleted) comes back empty.
       if (!nextRows.length && params.page > 0) {
         setPage(Math.max(0, Math.ceil((result.totalCount || 0) / params.pageSize) - 1));
       }
@@ -276,10 +262,8 @@ export function VehiclesPanel({ onError, confirmAction, focusRequest }: Vehicles
     };
   }, [submittedQ, status, page, pageSize, sortColumn, sortDirection, load]);
 
-  // A vehicle Stored for Recovery still belongs to a player who can get it
-  // back, so its delete is a separate route, permission and dialog -- one that
-  // names who loses it. Never queued (a stored vehicle is on no running map),
-  // and the server refuses while the owner is online.
+  // A stored vehicle still belongs to a player, so its delete has its own
+  // route and a dialog that names who loses it.
   async function handleDeleteStoredVehicle(vehicle: VehicleRow) {
     const id = String(vehicle.id);
     const label = vehicle.name || `vehicle ${id}`;

@@ -48,10 +48,8 @@ export const KEY_WRITE_DENIED_NAMESPACES = new Set(["updates", "addons"]);
 // A key stored as { "bases": "write" } was granted for per-base knobs; it must
 // not gain any of these on upgrade.
 //
-// vehicles:stored-delete takes a vehicle a player can still recover away from
-// them. A key stored as { "vehicles": "write" } was granted before that was
-// possible at all, and the action exists precisely so vehicles:delete does not
-// imply it.
+// vehicles:stored-delete deletes a vehicle a player can still recover; a key
+// stored as { "vehicles": "write" } predates it.
 export const LEVEL_EXCLUDED_ACTIONS = new Set([
   "backups:download-system",
   "backups:import-system",

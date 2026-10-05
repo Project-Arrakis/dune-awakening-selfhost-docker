@@ -228,10 +228,8 @@ test("vehicles:stored-delete is not reachable from any vehicles:delete wildcard"
   }
 });
 
-// Deny > Allow is per action name, so denying vehicles:delete does not by
-// itself deny vehicles:stored-delete under a vehicles:* allow. That is why the
-// stored route also requires vehicles:delete (server.js, pinned in
-// vehicleRouteStatus.test.js): the principal below fails that second check.
+// Denying vehicles:delete does not deny vehicles:stored-delete under a
+// vehicles:* allow, which is why the stored route requires both.
 test("a tier denied vehicles:delete cannot pass the stored route's two-action requirement", () => {
   const policies = {
     admin: {
