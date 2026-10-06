@@ -7,7 +7,9 @@ import { BasePermissionsTab } from "./BasePermissionsTab";
 import { BaseWaterTab } from "./BaseWaterTab";
 import { AutoRefillSettingsOverlay } from "./AutoRefillSettingsOverlay";
 import { DownloadBaseDialog, type DownloadBaseTarget } from "./DownloadBaseDialog";
-import { basesApi, type PlayerAccessFilter, type AutoRefillBase, type AutoRefillWaterBase, type RefillDeviceResult, type RefillWaterDeviceResult } from "../../api/bases";
+import { PlayerAccessSelect } from "../../components/common/PlayerAccessSelect";
+import { PLAYER_ACCESS_DEFAULT, accessCountLabel, describePlayerAccess, filterRowsByAccess, type PlayerAccessFilter } from "../../lib/playerAccess";
+import { basesApi, type AutoRefillBase, type AutoRefillWaterBase, type RefillDeviceResult, type RefillWaterDeviceResult } from "../../api/bases";
 import { friendlyMapName } from "../maps/mapNames";
 import { mapsApi } from "../../api/maps";
 import { cachedInstanceNames, resolveInstanceNames } from "../maps/instanceNames";
@@ -371,7 +373,7 @@ function renderBaseCell(row: Record<string, unknown>, column: string, instanceNa
 export function BasesPanel({ onError, confirmAction, restartGate, formatMutationResult, focusRequest, playerId = "", playerName = "", embedded = false, viewSwitch }: BasesPanelProps) {
   // Per-player view only: which of the player's bases to list. The access level
   // is part of the cache scope so each choice keeps its own cached view.
-  const [access, setAccess] = useState<PlayerAccessFilter>("owner");
+  const [access, setAccess] = useState<PlayerAccessFilter>(PLAYER_ACCESS_DEFAULT);
   const scope = playerId ? `player:${playerId}:${access}` : "all";
   const initialCache = basesCache?.scope === scope ? basesCache : null;
   const [q, setQ] = useState(() => initialCache?.q ?? "");
@@ -493,9 +495,9 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
       // older API that ignores the parameter; the endpoint is unpaginated for a
       // player, so for a narrowed view the totals can be derived from the rows.
       const allRows = (result.rows || []).map(withCoordinates);
-      const wanted = access === "owner" ? "Owner" : access === "coowner" ? "Co-Owner" : "";
-      const nextRows = playerId && wanted ? allRows.filter((row) => row.relationship === wanted) : allRows;
-      const ownedOnlyTotals = playerId && wanted ? {
+      const narrowed = Boolean(playerId) && access !== "all";
+      const nextRows = playerId ? filterRowsByAccess(allRows, access) : allRows;
+      const ownedOnlyTotals = narrowed ? {
         count: nextRows.length,
         pieces: nextRows.reduce((sum, row) => sum + (Number(row.piece_count) || 0), 0),
         placeables: nextRows.reduce((sum, row) => sum + (Number(row.placeable_count) || 0), 0)
@@ -1362,7 +1364,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
       <div className="panel-title">
         <div>
           <PanelHeading>Bases</PanelHeading>
-          {playerId && <p className="playerAdmin_note">{access === "owner" ? `Bases owned by ${playerName}.` : access === "coowner" ? `Bases ${playerName} co-owns.` : `Bases ${playerName} owns or has been given owner, co-owner or associate access to (guild and public access are not listed).`} Expand a row to use the same tools available on the main Bases page.</p>}
+          {playerId && <p className="playerAdmin_note">{describePlayerAccess("Bases", playerName, access)} Expand a row to use the same tools available on the main Bases page.</p>}
         </div>
         {viewSwitch}
         <div className="action-row">
@@ -1377,14 +1379,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
               onClick={() => setAutoRefillSettingsOpen(true)}
             ><Settings size={16} /></button>
           )}
-          {playerId && <label className="inline-filter-label">
-            Access
-            <select value={access} onChange={(event) => setAccess(event.target.value as PlayerAccessFilter)}>
-              <option value="owner">Owned</option>
-              <option value="coowner">Co-owner</option>
-              <option value="all">All (owner, co-owner, associate)</option>
-            </select>
-          </label>}
+          {playerId && <PlayerAccessSelect value={access} onChange={setAccess} />}
           <button onClick={() => void load({ q: submittedQ, page, pageSize, sortColumn, sortDirection })}>Refresh</button>
         </div>
       </div>
@@ -1396,7 +1391,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
                   <span><strong>{totalOwned.toLocaleString()}</strong> Owned</span>
                   <span><strong>{totalShared.toLocaleString()}</strong> Shared</span>
                 </>
-              : <span><strong>{totalBases.toLocaleString()}</strong> {access === "owner" ? "Owned" : "Co-owned"}</span>}
+              : <span><strong>{totalBases.toLocaleString()}</strong> {accessCountLabel(access)}</span>}
             <span><strong>{totalPieces.toLocaleString()}</strong> Building Pieces</span>
             <span><strong>{totalPlaceables.toLocaleString()}</strong> Placeables</span>
           </div>

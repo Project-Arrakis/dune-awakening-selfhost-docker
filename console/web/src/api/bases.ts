@@ -1,4 +1,5 @@
 import { api, post } from "./client";
+import type { PlayerAccessFilter } from "../lib/playerAccess";
 
 export type RefillDeviceResult = {
   placeableId: string;
@@ -456,8 +457,6 @@ export type BasesListResponse = {
   capabilities: Record<string, unknown>;
   reason?: string;
 };
-
-export type PlayerAccessFilter = "owner" | "coowner" | "all";
 
 type BasesListParams = { q?: string; page?: number; pageSize?: number; sortColumn?: string; sortDirection?: "asc" | "desc"; access?: PlayerAccessFilter };
 

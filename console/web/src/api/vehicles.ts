@@ -1,5 +1,5 @@
 import { api, post } from "./client";
-import type { PlayerAccessFilter } from "./bases";
+import { accessQuery, type PlayerAccessFilter } from "../lib/playerAccess";
 
 export type VehicleModule = {
   templateId: string;
@@ -241,7 +241,7 @@ export const vehiclesApi = {
     return api<VehiclesListResponse>(`/api/vehicles${qs ? `?${qs}` : ""}`);
   },
   forPlayer: (playerId: string, params: { access?: PlayerAccessFilter } = {}) =>
-    api<VehiclesListResponse>(`/api/players/${encodeURIComponent(playerId)}/vehicles${params.access && params.access !== "all" ? `?access=${params.access}` : ""}`),
+    api<VehiclesListResponse>(`/api/players/${encodeURIComponent(playerId)}/vehicles${accessQuery(params.access) ? `?${accessQuery(params.access)}` : ""}`),
   permissions: (vehicleId: string) =>
     api<VehiclePermissions>(`/api/vehicles/${encodeURIComponent(vehicleId)}/permissions`),
   // Fetched when the contents overlay opens rather than folded into the list
