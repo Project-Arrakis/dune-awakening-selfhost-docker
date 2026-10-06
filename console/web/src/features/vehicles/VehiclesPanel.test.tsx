@@ -138,6 +138,31 @@ describe("VehiclesPanel", () => {
     expect(await screen.findByText("Sector E-5")).toBeInTheDocument();
   });
 
+  it("places Deep Desert sectors on the Live Map's measured grid", async () => {
+    const base = { ...listResponse().rows[0], map: "DeepDesert", partition_id: 8 };
+    vi.mocked(vehiclesApi.list).mockResolvedValue(listResponse({
+      rows: [
+        // Both read D-5 in game. A 250,000 uu grid cannot put them in one row:
+        // centred on the origin it gives E-5 and D-5, on the map centre D-5 and C-5.
+        { ...base, id: "5101", x: -30000, y: 100000 },
+        { ...base, id: "5102", x: -30000, y: 350000 }
+      ]
+    }));
+    renderPanel();
+
+    expect(await screen.findAllByText("Sector D-5")).toHaveLength(2);
+  });
+
+  it("shows no sector for a Deep Desert point outside the grid", async () => {
+    vi.mocked(vehiclesApi.list).mockResolvedValue(listResponse({
+      rows: [{ ...listResponse().rows[0], map: "DeepDesert", partition_id: 8, x: 2000000, y: 0 }]
+    }));
+    renderPanel();
+
+    expect(await screen.findByText("(2000000, 0)")).toBeInTheDocument();
+    expect(screen.queryByText(/^Sector/)).toBeNull();
+  });
+
   // A vehicle's cargo hold hangs off the vehicle actor, not a module, so this
   // is one control on the Components header gated on a fitted storage module
   // -- not a button per component card.

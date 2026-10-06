@@ -145,5 +145,5 @@ export type TerrainView = {
   flipY: boolean;
 };
 
-/** A square lettered grid on the world plane: min corner, cell size in uu, cells per side. */
-export type SectorGridSpec = { x0: number; y0: number; cell: number; divisions: number };
+/** A lettered grid on the world plane: min corner, cell size in uu per axis, cells per side. */
+export type SectorGridSpec = { x0: number; y0: number; cellX: number; cellY: number; divisions: number };
