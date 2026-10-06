@@ -9,6 +9,13 @@ their Saved folders after stopping them. Failed applications restore the previou
 image policy. The apply tool does not rewrite or delete player or vehicle rows;
 the unpatched game can delete unsupported Tank records when loading them.
 
+If an apply is interrupted, the next Hagga launch clears the stale in-progress
+flag under the Battlegroup lifecycle lock and uses the saved image policy.
+The Settings card retains an interrupted-operation warning until Tank settings
+are successfully applied again. An active apply is never cleared by a launch.
+If Docker cleanup removed an unused Tank image, startup rebuilds it from the
+same verified build and assets; it never silently substitutes the stock image.
+
 The six native Tank templates are offered only when enabled. Spawning requires
 an online player in a ready Hagga partition running the exact prepared image.
 Every template uses Tier 6 parts: Booster or Inventory with Dart, Rocket or Flame.

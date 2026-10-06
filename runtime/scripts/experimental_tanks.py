@@ -34,19 +34,49 @@ def manifest(tag):
     return json.loads((ROOT / 'patches/experimental-tanks/2134304/manifest.json').read_text())
 
 
-def status(tag):
+INTERRUPTED_APPLY = 'The previous operation was interrupted. Apply Tank settings again to reconcile Hagga.'
+
+
+def apply_state(*, recover=False):
+    """Detect stale apply state under the same lock that owns every switch.
+
+    Startup already holds this lock in its parent process. Trying to acquire
+    it again would mistake that startup for a still-running Tank operation.
+    Internal apply children must retain the flag throughout the switch.
+    """
     state = read_state()
+    if not state.get('applying') or os.environ.get('DUNE_TANK_APPLY') == '1':
+        return state
+
+    def interrupted_state():
+        # Re-read after acquiring the lock; never overwrite a completed switch
+        # using a snapshot read while that switch was still in flight.
+        current = read_state()
+        if current.get('applying'):
+            current = {**current, 'applying': False, 'error': INTERRUPTED_APPLY}
+            if recover:
+                save(current)
+        return current
+
+    if os.environ.get('DUNE_BATTLEGROUP_LIFECYCLE_LOCK_HELD') == '1':
+        return interrupted_state()
+    lock_path = Path(os.environ.get('DUNE_BATTLEGROUP_LIFECYCLE_LOCK_FILE') or
+                     ROOT / 'runtime/generated/battlegroup-lifecycle.lock')
+    if not recover and not lock_path.exists():
+        return interrupted_state()
+    if recover:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open('a' if recover else 'r') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return read_state()
+        return interrupted_state()
+
+
+def status(tag):
+    state = apply_state()
     applying, error = state.get('applying', False), state.get('error', '')
-    lock_path = ROOT / 'runtime/generated/battlegroup-lifecycle.lock'
-    if applying and lock_path.exists():
-        with lock_path.open('r') as lock:
-            try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                pass
-            else:
-                applying = False
-                error = 'The previous operation was interrupted. Apply Tank settings again to reconcile Hagga.'
     return {'enabled': state['enabled'], 'supported': manifest(tag) is not None,
             'build': tag, 'status': 'Unsupported Build' if state['enabled'] and not manifest(tag)
             else 'Enabled' if state['enabled'] else 'Disabled',
@@ -81,6 +111,31 @@ def hagga_is_ready(partition, name):
     return result.returncode == 0
 
 
+def restore_missing_image(tag):
+    """Rebuild a pruned opt-in image from the pinned inputs, never fall back to stock."""
+    def prepare():
+        state = read_state()
+        if not state['enabled'] or state.get('build') != tag:
+            raise ValueError('Tank settings changed. Retry starting Hagga.')
+        if state.get('applying') and os.environ.get('DUNE_TANK_APPLY') != '1':
+            raise ValueError('Hagga image settings are being applied. Wait for this operation to finish.')
+        image_id = build(tag)
+        save({**state, 'imageId': image_id})
+        return image_id
+
+    if os.environ.get('DUNE_BATTLEGROUP_LIFECYCLE_LOCK_HELD') == '1':
+        return prepare()
+    lock_path = Path(os.environ.get('DUNE_BATTLEGROUP_LIFECYCLE_LOCK_FILE') or
+                     ROOT / 'runtime/generated/battlegroup-lifecycle.lock')
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open('a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError('Another Battlegroup operation is running. Try again when it finishes.')
+        return prepare()
+
+
 def image_for_map(tag, map_name):
     state = read_state()
     if map_name != 'Survival_1' or not state['enabled']:
@@ -92,13 +147,19 @@ def image_for_map(tag, map_name):
     image_id = state.get('imageId', '')
     if not re.fullmatch(r'sha256:[0-9a-f]{64}', image_id):
         raise ValueError('The experimental Tank image has not been prepared.')
-    run('docker', 'image', 'inspect', image_id, capture=True)
+    try:
+        run('docker', 'image', 'inspect', image_id, capture=True)
+    except subprocess.CalledProcessError:
+        # Startup may follow a Docker image prune while the stack was stopped.
+        # Build performs the same base, executable and asset checks as Enable.
+        image_id = restore_missing_image(tag)
     return image_id
 
 
 def apply(tag, enabled):
     """Switch only running Hagga maps; keep the old policy for rollback."""
-    lock_path = ROOT / 'runtime/generated/battlegroup-lifecycle.lock'
+    lock_path = Path(os.environ.get('DUNE_BATTLEGROUP_LIFECYCLE_LOCK_FILE') or
+                     ROOT / 'runtime/generated/battlegroup-lifecycle.lock')
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open('a') as lock:
         try:
@@ -257,7 +318,7 @@ def main():
             raise ValueError('Choose true or false for Experimental Tanks.')
         apply(tag, a.args == ['true'])
     elif a.command == 'launch-guard':
-        if a.args[0] == 'Survival_1' and read_state().get('applying') and os.environ.get('DUNE_TANK_APPLY') != '1':
+        if a.args[0] == 'Survival_1' and apply_state(recover=True).get('applying') and os.environ.get('DUNE_TANK_APPLY') != '1':
             raise ValueError('Hagga image settings are being applied. Wait for this operation to finish.')
     elif a.command == 'catalog':
         available = status(tag)
