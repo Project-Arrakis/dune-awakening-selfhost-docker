@@ -472,7 +472,7 @@ tab can offer a retry only where retrying could actually help.
 
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|
-| GET | `/api/vehicles` | List all player vehicles (paginated), each with owner, shared-with roster, lowest-component condition %, fuel %, map/partition, coordinates, and per-component durability | `q?`, `page?`, `pageSize?`, `sortColumn?`, `sortDirection?` |
+| GET | `/api/vehicles` | List all player vehicles (paginated), each with owner, shared-with roster, lowest-component condition %, fuel %, map/partition, coordinates, and per-component durability. `status` narrows the list: `owned` (has an owner or is in `Travel`, not put away), `recovery` (Stored for Recovery), `backup` (Vehicle Backup), `unowned` (no owner, not put away or in `Travel`), or `all` (default) | `q?`, `page?`, `pageSize?`, `sortColumn?`, `sortDirection?`, `status?` |
 | GET | `/api/players/{playerId}/vehicles` | List the selected player's owned and shared vehicles using the same vehicle details | `playerId` |
 | GET | `/api/vehicles/{vehicleId}/permissions` | Get a vehicle's permission roster (Owner, Co-Owners, Associates) plus the detected system custodian | `vehicleId` |
 | PUT | `/api/vehicles/{vehicleId}/permissions` | Replace a vehicle's permission roster | `vehicleId`, `entries[]` (`playerId`, `rank`) |
@@ -483,14 +483,18 @@ tab can offer a retry only where retrying could actually help.
 | DELETE | `/api/vehicles/{vehicleId}/storage/items` | Delete a chosen set of whole stacks (max 200). Requires `{ confirmation: "DELETE ITEMS" }` | `vehicleId`, `itemIds[]` |
 | DELETE | `/api/vehicles/{vehicleId}/storage/all-items` | Empty a vehicle's cargo hold. Requires `{ confirmation: "DELETE ALL ITEMS" }` | `vehicleId` |
 | DELETE | `/api/vehicles/{vehicleId}` | Permanently delete a vehicle and everything on it (queued instead if the map isn't safely writable right now); takes a full-database safety backup first. Requires `{ confirmation: "DELETE VEHICLE" }` | `vehicleId` |
+| DELETE | `/api/vehicles/{vehicleId}/stored` | Permanently delete a vehicle that is Stored for Recovery; refused for any other state and while its owner is online. Takes a full-database safety backup first. Requires `{ confirmation: "DELETE STORED VEHICLE" }` and the `vehicles:stored-delete` action | `vehicleId` |
 | GET | `/api/vehicles/pending-deletes` | List queued vehicle deletes, grouped by restart target | None |
 | DELETE | `/api/vehicles/{vehicleId}/queued-delete` | Cancel a vehicle's queued delete | `vehicleId` |
 
 `GET /api/vehicles` and the player-scoped list are read-only; the permission
 routes share their implementation with the base permission routes -- see
 [vehicle-permissions.md](vehicle-permissions.md). The system-custodian route
-mirrors the base one exactly, minus the backed-up guard, since a vehicle has
-no picked-up state. The delete route mirrors `DELETE /api/bases/{baseId}` --
+mirrors the base one exactly, minus the backed-up guard: a vehicle's stored
+states (`VehicleBackup`, `VehicleRecovery`) are actor lifecycle states rather
+than an unclaimed base. The delete route mirrors `DELETE /api/bases/{baseId}`
+and refuses those states and `Travel`; `DELETE /api/vehicles/{vehicleId}/stored`
+is the separate, separately-permissioned delete for a `VehicleRecovery` vehicle --
 see [vehicle-deletion.md](vehicle-deletion.md). The storage routes read and
 delete the vehicle's single cargo hold -- reached through
 `dune.inventories.actor_id`, not `vehicle_module_id`, which is empty in
@@ -512,12 +516,21 @@ when it is false. `capabilities.vehicleDelete` similarly gates the Delete
 Vehicle action (`dune.vehicles`/`vehicle_modules`/`actors` plus
 `permission_actor_destroy`/`delete_actors`), and `capabilities.vehicleDeleteQueue`
 additionally requires `dune.world_partition` -- without it, deletes are
-always immediate rather than queued when the map is live. See
+always immediate rather than queued when the map is live.
+`capabilities.vehicleStoredDelete` gates the Delete Stored Vehicle action; it
+needs `vehicleDelete` plus `dune.actors.state`, `dune.recovered_vehicles`
+(`vehicle_id`, `character_id`, `time_stored`, `reason`) and `dune.player_state`
+(`id`, `account_id`, `character_name`, `online_status`). See
 [vehicle-deletion.md](vehicle-deletion.md). Sortable `sortColumn` values: `id`, `name`,
 `type`, `owner`, `condition_percent`, `fuel_percent`, `map`; `q` matches vehicle
 name, type, owner, map, and exact id. Response fields mirror the paginated-list
 convention (`rows`, `totalCount`, unfiltered `totalVehicles`). Owner resolves from
-the rank-1 permission holder, falling back to the actor's account owner; the
+the rank-1 permission holder, falling back to the actor's account owner and then,
+for a stored vehicle, to the character on its `dune.recovered_vehicles` or
+`dune.backup_vehicles` record (the game clears the roster when it stores one). Each
+row carries `lifecycle_state`; a `VehicleRecovery` row also carries `stored_at` and
+`stored_reason` (`Normal`, `Migrated`, `RecoveredFromLostState`), which are null
+otherwise. The
 `shared_with` roster is the rank 2/3 holders. A component's maximum durability uses
 a verified game-data override when one is available, then its own stats blob
 (`MaxDurability`, else the decayed cap). If no known or stored maximum exists, it

@@ -2509,6 +2509,31 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 
 /* Vehicles page */
 .vehicles-search-row { margin: 12px 0; }
+/* Label-width segments that wrap on a narrow panel. Each segment has a top and
+   left divider and is pulled 1px up and left, so the container's overflow:
+   hidden clips the outer ones. Extra classes because .segmented-control is
+   declared later at equal specificity. */
+.segmented-control.vehicles-status-segments {
+  display: inline-flex;
+  flex-wrap: wrap;
+  height: auto;
+  max-width: 100%;
+  margin: 10px 0 8px;
+}
+.segmented-control.vehicles-status-segments .segmented-control-segment {
+  flex: 1 0 auto;
+  margin: -1px 0 0 -1px;
+  border-top: 1px solid var(--border);
+  border-left: 1px solid var(--border);
+}
+/* aria-disabled, not disabled, so it stays focusable; styled to match
+   button:disabled. */
+.vehicles-table .icon-toggle-button[aria-disabled="true"],
+.vehicles-table .icon-toggle-button[aria-disabled="true"]:hover {
+  opacity: .45;
+  cursor: not-allowed;
+  background: transparent;
+}
 /* Grow to fit the rows on the page instead of the shared height cap, while
    keeping the inherited horizontal `overflow: auto` so a wide table scrolls
    inside its box at narrow widths rather than breaking out of the panel. */
