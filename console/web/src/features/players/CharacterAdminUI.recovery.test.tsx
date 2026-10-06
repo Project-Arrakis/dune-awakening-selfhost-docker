@@ -80,7 +80,7 @@ describe("CharacterAdminUI deleted-character recovery", () => {
       formatMutationResult={() => "Action completed."}
       restartGate={vi.fn().mockResolvedValue("immediate")}
     />);
-    fireEvent.click(screen.getByRole("tab", { name: "Admin" }));
+    fireEvent.click(screen.getByRole("button", { name: "Admin" }));
     fireEvent.click(screen.getByRole("button", { name: "Repair Login Queue" }));
     await waitFor(() => expect(confirmAction).toHaveBeenCalledWith(
       expect.stringContaining("close the game first. Active queues will not be deleted."),
@@ -105,7 +105,7 @@ describe("CharacterAdminUI deleted-character recovery", () => {
       restartGate={vi.fn().mockResolvedValue("immediate")}
     />);
 
-    fireEvent.click(screen.getByRole("tab", { name: "Admin" }));
+    fireEvent.click(screen.getByRole("button", { name: "Admin" }));
     expect(await screen.findByRole("option", { name: /Drew · 50 Items/ })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Recover Character" }));
 

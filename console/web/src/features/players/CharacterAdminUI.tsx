@@ -1148,9 +1148,9 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
     <section className="playerAdmin_container" aria-label="Player admin layout">
       <div className="playerAdmin_header"><h3>Player Summary</h3><button onClick={onClose}>Close</button></div>
       <PlayerSummary detail={detail} fallback={fallback} dbPlayerId={dbPlayerId} actionPlayerId={actionPlayerId} refreshKey={playerAdmin_summaryRefreshKey} onRepairFactionReputation={playerAdmin_repairFactionReputation} factionRepairDisabled={!dbPlayerId || playerAdmin_isOnline} factionRepairResult={playerAdmin_actionResult?.key === "repairFactionReputation" ? playerAdmin_actionResult : null} />
-      <div className="playerAdmin_tabs" role="tablist" aria-label="Player admin tabs">{playerAdmin_tabs.map((playerAdmin_tab) => {
+      <div className="playerAdmin_tabs" role="group" aria-label="Player admin sections">{playerAdmin_tabs.map((playerAdmin_tab) => {
         const TabIcon = playerAdmin_tab.icon;
-        return <button key={playerAdmin_tab.label} role="tab" aria-selected={playerAdmin_activeTab === playerAdmin_tab.label} className={playerAdmin_activeTab === playerAdmin_tab.label ? "active" : ""} onClick={() => playerAdmin_setActiveTab(playerAdmin_tab.label)}><TabIcon size={17} aria-hidden="true" /><span>{playerAdmin_tab.label}</span></button>;
+        return <button key={playerAdmin_tab.label} aria-pressed={playerAdmin_activeTab === playerAdmin_tab.label} className={playerAdmin_activeTab === playerAdmin_tab.label ? "active" : ""} onClick={() => playerAdmin_setActiveTab(playerAdmin_tab.label)}><TabIcon size={17} aria-hidden="true" /><span>{playerAdmin_tab.label}</span></button>;
       })}</div>
       {playerAdmin_activeTab === "Character" && <div className="playerAdmin_content">
         {playerAdmin_toggleBox("quick_rewards", "Quick Rewards", <div className="playerAdmin_section playerAdmin_quickRewardsSection">

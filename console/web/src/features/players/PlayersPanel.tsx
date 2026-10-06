@@ -230,12 +230,15 @@ export function PlayersPanel({ onError, renderCharacterAdmin, onOpenBase, confir
   async function open(row: Record<string, unknown>) {
     const id = String(row.actor_id || row.player_pawn_id || row.id || "");
     const requestId = ++profileRequestIdRef.current;
+    // Never show the previously selected player's profile under a new selection.
+    if (selectedPlayerIdRef.current !== id) setDetail(null);
     selectedPlayerIdRef.current = id;
     setSelected(row);
     try {
       const nextDetail = await playersApi.profile(id);
       if (profileRequestIdRef.current === requestId && selectedPlayerIdRef.current === id) setDetail(nextDetail);
     } catch (error) {
+      if (profileRequestIdRef.current === requestId) setDetail(null);
       if (profileRequestIdRef.current === requestId) onError(`Could not load this player's profile: ${errorText(error)}`);
     }
   }
@@ -387,8 +390,8 @@ export function PlayersPanel({ onError, renderCharacterAdmin, onOpenBase, confir
         </div>
       </div>
       <p className="action-help-note">
-        {playerFilter !== "all" || submittedQ
-          ? `${totalCount.toLocaleString()} of ${totalPlayers.toLocaleString()} players match`
+        {playerFilter !== "all" || submittedQ || !showInactive
+          ? `${totalCount.toLocaleString()} of ${totalPlayers.toLocaleString()} players shown`
           : `${totalPlayers.toLocaleString()} players`}
         {!statusFilterSupported && " · Status filtering isn't available on this database version."}
       </p>
@@ -404,7 +407,7 @@ export function PlayersPanel({ onError, renderCharacterAdmin, onOpenBase, confir
       </div>
       <DataTable
         rows={rows}
-        columns={["actor_id", "character_name", "last_seen", "total_playtime_seconds", "online_status", "map", "fls_id"]}
+        columns={["character_name", "online_status", "last_seen", "total_playtime_seconds", "map", "actor_id", "fls_id"]}
         columnLabels={{
           actor_id: "DB Player ID",
           character_name: "Character",

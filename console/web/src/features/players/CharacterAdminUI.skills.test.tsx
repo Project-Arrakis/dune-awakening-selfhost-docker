@@ -59,7 +59,7 @@ describe("CharacterAdminUI Tank catalog", () => {
     const confirm = vi.fn().mockResolvedValue(false);
     vi.mocked(adminApi.structuredVehicles).mockResolvedValue({ vehicles: [{ id: "Tank", name: "Tank", templates: ["T0"] }] });
     render(<CharacterAdminUI {...baseProps} confirmAction={confirm} detail={{ player: { actual_online_status: "Online" } }} />);
-    fireEvent.click(screen.getByRole("tab", { name: "Admin" }));
+    fireEvent.click(screen.getByRole("button", { name: "Admin" }));
     await screen.findByRole("option", { name: "Tier 6 Booster Dart" });
     fireEvent.click(screen.getByRole("button", { name: "Spawn" }));
     await waitFor(() => expect(confirm).toHaveBeenCalled());
@@ -75,7 +75,7 @@ describe("CharacterAdminUI Tank catalog", () => {
     vi.mocked(playersApi.spawnVehicle).mockResolvedValue({ task });
     const confirm = vi.fn().mockResolvedValue(true);
     render(<CharacterAdminUI {...baseProps} confirmAction={confirm} waitForTask={waiting} detail={{ player: { actual_online_status: "Online" } }} />);
-    fireEvent.click(screen.getByRole("tab", { name: "Admin" }));
+    fireEvent.click(screen.getByRole("button", { name: "Admin" }));
     await screen.findByRole("option", { name: "Tier 6 Booster Dart" });
     fireEvent.click(screen.getByRole("button", { name: "Spawn" }));
     expect(await screen.findByText("Spawning Regis Tank for OfflinePlayer")).toBeInTheDocument();
@@ -89,7 +89,7 @@ describe("CharacterAdminUI Tank catalog", () => {
   it("shows Regis Tank and six presets when enabled, even without a profile map", async () => {
     vi.mocked(adminApi.structuredVehicles).mockResolvedValue({ vehicles: [{ id: "Tank", name: "Tank", templates: ["T0", "T6_CombatDart", "T6_CombatFire", "T6_DartInventory", "T6_RocketInventory", "T6_FireInventory"] }] });
     render(<CharacterAdminUI {...baseProps} detail={{ player: { online_status: "Offline" } }} />);
-    fireEvent.click(screen.getByRole("tab", { name: "Admin" }));
+    fireEvent.click(screen.getByRole("button", { name: "Admin" }));
     expect(await screen.findByRole("option", { name: "Regis Tank" })).toBeInTheDocument();
     expect(await screen.findByRole("option", { name: "Tier 6 Booster Dart" })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "Tier 6 Booster Rocket" })).toBeInTheDocument();
@@ -131,7 +131,7 @@ describe("CharacterAdminUI skill live grants", () => {
       detail={{ player: { actual_online_status: "Offline" }, capabilities: {} }}
     />);
 
-    fireEvent.click(screen.getByRole("tab", { name: "Skills" }));
+    fireEvent.click(screen.getByRole("button", { name: "Skills" }));
 
     expect(await screen.findByText("The player must be online to change skills or restore starter skills.")).toBeInTheDocument();
     const rankButton = await screen.findByRole("button", { name: "Set Energy Capsule rank 1" });
@@ -159,7 +159,7 @@ describe("CharacterAdminUI skill rank bars", () => {
       detail={{ player: { actual_online_status: "Online" }, capabilities: {} }}
     />);
 
-    fireEvent.click(screen.getByRole("tab", { name: "Skills" }));
+    fireEvent.click(screen.getByRole("button", { name: "Skills" }));
     fireEvent.click(await screen.findByRole("button", { name: "Bene Gesserit" }));
 
     expect(await screen.findByRole("button", { name: "Set Weirding Step rank 3" })).toBeInTheDocument();
@@ -186,7 +186,7 @@ describe("CharacterAdminUI skill rank from points", () => {
       detail={{ player: { actual_online_status: "Online" }, capabilities: {} }}
     />);
 
-    fireEvent.click(screen.getByRole("tab", { name: "Skills" }));
+    fireEvent.click(screen.getByRole("button", { name: "Skills" }));
     fireEvent.click(await screen.findByRole("button", { name: "Bene Gesserit" }));
 
     // Rank 2 of 3: clicking pip 2 would clear it, so its label reads "rank 0".

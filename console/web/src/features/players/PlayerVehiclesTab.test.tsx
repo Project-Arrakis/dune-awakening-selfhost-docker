@@ -50,7 +50,9 @@ describe("PlayerVehiclesTab", () => {
     expect(screen.getByLabelText("Player vehicle totals")).toHaveTextContent("1 Owned");
     expect(screen.getByLabelText("Player vehicle totals")).not.toHaveTextContent("Shared");
 
+    expect(screen.getByLabelText("Player vehicle totals")).toHaveTextContent(/^1\s*Owned$/);
     fireEvent.click(screen.getByLabelText("Show components for Owned Bike"));
+    expect(screen.getByLabelText("Collapse components for Owned Bike")).toBeInTheDocument();
   });
 
   it("refreshes the filtered list on demand", async () => {

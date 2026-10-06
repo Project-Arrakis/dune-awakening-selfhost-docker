@@ -9,7 +9,7 @@ import { VehiclePermissionsTab } from "./VehiclePermissionsTab";
 import { VehicleStorageOverlay } from "./VehicleStorageOverlay";
 
 const GLOBAL_COLUMNS = ["name", "type", "owner", "shared_with", "condition_percent", "fuel_percent", "location"];
-const PLAYER_COLUMNS = ["name", "type", "relationship", "owner", "condition_percent", "fuel_percent", "location"];
+const PLAYER_COLUMNS = ["name", "type", "condition_percent", "fuel_percent", "location"];
 const COLUMN_LABELS: Record<string, string> = {
   name: "Vehicle",
   type: "Type",

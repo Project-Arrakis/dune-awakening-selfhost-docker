@@ -19,6 +19,7 @@ export function PlayerVehiclesTab({ playerId, playerName, confirmAction }: Playe
   const [canEditPermissions, setCanEditPermissions] = useState(false);
   const [storageSupported, setStorageSupported] = useState(false);
   const [message, setMessage] = useState("");
+  const [truncated, setTruncated] = useState(false);
   const requestIdRef = useRef(0);
 
   const load = useCallback(async () => {
@@ -30,6 +31,7 @@ export function PlayerVehiclesTab({ playerId, playerName, confirmAction }: Playe
       if (requestIdRef.current !== requestId) return;
       // Only vehicles the player owns; ones merely shared with them are
       // managed from their owner's page.
+      setTruncated(Number(result.totalCount || 0) > (result.rows || []).length);
       setRows((result.rows || []).filter((row) => row.relationship === "Owner"));
       setSupported(result.capabilities?.vehicles !== false);
       setCanEditPermissions(result.capabilities?.vehiclePermissions === true);
@@ -70,6 +72,7 @@ export function PlayerVehiclesTab({ playerId, playerName, confirmAction }: Playe
                 <div className="player-vehicles-summary" aria-label="Player vehicle totals">
                   <span><strong>{rows.length}</strong> Owned</span>
                 </div>
+                {truncated && <p className="playerAdmin_note danger">This player has more vehicles than can be listed here; some owned vehicles may be missing.</p>}
                 <VehicleTable
                   rows={rows}
                   context="player"
