@@ -1,14 +1,14 @@
 /// <reference types="vite/client" />
 import { sealRockLibrary } from "./terrainSeal";
 import { sandRingCount, withCommonRock, withSandRing } from "./terrainGeometry";
-import type { TerrainCommonRock, TerrainLayoutMeta, TerrainLibrary, TerrainOutside, TerrainSandRing } from "./types";
+import type { TerrainCommonRock, TerrainLayoutMeta, TerrainLibrary, TerrainOutside, TerrainSandBase, TerrainSandRing } from "./types";
 
 /**
  * Fetching and inflating the terrain assets.
  *
  * Everything ships gzipped, including the JSON sidecars, so it all flows through
- * one path. The shared half is 8.2 MB and identical for every layout; a layout
- * adds about 0.65 MB, so a Coriolis reset re-fetches well under a megabyte.
+ * one path. The shared half is 8.6 MB and identical for every layout; a layout
+ * adds about 0.24 MB, so a Coriolis reset re-fetches well under a megabyte.
  */
 
 export type SharedAssets = {
@@ -49,7 +49,7 @@ export type LayoutAssets = {
  * built from a base path.
  *
  * A layout-only rebuild leaves `meshes.bin-<hash>.gz` at the same URL, so a
- * Coriolis reset re-downloads under a megabyte rather than the whole 8.2 MB.
+ * Coriolis reset re-downloads under a megabyte rather than the whole 8.6 MB.
  */
 const assetUrls = import.meta.glob("./assets/**/*.gz", {
   query: "?url",
@@ -72,6 +72,7 @@ export const bundledAsset: AssetResolver = (name) => {
  */
 const LAYOUT_CACHE_LIMIT = 2;
 let sharedPromise: Promise<SharedAssets> | null = null;
+let sandBasePromise: Promise<SandBase> | null = null;
 const layoutCache = new Map<string, Promise<LayoutAssets>>();
 
 /**
@@ -85,7 +86,7 @@ const layoutCache = new Map<string, Promise<LayoutAssets>>();
  * aborted promise and report the terrain unavailable.
  *
  * Abandoning a load is also no reason to throw the bytes away -- whoever comes
- * next wants the same 8.2 MB -- so the fetch is left to finish and fill the cache.
+ * next wants the same 8.6 MB -- so the fetch is left to finish and fill the cache.
  */
 function forCaller<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return work;
@@ -209,6 +210,70 @@ export function decodeIndices(library: TerrainLibrary, geometry: Uint8Array): Te
   return plain;
 }
 
+export type SandBase = { info: TerrainSandBase; field: Uint16Array };
+
+/** A zigzagged signed 16-bit step, stored across two byte planes: all high bytes, then all low. */
+function planeStep(planes: Uint8Array, count: number, k: number): number {
+  const z = (planes[k] << 8) | planes[count + k];
+  return (z >>> 1) ^ -(z & 1);
+}
+
+/**
+ * The shared sand grid. Each texel is stored as its step from the value its
+ * left, upper and upper-left neighbours predict (`left + up - upleft`), which
+ * leaves small numbers on smooth dunes.
+ */
+export function decodeSandBase(info: TerrainSandBase, planes: Uint8Array): Uint16Array {
+  if (info.coding !== "zigzag-delta2d") throw new Error(`the sand base is stored as ${info.coding}, which this console cannot read`);
+  const n = info.n;
+  const count = n * n;
+  if (planes.byteLength !== count * 2) throw new Error(`the sand base is ${planes.byteLength} bytes, expected ${n}x${n} u16`);
+  const out = new Uint16Array(count);
+  for (let j = 0; j < n; j++) {
+    for (let i = 0; i < n; i++) {
+      const k = j * n + i;
+      const predicted = i === 0 ? (j === 0 ? 0 : out[k - n]) : j === 0 ? out[k - 1] : out[k - 1] + out[k - n] - out[k - n - 1];
+      out[k] = (predicted + planeStep(planes, count, k)) & 0xffff;
+    }
+  }
+  return out;
+}
+
+/**
+ * Undo a layout's height coding. With `hfCoding` "base-diff" the field holds
+ * each texel's step from the shared base, since four fifths of the sand is the
+ * same in every layout: the twelve fields ship in 1.5 MB instead of 6.1 MB.
+ * Returns the plain u16 field and the meta without the coding mark.
+ */
+export function decodeHeightField(meta: TerrainLayoutMeta, coded: Uint8Array, base: SandBase): { meta: TerrainLayoutMeta; heightField: Uint8Array } {
+  if (meta.hfCoding !== "base-diff") throw new Error(`layout ${meta.layout} heights are stored as ${meta.hfCoding}, which this console cannot read`);
+  const { info, field } = base;
+  if (info.n !== meta.hfN || meta.hfZlo !== info.zlo || meta.hfZhi !== info.zlo + 65535 * info.zstep) {
+    throw new Error(`layout ${meta.layout} heights do not fit the sand base they are stored against`);
+  }
+  const count = field.length;
+  const out = new Uint16Array(count);
+  for (let k = 0; k < count; k++) out[k] = (field[k] + planeStep(coded, count, k)) & 0xffff;
+  const { hfCoding: _coding, ...plain } = meta;
+  return { meta: plain, heightField: new Uint8Array(out.buffer) };
+}
+
+function loadSandBase(resolve: AssetResolver): Promise<SandBase> {
+  if (!sandBasePromise) {
+    sandBasePromise = (async () => {
+      const [info, planes] = await Promise.all([
+        gunzipJson<TerrainSandBase>(resolve("sand-base.json.gz")),
+        gunzip(resolve("sand-base.bin.gz"))
+      ]);
+      return { info, field: decodeSandBase(info, planes) };
+    })();
+    sandBasePromise.catch(() => {
+      sandBasePromise = null;
+    });
+  }
+  return sandBasePromise;
+}
+
 const joined = new WeakMap<LayoutAssets, LayoutAssets>();
 
 /**
@@ -247,7 +312,8 @@ export async function loadLayoutAssets(layout: number, resolve: AssetResolver = 
     if (heightField.byteLength !== meta.hfN * meta.hfN * 2) {
       throw new Error(`layout ${layout} height field is ${heightField.byteLength} bytes, expected ${meta.hfN}x${meta.hfN} u16`);
     }
-    return { meta, instances, heightField };
+    if (!meta.hfCoding) return { meta, instances, heightField };
+    return { instances, ...decodeHeightField(meta, heightField, await loadSandBase(resolve)) };
   })();
 
   layoutCache.set(key, pending);
@@ -263,5 +329,6 @@ export async function loadLayoutAssets(layout: number, resolve: AssetResolver = 
 /** Test seam: drop everything held between cases. */
 export function clearTerrainAssetCache(): void {
   sharedPromise = null;
+  sandBasePromise = null;
   layoutCache.clear();
 }

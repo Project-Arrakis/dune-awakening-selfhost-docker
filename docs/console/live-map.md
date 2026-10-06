@@ -497,7 +497,7 @@ when the terrain at its spot is both nearer the eye and more than 30 m above it
 
 ### Assets
 
-`terrain/assets/` is 49 gzipped files totalling 16.0 MB, inflated in the browser:
+`terrain/assets/` is 51 gzipped files totalling 11.5 MB, inflated in the browser:
 
 | part | size |
 |---|---|
@@ -508,12 +508,23 @@ when the terrain at its spot is both nearer the eye and more than 30 m above it
 | shared: rock outside the map (221 pieces) | 5 KB |
 | shared: sand outside the map | 50 KB |
 | shared: placements every layout has (6,394) | 0.13 MB |
-| each of 12 layouts | about 0.65 MB |
+| shared: the sand every layout has | 0.35 MB |
+| each of 12 layouts | about 0.24 MB |
 
 A Coriolis reset changes only the layout, so the browser re-fetches about
-0.65 MB and the 8.2 MB shared half stays cached.
+0.24 MB and the 8.6 MB shared half stays cached.
 
-Two encodings shrink the files, and the loader undoes both:
+Three encodings shrink the files, and the loader undoes them:
+
+- **Sand heights** are stored against a shared base (`hfCoding` in a layout's
+  JSON). About four fifths of the sand is the same in every layout, so
+  `sand-base.bin.gz` holds the per-texel median of the twelve fields, each texel
+  as its step from what its left, upper and upper-left neighbours predict, and a
+  layout holds only each texel's step from that base. Heights are whole steps of
+  2 uu from one shared floor, steps are zigzagged, and high and low bytes are
+  stored apart. The twelve fields ship in 1.5 MB instead of 6.1 MB, and no
+  height moves by more than 1 uu. `decodeSandBase` and `decodeHeightField`
+  restore a plain field; nothing after the loader sees the coding.
 
 - **Mesh indices** are stored as the step from the index before, zigzagged so
   small steps either way stay small (`idxCoding` in `meshes.json.gz`). The
@@ -601,6 +612,7 @@ Feature-level changes to the Live Map, newest first.
 
 | Release | Date | Change |
 |---|---|---|
+| Unreleased | 2026-10 | Sand height fields are stored as one shared base plus each layout's differences: terrain assets drop from 16.0 MB to 11.5 MB, and a Coriolis reset re-fetches about 0.24 MB instead of 0.65 MB. |
 | Unreleased | 2026-10 | **Tilt and rotation** of the Deep Desert terrain, with perspective: Tilt slider, Top-Down reset, right-drag and a compass. Markers are projected through the camera and hidden where rock covers them; the sector grid is drawn on the terrain, over rock and cliffs. Tilted, the view reaches 375,000 uu past the map's edge: the shield walls outside the square, hand-placed pieces included and floating upper tiers closed down to the ground, on the game's own sand for the first 90,000 uu and a level plain beyond. **Elevation Lines** layer. Rock is painted with the game's own textures (its normal map baked into the two big wall shapes), lit with its authored normals and a per-instance tone, sealed at load, lit as a solid and textured from the side when tilted; the camera's eye stays above the rock at high zoom. The map frame fits the window's height. Terrain instances are culled per frame and the depth pass stops before shading; assets are 1.9 MB smaller (delta-coded mesh indices, shared placements shipped once). |
 | v1.4.35 | 2026-09-20 | The Coriolis block is read from the game log by pattern instead of from a tail, so the layout no longer goes missing on long-running servers. |
 | v1.4.23 | 2026-09-17 | Spice and Flour Sand layers fixed after the game changed `resourcefield_state`. |
