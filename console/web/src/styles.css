@@ -192,6 +192,19 @@ h1, h2, h3, h4, h5 { color: var(--title); line-height: 1.2; letter-spacing: 0; }
 }
 .confirm-modal.danger { border-color: var(--danger-strong); }
 .confirm-modal.confirm-modal-wide { width: min(560px, calc(100vw - 32px)); }
+/* Download Base: one row per format, its button on the right (below on phones). */
+.download-base-options { display: grid; gap: 10px; }
+.download-base-option { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px; border: 1px solid var(--border-strong); border-radius: 8px; }
+/* .confirm-modal prefix: .confirm-modal p has the same specificity and comes later. */
+.confirm-modal .download-base-option p { margin: 4px 0 0; color: var(--muted-warm); line-height: 1.4; }
+/* Wider than the 560px wide modal, so the descriptions beside the buttons wrap to fewer lines. */
+.confirm-modal.download-base-modal { width: min(640px, calc(100vw - 32px)); }
+/* One width for both buttons, so the two descriptions line up. */
+.download-base-option > button { flex: none; width: 224px; min-height: 40px; white-space: nowrap; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+@media (max-width: 520px) {
+  .download-base-option { flex-direction: column; align-items: stretch; }
+  .download-base-option > button { width: auto; }
+}
 .confirm-modal-title {
   display: flex;
   align-items: center;
@@ -200,13 +213,14 @@ h1, h2, h3, h4, h5 { color: var(--title); line-height: 1.2; letter-spacing: 0; }
 }
 .confirm-modal-title h3 { margin: 0; font-size: 18px; }
 .confirm-modal p { margin: 0; color: #e9dcc8; line-height: 1.45; overflow-wrap: anywhere; }
-.confirm-modal-details { display: grid; gap: 8px; margin: 0; }
-.confirm-modal-details div { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 10px; align-items: center; }
-/* min-width/overflow-wrap: the label column is a fixed 92px so labels line up
-   across rows (each row is its own grid, so the track cannot size to content).
-   Without these a long label -- a base piece name like
-   BloodWaterExtractionAdvanced -- overflows its track and collides with the
-   value beside it instead of wrapping inside it. */
+/* One grid for the whole list (rows are display: contents), so the label
+   column sizes to the widest label -- short labels no longer wrap beside an
+   empty value column -- while every row still shares the same track. The
+   track is capped at 60% of the dialog; min-width/overflow-wrap below keep a
+   long unbreakable label (a base piece name like BloodWaterExtractionAdvanced)
+   wrapping inside it instead of colliding with the value. */
+.confirm-modal-details { display: grid; grid-template-columns: fit-content(60%) minmax(0, 1fr); column-gap: 14px; row-gap: 8px; align-items: center; margin: 0; }
+.confirm-modal-details div { display: contents; }
 .confirm-modal-details dt { color: var(--muted); font-size: 12px; text-transform: uppercase; min-width: 0; overflow-wrap: anywhere; }
 .confirm-modal-details dd { margin: 0; overflow-wrap: anywhere; font-weight: 800; }
 .confirm-modal-details dd.accent { color: var(--title); }
@@ -421,6 +435,28 @@ main { padding: 22px; min-width: 0; }
   background: rgba(18, 20, 22, .78);
   border-color: rgba(255, 208, 138, .24);
   backdrop-filter: blur(12px);
+}
+.panel.home-highlights { display: grid; grid-template-columns: minmax(0, .85fr) minmax(0, 1.65fr); min-width: 0; padding: 0; overflow: hidden; background: rgba(18, 20, 22, .88); border-color: rgba(255, 208, 138, .24); }
+.home-highlight-content { min-width: 0; padding: 18px; }
+.home-highlights-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
+.home-highlights-heading h2 { display: flex; align-items: center; gap: 8px; margin: 0; }
+.home-highlights-heading svg { color: #d7ad72; }
+.home-highlight-tag { color: #e2ba7e; background: rgba(191, 134, 59, .12); border: 1px solid rgba(191, 134, 59, .3); border-radius: 4px; padding: 3px 8px; font-size: 11px; }
+.home-highlight-art { position: relative; min-width: 0; overflow: hidden; background: #111315; }
+.home-highlight-art img { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: cover; object-position: center; }
+.home-highlight-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin: 0 0 12px; color: #f0ca91; font-size: 15px; }
+.home-highlight-title span { color: #b9ad9a; font-size: 11px; font-weight: 400; }
+.home-highlight-steps { display: grid; gap: 12px; padding: 0; margin: 0; list-style: none; }
+.home-highlight-steps li { display: flex; align-items: flex-start; gap: 11px; min-width: 0; }
+.home-highlight-step-number { display: grid; place-items: center; flex: 0 0 25px; height: 25px; border: 1px solid rgba(215, 173, 114, .35); border-radius: 50%; color: #e2ba7e; background: rgba(191, 134, 59, .1); font-size: 12px; }
+.home-highlight-steps strong { color: #e4c399; font-size: 13px; }
+.home-highlight-steps p { margin: 5px 0 0; color: #b9ad9a; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+@media (max-width: 900px) {
+  .panel.home-highlights { grid-column: 1 / -1; grid-template-columns: minmax(0, 1fr); }
+  .home-highlight-art { aspect-ratio: 1672 / 941; }
+}
+@media (min-width: 1600px) {
+  .panel.home-highlights { grid-template-columns: minmax(0, min(34%, 420px)) minmax(0, 1fr); }
 }
 .topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 18px; border-bottom: 1px solid #2f2a25; padding-bottom: 16px; }
 .topbar div { display: grid; gap: 4px; }
@@ -638,6 +674,12 @@ main { padding: 22px; min-width: 0; }
 .action-panel { margin-top: 16px; border-top: 1px solid #302b25; padding-top: 14px; }
 .action-sections { display: grid; gap: 14px; }
 .settings-section-stack { display: grid; gap: 18px; }
+.settings-server-startup-body { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 14px 20px; }
+.settings-server-startup-copy { display: grid; gap: 5px; min-width: 0; }
+.settings-server-startup-copy > strong { color: var(--title); }
+.settings-server-startup-control .switch-state { min-width: 72px; }
+.settings-server-startup-result { grid-column: 1 / -1; justify-self: start; width: fit-content; max-width: none; flex-wrap: nowrap; }
+.settings-server-startup-result .inline-task-message { flex: 0 1 auto; white-space: nowrap; }
 .action-section { background: #14171a; border: 1px solid #302b25; border-radius: 8px; padding: 14px; display: grid; gap: 10px; }
 .maps-panel > .home-task-result + .action-section,
 .maps-panel > .dirty-note + .action-section,
@@ -814,6 +856,37 @@ main { padding: 22px; min-width: 0; }
 .server-control-panel { display: grid; gap: 8px; }
 .server-control-panel .action-row { margin: 6px 0; }
 .server-control-panel .action-section { gap: 8px; padding: 12px; }
+.home-last-restart { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin: 14px 0 4px; padding-top: 12px; border-top: 1px solid var(--border); }
+.home-last-restart span { color: var(--muted); }
+.home-last-restart strong { color: var(--title); text-align: right; }
+.restart-history-panel { margin: 6px 0; border: 1px solid var(--border); border-radius: 8px; background: color-mix(in srgb, var(--panel) 82%, transparent); overflow: hidden; }
+.restart-history-panel > summary { cursor: pointer; list-style: none; padding: 13px 14px; }
+.restart-history-panel > summary::-webkit-details-marker { display: none; }
+.restart-history-panel > summary > span { display: flex; justify-content: space-between; align-items: baseline; gap: 14px; }
+.restart-history-panel > summary small { color: var(--muted); font-weight: 500; text-align: right; }
+.restart-history-panel[open] > summary { border-bottom: 1px solid var(--border); }
+.restart-history-content { display: grid; gap: 12px; padding: 14px; }
+.restart-history-toolbar { display: flex; align-items: end; justify-content: space-between; gap: 12px; }
+.restart-history-toolbar label { display: grid; gap: 5px; min-width: min(240px, 100%); }
+.restart-history-message { margin: 0; padding: 12px 14px; border: 1px solid var(--danger); border-radius: 8px; background: rgba(120, 38, 38, .12); color: var(--danger-text); }
+.restart-history-empty { min-height: 82px; display: grid; place-content: center; gap: 5px; padding: 18px; border: 1px dashed var(--border-strong); border-radius: 8px; background: rgba(20, 23, 26, .7); text-align: center; }
+.restart-history-empty strong { color: var(--text-strong); }
+.restart-history-empty span { color: var(--muted); }
+.restart-history-table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; background: #14171a; }
+.restart-history-table { width: 100%; min-width: 900px; border-collapse: separate; border-spacing: 0; }
+.restart-history-table th, .restart-history-table td { padding: 9px 10px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: middle; }
+.restart-history-table th { background: rgba(255, 208, 138, .045); color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .055em; }
+.restart-history-table tbody tr:last-child td { border-bottom: 0; }
+.restart-history-table tbody tr:hover td { background: rgba(255, 208, 138, .025); }
+.restart-history-completed { color: var(--text-subtle); font-variant-numeric: tabular-nums; }
+.restart-history-target strong, .restart-history-target small { display: block; }
+.restart-history-target strong { color: var(--text-strong); }
+.restart-history-target small { margin-top: 2px; color: var(--muted); font-size: 11px; }
+.restart-history-reason { max-width: 300px; white-space: normal; line-height: 1.35; }
+.restart-history-scope { display: inline-flex; min-width: 76px; justify-content: center; padding: 4px 8px; border: 1px solid var(--border-strong); border-radius: 999px; color: var(--text-subtle); font-size: 11px; font-weight: 700; }
+.restart-history-scope.scope-battlegroup { border-color: rgba(198, 139, 74, .65); color: #ffd9a8; }
+.restart-history-scope.scope-map { border-color: rgba(85, 139, 172, .65); color: #b9ddf3; }
+.restart-history-scope.scope-service { border-color: rgba(122, 177, 97, .65); color: #d8f0c8; }
 .restart-service-line { align-items: flex-end; margin: 12px 0; }
 .restart-service-line label { align-self: end; }
 .title-action-line { align-items: flex-end; }
@@ -1428,6 +1501,41 @@ main { padding: 22px; min-width: 0; }
 .setup-form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; margin-top: 14px; }
 .check-grid { margin-top: 14px; display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
 .requirements { color: #d9c8aa; }
+/* This stylesheet sets no global anchor colour, so an inline link would render
+   in the browser's default blue -- unreadable on the dark panel. */
+.wizard .panel a { color: var(--accent-strong); text-decoration: underline; text-underline-offset: 2px; }
+.wizard .panel a:hover { color: var(--title); }
+.setup-path-choice { margin-top: 18px; }
+.setup-path-choice h4 { margin: 0 0 10px; }
+.setup-path-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+/* A choice, not a submit: these read as cards and the selected one is the only
+   thing the stepper acts on, so the border carries the state rather than a
+   filled background that would compete with the panel's own. */
+/* justify-content is reset because the base `button` rule centres it for a
+   flex row; left as centre, this grid centres its auto track and the shorter
+   card's text sits indented from its own padding edge. */
+.setup-path-option { display: grid; justify-content: start; gap: 6px; text-align: left; padding: 14px; height: auto; border: 1px solid #39332c; border-radius: 8px; background: rgba(0,0,0,.12); }
+.setup-path-option strong { color: #f1dfc1; }
+.setup-path-option span { color: #cbbb9c; font-size: 13px; line-height: 1.5; }
+.setup-path-option.selected { border-color: var(--accent); }
+/* The running row borrows badge-info's blue, already this palette's "in
+   progress" hue; another warm step would disappear into the panel. */
+.restore-checklist { margin-top: 16px; padding: 16px 18px; border: 1px solid var(--border); border-radius: 8px; background: rgba(0,0,0,.12); }
+.restore-checklist h3 { margin: 0 0 12px; font-size: 16px; color: var(--text-strong); }
+.restore-checklist ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+/* The icon column is a fixed 16px rather than auto: a rotating square's
+   bounding box is wider than the square, so an auto column let the spinner
+   drag its own row's icon out of line with the other three. */
+.restore-step { display: grid; grid-template-columns: 16px 1fr auto; align-items: center; gap: 10px; font-size: 14px; }
+.restore-step-icon { justify-self: center; }
+.restore-step-detail { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+.restore-step-done { color: var(--success-text); }
+.restore-step-active { color: #b6d5ff; }
+.restore-step-failed { color: var(--danger-text); }
+.restore-step-pending { color: var(--text-faint); }
+.restore-step-spin { animation: spin 1s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .restore-step-spin { animation: none; } }
+.restore-note { margin: 14px 0 0; padding: 10px 12px; border: 1px solid var(--warning); border-radius: 6px; background: rgba(169,121,50,.14); color: var(--muted-warm); font-size: 13px; line-height: 1.5; }
 .mini-output, .log-box, .command-preview {
   display: block;
   width: 100%;
@@ -1478,6 +1586,10 @@ main { padding: 22px; min-width: 0; }
 .task-warning-count svg { flex: 0 0 auto; }
 .task-technical-details { display: block; }
 body.debug .technical-details { display: block; }
+/* .technical-details is a debug-only disclosure, hidden above unless
+   body.debug is set. A backup result card that tells the operator to read
+   what is inside it (the restore preview's replace list) opts out. */
+.technical-details.backup-result-details { display: block; }
 .update-log-details { margin-top: 6px; }
 .technical-details summary, .task-technical-details summary {
   cursor: pointer;
@@ -1519,6 +1631,13 @@ body.debug .technical-details { display: block; }
 .setup-finish-celebration span:nth-child(4) { background: #d9a7e2; animation-delay: .36s; }
 .setup-finish-celebration span:nth-child(5) { background: #fff1d4; animation-delay: .48s; }
 .danger-note, .error, .error-banner { color: var(--danger-text); overflow-wrap: anywhere; }
+/* `.action-section p { color: #ad9f89; }` (class+element, 0-1-1) otherwise beats
+   the plain-class rule above (0-1-0) regardless of source order, so every
+   danger note inside an .action-section rendered in ordinary body colour --
+   including the system-backup passphrase warning, which is the most important
+   sentence on the Backups page. Same specificity trap already documented for
+   the live-map popover further down this file. */
+.action-section p.danger-note { color: var(--danger-text); }
 .success-note { color: #9be6bd; }
 .error-banner { background: #351b1b; border: 1px solid var(--danger-strong); padding: 12px; border-radius: 6px; margin-bottom: 14px; }
 .drawer { border: 1px solid #302b25; border-radius: 8px; padding: 12px; color: #d9c8aa; background: rgba(13, 15, 17, .48); }
@@ -1530,6 +1649,7 @@ body.debug .technical-details { display: block; }
   min-width: 150px;
   padding-right: 38px;
 }
+.players-inactive-filter select { width: 160px; min-width: 160px; }
 .players-search-row, .guilds-search-row, .bases-search-row { flex-wrap: nowrap; }
 .players-search-row input, .guilds-search-row input, .bases-search-row input { width: auto; min-width: 0; flex: 1 1 auto; }
 .players-search-row button, .guilds-search-row button, .bases-search-row button { width: auto; flex: 0 0 auto; }
@@ -1773,7 +1893,28 @@ body.debug .technical-details { display: block; }
 .playerAdmin_iconRailButton.active[data-category="all_categories"] img { transform: rotate(-45deg); }
 .playerAdmin_iconRailButton.active img { filter: drop-shadow(0 0 5px rgba(154, 88, 162, .58)); }
 .playerAdmin_iconRailLabel { justify-self: start; min-height: 36px; display: inline-flex; align-items: center; justify-content: center; padding: 7px 14px; border: 1px solid rgba(255, 208, 138, .38); border-radius: 6px; background: #14171a; color: #ffd08a; font-size: 16px; font-weight: 700; white-space: nowrap; }
-.playerAdmin_spawnVehicleRow select { max-width: 190px; }
+.playerAdmin_spawnVehicleRow select { max-width: 100%; min-width: 0; }
+.playerAdmin_spawnVehicleRow select:first-of-type { flex: 0 1 210px; width: 210px; }
+.playerAdmin_spawnVehicleRow select:last-of-type { flex: 0 1 280px; width: 280px; }
+.experimental-features-section { margin: 20px 0; }
+.experimental-features-section > h3 { margin: 0 0 14px; color: var(--title); }
+.experimental-features-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 360px)); gap: 16px; align-items: start; }
+.experimental-feature-card { min-width: 0; border: 2px solid var(--border-strong); border-radius: 12px; background: var(--panel-soft); color: var(--muted-warm); transition: border-color .2s; }
+.experimental-feature-card.enabled { border-color: var(--success); }
+.experimental-feature-card.disabled { border-color: var(--danger); }
+.experimental-feature-image { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 10px 10px 0 0; background: var(--panel-muted); }
+.experimental-feature-content { display: grid; gap: 12px; padding: 16px; }
+.experimental-feature-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.experimental-feature-heading h4 { margin: 0; color: var(--title); font-size: 18px; }
+.experimental-feature-status { color: var(--muted-warm); font-size: 13px; font-weight: 600; }
+.experimental-feature-card.enabled .experimental-feature-status { color: var(--success-text); }
+.experimental-feature-card.disabled .experimental-feature-status { color: var(--danger-text); }
+.experimental-feature-button { width: 100%; justify-content: center; gap: 8px; }
+.experimental-feature-content .attention-text { margin: 0; }
+.experimental-feature-content .inline-task-result { min-width: 0; flex-wrap: wrap; }
+@media (max-width: 600px) {
+  .playerAdmin_spawnVehicleRow select:first-of-type, .playerAdmin_spawnVehicleRow select:last-of-type { flex: 1 1 100%; width: 100%; }
+}
 .specialization-tab { gap: 14px; }
 .specialization-header { display: grid; grid-template-columns: minmax(180px, 1fr) auto; align-items: center; gap: 10px 16px; }
 .specialization-header h4 { margin: 0; }
@@ -1839,6 +1980,45 @@ body.debug .technical-details { display: block; }
 .blueprints-panel .home-task-result { margin: 0; }
 .blueprint-import-row { display: flex; align-items: end; gap: 10px; flex-wrap: wrap; }
 .blueprint-import-row > button { width: auto; min-height: 40px; }
+/* Base Backups view (features/bases/BaseBackupsView.tsx) reuses the blueprint import row. */
+.base-backups-view > .result-panel { margin: 0 0 16px; }
+.base-backups-view > .base-backup-target { margin: 12px 0; }
+.base-backup-player-picker .bases-permissions-candidates { margin-top: 8px; }
+/* Line the receiver search up with the file row above: same field sizing and gap. */
+.base-backup-player-picker .bases-permissions-search-row { gap: 10px; }
+/* Every field in this view gets the same width, so the rows line up at any
+   width: 560px, or what is left after the widest button group (~320px). */
+.base-backups-view .base-backup-import-row > .blueprint-file-field,
+/* .base-backups-view prefix: .action-row > input:not([type=checkbox]) is the same
+   specificity without it, and comes later. */
+.base-backups-view .base-backup-player-picker .bases-permissions-search-row > input,
+.base-backups-view .base-backup-edit-field { flex: 0 0 auto; width: min(560px, calc(100% - 320px)); min-width: min(100%, 260px); max-width: none; }
+.base-backup-player-picker .bases-permissions-search-row > button { width: auto; min-height: 40px; }
+/* The shared blueprint file control is 40px; inputs and buttons here are 43px. */
+.base-backups-view .blueprint-file-control { min-height: 43px; }
+/* Edit owner/name/map panel, in an expanded row under the edited backup. */
+/* Undo the global td nowrap/ellipsis/360px cap inside the expanded row. */
+.base-backups-table td.expanded-row-cell { max-width: none; white-space: normal; overflow: visible; }
+/* On a phone the table is wider than its scroll box and the expanded cell spans
+   the whole table, so size the panel to the visible box (cqw of the wrap), not
+   the table, and keep it at the box's left edge. */
+.base-backups-table-wrap { container-type: inline-size; }
+.base-backups-table td.expanded-row-cell > .base-backup-edit { position: sticky; left: 12px; width: calc(100cqw - 24px); box-sizing: border-box; }
+.base-backup-edit { display: grid; gap: 10px; }
+.base-backup-edit .base-backup-edit-field { width: min(560px, 100%); }
+.base-backup-edit-field { display: grid; gap: 5px; color: var(--muted-warm); }
+.base-backup-edit-problem { margin: 0; color: var(--danger-text); }
+.base-backup-edit-map { display: grid; gap: 5px; justify-items: start; color: var(--muted-warm); }
+.base-backup-edit > .action-help-note { margin: 0; }
+.base-backup-edit-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.base-backup-edit-actions > button { width: auto; min-height: 40px; }
+.base-backup-target-chosen { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0; }
+.base-backup-target-chosen > button { width: auto; }
+/* A timeout result must stay readable: cancel .home-task-result's 10 s fade
+   (0-3-0 beats its 0-2-0), show its details, and keep Dismiss compact. */
+.base-backups-view .home-task-result.result-persistent { animation: none; opacity: 1; transform: none; }
+.technical-details.base-backup-result-details { display: block; }
+.base-backups-view .result-panel > button { justify-self: start; width: auto; }
 .blueprint-file-field { display: grid; gap: 5px; flex: 1 1 360px; max-width: 560px; min-width: min(100%, 260px); color: var(--muted-warm); font-size: 15px; line-height: 1.35; cursor: pointer; }
 .blueprint-file-field > input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .blueprint-file-control { min-height: 40px; display: flex; align-items: center; gap: 9px; min-width: 0; padding: 8px 11px; border: 1px solid var(--border-strong); border-radius: 6px; background: #17191b; color: #e8dcc4; }
@@ -2366,6 +2546,31 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 
 /* Vehicles page */
 .vehicles-search-row { margin: 12px 0; }
+/* Label-width segments that wrap on a narrow panel. Each segment has a top and
+   left divider and is pulled 1px up and left, so the container's overflow:
+   hidden clips the outer ones. Extra classes because .segmented-control is
+   declared later at equal specificity. */
+.segmented-control.vehicles-status-segments {
+  display: inline-flex;
+  flex-wrap: wrap;
+  height: auto;
+  max-width: 100%;
+  margin: 10px 0 8px;
+}
+.segmented-control.vehicles-status-segments .segmented-control-segment {
+  flex: 1 0 auto;
+  margin: -1px 0 0 -1px;
+  border-top: 1px solid var(--border);
+  border-left: 1px solid var(--border);
+}
+/* aria-disabled, not disabled, so it stays focusable; styled to match
+   button:disabled. */
+.vehicles-table .icon-toggle-button[aria-disabled="true"],
+.vehicles-table .icon-toggle-button[aria-disabled="true"]:hover {
+  opacity: .45;
+  cursor: not-allowed;
+  background: transparent;
+}
 /* Grow to fit the rows on the page instead of the shared height cap, while
    keeping the inherited horizontal `overflow: auto` so a wide table scrolls
    inside its box at narrow widths rather than breaking out of the panel. */
@@ -2603,6 +2808,7 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .bot-item-picker-row em { font-style: normal; font-size: 11px; color: var(--muted); }
 .bot-item-picker-row button { width: auto; min-width: 64px; }
 @media (max-width: 720px) {
+  .backup-import-actions > button { flex: 1 1 160px; min-height: 44px; }
   .updates-page-title { align-items: center; flex-direction: row; }
   .updates-page-title .qa-login-actions { width: auto; }
   .qa-build-row { align-items: flex-start; flex-direction: column; }
@@ -2659,6 +2865,17 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .market-bot-commodity-grid .stack-hint { font-size: 11px; color: #9a8d74; font-weight: 400; }
 .market-bot-toggle { min-height: 38px; display: flex !important; align-items: center; align-self: end; gap: 8px; padding: 0 11px; border: 1px solid #40382e; border-radius: 6px; background: #171a1f; color: #dfceb0 !important; font-size: 13px !important; cursor: pointer; }
 .market-bot-toggle input { width: auto; }
+.market-bot-backups-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+/* The title shrink-wraps beside the toggle here, so drop the section divider
+   (the block's own border frames it) and open the info box rightward from the
+   icon instead of leftward past the modal edge. Above 760px only: below it
+   the shared bottom-sheet rule positions every info box. */
+.market-bot-backups-row .market-bot-section-title { border-bottom: 0; padding-bottom: 0; }
+@media (min-width: 761px) {
+  .market-bot-backups-row .market-bot-section-title .memory-info-box { left: 0; right: auto; }
+}
+.market-bot-backups-off { border-color: rgba(214, 120, 70, .55); background: rgba(120, 52, 24, .22); }
+.market-bot-backups-warning { margin: 0; color: #f0b58c; font-size: 13px; }
 .market-bot-run-summary { margin: 0; padding: 0 2px; font-size: 12px; }
 .market-bot-actions { justify-content: flex-start; }
 .market-bot-actions button { width: auto; min-width: 0; }
@@ -2815,13 +3032,45 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
   --live-map-sidebar-width: 320px;
   display: grid;
   grid-template-columns: var(--live-map-sidebar-width) minmax(0, 1fr);
-  width: min(100%, calc(var(--live-map-sidebar-width) + 16px + 82vh));
-  margin-inline: auto;
+  width: 100%;
   gap: 16px;
   align-items: start;
 }
 .live-map-sidebar { display: grid; gap: 12px; }
 .live-map-main { min-width: 0; display: grid; gap: 10px; }
+.live-map-stage { position: relative; min-width: 0; }
+.live-map-compass {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 6;
+  width: 64px;
+  height: 64px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  cursor: pointer;
+}
+.live-map-compass svg { display: block; width: 100%; height: 100%; }
+.live-map-compass .dial { fill: rgba(16, 19, 22, .82); stroke: var(--border-strong); stroke-width: 1.5; }
+.live-map-compass:hover .dial, .live-map-compass:focus-visible .dial { stroke: var(--accent); }
+.live-map-compass .needle-north { fill: var(--accent-strong); }
+.live-map-compass .needle-south { fill: var(--muted); opacity: .55; }
+.live-map-compass text {
+  fill: var(--muted);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 9px;
+  font-weight: 600;
+  text-anchor: middle;
+  dominant-baseline: central;
+}
+.live-map-compass text.north { fill: var(--text-strong); font-size: 11px; }
+.live-map-search-section { display: grid; gap: 7px; }
+.live-map-search-control { display: flex; align-items: stretch; gap: 7px; }
+.live-map-search-control input { min-width: 0; }
+.live-map-search-control button { width: auto; flex: 0 0 auto; }
+.live-map-search-section > .muted { font-size: 11px; line-height: 1.4; }
 .live-map-map-buttons { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
 .live-map-map-buttons button { width: 100%; white-space: normal; min-height: 40px; }
 .live-map-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
@@ -2973,7 +3222,28 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
   flex: 0 0 24px;
 }
 .live-map-legend-dot-spacer { flex: 0 0 auto; width: 28px; height: 24px; }
-.live-map-sector-grid-layer { border-bottom: 1px solid rgba(198, 139, 74, .2); margin-bottom: 4px; padding-bottom: 8px; }
+/* The terrain overlays are their own group above the marker legend; the divider
+   sits under the whole group. */
+.live-map-overlay-group {
+  display: grid;
+  gap: 4px;
+  border-bottom: 1px solid rgba(198, 139, 74, .2);
+  margin-bottom: 4px;
+  padding-bottom: 8px;
+}
+.live-map-elevation-swatch {
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  border: 1px solid rgba(198, 139, 74, .75);
+  border-radius: 4px;
+  /* stacked contours, to read as elevation rather than as a grid */
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0 4px,
+    rgba(198, 139, 74, .75) 4px 5px);
+  flex: 0 0 24px;
+}
 .live-map-sector-grid-swatch {
   width: 24px;
   min-width: 24px;
@@ -2987,19 +3257,17 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 }
 .live-map-frame {
   position: relative;
-  /* Both maps are square (4096x4096) -- keeping the box itself square
-     (rather than width:100%; height:82vh independently) is what makes
-     "contain" fit actually fill it with no blank top/bottom margin.
-     width:min(100%, 82vh) picks whichever of the column's width or the
-     82vh height budget is tighter, and aspect-ratio derives the other
-     dimension from that, so it still grows with available space (the
-     original ask) without reintroducing letterboxing (found live on
-     dune2 after the 920px cap was dropped: the frame got taller than
-     wide, so the square map no longer reached the frame's edges). */
-  width: min(100%, 82vh);
+  /* Both maps are square (4096x4096), so the box is square at the column's
+     full width -- never taller than wide, which left the map short of the
+     frame's edges -- but capped at the window's height less the toolbar
+     above it, so the whole map fits without scrolling the page. A wide window
+     then centres the flat map at fit; tilted, the extra width shows past the edge. */
+  width: 100%;
   aspect-ratio: 1 / 1;
   min-width: 560px;
   min-height: 560px;
+  max-height: calc(100vh - 110px);
+  max-height: calc(100dvh - 110px);
   overflow: hidden;
   overscroll-behavior: contain;
   touch-action: none;
@@ -3010,7 +3278,13 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 }
 .live-map-frame.dragging { cursor: grabbing; user-select: none; }
 .live-map-frame.dragging-player { cursor: grabbing; user-select: none; }
-.live-map-canvas { position: relative; background: #101316; }
+/* Centred when narrower than the frame (fit zoom in a wide window); no effect once wider. */
+.live-map-canvas { position: relative; margin-inline: auto; background: #101316; }
+/* A marker at the viewport's edge must not stretch the scroll area. `clip`, so
+   this never becomes a scroller. The layer, not the map, so markers still show
+   where the tilted view runs past a map narrower than the frame. */
+.live-map-canvas.is-3d .live-map-marker-layer { overflow: clip; }
+.live-map-toolbar input[type="range"].live-map-tilt-range { width: 110px; }
 .live-map-image { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; user-select: none; pointer-events: none; z-index: 0; }
 /* The terrain canvas covers the frame's viewport, not the scaled map: at
    maximum zoom the map is 16384px, beyond MAX_TEXTURE_SIZE on many GPUs. It is
@@ -3024,6 +3298,8 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
   display: block;
   pointer-events: none;
   will-change: transform;
+  /* Tilted, it can be wider than the map (see terrainViewport's fill). */
+  max-width: none;
 }
 .live-map-placeholder { position: absolute; inset: 0; display: grid; place-items: center; background: radial-gradient(circle at center, #251d14, #07090b 72%); color: #ffd08a; border: 1px dashed #514232; }
 /* Sits between the map and the markers. Drawn in map-pixel space via viewBox,
@@ -3033,8 +3309,10 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
    so the grid stays the same weight at every zoom rather than thickening as you
    zoom in. Kept hairline-thin and dark: it is a reference overlay, and terrain
    detail has to stay readable through it. */
-.live-map-sector-grid .lines line { stroke: rgba(16, 11, 4, .8); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.live-map-sector-grid .lines line { stroke: rgba(16, 11, 4, .8); stroke-width: 1; vector-effect: non-scaling-stroke; fill: none; }
 .live-map-sector-grid .lines line.edge { stroke: rgba(16, 11, 4, .95); stroke-width: 2; }
+/* Tilted, only the labels are here, in viewport pixels: the terrain draws the lines. */
+.live-map-sector-grid.is-3d { overflow: hidden; max-width: none; }
 /* font-size is set inline as viewBox units divided by zoom, so the label stays
    a constant size on screen. Sizing it in viewBox units alone would scale it
    with the map -- at maximum zoom a cell label would render ~368px tall. */
@@ -3084,6 +3362,7 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .live-map-marker.marker-player:hover { width: 48px; height: 48px; }
 .live-map-marker.marker-player.dragging { cursor: grabbing; z-index: 16; width: 42px; height: 42px; }
 .live-map-marker.marker-player.offline { filter: grayscale(1) brightness(.65); }
+.live-map-legend-dot.marker-player.offline { filter: grayscale(1) brightness(.65); }
 .live-map-marker.marker-player.teleport-preview { z-index: 15; width: 42px; height: 42px; box-shadow: 0 0 0 3px rgba(255, 208, 138, .28), 0 0 18px rgba(255, 208, 138, .42); }
 .live-map-marker.marker-base, .live-map-legend-dot.marker-base { background: url("/images/maps/Base.webp") center / contain no-repeat; border: none; border-radius: 0; box-shadow: none; }
 .live-map-marker.marker-base { width: 36px; height: 36px; z-index: 2; }
@@ -3383,6 +3662,9 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .live-map-marker-overlay.anchor-above { top: auto; bottom: calc(100% + 10px); }
 .live-map-marker-overlay-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 2px; }
 .live-map-marker-overlay-header strong { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; color: #fff1d4; }
+.live-map-player-status { flex: 0 0 auto; padding: 2px 7px; border: 1px solid currentColor; border-radius: 999px; font-size: 10px; font-weight: 800; line-height: 1.25; letter-spacing: .04em; text-transform: uppercase; white-space: nowrap; }
+.live-map-player-status.online { color: var(--success-text); background: rgba(61, 139, 98, .14); }
+.live-map-player-status.offline { color: var(--danger-text); background: rgba(167, 73, 73, .14); }
 .live-map-marker-overlay-close { width: 22px; height: 22px; flex: 0 0 auto; display: flex; align-items: center; justify-content: center; padding: 0; background: #252017; border: 1px solid #4d4032; border-radius: 6px; color: #ceb894; font-size: 14px; line-height: 1; cursor: pointer; }
 .live-map-marker-overlay-close:hover { color: #ffd08a; border-color: #6a5842; }
 .live-map-marker-overlay-subtitle { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: #ad9f89; margin: 0 0 8px; }
@@ -3666,6 +3948,130 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
    table header, itself not page-sticky at this width. */
 @media (max-width: 900px) {
   .bases-search-row { position: static; }
+}
+
+/* Player Summary embeds the same wide Bases table used by the full Bases
+   page. Horizontal scrolling is useful on that management page, but inside a
+   phone-width player summary it leaves almost every field and the row actions
+   off-screen. Only the embedded view becomes a labelled card; the full Bases
+   page keeps its dense, scrollable table. */
+@media (max-width: 760px) {
+  .player-bases-panel .table-wrap.bases-table-wrap {
+    overflow: visible;
+    border: 0;
+    border-radius: 0;
+  }
+  .player-bases-panel .bases-table,
+  .player-bases-panel .bases-table > tbody {
+    display: block;
+    width: 100%;
+    min-width: 0;
+  }
+  .player-bases-panel .bases-table > thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  .player-bases-panel .bases-table > tbody {
+    display: grid;
+    gap: 12px;
+  }
+  .player-bases-panel .bases-table > tbody > tr:not(.expanded-row):not(.expanded-row-sticky) {
+    position: relative;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    border: 1px solid rgba(198, 139, 74, .5);
+    border-radius: 10px;
+    background: #14171a;
+    box-shadow: 0 8px 22px rgba(0, 0, 0, .18);
+    overflow: hidden;
+  }
+  .player-bases-panel .bases-table > tbody > tr:not(.expanded-row):not(.expanded-row-sticky) > td[data-column],
+  .player-bases-panel .bases-table > tbody > tr:not(.expanded-row):not(.expanded-row-sticky) > td.bases-actions-column {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-content: start;
+    gap: 6px;
+    width: auto;
+    min-width: 0;
+    min-height: 62px;
+    padding: 10px 12px;
+    border-right: 1px solid rgba(58, 49, 39, .72);
+    border-bottom: 1px solid rgba(58, 49, 39, .72);
+    text-align: left;
+  }
+  .player-bases-panel .bases-table > tbody > tr:not(.expanded-row):not(.expanded-row-sticky) > td[data-column]::before,
+  .player-bases-panel .bases-table > tbody > tr:not(.expanded-row):not(.expanded-row-sticky) > td.bases-actions-column::before {
+    content: attr(data-label);
+    color: #c9ad83;
+    font-size: 11px;
+    font-weight: 800;
+    line-height: 1.2;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+  }
+  .player-bases-panel .bases-table > tbody > tr:not(.expanded-row):not(.expanded-row-sticky) > td[data-column="name"] {
+    order: -1;
+    grid-column: 1 / -1;
+    min-height: 0;
+    padding: 13px 52px 13px 14px;
+    border-right: 0;
+    background: rgba(198, 139, 74, .055);
+    color: var(--title);
+    font-weight: 700;
+  }
+  .player-bases-panel .bases-table > tbody > tr:not(.expanded-row):not(.expanded-row-sticky) > td[data-column="coordinates"],
+  .player-bases-panel .bases-table > tbody > tr:not(.expanded-row):not(.expanded-row-sticky) > td.bases-actions-column {
+    grid-column: 1 / -1;
+    border-right: 0;
+  }
+  .player-bases-panel .bases-table > tbody > tr:not(.expanded-row):not(.expanded-row-sticky) > td.bases-actions-column {
+    min-height: 0;
+    border-bottom: 0;
+  }
+  .player-bases-panel .bases-table td.bases-actions-column .icon-toggle-group {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+  .player-bases-panel .bases-table td.bases-expand-column {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 1;
+    width: 34px;
+    padding: 0;
+    border: 0;
+  }
+  .player-bases-panel .bases-table > tbody > tr.expanded-row-sticky,
+  .player-bases-panel .bases-table > tbody > tr.expanded-row {
+    position: static;
+    display: block;
+    width: 100%;
+  }
+  .player-bases-panel .bases-table > tbody > tr.expanded-row-sticky > td.expanded-row-cell,
+  .player-bases-panel .bases-table > tbody > tr.expanded-row > td.expanded-row-cell {
+    display: block;
+    width: 100%;
+    padding-inline: 10px;
+  }
+}
+
+@media (max-width: 430px) {
+  .player-bases-panel .bases-table > tbody > tr:not(.expanded-row):not(.expanded-row-sticky) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .player-bases-panel .bases-table > tbody > tr:not(.expanded-row):not(.expanded-row-sticky) > td[data-column],
+  .player-bases-panel .bases-table > tbody > tr:not(.expanded-row):not(.expanded-row-sticky) > td.bases-actions-column {
+    grid-column: 1;
+    border-right: 0;
+  }
 }
 
 .bases-expanded-tablist {
@@ -6282,6 +6688,12 @@ td .inline-action-result-wrap { flex: 1 0 100%; justify-content: flex-start; min
 .backup-result-copy { display: grid; gap: 6px; }
 .backup-result-copy h4, .backup-result-copy p { margin: 0; }
 .backup-result.result-ok, .backup-result.result-fail, .backup-result.result-danger { animation: backupResultFadeOut .4s ease 5s forwards; }
+/* The fade above suits a short confirmation nobody needs to re-read. A card
+   carrying output the operator is told to read -- the restore preview's own
+   message says "review what it would replace below" -- or any failure must
+   stay put instead of erasing itself after five seconds. Same 0-2-0
+   specificity as the rule above, so it has to stay below it to win. */
+.backup-result.result-persistent { animation: none; opacity: 1; transform: none; }
 .backup-result.result-attention { border-color: #c68b4a; color: #ffd08a; }
 .backup-result.result-attention .badge { border-color: #c68b4a; color: #ffd08a; }
 .backup-result.result-attention h4, .backup-result.result-attention p { color: #ffd08a; }
@@ -6301,10 +6713,25 @@ td .inline-action-result-wrap { flex: 1 0 100%; justify-content: flex-start; min
 .backup-auto-controls .checkbox-row { flex: 0 0 auto; min-height: 40px; align-items: center; }
 .backup-auto-controls .compact-select { flex: 0 1 210px; }
 .backup-auto-controls .inline-task-result { margin-left: 4px; }
-.backup-external-import { margin-top: 18px; }
+/* This panel's sections are direct children of .panel, so they get none of the
+   .action-sections grid gap -- each needs its own separation, including
+   Automatic Backups, which previously had none at all. */
+.backups-panel > .action-section { margin-top: 18px; }
+.backup-group-title { margin-top: 0; }
+/* margin intentionally omitted: .action-section p { margin: 0 } (0-1-1) always wins over this (0-1-0), and the parent grid's 10px gap already spaces this from what follows. */
+.backup-group-note { color: #ad9f89; }
+.backup-note-warning strong { color: var(--danger-text); }
+.backup-note-warning code {
+  color: #f1dfc1;
+  background: rgba(0, 0, 0, .25);
+  border: 1px solid #39332c;
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.backup-group-actions { justify-content: flex-end; gap: 14px; margin: 4px 0 8px; }
 .backup-import-controls { align-items: flex-end; }
 .backup-import-controls .wide-field { flex-basis: 300px; min-width: min(300px, 100%); }
-.backup-import-actions { display: flex; align-items: center; justify-content: flex-start; gap: 12px; flex: 0 0 100%; min-height: 42px; }
+.backup-import-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 14px; flex: 0 0 100%; min-height: 42px; margin: 6px 0 4px; }
 @keyframes backupResultFadeOut {
   to { opacity: 0; transform: translateY(-4px); }
 }
@@ -6319,16 +6746,23 @@ td .inline-action-result-wrap { flex: 1 0 100%; justify-content: flex-start; min
 .settings-category .settings-grid-roomy { padding: 14px; }
 .settings-selector-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin-bottom: 12px; }
 .settings-selector-row .compact-select { min-width: min(100%, 280px); }
-.spicefield-settings-heading { margin: 22px 0 12px; padding-top: 18px; border-top: 1px solid rgba(214, 185, 140, .18); }
+.spicefield-settings-section { display: grid; gap: 12px; margin-top: 22px; padding-top: 18px; border-top: 1px solid rgba(214, 185, 140, .18); }
+.spicefield-settings-heading { margin: 0; }
 .spicefield-settings-heading h3 { margin: 0 0 6px; color: var(--title); font-size: 14px; }
 .spicefield-settings-heading p { margin: 0; color: var(--muted); font-size: 12px; }
+.spicefield-settings-tools { width: 100%; }
 .spicefield-settings-scope { margin: 0 0 8px !important; color: var(--accent) !important; font-size: 12px; font-weight: 600; }
 .spicefield-settings-scope strong { font-weight: 700; color: var(--title); }
+.spicefield-settings-scope-hint { color: var(--muted); font-weight: 400; }
 /* Distinct from the plain .empty placeholder other grids use for "select a
    Target" -- this is a deliberate exclusion (Overmap has no spice fields),
    not an unfilled state, so it gets its own icon/border rather than reusing
    the generic empty look an operator could mistake for a bug. */
 .spicefield-overmap-notice { display: flex; align-items: center; gap: 8px; border: 1px solid rgba(214, 185, 140, .3); border-radius: 6px; padding: 10px 12px; background: var(--panel-muted); }
+/* Same warning-adjacent treatment as .spicefield-overmap-notice, but for the
+   cross-tab stale-draft case: Save is disabled and the operator needs to
+   understand why before Discard Changes' re-load makes sense to click. */
+.spicefield-settings-stale-notice { margin: 0; border: 1px solid rgba(214, 185, 140, .3); border-radius: 6px; padding: 10px 12px; background: var(--panel-muted); color: var(--muted-warm); font-size: 12px; }
 .spicefields-toolbar { align-items: end; }
 .spicefields-toolbar .wide-field { flex: 1 1 420px; }
 .spicefields-refresh-button { flex: 0 0 auto; margin-bottom: 0; min-height: 42px; }
@@ -6347,6 +6781,14 @@ td .inline-action-result-wrap { flex: 1 0 100%; justify-content: flex-start; min
 .settings-reset-button:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
 .settings-field strong { overflow-wrap: anywhere; }
 .settings-field small { color: #a99577; overflow-wrap: anywhere; }
+.settings-field .settings-value-recommendation-warning {
+  color: #ffd08a;
+  background: rgba(198, 139, 74, .09);
+  border-left: 3px solid #c68b4a;
+  border-radius: 4px;
+  padding: 7px 9px;
+  line-height: 1.4;
+}
 .settings-field-description, .settings-field .settings-field-description { display: flex; gap: 6px; align-items: flex-start; color: #e4d9c4; font-size: 12.5px; line-height: 1.45; min-width: 0; }
 .settings-field-description svg { flex-shrink: 0; margin-top: 1px; color: var(--accent); }
 .settings-field-description-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
@@ -6445,15 +6887,37 @@ td .inline-action-result-wrap { flex: 1 0 100%; justify-content: flex-start; min
 .choam-terminals-editor { display: grid; gap: 14px; }
 .choam-terminals-toolbar { display: flex; align-items: center; gap: 12px; }
 .choam-terminals-toolbar p { margin: 0; color: #bcae98; }
-.choam-terminals-table { min-width: 920px; }
+.choam-terminals-table { min-width: 1080px; }
 .choam-terminals-table th, .choam-terminals-table td { vertical-align: middle; }
-.choam-terminals-table th:first-child, .choam-terminals-table td:first-child { width: 34%; }
-.choam-terminals-table th:nth-child(2), .choam-terminals-table td:nth-child(2) { width: 24%; text-align: center; }
-.choam-terminals-table th:nth-child(3), .choam-terminals-table td:nth-child(3) { width: 25%; text-align: center; }
-.choam-terminals-table th:last-child, .choam-terminals-table td:last-child { width: 17%; text-align: center; }
+.choam-terminals-table th:first-child, .choam-terminals-table td:first-child { width: 28%; }
+.choam-terminals-table th:nth-child(2), .choam-terminals-table td:nth-child(2) { width: 18%; text-align: center; }
+.choam-terminals-table th:nth-child(3), .choam-terminals-table td:nth-child(3) { width: 14%; text-align: center; }
+.choam-terminals-table th:nth-child(4), .choam-terminals-table td:nth-child(4) { width: 18%; text-align: center; }
+.choam-terminals-table th:last-child, .choam-terminals-table td:last-child { width: 22%; text-align: center; }
 .choam-terminal-status .badge-pass { background: rgba(61, 139, 98, .12); }
 .choam-terminal-actions { justify-content: center; flex-wrap: nowrap; margin: 0; }
-.choam-terminal-actions button { width: 96px; min-width: 96px; white-space: nowrap; }
+.choam-terminal-actions button { min-width: 96px; white-space: nowrap; }
+.choam-terminal-actions .choam-position-toggle { width: 140px; min-width: 140px; justify-content: center; }
+.choam-position-editor-row td { background: var(--panel-soft); }
+.choam-position-editor { display: grid; gap: 12px; padding: 4px 2px; text-align: left; }
+.choam-position-editor-hint { margin: 0; color: var(--text-subtle); }
+.choam-position-editor-controls { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
+.choam-character-select { gap: 0; }
+.choam-character-select > span { display: block; padding-bottom: 16px; }
+.choam-character-select select:disabled { opacity: .55; color: var(--text-faint); cursor: not-allowed; }
+.choam-position-editor-message { margin: 0; color: var(--text-subtle); }
+.choam-position-editor-tiles { display: grid; grid-template-columns: repeat(4, minmax(90px, 1fr)); gap: 10px; }
+.choam-position-tile { display: grid; gap: 4px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel-muted); text-align: center; }
+.choam-position-tile span { color: var(--text-faint); font-size: 11px; text-transform: uppercase; letter-spacing: .03em; }
+.choam-position-tile strong { color: var(--text); font-size: 15px; }
+.choam-position-editor-distance { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--muted-warm); font-size: 13px; }
+.choam-position-editor-limit { color: var(--text-faint); }
+.choam-position-bar-track { height: 8px; overflow: hidden; border-radius: 999px; background: var(--panel-muted); border: 1px solid var(--border); }
+.choam-position-bar-fill { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width .2s ease; }
+.choam-position-bar-track.choam-position-bar-danger { border-color: var(--danger); }
+.choam-position-bar-track.choam-position-bar-danger .choam-position-bar-fill { background: var(--danger); }
+.choam-position-editor-warning { margin: 0; color: var(--danger-text); }
+.choam-position-editor-note { margin: 0; color: var(--text-faint); font-size: 12px; }
 
 @media (max-width: 760px) {
   .choam-terminals-toolbar { align-items: flex-start; flex-direction: column; }
@@ -6727,6 +7191,15 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
 }
 
 @media (max-width: 760px) {
+  .settings-server-startup-body { grid-template-columns: minmax(0, 1fr); }
+  .settings-server-startup-control { width: 100%; }
+  .settings-server-startup-result { grid-column: 1; width: 100%; max-width: 100%; flex-wrap: wrap; }
+  .settings-server-startup-result .inline-task-message { flex: 0 0 100%; white-space: normal; }
+  .restart-history-panel > summary > span { align-items: flex-start; flex-direction: column; gap: 4px; }
+  .restart-history-panel > summary small { text-align: left; }
+  .restart-history-content { padding: 12px; }
+  .restart-history-toolbar { align-items: stretch; flex-direction: column; }
+  .restart-history-toolbar label, .restart-history-toolbar button { width: 100%; }
   .deep-desert-layout-heading { align-items: flex-start; }
   .deep-desert-layout-controls { align-items: stretch; }
   .deep-desert-layout-options { width: 100%; grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -6909,7 +7382,8 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
   .sidebar-nav.mobile-open .sidebar-nav-heading { grid-column: 1 / -1; }
   .topbar .topbar-links { grid-template-columns: 1fr; }
   .community-button, .listing-claim-badge { grid-column: auto; }
-  .confirm-modal-details div { grid-template-columns: 1fr; gap: 3px; }
+  .confirm-modal-details { grid-template-columns: 1fr; row-gap: 3px; }
+  .confirm-modal-details div + div dt { margin-top: 5px; }
   /* Excludes the grouped (4-button/quaternary) layout below -- its own rule
      right after this one handles it. A bare .confirm-modal-actions selector
      here would win (same specificity, later in source) over
@@ -7598,3 +8072,131 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
 }
+
+.backup-import-progress { display: flex; align-items: center; gap: 10px; }
+.backup-import-progress > div { flex: 1; height: 6px; background: var(--panel-muted); border-radius: 3px; overflow: hidden; }
+.backup-import-progress-bar { height: 100%; background: var(--accent); transition: width .2s linear; }
+.backup-import-progress > span { color: var(--muted-warm); font-size: 12px; min-width: 36px; text-align: right; }
+
+.choam-capture-steps { display: grid; gap: 10px; padding: 11px 13px; background: var(--panel-muted); border: 1px solid var(--border); border-radius: 8px; }
+.choam-capture-step { display: flex; gap: 10px; align-items: flex-start; }
+.choam-capture-step-pending { opacity: .55; }
+.choam-capture-step-body { flex: 1; min-width: 0; display: grid; gap: 5px; }
+.choam-capture-step-label { margin: 0; font-size: 13px; color: var(--text); }
+.choam-capture-step-note { margin: 0; font-size: 12px; color: var(--text-faint); }
+.choam-capture-spinner { width: 15px; height: 15px; border-width: 2px; margin-top: 2px; }
+.choam-capture-dot { width: 13px; height: 13px; margin-top: 3px; border: 2px solid var(--border-strong); border-radius: 50%; flex: 0 0 auto; }
+.choam-capture-bar { display: block; height: 4px; background: var(--panel); border-radius: 2px; overflow: hidden; }
+.choam-capture-bar > span { display: block; height: 100%; background: var(--accent); transition: width .4s linear; }
+.choam-capture-stop { justify-self: start; }
+
+/* The editor lives in a full-width table cell, so without a cap the three
+   coordinate fields split the whole table width between them. */
+.choam-position-editor > * { max-width: 660px; }
+.choam-position-sections { display: flex; gap: 12px; align-items: stretch; flex-wrap: wrap; }
+.choam-position-section { flex: 1 1 280px; min-width: 0; margin: 0; border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; display: grid; gap: 9px; }
+.choam-position-section > legend { padding: 0 4px; font-size: 12px; color: var(--text-faint); }
+/* The global `label` rule sets colour and gap but no font-size, so these would
+   otherwise render at the browser default 16px -- larger than every sibling in
+   this editor (legend, note, badge and table cells are all 12px). */
+.choam-position-section label { font-size: 13px; }
+.choam-position-section input { width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.choam-position-section-facing { flex: 0 0 212px; justify-items: center; }
+.choam-heading-value { width: 104px; }
+.choam-heading-value input { text-align: center; }
+.choam-dial { width: 152px; height: 152px; flex: 0 0 auto; touch-action: none; cursor: grab; border-radius: 50%; }
+.choam-dial:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.choam-dial:active { cursor: grabbing; }
+.choam-dial-face { fill: var(--panel-muted); stroke: var(--border-strong); stroke-width: 1; }
+.choam-dial-tick { stroke: var(--border-strong); stroke-width: 1; }
+.choam-dial-tick-major { stroke: var(--muted); stroke-width: 1.5; }
+.choam-dial-axis { fill: var(--text-faint); font-size: 10px; }
+.choam-dial-needle { stroke: var(--accent); stroke-width: 2.5; stroke-linecap: round; }
+.choam-dial-grip { fill: var(--accent-strong); }
+.choam-dial-hub { fill: var(--muted); }
+.choam-position-editor-restart { margin: 0; font-size: 12px; color: var(--muted-warm); }
+/* Players -> Deleted characters sub-view.
+   The mode toggle sits between the heading and the filter row, so it must not
+   absorb the flex gap that .panel-title distributes with space-between. */
+.players-view-segments { margin-right: auto; }
+/* Direct child only: a descendant selector here also caught the nested
+   .deleted-character-unattributed > .panel-title and knocked its asset count
+   20px off the heading beside it. */
+.deleted-character-assets > .panel-title { align-items: flex-start; }
+/* .table-wrap caps height at min(64vh, 620px). Left on, the expanded detail
+   scrolls inside the character table while each asset table scrolls inside
+   that -- three nested scrollers. Every other panel with expandable rows opts
+   out the same way (.bases-table-wrap, .vehicles-table-wrap, ...). Two classes
+   because a later grouped rule re-declares .table-wrap at equal specificity. */
+.table-wrap.deleted-character-table-wrap { max-height: none; }
+.deleted-character-table th.deleted-character-expand-column,
+.deleted-character-table td.deleted-character-expand-column {
+  width: 32px;
+  padding-inline: 4px;
+  text-align: center;
+  overflow: visible;
+  text-overflow: clip;
+}
+.deleted-character-expand-button {
+  width: 24px;
+  height: 24px;
+  min-width: 0;
+  padding: 0;
+  margin: 0 auto;
+  border: 0;
+  background: none;
+  color: inherit;
+  display: inline-grid;
+  place-items: center;
+}
+/* The description above it is .action-help-note (italic, muted). Repeating that
+   style for the summary made two flat paragraphs; the summary is the finding,
+   so it reads upright in the neutral subtle tone rather than the warm muted. */
+.deleted-character-summary {
+  margin: 10px 0 4px;
+  font-style: normal;
+  font-size: 13px;
+  color: var(--text-subtle);
+}
+.deleted-character-detail { display: flex; flex-direction: column; gap: 14px; padding: 4px 0 8px; }
+.deleted-character-meta { display: flex; flex-wrap: wrap; gap: 6px; }
+.deleted-character-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .03);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.deleted-character-chip-label { color: var(--text-faint); }
+.deleted-character-chip-value { color: var(--text-subtle); }
+.deleted-character-assets-group { display: flex; flex-direction: column; gap: 6px; }
+.deleted-character-assets-subtitle {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.deleted-character-assets-table th.deleted-character-asset-actions,
+.deleted-character-assets-table td.deleted-character-asset-actions {
+  width: 60px;
+  text-align: center;
+}
+/* The unattributed block uses the same navigation toggle as the Player Admin
+   sections, with a warning edge to distinguish unassigned assets. */
+.deleted-character-unattributed {
+  margin-top: 22px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--warning);
+  border-radius: 0 8px 8px 0;
+  background: var(--panel-muted);
+  overflow: hidden;
+}
+.deleted-character-unattributed > .playerAdmin_toggleHeader { border-radius: 0; background: var(--panel-muted); }
+.deleted-character-unattributed > .playerAdmin_toggleBody { display: flex; flex-direction: column; gap: 12px; }
+.deleted-character-unattributed-count { margin-left: auto; color: var(--text-faint); font-weight: 500 !important; }

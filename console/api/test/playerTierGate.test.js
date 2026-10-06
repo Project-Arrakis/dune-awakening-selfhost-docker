@@ -30,7 +30,7 @@ test("everything else under players/guilds is denied, including sensitive sub-ro
     "/api/players/42/character-recovery", "/api/players/42/ban", "/api/players/42/progression",
     "/api/players/42/inventory/", "/api/players/42/", "/api/players//inventory", "/api/players/42/inventory/extra",
     "/api/guilds/7", "/api/guilds/7/", "/api/guilds/7/members/9", "/api/guilds/",
-    "/api/players/online/extra", "/api/players/42/../43"
+    "/api/players/online/extra", "/api/players/42/../43", "/api/players/deleted-characters", "/api/players/007", "/api/players/%2e/inventory", "/api/guilds/abc/members"
   ]) {
     assert.deepEqual(c(p, "GET"), { kind: "deny" }, p);
   }

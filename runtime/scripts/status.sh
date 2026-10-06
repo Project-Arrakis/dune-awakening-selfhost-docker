@@ -10,6 +10,10 @@ set +a
 source runtime/scripts/runtime-env.sh
 source runtime/scripts/fls-signals.sh
 source runtime/scripts/farm-readiness.sh
+# shellcheck source=runtime/scripts/lib/postgres.sh
+source runtime/scripts/lib/postgres.sh
+# shellcheck source=runtime/scripts/lib/rabbitmq.sh
+source runtime/scripts/lib/rabbitmq.sh
 
 issue=0
 warming=0
@@ -22,6 +26,12 @@ log_tail_lines="${DUNE_STATUS_LOG_TAIL_LINES:-4000}"
 docker_timeout() {
   timeout --kill-after=2s "${docker_timeout_seconds}s" "$@"
 }
+
+# As in ready.sh: the database checks run through lib/postgres.sh, which
+# docker_timeout cannot wrap, so the seam takes the budget itself. These two
+# queries carried no watchdog when they were `docker exec`s; giving them the
+# one the rest of this script already uses is the point of stating it here.
+DUNE_PSQL_TIMEOUT_SECONDS="$docker_timeout_seconds"
 
 config_value() {
   local file="$1"
@@ -136,7 +146,7 @@ dynamic_listener_rows() {
 
     if is_running dune-postgres; then
       row="$(
-        docker exec dune-postgres psql -U dune -d dune -At -F '|' -c "
+        dune_psql_app -At -F '|' -c "
           select
             coalesce(nullif(fs.map, ''), nullif(wp.map, ''), 'Partition ${partition_id}'),
             coalesce(fs.game_port::text, ''),
@@ -219,8 +229,13 @@ count_rmq_prefix() {
     return
   fi
 
+  # As in ready.sh, through the management API where it can answer, and through
+  # the same exec as before where it cannot. Cached either way, so a full status
+  # run costs one lookup rather than one per prefix counted.
   if [ "$rmq_game_connections_cache" = "__unset__" ]; then
-    rmq_game_connections_cache="$(timeout 60 docker exec dune-rmq-game rabbitmqctl list_connections user state 2>/dev/null || true)"
+    local RMQ_HTTP_TIMEOUT_SECONDS=10
+    rmq_game_connections_cache="$(dune_rmq_game_connections 2>/dev/null)" \
+      || rmq_game_connections_cache="$(timeout 60 docker exec dune-rmq-game rabbitmqctl list_connections user state 2>/dev/null || true)"
   fi
 
   printf '%s\n' "$rmq_game_connections_cache" \
@@ -403,7 +418,7 @@ fi
 
 partition_count="unknown"
 if is_running dune-postgres; then
-  partition_count="$(docker exec dune-postgres psql -U dune -d dune -Atc "select count(*) from world_partition;" 2>/dev/null | tr -d '[:space:]' || true)"
+  partition_count="$(psql_app_value "select count(*) from world_partition;" 2>/dev/null | tr -d '[:space:]' || true)"
   if [ "${partition_count:-0}" -le 0 ] 2>/dev/null; then
     issue=1
   fi
@@ -417,7 +432,7 @@ overmap_state="$(map_state dune-server-overmap 'Server farm is READY .*partition
 active="$(latest_number_from_director_logs 'BattlegroupCurrentActive' || true)"
 database_active=""
 if is_running dune-postgres; then
-  database_active="$(docker exec dune-postgres psql -U dune -d dune -Atc "
+  database_active="$(psql_app_value "
     select case
       when to_regclass('dune.actors') is null or to_regclass('dune.player_state') is null then null
       else (

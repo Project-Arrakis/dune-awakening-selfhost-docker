@@ -60,7 +60,7 @@ issue if you get stuck on one of those.
 | Maps | Per-map mode configuration (dynamic / always-on / disabled) | — |
 | Landsraad | The in-game faction/political system | — |
 | Database | Schema/table browsing, SQL preview/export | — |
-| Backups | Database and base backups | §4 below, [`docs/console/database-backups.md`](console/database-backups.md) |
+| Backups | Database, encrypted system, and base backups | §4 below, [`docs/console/database-backups.md`](console/database-backups.md) |
 | Updates | Game-server content updates | §5 below |
 | Bases (accessed by expanding a base row) | Power, Water, Inventory, Sub-Fief Permissions, Base Permissions tabs | [`docs/console/base-inventory.md`](console/base-inventory.md), [`docs/console/base-permissions.md`](console/base-permissions.md), [`docs/console/base-child-permissions.md`](console/base-child-permissions.md), [`docs/console/base-deletion.md`](console/base-deletion.md) |
 | Exchange | Read-only view of the game's live CHOAM market listings | [`docs/console/exchange.md`](console/exchange.md) |
@@ -74,12 +74,13 @@ issue if you get stuck on one of those.
 Expanding a base row in the Bases panel gives you these tabs (plus a Land
 Claim Editor not covered here):
 
-- **Power** — refill generators/water up to a per-generator-type cap
+- **Power** — refill generators, wind turbines, and windtrap filters up to a per-device-type cap
   ([`docs/console/generator-refill-caps.md`](console/generator-refill-caps.md),
   [`docs/console/generator-fuel-burn-rates.md`](console/generator-fuel-burn-rates.md)).
+  Windtrap filters keep the tier currently in use (first accepted tier in inventory, else the burning tier, else the default).
   Refills are queued and applied on the next safe window — they do not
   necessarily take effect the instant you click.
-- **Water** — same refill mechanism as Power, for water-producing devices.
+- **Water** — restores stored water only, for cisterns and windtraps. Same refill mechanism as Power, queued to the next safe window.
 - **Inventory** — a read-only snapshot of everything stored at the base,
   with the ability to open a container and delete individual items. See
   [`docs/console/base-inventory.md`](console/base-inventory.md) for what
@@ -97,11 +98,16 @@ Claim Editor not covered here):
   live map is queued and written at that map's next restart. See
   [`docs/console/base-child-permissions.md`](console/base-child-permissions.md).
 
-**Auto-refill** is opt-in per base, enabled from the Power tab (generators)
+**Auto-refill** is opt-in per base, enabled from the Power tab (generators, wind turbines, and windtraps)
 and the Water tab (water storage). An enrolled base is scanned on a fixed
 interval and queued for a refill when its lowest device falls below a
 threshold; the refill itself goes through the same queue as a manual one, so
-it applies at the next safe window rather than immediately. The two
+it applies at the next safe window rather than immediately. Windtraps are
+scanned with the generators but against their own threshold: a windtrap holds
+only 5 filters, so it reads in 20% steps, and one windtrap below its threshold
+queues a refill for the whole base, generators included. Bases already
+enrolled before windtraps were added are covered automatically — there is no
+separate opt-in. The two
 subsystems are independent — separate enrollment lists, separate schedules —
 so enrolling a base in one does not enroll it in the other.
 
@@ -114,13 +120,14 @@ game data is touched.
 | Setting | Default | Range |
 |---|---:|---|
 | Generators — queue a refill below | 50 | 1-99 % |
+| Windtraps — queue a refill below | 40 (1 filter left) | 1-99 % |
 | Generators — check every | 24 | 1-168 h |
 | Water — queue a refill below | 50 | 1-99 % |
 | Water — check every | 24 | 1-168 h |
 
 Each field has a **Reset**, which clears the console override and falls back to
 the environment variable (`ADMIN_AUTO_REFILL_THRESHOLD_PERCENT`,
-`ADMIN_AUTO_REFILL_INTERVAL_HOURS`, `ADMIN_AUTO_REFILL_WATER_THRESHOLD_PERCENT`,
+`ADMIN_AUTO_REFILL_WINDTRAP_THRESHOLD_PERCENT`, `ADMIN_AUTO_REFILL_INTERVAL_HOURS`, `ADMIN_AUTO_REFILL_WATER_THRESHOLD_PERCENT`,
 `ADMIN_AUTO_REFILL_WATER_INTERVAL_HOURS`) if one is set, or the default above.
 The precedence is settings page, then environment variable, then default. An
 unparseable environment variable falls back to the default rather than failing
@@ -175,7 +182,7 @@ next.
 
 ## 4. Backups
 
-Two unrelated things share the word "backup" in this project — know which
+Three different things share the word "backup" in this project — know which
 one you need:
 
 1. **Database backups** (the Backups page) — a real backup/restore of the
@@ -188,7 +195,20 @@ one you need:
    the database unless one of these is supplied. See
    [`docs/console/database-backups.md`](console/database-backups.md) for
    the full decision matrix and the `dune db restore` CLI equivalents.
-2. **The in-game "pick up base" mechanic** — not a console feature at all;
+2. **System backups** (the Backups page, *System Backups (Encrypted)*) — the
+   database **plus** everything the console generates: `.env`,
+   `runtime/generated/`, and every file in `runtime/secrets/` (the Funcom
+   token, the admin password, RMQ credentials, sietch join password, IAM
+   policies). One GPG AES-256-encrypted archive, point-in-time by
+   construction. This is what moves a server to new hardware without
+   re-entering every setting by hand. **There is no way to recover one
+   without the passphrase you set**, so store it somewhere durable and
+   separate from the archive. Create, download, import and restore are all
+   on that page, with `dune db backup-system` / `restore-system` as the CLI
+   equivalents. Restore previews before it applies, and asks what to do
+   about Battlegroup identity and the admin audit log. See
+   [`docs/console/database-backups.md`](console/database-backups.md).
+3. **The in-game "pick up base" mechanic** — not a console feature at all;
    see §3 above and
    [`docs/console/base-backups.md`](console/base-backups.md).
 
@@ -201,7 +221,8 @@ the Web UI's Updates panel — do not confuse them:
 
 - **`dune update`** — updates the **game server** itself (the SteamCMD
   content Funcom ships). Subcommands: `check`, `install`,
-  `fix-steamcmd`, `fix-install-dir`, and an unattended option,
+  `install-assets`, `fix-steamcmd`, `fix-install-dir`, and an unattended
+  option,
   `dune update auto enable [interval-minutes] ...` / `disable` /
   `status`, backed by a systemd timer that runs 5 minutes after boot and
   then repeats on a rolling interval (default: every 60 minutes,
@@ -210,6 +231,13 @@ the Web UI's Updates panel — do not confuse them:
   **Refresh Game Check** always requests a live result. Read-only checks use
   two short, bounded Steam attempts by default, while actual installations
   retain the longer content-host retry policy needed for downloads.
+  `dune update install-assets` is the same download without any database
+  work: it installs the game files and images and stops there. That is what
+  a brand-new host needs before it can restore a system backup, since the
+  Funcom database image is not pullable and only exists once the game files
+  are installed. The Updates page's **Install Game Files** button runs the
+  same thing. Plain `dune update install`, by contrast, also migrates the
+  database and reseeds world partitions.
 - **`dune self-update`** (alias `dune stack-update`) — updates **this
   repository/stack itself** (fetching a new GitHub release of
   `dune-awakening-selfhost-docker`). Subcommands: `check`, `list`,

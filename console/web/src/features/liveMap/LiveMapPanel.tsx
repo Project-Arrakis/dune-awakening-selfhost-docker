@@ -4,19 +4,26 @@ import { liveMapApi, type LiveMapConfig, type LiveMapMarker, type LiveMapPartiti
 import { mapsApi } from "../../api/maps";
 import type { Task } from "../../api/setup";
 import { DataTable } from "../../components/common/DataTable";
-import { StatusPill, TechnicalDetails } from "../../components/common/DisplayPrimitives";
+import { TechnicalDetails } from "../../components/common/DisplayPrimitives";
 import { firstDefined, formatUiSentence, titleCase } from "../../lib/display";
 import { friendlyInlineError } from "../players/playerAdminUtils";
 import {
   clampLiveMapZoom,
+  liveMapCamera,
   liveMapMinimumZoom,
   liveMapPixelsToWorld,
   MAX_LIVE_MAP_ZOOM,
+  panScrollDelta,
+  terrainViewport,
   visibleWorldRect,
   worldToLiveMapPoint,
+  zoomCentreFor,
   type LiveMapPoint
 } from "./liveMapGeometry";
-import { labelAnchorInView, sectorForWorldPoint, sectorGridFor } from "./liveMapSectorGrid";
+import { MAX_TILT, projectToScreen, screenToWorldAtZ, type TerrainCamera } from "./terrain/terrainCamera";
+import type { TerrainApi } from "./terrain/DeepDesertTerrain";
+import { labelAnchorInView, projectSectorLabels, sectorForWorldPoint, sectorGridFor } from "./liveMapSectorGrid";
+import { LiveMapCompass } from "./LiveMapCompass";
 
 // On-screen size of a sector label, in CSS pixels. The SVG is drawn in map-pixel
 // space and scaled by zoom, so the font size is divided back out to keep it
@@ -134,7 +141,7 @@ const LEGEND_LAYOUT: LegendItem[] = [
 // settings popover's Reset action and the initial useState below share the
 // exact same values instead of drifting apart.
 const DEFAULT_LAYER_FILTERS: Record<string, boolean> = {
-  player: true, vehicle: true, base: true, storage: false,
+  player: true, player_online: true, player_offline: true, vehicle: true, base: true, storage: false,
   spice: true, spice_active: true, flour_sand: true, ore: false, scrap: false, flora: false,
   poi: true, house_representative: true, trainer: true, fortress: false, hazard: false, enemy: false
 };
@@ -214,6 +221,7 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
   const [selected, setSelected] = useState<LiveMapMarker | null>(null);
   const [hoveredMarker, setHoveredMarker] = useState<LiveMapMarker | null>(null);
   const [filters, setFilters] = useState<Record<string, boolean>>(() => ({ ...DEFAULT_LAYER_FILTERS, ...loadDefaultLayerFilters() }));
+  const [markerSearch, setMarkerSearch] = useState("");
   const [layerSettingsOpen, setLayerSettingsOpen] = useState(false);
   const [layerSettingsDraft, setLayerSettingsDraft] = useState<Record<string, boolean>>(DEFAULT_LAYER_FILTERS);
   const [layerSettingsSubtypeDraft, setLayerSettingsSubtypeDraft] = useState<Record<string, Record<string, boolean>>>({});
@@ -237,6 +245,15 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
   // over the grid burned into the picture, which is drawn at that image's own
   // mis-scaled extent -- the overlay is the one that agrees with the markers.
   const [showSectorGrid, setShowSectorGrid] = useState(true);
+  // Off by default: a reading aid that darkens the terrain slightly.
+  const [showElevationLines, setShowElevationLines] = useState(false);
+  // The 3D view, radians. Both zero is the flat, top-down map.
+  const [tilt, setTilt] = useState(0);
+  const [yaw, setYaw] = useState(0);
+  const [terrainApi, setTerrainApi] = useState<TerrainApi | null>(null);
+  // Bumped on scroll while in 3D, where each marker has to be projected again.
+  const [, setViewTick] = useState(0);
+  const [rotateDrag, setRotateDrag] = useState<{ x: number; y: number; tilt: number; yaw: number } | null>(null);
   // The canvas mounts empty and paints only once ~7 MB of assets are in, so the
   // flat image stays up until it reports itself ready. Dropping the image when
   // the lazy chunk resolved left a window showing neither.
@@ -257,13 +274,16 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [zoom, setZoom] = useState(0.16);
   const [target, setTarget] = useState<{ x: number; y: number } | null>(null);
+  // The height a location was picked at in 3D. Display only, never sent.
+  const [targetHeight, setTargetHeight] = useState<number | undefined>(undefined);
   const [loading, setLoading] = useState(false);
   // Distinct from `loading` -- that flips on every 5s auto-refresh poll too,
   // which would flicker the overlay constantly. This only tracks the load
   // triggered by switching map/partition, so the overlay appears just for
   // the switch itself.
   const [switching, setSwitching] = useState(false);
-  const [drag, setDrag] = useState<{ x: number; y: number; left: number; top: number } | null>(null);
+  // `grab`: for a pan begun in 3D, the camera then and what was grabbed.
+  const [drag, setDrag] = useState<{ x: number; y: number; left: number; top: number; grab?: { camera: TerrainCamera; sx: number; sy: number; z: number } } | null>(null);
   const [playerDrag, setPlayerDrag] = useState<{ marker: LiveMapMarker; point: LiveMapPoint; startX: number; startY: number } | null>(null);
   const [playerTeleportPreview, setPlayerTeleportPreview] = useState<{ marker: LiveMapMarker; point: LiveMapPoint } | null>(null);
   const [teleportResult, setTeleportResult] = useState<HomeTaskResult | null>(null);
@@ -439,7 +459,8 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
     }
     frame.addEventListener("wheel", handleWheel, { passive: false });
     return () => frame.removeEventListener("wheel", handleWheel);
-  }, [zoom, activeMap?.key]);
+    // tilt, yaw and the terrain API too: setZoomAround builds the 3D camera from them.
+  }, [zoom, activeMap?.key, tilt, yaw, terrainApi]);
   useEffect(() => {
     function syncMinimumZoom() {
       const min = liveMapMinimumZoom(activeMap, frameRef.current);
@@ -485,8 +506,15 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
     // never be dropped by the partition filter. spice_active markers do
     // carry a real partition_id and filter normally.
     .filter((marker) => !partitionId || marker.partition_id == null || String(marker.partition_id) === partitionId);
-  const topLevelVisible = partitionFiltered.filter((marker) => filters[String(marker.type)] !== false);
-  const visible = topLevelVisible.filter((marker) => !marker.subtype || subtypeFilters[String(marker.type)]?.[marker.subtype] !== false);
+  const topLevelVisible = partitionFiltered.filter((marker) => {
+    const type = String(marker.type);
+    if (filters[type] === false) return false;
+    if (type.toLowerCase() !== "player") return true;
+    return filters[`player_${liveMapPlayerStatus(marker)}`] !== false;
+  });
+  const layerVisible = topLevelVisible.filter((marker) => !marker.subtype || subtypeFilters[String(marker.type)]?.[marker.subtype] !== false);
+  const visible = layerVisible.filter((marker) => liveMapMarkerMatchesSearch(marker, markerSearch));
+  const searching = markerSearch.trim() !== "";
   const plotted = visible.filter((marker) => Number.isFinite(Number(marker.x)) && Number.isFinite(Number(marker.y)));
   const displayRows = visible.filter((marker) => TABLE_MARKER_TYPES.has(String(marker.type))).map((marker) => ({ ...marker, display_name: friendlyMarkerName(marker), raw_name: marker.name || marker.id }));
   const markerCounts = countMarkers(visible);
@@ -504,6 +532,7 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
   // hide when it truly has nothing right now, never because the user
   // unchecked its own or its parent category's checkbox.
   const rawSubtypeCounts = countBySubtype(partitionFiltered);
+  const rawPlayerStatusCounts = countPlayerStatuses(partitionFiltered);
   const inBounds = activeMap ? plotted.map((marker) => ({ marker, point: worldToLiveMapPoint(marker, activeMap) })).filter((item) => item.point?.inBounds) as { marker: LiveMapMarker; point: LiveMapPoint }[] : [];
   const targetPoint = target && activeMap ? worldToLiveMapPoint({ x: target.x, y: target.y }, activeMap) : null;
   const minimumZoom = liveMapMinimumZoom(activeMap, frameRef.current);
@@ -550,9 +579,101 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
   const terrainKey = `${activeMap?.key || ""}:${coriolisLayout ?? ""}`;
   terrainKeyRef.current = terrainKey;
   const terrainReady = readyTerrainKey === terrainKey;
+  const can3D = terrainEligible && terrainReady && terrainApi !== null;
+  const is3D = can3D && (tilt !== 0 || yaw !== 0);
+  // The same helper the terrain canvas builds its camera from. A function,
+  // because handlers call it again: the scroll moves between renders.
+  function currentView3d() {
+    const frame = frameRef.current;
+    if (!is3D || !activeMap || !frame || !terrainApi) return null;
+    const viewport = terrainViewport(activeMap, zoom, frame.scrollLeft, frame.scrollTop, frame.clientWidth, frame.clientHeight, true);
+    const camera = liveMapCamera(activeMap, zoom, viewport, tilt, yaw, terrainApi.pivotZ, terrainApi.topZ);
+    return camera ? { viewport, camera } : null;
+  }
+  const view3d = currentView3d();
+  useEffect(() => {
+    const frame = frameRef.current;
+    if (!is3D || !frame) return undefined;
+    let queued = 0;
+    const tick = () => {
+      if (queued) return;
+      queued = requestAnimationFrame(() => { queued = 0; setViewTick((n) => n + 1); });
+    };
+    frame.addEventListener("scroll", tick, { passive: true });
+    const observer = new ResizeObserver(tick);
+    observer.observe(frame);
+    return () => {
+      frame.removeEventListener("scroll", tick);
+      observer.disconnect();
+      if (queued) cancelAnimationFrame(queued);
+    };
+  }, [is3D]);
+  // Leaving the rendered terrain leaves 3D with it.
+  useEffect(() => {
+    if (!terrainEligible) { setTilt(0); setYaw(0); }
+  }, [terrainEligible]);
+  const handleTerrainApi = useCallback((api: TerrainApi | null) => setTerrainApi(api), []);
+  // What the terrain hides has been measured again: place the markers again.
+  const handleTerrainOcclusion = useCallback(() => setViewTick((n) => n + 1), []);
+  /**
+   * Where a map point is drawn, inside the marker layer and relative to the
+   * viewport. In 3D the marker layer covers the viewport, not the map. In 3D it is projected at height `z`, or the sand's. `visible` is
+   * false outside the view, where drawing it would stretch the scroll area.
+   */
+  function placePoint(point: LiveMapPoint, z?: number) {
+    const frame = frameRef.current;
+    if (!view3d || !activeMap || !terrainApi) {
+      return {
+        left: point.px * zoom,
+        top: point.py * zoom,
+        viewportX: point.px * zoom - (frame?.scrollLeft || 0),
+        viewportY: point.py * zoom - (frame?.scrollTop || 0),
+        visible: true,
+        occluded: false
+      };
+    }
+    const world = liveMapPixelsToWorld(point.px, point.py, activeMap);
+    if (!world) return null;
+    const height = z !== undefined && Number.isFinite(z) && z !== 0 ? z : terrainApi.heightAt(world.x, world.y);
+    const { viewport, camera } = view3d;
+    const s = projectToScreen(camera, world.x, world.y, height);
+    return {
+      left: s.sx,
+      top: s.sy,
+      viewportX: s.sx + viewport.left - (frame?.scrollLeft || 0),
+      viewportY: s.sy + viewport.top - (frame?.scrollTop || 0),
+      visible: !s.behind && s.sx >= 0 && s.sx <= viewport.width && s.sy >= 0 && s.sy <= viewport.height,
+      occluded: tilt > 0 && terrainApi.occluded(world.x, world.y, height)
+    };
+  }
+  const targetPlaced = targetPoint ? placePoint(targetPoint, targetHeight) : null;
+  /**
+   * The world point under a mouse event in 3D: read back from the terrain, or
+   * failing that the ray walked onto the sand. Null outside the map.
+   */
+  function worldUnderPointer(event: { clientX: number; clientY: number }) {
+    const view3d = currentView3d();
+    if (!view3d || !canvasRef.current || !terrainApi || !activeMap) return null;
+    const onMap = <T extends { x: number; y: number }>(world: T) => (
+      world.x >= Math.min(activeMap.minX, activeMap.maxX) && world.x <= Math.max(activeMap.minX, activeMap.maxX)
+      && world.y >= Math.min(activeMap.minY, activeMap.maxY) && world.y <= Math.max(activeMap.minY, activeMap.maxY) ? world : null
+    );
+    const rect = canvasRef.current.getBoundingClientRect();
+    const sx = event.clientX - rect.left - view3d.viewport.left;
+    const sy = event.clientY - rect.top - view3d.viewport.top;
+    const picked = terrainApi.pick(sx, sy);
+    if (picked) return onMap(picked);
+    let z = terrainApi.pivotZ;
+    let ground = screenToWorldAtZ(view3d.camera, sx, sy, z);
+    for (let i = 0; i < 4; i++) {
+      z = terrainApi.heightAt(ground.x, ground.y);
+      ground = screenToWorldAtZ(view3d.camera, sx, sy, z);
+    }
+    return onMap({ x: ground.x, y: ground.y, z });
+  }
   const sectorGrid = useMemo(() => (activeMap ? sectorGridFor(activeMap) : null), [activeMap]);
   // Keep each sector label inside the visible part of its own cell. Above about
-  // 2x zoom a 250,000 uu cell is wider than the frame, so a label pinned to the
+  // 2x zoom a sector cell is wider than the frame, so a label pinned to the
   // cell's true centre scrolls out of view and the grid stops answering the one
   // question it exists for. Positions are written straight to the DOM rather
   // than through state: this runs on every scroll frame, and re-rendering 81
@@ -598,7 +719,12 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
       observer.disconnect();
       if (queued) cancelAnimationFrame(queued);
     };
-  }, [showSectorGrid, sectorGrid, zoom]);
+    // is3D: the flat grid is unmounted while tilted and re-placed on the way back.
+  }, [showSectorGrid, sectorGrid, zoom, is3D]);
+  // Tilted, the terrain draws the lines; only the labels are projected here, each render.
+  const sectorLabels3d = view3d && showSectorGrid && sectorGrid
+    ? projectSectorLabels(view3d.camera, SECTOR_LABEL_PX * 1.6, SECTOR_LABEL_PX * SECTOR_LABEL_PX * 4)
+    : null;
 
   const zoomMaxPercent = Math.round(MAX_LIVE_MAP_ZOOM * 100);
   const zoomValuePercent = Math.round(zoom * 100);
@@ -690,11 +816,17 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
   function handleMapDoubleClick(event: React.MouseEvent<HTMLDivElement>) {
     if (!activeMap || !canvasRef.current) return;
     if ((event.target as HTMLElement).closest(".live-map-marker, .live-map-target")) return;
+    if (view3d) {
+      const picked = worldUnderPointer(event);
+      if (picked) { setTarget({ x: picked.x, y: picked.y }); setTargetHeight(picked.z); }
+      return;
+    }
     const rect = canvasRef.current.getBoundingClientRect();
     const px = (event.clientX - rect.left) / zoom;
     const py = (event.clientY - rect.top) / zoom;
     const world = liveMapPixelsToWorld(px, py, activeMap);
     if (!world) return;
+    setTargetHeight(undefined);
     setTarget(world);
   }
   function setZoomAround(nextZoom: number, anchor?: { clientX: number; clientY: number }) {
@@ -709,6 +841,19 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
     if (next === oldZoom) {
       zoomAnchorRef.current = null;
       return;
+    }
+    const view3d = currentView3d();
+    if (view3d && anchor && activeMap && terrainApi && canvas) {
+      // 3D: keep the ground under the cursor fixed; the scroll centre is the camera centre.
+      const rect = canvas.getBoundingClientRect();
+      const ground = screenToWorldAtZ(view3d.camera, anchor.clientX - rect.left - view3d.viewport.left, anchor.clientY - rect.top - view3d.viewport.top, terrainApi.pivotZ);
+      const centre = zoomCentreFor(view3d.camera, ground, oldZoom, next);
+      const point = worldToLiveMapPoint(centre, activeMap);
+      if (point) {
+        zoomAnchorRef.current = { mapX: point.px, mapY: point.py, viewportX: frame.clientWidth / 2, viewportY: frame.clientHeight / 2 };
+        setZoom(next);
+        return;
+      }
     }
     const canvasRect = canvas?.getBoundingClientRect();
     const frameRect = frame.getBoundingClientRect();
@@ -749,6 +894,11 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
   }
   function liveMapPointerPoint(event: MouseEvent | React.MouseEvent) {
     if (!canvasRef.current) return null;
+    if (view3d && activeMap) {
+      const world = worldUnderPointer(event);
+      const point = world ? worldToLiveMapPoint(world, activeMap) : null;
+      return point ? { px: point.px, py: point.py, inBounds: true } : null;
+    }
     const rect = canvasRef.current.getBoundingClientRect();
     return {
       px: (event.clientX - rect.left) / zoom,
@@ -910,7 +1060,7 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
       window.removeEventListener("mousemove", move);
       window.removeEventListener("mouseup", up);
     };
-  }, [playerDrag, zoom, activeMap?.key]);
+  }, [playerDrag, zoom, activeMap?.key, tilt, yaw]);
   useEffect(() => {
     if (!teleportResult || teleportResult.status === "running") return;
     const id = window.setTimeout(() => setTeleportResult(null), 10400);
@@ -963,6 +1113,16 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
     </section>
     <div className="live-map-layout">
       <aside className="live-map-sidebar">
+        <section className="action-section live-map-search-section">
+          <label htmlFor="live-map-marker-search">
+            <span className="live-map-view-label">Search Map</span>
+            <span className="live-map-search-control">
+              <input id="live-map-marker-search" type="search" value={markerSearch} onChange={(event) => setMarkerSearch(event.target.value)} placeholder="Player, owner, base, vehicle..." />
+              {markerSearch && <button type="button" onClick={() => setMarkerSearch("")}>Clear</button>}
+            </span>
+          </label>
+          <span className="muted">Searches player names and marker names, plus base and vehicle owners.</span>
+        </section>
         <section className="action-section">
           <div className="live-map-layers-header" ref={layerSettingsRef}>
             <h4>Layers</h4>
@@ -982,6 +1142,29 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
                   const key = item.key;
                   const indent = (node: React.ReactNode, keyValue: React.Key) =>
                     currentSection ? <div key={keyValue} className="live-map-layer-section-item">{node}</div> : <React.Fragment key={keyValue}>{node}</React.Fragment>;
+                  if (key === "player") {
+                    const statusKeys = ["online", "offline"];
+                    const checkedCount = statusKeys.filter((status) => layerSettingsDraft[`player_${status}`] !== false).length;
+                    const allChecked = checkedCount === statusKeys.length;
+                    const noneChecked = checkedCount === 0;
+                    return indent(<div className="live-map-layer-group" key={key}>
+                      <label className="checkbox-row live-map-layer">
+                        <span className="live-map-layer-label">Player</span>
+                        <IndeterminateCheckbox checked={allChecked} indeterminate={!allChecked && !noneChecked} onChange={() => {
+                          const nextValue = !allChecked;
+                          setLayerSettingsDraft((prev) => ({ ...prev, player: nextValue, player_online: nextValue, player_offline: nextValue }));
+                        }} />
+                      </label>
+                      <div className="live-map-layer-sublist">{statusKeys.map((status) => <label key={status} className="checkbox-row live-map-layer live-map-layer-sub">
+                        <span className="live-map-layer-label">{titleCase(status)}</span>
+                        <input type="checkbox" checked={layerSettingsDraft[`player_${status}`] !== false} onChange={() => setLayerSettingsDraft((prev) => {
+                          const next = { ...prev, [`player_${status}`]: prev[`player_${status}`] === false };
+                          next.player = statusKeys.some((playerStatus) => next[`player_${playerStatus}`] !== false);
+                          return next;
+                        })} />
+                      </label>)}</div>
+                    </div>, key);
+                  }
                   const subtypes = EXPANDABLE_KEYS.has(key) ? Object.keys(subtypeFilters[key] || {}).sort() : [];
                   if (subtypes.length === 0) {
                     return indent(<label className="checkbox-row live-map-layer">
@@ -1081,12 +1264,24 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
               return !filters[key];
             };
             return <>
-            {activeMap?.key === "DeepDesert" && <label className="checkbox-row live-map-layer live-map-sector-grid-layer">
-              <span className="live-map-layer-label">Sector Grid</span>
-              <span className="muted">Overlay</span>
-              <span className="live-map-sector-grid-swatch" aria-hidden="true" />
-              <input type="checkbox" aria-label="Sector Grid" checked={showSectorGrid} onChange={() => setShowSectorGrid((on) => !on)} />
-            </label>}
+            {/* Terrain overlays, grouped above the marker legend. The divider is
+                on the group, not on a row, so both sit above it. */}
+            {(activeMap?.key === "DeepDesert" || terrainEligible) && <div className="live-map-overlay-group">
+              {activeMap?.key === "DeepDesert" && <label className="checkbox-row live-map-layer">
+                <span className="live-map-layer-label">Sector Grid</span>
+                <span className="muted">Overlay</span>
+                <span className="live-map-sector-grid-swatch" aria-hidden="true" />
+                <input type="checkbox" aria-label="Sector Grid" checked={showSectorGrid} onChange={() => setShowSectorGrid((on) => !on)} />
+              </label>}
+              {/* Only offered when the 3D terrain is actually drawing -- it is a
+                  shader effect, so on the flat fallback image it would do nothing. */}
+              {terrainEligible && <label className="checkbox-row live-map-layer">
+                <span className="live-map-layer-label">Elevation Lines</span>
+                <span className="muted">Terrain</span>
+                <span className="live-map-elevation-swatch" aria-hidden="true" />
+                <input type="checkbox" aria-label="Elevation Lines" checked={showElevationLines} onChange={() => setShowElevationLines((on) => !on)} />
+              </label>}
+            </div>}
             {LEGEND_LAYOUT.map((item, index) => {
             if ("header" in item) {
               const sectionName = item.header;
@@ -1130,6 +1325,38 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
             const key = item.key;
             if (GATED_LAYER_KEYS.has(key) && capabilities[key] === false) return null;
             if ((rawCategoryCounts[key] || 0) === 0 && !(knownSubtypes[key]?.length)) return null;
+            if (key === "player") {
+              const statusKeys = ["online", "offline"];
+              const checkedCount = statusKeys.filter((status) => filters[`player_${status}`] !== false).length;
+              const allChecked = checkedCount === statusKeys.length;
+              const noneChecked = checkedCount === 0;
+              const expanded = Boolean(expandedGroups.player);
+              return indent(<div className="live-map-layer-group">
+                <label className="checkbox-row live-map-layer">
+                  <button type="button" className="live-map-layer-expand" aria-label={expanded ? "Collapse Player" : "Expand Player"} onClick={() => setExpandedGroups((prev) => ({ ...prev, player: !prev.player }))}>{expanded ? "−" : "+"}</button>
+                  <span className="live-map-layer-label">Player</span>
+                  <span className="muted">{markerCounts.player || 0}</span>
+                  <span className="live-map-legend-dot-spacer" aria-hidden="true" />
+                  <IndeterminateCheckbox checked={allChecked} indeterminate={!allChecked && !noneChecked} onChange={() => {
+                    const nextValue = !allChecked;
+                    setFilters((prev) => ({ ...prev, player: nextValue, player_online: nextValue, player_offline: nextValue }));
+                  }} />
+                </label>
+                {expanded && <div className="live-map-layer-sublist">{statusKeys.map((status) => {
+                  const checked = filters[`player_${status}`] !== false;
+                  return <label key={status} className="checkbox-row live-map-layer live-map-layer-sub">
+                    <span className="live-map-layer-label">{titleCase(status)}</span>
+                    <span className="muted">{rawPlayerStatusCounts[status] || 0}</span>
+                    <span className={`live-map-legend-dot marker-player ${status}`} />
+                    <input type="checkbox" checked={checked} onChange={() => setFilters((prev) => {
+                      const next = { ...prev, [`player_${status}`]: !checked };
+                      next.player = statusKeys.some((playerStatus) => next[`player_${playerStatus}`] !== false);
+                      return next;
+                    })} />
+                  </label>;
+                })}</div>}
+              </div>, key);
+            }
             const subtypes = EXPANDABLE_KEYS.has(key) ? Object.keys(subtypeFilters[key] || {}).sort() : [];
             if (subtypes.length === 0) {
               return indent(<label className="checkbox-row live-map-layer">{chevronSpacer}<span className="live-map-layer-label">{friendlyMarkerType(key)}</span><span className="muted">{markerCounts[key] || 0}</span><span className={`live-map-legend-dot marker-${key}`} /><input type="checkbox" checked={filters[key]} onChange={() => setFilters({ ...filters, [key]: !filters[key] })} /></label>, key);
@@ -1223,26 +1450,60 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
           <button onClick={() => setZoomAround(zoom * 0.84)}>Zoom Out</button>
           <button onClick={fitLiveMapView}>Fit Map</button>
           <label>Zoom<input className="live-map-zoom-range" type="range" min={zoomMinPercent} max={zoomMaxPercent} value={zoomValuePercent} style={{ "--zoom-progress": `${zoomProgressPercent}%` } as React.CSSProperties} onChange={(event) => setZoomAround(Number(event.target.value) / 100)} /></label>
-          <span className="muted">Drag to Pan. Mouse Wheel Zooms. Double-click to pick a location.</span>
+          {can3D && <label>Tilt<input className="live-map-zoom-range live-map-tilt-range" type="range" min={0} max={Math.round((MAX_TILT * 180) / Math.PI)} step={1} value={Math.round((tilt * 180) / Math.PI)} style={{ "--zoom-progress": `${(tilt / MAX_TILT) * 100}%` } as React.CSSProperties} onChange={(event) => setTilt((Number(event.target.value) * Math.PI) / 180)} /></label>}
+          {can3D && <button onClick={() => { setTilt(0); setYaw(0); }} disabled={!is3D}>Top-Down</button>}
+          <span className="muted">Drag to Pan. Mouse Wheel Zooms. Double-click to pick a location.{can3D ? " Right-drag to tilt and rotate." : ""}</span>
         </div>
         {teleportResult && <HomeTaskResultCard result={teleportResult} />}
+        <div className="live-map-stage">
         <div className={`live-map-frame ${drag ? "dragging" : ""} ${playerDrag ? "dragging-player" : ""}`} ref={frameRef}
           onDoubleClick={handleMapDoubleClick}
-          onMouseDown={(event) => { if ((event.target as HTMLElement).closest(".live-map-marker, .live-map-target")) return; setDrag({ x: event.clientX, y: event.clientY, left: frameRef.current?.scrollLeft || 0, top: frameRef.current?.scrollTop || 0 }); }}
-          onMouseMove={(event) => { if (!drag || !frameRef.current) return; frameRef.current.scrollLeft = drag.left - (event.clientX - drag.x); frameRef.current.scrollTop = drag.top - (event.clientY - drag.y); }}
-          onMouseUp={() => setDrag(null)}
-          onMouseLeave={() => setDrag(null)}>
+          onContextMenu={(event) => { if (can3D) event.preventDefault(); }}
+          onMouseDown={(event) => {
+            if ((event.target as HTMLElement).closest(".live-map-marker, .live-map-target")) return;
+            // Right-drag turns the view: across rotates, up leans it back.
+            if (event.button === 2) { if (can3D) { event.preventDefault(); setRotateDrag({ x: event.clientX, y: event.clientY, tilt, yaw }); } return; }
+            if (event.button !== 0) return;
+            // 3D: remember what was grabbed, so that exact point follows the pointer.
+            const view = currentView3d();
+            const rect = canvasRef.current?.getBoundingClientRect();
+            const grab = view && rect && terrainApi ? {
+              camera: view.camera,
+              sx: event.clientX - rect.left - view.viewport.left,
+              sy: event.clientY - rect.top - view.viewport.top,
+              z: worldUnderPointer(event)?.z ?? terrainApi.pivotZ
+            } : undefined;
+            setDrag({ x: event.clientX, y: event.clientY, left: frameRef.current?.scrollLeft || 0, top: frameRef.current?.scrollTop || 0, grab });
+          }}
+          onMouseMove={(event) => {
+            if (rotateDrag) {
+              setYaw(rotateDrag.yaw + ((event.clientX - rotateDrag.x) * ROTATE_DEG_PER_PX * Math.PI) / 180);
+              setTilt(Math.max(0, Math.min(MAX_TILT, rotateDrag.tilt - ((event.clientY - rotateDrag.y) * TILT_DEG_PER_PX * Math.PI) / 180)));
+              return;
+            }
+            if (!drag || !frameRef.current) return;
+            const dx = event.clientX - drag.x;
+            const dy = event.clientY - drag.y;
+            // 3D: a screen drag is a camera move.
+            const delta = drag.grab
+              ? panScrollDelta(drag.grab.camera, drag.grab, { sx: drag.grab.sx + dx, sy: drag.grab.sy + dy }, drag.grab.z)
+              : { left: -dx, top: -dy };
+            frameRef.current.scrollLeft = drag.left + delta.left;
+            frameRef.current.scrollTop = drag.top + delta.top;
+          }}
+          onMouseUp={() => { setDrag(null); setRotateDrag(null); }}
+          onMouseLeave={() => { setDrag(null); setRotateDrag(null); }}>
           {switching && <div className="live-map-loading-overlay"><span className="spinner" aria-hidden="true" /><strong className="loading-dots">Loading Map</strong></div>}
-          {activeMap ? <div className="live-map-canvas" ref={canvasRef} style={{ width: Math.floor(activeMap.width * zoom), height: Math.floor(activeMap.height * zoom) }}>
+          {activeMap ? <div className={`live-map-canvas${is3D ? " is-3d" : ""}`} ref={canvasRef} style={{ width: Math.floor(activeMap.width * zoom), height: Math.floor(activeMap.height * zoom) }}>
             {terrainEligible
               ? <>
                   {!terrainReady && activeMap.image && <img className="live-map-image" src={activeMap.image} alt={activeMap.label} draggable={false} />}
                   <Suspense fallback={null}>
-                    <DeepDesertTerrain config={activeMap} layout={coriolisLayout as number} zoom={zoom} frameRef={frameRef} onUnavailable={handleTerrainUnavailable} onReady={handleTerrainReady} />
+                    <DeepDesertTerrain config={activeMap} layout={coriolisLayout as number} zoom={zoom} frameRef={frameRef} onUnavailable={handleTerrainUnavailable} onReady={handleTerrainReady} elevationLines={showElevationLines} sectorGrid={showSectorGrid} tilt={tilt} yaw={yaw} onTerrainApi={handleTerrainApi} onOcclusion={handleTerrainOcclusion} />
                   </Suspense>
                 </>
               : activeMap.image ? <img className="live-map-image" src={activeMap.image} alt={activeMap.label} draggable={false} /> : <div className="live-map-placeholder">{activeMap.label}</div>}
-            {showSectorGrid && sectorGrid && <svg className="live-map-sector-grid" viewBox={`0 0 ${activeMap.width} ${activeMap.height}`} width={Math.floor(activeMap.width * zoom)} height={Math.floor(activeMap.height * zoom)} aria-hidden="true">
+            {showSectorGrid && sectorGrid && !is3D && <svg className="live-map-sector-grid" viewBox={`0 0 ${activeMap.width} ${activeMap.height}`} width={Math.floor(activeMap.width * zoom)} height={Math.floor(activeMap.height * zoom)} aria-hidden="true">
               <g className="lines">
                 {sectorGrid.lines.map((line, index) => <line key={index} x1={line.x1} y1={line.y1} x2={line.x2} y2={line.y2} className={line.edge ? "edge" : ""} />)}
               </g>
@@ -1250,9 +1511,14 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
                 {sectorGrid.labels.map((label) => <text key={label.text} x={label.px} y={label.py} fontSize={SECTOR_LABEL_PX / Math.max(zoom, 0.01)}>{label.text}</text>)}
               </g>
             </svg>}
-            <div className="live-map-marker-layer">
-              {targetPoint && pickedMarker && <div className="live-map-target" style={{ left: `${targetPoint.px * zoom}px`, top: `${targetPoint.py * zoom}px` }}>
-                <div className={`live-map-marker-overlay ${overlayAnchorClasses(targetPoint, zoom, frameRef.current)}`} role="dialog" aria-label="Picked location"
+            {sectorLabels3d && view3d && <svg className="live-map-sector-grid is-3d" style={{ left: view3d.viewport.left, top: view3d.viewport.top }} width={view3d.viewport.width} height={view3d.viewport.height} aria-hidden="true">
+              <g className="labels">
+                {sectorLabels3d.map((label) => <text key={label.text} x={label.sx} y={label.sy} fontSize={SECTOR_LABEL_PX}>{label.text}</text>)}
+              </g>
+            </svg>}
+            <div className="live-map-marker-layer" style={view3d ? { inset: "auto", left: view3d.viewport.left, top: view3d.viewport.top, width: view3d.viewport.width, height: view3d.viewport.height } : undefined}>
+              {targetPoint && pickedMarker && targetPlaced?.visible && <div className="live-map-target" style={{ left: `${targetPlaced.left}px`, top: `${targetPlaced.top}px` }}>
+                <div className={`live-map-marker-overlay ${overlayAnchorClasses(targetPlaced.viewportX, targetPlaced.viewportY, frameRef.current)}`} role="dialog" aria-label="Picked location"
                   onMouseDown={(event) => event.stopPropagation()}
                   onDoubleClick={(event) => event.stopPropagation()}>
                   <div className="live-map-marker-overlay-header">
@@ -1292,6 +1558,12 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
                 const isDraggingThisPlayer = Boolean(playerDrag && String(playerDrag.marker.id) === String(marker.id) && String(playerDrag.marker.type) === String(marker.type));
                 const isPreviewingThisPlayer = Boolean(playerTeleportPreview && String(playerTeleportPreview.marker.id) === String(marker.id) && String(playerTeleportPreview.marker.type) === String(marker.type));
                 const renderPoint = isDraggingThisPlayer ? playerDrag!.point : isPreviewingThisPlayer ? playerTeleportPreview!.point : point;
+                // A marker being dragged or previewed takes the ground's height, not its own.
+                const placed = placePoint(renderPoint, renderPoint === point ? Number(marker.z) : undefined);
+                if (!placed || !placed.visible) return null;
+                // Hidden behind the tilted terrain -- but never the marker being
+                // worked with, and never while a search is narrowing the map.
+                if (placed.occluded && !searching && !isPinned && !isDraggingThisPlayer && !isPreviewingThisPlayer) return null;
                 const spiceSizeClass = SPICE_TIER_TYPES.has(String(marker.type)) && typeof marker.subtype === "string" ? `spice-size-${marker.subtype.toLowerCase()}` : "";
                 const subtypeClass = typeof marker.subtype === "string" ? `subtype-${marker.subtype.toLowerCase()}` : "";
                 // A plain div, not a button: the overlay below nests real
@@ -1322,13 +1594,14 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
                     event.preventDefault();
                     setSelected(marker);
                   }}
-                  style={{ left: `${renderPoint.px * zoom}px`, top: `${renderPoint.py * zoom}px` }}>
-                  {overlayOpen && <div className={`live-map-marker-overlay ${overlayAnchorClasses(renderPoint, zoom, frameRef.current)}`} role="dialog" aria-label={`${friendlyMarkerType(String(marker.type))}: ${friendlyMarkerName(marker)}`}>
+                  style={{ left: `${placed.left}px`, top: `${placed.top}px` }}>
+                  {overlayOpen && <div className={`live-map-marker-overlay ${overlayAnchorClasses(placed.viewportX, placed.viewportY, frameRef.current)}`} role="dialog" aria-label={`${friendlyMarkerType(String(marker.type))}: ${friendlyMarkerName(marker)}`}>
                     <div className="live-map-marker-overlay-header">
                       <strong>{friendlyMarkerName(marker)}</strong>
+                      {isPlayer && <span className={`live-map-player-status ${playerStatus}`}>{titleCase(playerStatus)}</span>}
                       {isPinned && <button type="button" className="live-map-marker-overlay-close" aria-label="Close" onClick={(event) => { event.stopPropagation(); setSelected(null); setHoveredMarker(null); }}>×</button>}
                     </div>
-                    <div className="live-map-marker-overlay-subtitle">{liveMapOverlaySubtitle(marker)}</div>
+                    {!isPlayer && <div className="live-map-marker-overlay-subtitle">{liveMapOverlaySubtitle(marker)}</div>}
                     <div className="live-map-marker-overlay-facts">
                       {liveMapOverlayFacts(marker, maps, partitions, partitionDisplayNames).map(([key, value]) => <React.Fragment key={key}><span>{key}</span><strong>{value}</strong></React.Fragment>)}
                     </div>
@@ -1352,6 +1625,8 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
               })}
             </div>
           </div> : <div className="empty">Loading map configuration...</div>}
+        </div>
+        {is3D && <LiveMapCompass yaw={yaw} onFaceNorth={() => setYaw(0)} />}
         </div>
       </div>
     </div>
@@ -1377,14 +1652,16 @@ export function mergeLiveMapRows(previous: LiveMapMarker[], incoming: LiveMapMar
 // scrolled viewport, not just its raw canvas position) while the shift
 // itself is still applied via CSS classes, not inline math, so it stays
 // themeable.
+// Right-drag sensitivity.
+const ROTATE_DEG_PER_PX = 0.3;
+const TILT_DEG_PER_PX = 0.3;
 const OVERLAY_WIDTH = 230;
 const OVERLAY_MAX_HEIGHT = 320;
 const OVERLAY_GAP = 10;
 const OVERLAY_EDGE_MARGIN = 12;
-function overlayAnchorClasses(renderPoint: LiveMapPoint, zoom: number, frame: HTMLDivElement | null) {
+/** Which way a marker's overlay opens, from where the marker sits in the viewport. */
+function overlayAnchorClasses(viewportX: number, viewportY: number, frame: HTMLDivElement | null) {
   if (!frame) return "";
-  const viewportX = renderPoint.px * zoom - frame.scrollLeft;
-  const viewportY = renderPoint.py * zoom - frame.scrollTop;
   const classes: string[] = [];
   if (viewportX < OVERLAY_WIDTH / 2 + OVERLAY_EDGE_MARGIN) classes.push("anchor-left");
   else if (viewportX > frame.clientWidth - OVERLAY_WIDTH / 2 - OVERLAY_EDGE_MARGIN) classes.push("anchor-right");
@@ -1426,6 +1703,34 @@ function countBySubtype(markers: LiveMapMarker[]) {
   }, {});
 }
 
+function countPlayerStatuses(markers: LiveMapMarker[]) {
+  return markers.reduce<Record<string, number>>((acc, marker) => {
+    if (String(marker.type || "").toLowerCase() !== "player") return acc;
+    const status = liveMapPlayerStatus(marker);
+    acc[status] = (acc[status] || 0) + 1;
+    return acc;
+  }, {});
+}
+
+export function liveMapMarkerMatchesSearch(marker: LiveMapMarker, search: string) {
+  const query = String(search || "").trim().toLocaleLowerCase();
+  if (!query) return true;
+  const searchable = [
+    friendlyMarkerName(marker),
+    marker.name,
+    marker.owner_name,
+    marker.character_name,
+    marker.player_name,
+    marker.subtypeLabel,
+    marker.subtype,
+    marker.base_type,
+    marker.sector,
+    marker.type,
+    marker.id
+  ];
+  return searchable.some((value) => String(value ?? "").toLocaleLowerCase().includes(query));
+}
+
 // Layer sub-type labels come straight off the game's blueprint names
 // ("ContainerVehicle", "BeneGesserit", "TradingPost") with no natural word
 // spacing. Insert a space at each lower/digit -> upper word boundary
@@ -1462,7 +1767,6 @@ function friendlyMarkerName(marker: LiveMapMarker) {
 // duplicated below in the facts grid.
 function liveMapOverlaySubtitle(marker: LiveMapMarker) {
   const type = String(marker.type).toLowerCase();
-  if (type === "player") return <StatusPill value={liveMapPlayerStatus(marker)} />;
   if (type === "base") return marker.base_type || "Unknown";
   return friendlyMarkerType(type);
 }

@@ -34,7 +34,7 @@ import {
   type RestartLifecycleState
 } from "./features/server/ServerPanels";
 import { IamPolicyEditor } from "./features/settings/IamPolicyEditor";
-import { parseUpdateTask, stackVersionButtonLabel, stackVersionButtonTitle } from "./features/updates/updateUtils";
+import { parseUpdateTask, stackVersionButtonLabel, preferKnownVersions, stackVersionButtonTitle, withInstalledVersion } from "./features/updates/updateUtils";
 import { formatUiSentence, stripAnsi, summarizeCommandText, titleCase } from "./lib/display";
 import { useStaleBuildWatcher } from "./lib/staleBuildWatcher";
 
@@ -157,7 +157,7 @@ let openConfirmDialog: ((request: ConfirmDialogRequest) => void) | null = null;
 
 const AddonsPanel = lazy(() => import("./features/addons/AddonsPanel").then((module) => ({ default: module.AddonsPanel })));
 const AdminToolsPanel = lazy(() => import("./features/adminTools/AdminToolsPanel").then((module) => ({ default: module.AdminToolsPanel })));
-const BasesPanel = lazy(() => import("./features/bases/BasesPanel").then((module) => ({ default: module.BasesPanel })));
+const BasesPage = lazy(() => import("./features/bases/BasesPage").then((module) => ({ default: module.BasesPage })));
 const BackupsPanel = lazy(() => import("./features/backups/BackupsPanel").then((module) => ({ default: module.BackupsPanel })));
 const CarePackagePanel = lazy(() => import("./features/carePackage/CarePackagePanel").then((module) => ({ default: module.CarePackagePanel })));
 const DatabasePanel = lazy(() => import("./features/database/DatabasePanel").then((module) => ({ default: module.DatabasePanel })));
@@ -217,6 +217,61 @@ function chooseBackupIdentity(meta: { backup: string; currentBattlegroupId: stri
         { label: "Backup ID", value: meta.backupBattlegroupId, tone: "success" }
       ],
       resolve: (outcome) => resolve(outcome === "confirm" ? "adopt-backup" : outcome === "tertiary" ? "keep-current" : "cancel")
+    });
+  });
+}
+
+type AuditLogChoice = "adopt-backup" | "keep-current" | "cancel";
+
+// Only ever asked when the archive and this host BOTH have their own admin
+// audit history -- restore_system() auto-adopts when only the archive has
+// one, and does nothing when neither does. Same shape as
+// chooseBackupIdentity: adopt is the primary action for a genuine migration,
+// keep-current is the safer default for a same-host rollback or an
+// intentional import into a different server.
+function chooseAuditLogAction(meta: { backup: string }): Promise<AuditLogChoice> {
+  return new Promise((resolve) => {
+    if (!openConfirmDialog) {
+      resolve("cancel");
+      return;
+    }
+    openConfirmDialog({
+      title: "Choose Admin Audit History",
+      message: "This archive and this host each have their own admin audit history. Adopt the backup's history when moving the same server to new hardware. Keep this host's own history when restoring into a different server or rolling back a mistake.",
+      confirmLabel: "Adopt Backup History",
+      tertiaryLabel: "Keep Current History",
+      cancelLabel: "Cancel Restore",
+      danger: true,
+      warning: "Whichever history is not kept is still saved to the pre-restore safety copy, not deleted -- but it stops being the live record.",
+      details: [
+        { label: "Backup", value: meta.backup, tone: "accent" }
+      ],
+      resolve: (outcome) => resolve(outcome === "confirm" ? "adopt-backup" : outcome === "tertiary" ? "keep-current" : "cancel")
+    });
+  });
+}
+
+type SystemImportConflictChoice = "overwrite" | "rename" | "cancel";
+
+// Rename is the confirm (primary) action and overwrite the tertiary: the safe
+// answer should be the one an operator reaches for without reading, because the
+// dangerous one destroys the only copy of the credentials already stored.
+function chooseImportConflict(existing: string): Promise<SystemImportConflictChoice> {
+  return new Promise((resolve) => {
+    if (!openConfirmDialog) {
+      resolve("cancel");
+      return;
+    }
+    openConfirmDialog({
+      title: "Backup Already Exists",
+      message: "A system backup with that name is already stored on this host. Keep both by storing the upload under a new name, or replace the stored one.",
+      confirmLabel: "Keep Both",
+      tertiaryLabel: "Overwrite",
+      cancelLabel: "Cancel Import",
+      danger: true,
+      warning: "Overwriting destroys the only copy of the credentials inside the stored archive. There is no undo and no other copy on this host.",
+      details: [{ label: "Already stored", value: existing, tone: "accent" }],
+      resolve: (outcome) => resolve(outcome === "confirm" ? "rename" : outcome === "tertiary" ? "overwrite" : "cancel")
     });
   });
 }
@@ -434,6 +489,10 @@ export function App() {
   const [useRecoveryCode, setUseRecoveryCode] = useState(false);
   const [setupMode, setSetupMode] = useState<"enroll" | "resetup" | null>(null);
   const [tab, setTab] = useActiveTab();
+  // Bumped when a failure elsewhere (a restore that needs the game images)
+  // sends the operator to Updates to install them. A nonce rather than a
+  // boolean so a second failure re-triggers it after the first was handled.
+  const [installGameFilesRequest, setInstallGameFilesRequest] = useState(0);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [pinnedAddons, setPinnedAddons] = useState<PinnedAddon[]>(() => loadPinnedAddons());
   const [selectedPinnedAddonId, setSelectedPinnedAddonId] = useState("");
@@ -455,6 +514,8 @@ export function App() {
   const [homeRunningAction, setHomeRunningAction] = useState<"start" | "stop" | "restart" | "">("");
   const [homeRestartStarted, setHomeRestartStarted] = useState(false);
   const [stackVersionStatus, setStackVersionStatus] = useState<Record<string, string>>({ status: "Checking", current: "", latest: "" });
+  const [installedVersion, setInstalledVersion] = useState("");
+  const stackBadgeStatus = withInstalledVersion(stackVersionStatus, installedVersion);
   const stackActionStartedAt = useRef(0);
   const stackActionReadyPolls = useRef(0);
   const stackRestartLifecycle = useRef<RestartLifecycleState>(createRestartLifecycleState());
@@ -513,12 +574,13 @@ export function App() {
   }, [pinnedAddons]);
 
   useEffect(() => {
-    api<{ authenticated: boolean; csrfToken: string | null; config?: { discordOAuthConfigured?: boolean; ports?: Partial<ServerPorts>; port?: number } }>("/api/auth/state").then((state) => {
+    api<{ authenticated: boolean; csrfToken: string | null; config?: { discordOAuthConfigured?: boolean; ports?: Partial<ServerPorts>; port?: number; version?: string } }>("/api/auth/state").then((state) => {
       setAuth(state.authenticated);
       setCsrfToken(state.csrfToken);
       setDiscordSignInAvailable(Boolean(state.config?.discordOAuthConfigured));
       setServerPorts(state.config?.ports);
       setAdminPort(state.config?.port);
+      setInstalledVersion(String(state.config?.version || ""));
     }).catch(() => undefined);
   }, []);
 
@@ -806,9 +868,9 @@ export function App() {
     void (async () => {
       try {
         const final = await waitForTaskSilently((await updatesApi.checkStack()).task);
-        if (!cancelled) setStackVersionStatus(parseUpdateTask(final));
+        if (!cancelled) setStackVersionStatus((previous) => preferKnownVersions(previous, parseUpdateTask(final)));
       } catch {
-        if (!cancelled) setStackVersionStatus({ status: "Unavailable", current: "", latest: "" });
+        if (!cancelled) setStackVersionStatus((previous) => preferKnownVersions(previous, { status: "Unavailable", current: "", latest: "" }));
       }
     })();
     return () => { cancelled = true; };
@@ -937,7 +999,7 @@ export function App() {
           <button className="sidebar-home-button" type="button" onClick={() => { setRedeploySetupOpen(false); setTab("Home"); closeMobileNav(); }} title="Open Home">
             <h1>Dune Docker Console</h1>
           </button>
-          <button className="stack-version-button" title={stackVersionButtonTitle(stackVersionStatus)} aria-label={stackVersionButtonTitle(stackVersionStatus)} onClick={() => { setRedeploySetupOpen(false); setTab("Updates"); closeMobileNav(); }}>{stackVersionButtonLabel(stackVersionStatus)}</button>
+          <button className="stack-version-button" title={stackVersionButtonTitle(stackBadgeStatus)} aria-label={stackVersionButtonTitle(stackBadgeStatus)} onClick={() => { setRedeploySetupOpen(false); setTab("Updates"); closeMobileNav(); }}>{stackVersionButtonLabel(stackBadgeStatus)}</button>
           <button
             className="sidebar-menu-toggle"
             type="button"
@@ -1028,9 +1090,9 @@ export function App() {
           setRedeploySetupOpen(true);
         }} />}
         {!redeploySetupOpen && tab === "Services" && <LazyTabBoundary label="Loading Services"><ServicesPanel services={services} setServices={setServices} setTask={setTask} openLogs={(service) => { setRedeploySetupOpen(false); setSelectedLogService(service); setTab("Logs"); }} onError={setError} confirmAction={confirmDialog} restartGate={restartGateChoice} /></LazyTabBoundary>}
-        {!redeploySetupOpen && tab === "Players" && <LazyTabBoundary label="Loading Players"><PlayersPanel onError={setError} renderCharacterAdmin={(props) => <LazyTabBoundary label="Loading Player Details"><CharacterAdminUI {...props} onError={setError} confirmAction={confirmDialog} waitForTask={waitForTaskSilently} formatMutationResult={formatMutationResult} restartGate={restartGateChoice} /></LazyTabBoundary>} /></LazyTabBoundary>}
+        {!redeploySetupOpen && tab === "Players" && <LazyTabBoundary label="Loading Players"><PlayersPanel onError={setError} confirmAction={confirmDialog} onOpenBase={(baseId) => { setBaseFocusRequest((current) => ({ baseId, nonce: current.nonce + 1 })); setTab("Bases"); }} renderCharacterAdmin={(props) => <LazyTabBoundary label="Loading Player Details"><CharacterAdminUI {...props} onError={setError} confirmAction={confirmDialog} waitForTask={waitForTaskSilently} formatMutationResult={formatMutationResult} restartGate={restartGateChoice} /></LazyTabBoundary>} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Guilds" && <LazyTabBoundary label="Loading Guilds"><GuildsPanel onError={setError} confirmAction={confirmDialog} /></LazyTabBoundary>}
-        {!redeploySetupOpen && tab === "Bases" && <LazyTabBoundary label="Loading Bases"><BasesPanel onError={setError} confirmAction={confirmDialog} restartGate={restartGateChoice} formatMutationResult={formatMutationResult} focusRequest={baseFocusRequest} /></LazyTabBoundary>}
+        {!redeploySetupOpen && tab === "Bases" && <LazyTabBoundary label="Loading Bases"><BasesPage onError={setError} confirmAction={confirmDialog} restartGate={restartGateChoice} formatMutationResult={formatMutationResult} focusRequest={baseFocusRequest} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Vehicles" && <LazyTabBoundary label="Loading Vehicles"><VehiclesPanel onError={setError} confirmAction={confirmDialog} formatMutationResult={formatMutationResult} focusRequest={vehicleFocusRequest} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Exchange" && <LazyTabBoundary label="Loading Market Board"><ExchangePanel onError={setError} confirmAction={confirmDialog} formatMutationResult={formatMutationResult} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Landsraad" && <LazyTabBoundary label="Loading Landsraad"><LandsraadPanel onError={setError} confirmAction={confirmDialog} restartGate={restartGateChoice} /></LazyTabBoundary>}
@@ -1047,6 +1109,9 @@ export function App() {
             onError={setError}
             confirmAction={confirmDialog}
             chooseBackupIdentity={chooseBackupIdentity}
+            chooseAuditLogAction={chooseAuditLogAction}
+            onInstallGameFiles={() => { setInstallGameFilesRequest((current) => current + 1); setTab("Updates"); }}
+            chooseImportConflict={chooseImportConflict}
             waitForTask={waitForTaskSilently}
             waitForTaskWithUpdates={waitForTaskWithUpdates}
             withTimeout={withTimeout}
@@ -1059,6 +1124,10 @@ export function App() {
           /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Logs" && <LazyTabBoundary label="Loading Logs"><LogsPanel selectedService={selectedLogService} setSelectedService={setSelectedLogService} text={logs} setText={setLogs} onError={setError} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Updates" && <LazyTabBoundary label="Loading Updates"><UpdatesPanel
+            installGameFilesRequest={installGameFilesRequest}
+            onInstallGameFilesHandled={() => setInstallGameFilesRequest(0)}
+            onStackStatus={setStackVersionStatus}
+            installedConsoleVersion={installedVersion}
             confirmAction={confirmDialog}
             waitForTask={waitForTaskSilently}
             parseKeyValueText={parseKeyValueText}

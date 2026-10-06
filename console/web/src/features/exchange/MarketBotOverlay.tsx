@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 import {
+  MARKET_BOT_DISABLE_BACKUPS_PHRASE,
   marketBotApi,
   type MarketAugmentPricing,
   type MarketBotStatus,
@@ -450,16 +451,34 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
     });
   }
 
+  // Missing settings (older API) mean backups are on, matching the server default.
+  const safetyBackups = status?.settings?.safetyBackups !== false;
+  const skippedSuffix = (result: { backupSkipped?: boolean }) => (result.backupSkipped ? " No safety backup was taken." : "");
+
+  async function setSafetyBackups(enabled: boolean) {
+    if (!enabled) {
+      const confirmed = await confirmAction(
+        "Turn off Market Bot safety backups? Buyback sweeps, reseeds, and NPC listing removals will change the database without taking a backup first. This applies to scheduled and manual runs. Existing backups are kept.",
+        { title: "Disable Safety Backups", confirmLabel: "Disable Backups", danger: true }
+      );
+      if (!confirmed) return;
+    }
+    await run("safety-backups", async () => {
+      await marketBotApi.saveSettings(enabled ? { safetyBackups: true } : { safetyBackups: false, confirmation: MARKET_BOT_DISABLE_BACKUPS_PHRASE });
+      return enabled ? "Safety backups are on." : "Safety backups are off.";
+    });
+  }
+
   async function runBuybackNow() {
     const confirmed = await confirmAction(
-      "Run a buyback sweep now with the saved schedule settings? The console probes eligibility first and takes a database backup only when there is something to buy.",
+      `Run a buyback sweep now with the saved schedule settings? The console probes eligibility first${safetyBackups ? " and takes a database backup only when there is something to buy." : ". Safety backups are off, so no backup is taken."}`,
       { title: "Run Buyback Sweep", confirmLabel: "Run Sweep", danger: true }
     );
     if (!confirmed) return;
     await run("run-buyback", async () => {
       const result = await marketBotApi.runBuyback();
       if (result.status === "swept") {
-        return `Sweep finished: bought ${result.purchased ?? 0} listing(s), ${result.totalUnits ?? "0"} units for ${result.totalSolari ?? "0"} Solari.`;
+        return `Sweep finished: bought ${result.purchased ?? 0} listing(s), ${result.totalUnits ?? "0"} units for ${result.totalSolari ?? "0"} Solari.${skippedSuffix(result)}`;
       }
       return result.detail || "Nothing eligible; no backup was taken.";
     });
@@ -483,19 +502,19 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
 
   async function runSeedNow() {
     const confirmed = await confirmAction(
-      "Reseed the NPC sell market now with the saved schedule settings? The console takes a database backup, clears the bot's own listings on that exchange, then seeds fresh from the active seed plan. Player listings are never touched.",
+      `Reseed the NPC sell market now with the saved schedule settings? The console ${safetyBackups ? "takes a database backup, clears" : "clears (safety backups are off, so no backup is taken)"} the bot's own listings on that exchange, then seeds fresh from the active seed plan. Player listings are never touched.`,
       { title: "Run Market Reseed", confirmLabel: "Run Reseed", danger: true }
     );
     if (!confirmed) return;
     await run("run-seed", async () => {
       const result = await marketBotApi.runSeed();
-      return `Reseed finished: ${result.listingCount ?? "0"} listings on exchange ${result.exchangeId ?? "?"}.`;
+      return `Reseed finished: ${result.listingCount ?? "0"} listings on exchange ${result.exchangeId ?? "?"}.${skippedSuffix(result)}`;
     });
   }
 
   async function runUnseedNow() {
     const confirmed = await confirmAction(
-      "Remove all of the Market Bot's NPC sell listings from the selected exchange? The console checks read-only first and takes a database backup only when there is something to remove. Player listings and pending seller payments are never touched.",
+      `Remove all of the Market Bot's NPC sell listings from the selected exchange? The console checks read-only first${safetyBackups ? " and takes a database backup only when there is something to remove." : ". Safety backups are off, so no backup is taken."} Player listings and pending seller payments are never touched.`,
       {
         title: "Remove NPC Listings",
         confirmLabel: "Remove Listings",
@@ -507,7 +526,7 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
     await run("unseed", async () => {
       const result = await marketBotApi.unseed(exchangeId ? { exchangeId } : {});
       if (result.status === "empty") return result.detail || "No NPC listings to remove; no backup was taken.";
-      return `Unseed finished: removed ${result.removedListings ?? "0"} NPC listing(s) from exchange ${result.exchangeId ?? "?"}.`;
+      return `Unseed finished: removed ${result.removedListings ?? "0"} NPC listing(s) from exchange ${result.exchangeId ?? "?"}.${skippedSuffix(result)}`;
     });
   }
 
@@ -602,7 +621,7 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
     <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Market Bot Settings" onClick={onClose}>
       <div className="confirm-modal exchange-config-modal market-bot-modal" onClick={(event) => event.stopPropagation()}>
         <div className="confirm-modal-title">
-          <div className="market-bot-title"><h3>Market Bot</h3><InfoTooltip id="market-bot-overview-help" label="About Market Bot">Market Bot can seed NPC sell listings and buy eligible player listings. Schedules run inside the Console without this window remaining open. Every database write is preceded by a backup.</InfoTooltip></div>
+          <div className="market-bot-title"><h3>Market Bot</h3><InfoTooltip id="market-bot-overview-help" label="About Market Bot">{`Market Bot can seed NPC sell listings and buy eligible player listings. Schedules run inside the Console without this window remaining open. ${safetyBackups ? "Every database write is preceded by a backup." : "Safety backups are off: database writes run without a backup."}`}</InfoTooltip></div>
           <button className="exchange-config-close" aria-label="Close" onClick={onClose}><X size={16} /></button>
         </div>
         {loading && <p className="muted">Loading…</p>}
@@ -666,6 +685,17 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
               </label>
             </div>
 
+            <div className={`market-bot-settings-block market-bot-backups${safetyBackups ? "" : " market-bot-backups-off"}`}>
+              <div className="market-bot-backups-row">
+                <SectionTitle title={safetyBackups ? "Safety Backups" : "Safety Backups Off"} id="market-bot-backups-help" help="When on, the console takes a full database backup before every Market Bot write: buyback sweeps, reseeds, and NPC listing removals, scheduled or manual. Only the newest Market Bot backups are kept (DUNE_MARKET_BOT_BACKUP_KEEP, default 5). Turning this off skips those backups; existing backups are kept." />
+                <label className="market-bot-toggle">
+                  <input aria-label="Back Up the Database Before Every Write" type="checkbox" checked={safetyBackups} disabled={Boolean(busy)} onChange={(event) => void setSafetyBackups(event.target.checked)} />
+                  <span>Back Up Before Every Write</span>
+                </label>
+              </div>
+              {!safetyBackups && <p className="market-bot-backups-warning" role="note">Market Bot writes run without a restore point. Scheduled and manual runs are affected.</p>}
+            </div>
+
             <div className="market-bot-tabs" role="tablist" aria-label="Market Bot Sections">
               <button type="button" role="tab" aria-selected={activeTab === "buyback"} className={activeTab === "buyback" ? "active" : ""} onClick={() => setActiveTab("buyback")}>Buyback</button>
               <button type="button" role="tab" aria-selected={activeTab === "reseed"} className={activeTab === "reseed" ? "active" : ""} onClick={() => setActiveTab("reseed")}>Reseed</button>
@@ -675,7 +705,7 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
             {notice && <p className="market-bot-notice" role="status">{notice}</p>}
 
             {activeTab === "buyback" && <div className="market-bot-section" role="tabpanel">
-              <SectionTitle title="Buyback Sweeps" id="market-bot-buyback-help" help="Buys complete player-listed stacks when the per-unit ask is within the configured percentage of the selected price basis. A sweep checks eligibility first and creates a backup only when something qualifies. Seeded pricing follows the reseed augment-pricing choice; category multipliers may be tuned independently." />
+              <SectionTitle title="Buyback Sweeps" id="market-bot-buyback-help" help="Buys complete player-listed stacks when the per-unit ask is within the configured percentage of the selected price basis. A sweep checks eligibility first and, with Safety Backups on, creates a backup only when something qualifies. Seeded pricing follows the reseed augment-pricing choice; category multipliers may be tuned independently." />
               <div className="market-bot-settings-block">
                 <strong>Schedule</strong>
                 <div className="market-bot-grid market-bot-schedule-grid">
@@ -734,7 +764,7 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
             </div>}
 
             {activeTab === "reseed" && <div className="market-bot-section" role="tabpanel">
-              <SectionTitle title="Market Reseed" id="market-bot-reseed-help" help="Replaces only the bot's NPC sell listings from the active seed plan. Each write run creates a backup, clears the bot listings on the selected exchange, and seeds fresh stock; player listings are never touched. Augments use bottom-of-range rolls, with either discounted or original plan pricing." />
+              <SectionTitle title="Market Reseed" id="market-bot-reseed-help" help="Replaces only the bot's NPC sell listings from the active seed plan. Each write run creates a backup (when Safety Backups are on), clears the bot listings on the selected exchange, and seeds fresh stock; player listings are never touched. Augments use bottom-of-range rolls, with either discounted or original plan pricing." />
               <div className="market-bot-settings-block">
                 <strong>Schedule</strong>
                 <div className="market-bot-grid market-bot-schedule-grid">

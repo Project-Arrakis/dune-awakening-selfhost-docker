@@ -58,4 +58,30 @@ describe("BuildingUnlocksTab", () => {
     expect(await screen.findByText("Pending Login")).toBeInTheDocument();
     expect(screen.getByText(/Dune will process it on the next login/i)).toBeInTheDocument();
   });
+
+  it("shows a DLC requirement in the grant confirmation", async () => {
+    const confirmAction = vi.fn().mockResolvedValue(false);
+    vi.mocked(playersApi.buildingUnlocks).mockResolvedValue({
+      capabilities: { buildingUnlockOwnership: true },
+      rows: [{ itemId: "MTX_Sardaukar_BuildingSet_Patent", name: "Sardaukar Building Set", group: "Special & Promotional", status: "Available", experimental: false, requiredDlc: "Filmic Archive", image: "/images/items/MTX_Sardaukar_BuildingSet_Patent.png" }]
+    });
+    render(<BuildingUnlocksTab dbPlayerId="123" playerName="Chani" confirmAction={confirmAction} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Grant" }));
+    expect(confirmAction).toHaveBeenCalledWith(expect.stringMatching(/must own Filmic Archive/i), expect.objectContaining({
+      details: expect.arrayContaining([expect.objectContaining({ label: "Requires", value: "Filmic Archive" })])
+    }));
+  });
+
+  it("shows entitlement-controlled database records without claiming DLC ownership", async () => {
+    vi.mocked(playersApi.buildingUnlocks).mockResolvedValue({
+      capabilities: { buildingUnlockOwnership: true },
+      rows: [{ itemId: "MTX_Neut_DesertMechanicSet_Patent", name: "Dune Man Building Set", group: "Special & Promotional", status: "Owned", experimental: false, requiredDlc: "Lost Harvest", entitlementControlled: true }]
+    });
+    render(<BuildingUnlocksTab dbPlayerId="123" playerName="Chani" confirmAction={vi.fn().mockResolvedValue(true)} />);
+
+    expect(await screen.findByText("Lost Harvest")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Recorded" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Owned" })).not.toBeInTheDocument();
+  });
 });

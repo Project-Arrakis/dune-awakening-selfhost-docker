@@ -3,12 +3,23 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 
+# farm-readiness.sh, like every script that sources a library here, resolves its
+# `source` lines against the repository root.
+cd "$repo_root"
+
+# The database query goes through runtime/scripts/lib/postgres.sh, which would
+# otherwise pick the TCP transport wherever a psql client is installed -- the
+# GitHub runner images ship one -- and dial a server that does not exist. Pinning
+# the exec transport keeps the query on the path the `docker` mock below covers.
+export DUNE_PSQL_TRANSPORT=exec
+
 source "$repo_root/runtime/scripts/farm-readiness.sh"
 
 mock_map_log=""
 mock_full_map_log=""
 mock_director_log=""
 mock_db_state="true|true"
+mock_target="abc|Survival_1"
 mock_container_id="container-generation-1"
 mock_director_id="director-generation-1"
 mock_container_started_at="2026-09-05T13:00:00Z"
@@ -62,7 +73,11 @@ docker() {
       printf '%s\n' "$mock_full_map_log"
       ;;
     "exec dune-postgres")
-      printf '%s\n' "$mock_db_state"
+      if [[ "$*" == *"select server_id ||"* ]]; then
+        printf '%s\n' "$mock_target"
+      else
+        printf '%s\n' "$mock_db_state"
+      fi
       ;;
     *)
       printf 'unexpected docker invocation: %s\n' "$*" >&2
@@ -103,6 +118,35 @@ expect_not_ready
 # Fewer than the configured number of reports cannot briefly flash Ready.
 mock_director_log=$'[ServerState] {"partitionId":1,"ready":true}\n[ServerState] {"partitionId":1,"ready":true}'
 expect_not_ready
+
+# Exact completed arrival is stronger evidence than an extra heartbeat, but
+# requests, incomplete handling and another server/partition/player are not.
+arrival='Handling travel completion : TravelCompletion { FlsId = player, FlowId = flow, MapName = Survival_1, PartitionId = 1, ServerID = abc }'
+handled='Handling travel completion for flow: player to Survival_1 (instancingMode=Dimension)'
+mock_director_log="$arrival"
+expect_not_ready
+for wrong in \
+  "${arrival/ServerID = abc/ServerID = old-server}" \
+  "${arrival/PartitionId = 1/PartitionId = 31}" \
+  "${arrival/MapName = Survival_1/MapName = Overmap}" \
+  "${arrival/FlowId = flow/FlowId = another-flow}" \
+  "${arrival/FlsId = player/FlsId = another-player}"; do
+  mock_director_log="$wrong"$'\n'"$handled"
+  expect_not_ready
+done
+mock_director_log="$arrival"$'\n'"$handled"
+mock_db_state="false|true"
+expect_not_ready
+mock_db_state="true|true"
+farm_partition_is_ready dune-server-survival-1 1 3
+grep -Fq "logs --since $mock_container_started_at" "$mock_docker_log_calls_file"
+# Consume long output fully so a valid completion does not cause SIGPIPE.
+{ printf '%s\n%s\n' "$arrival" "$handled"; printf 'unrelated long log %.0s' {1..10000}; } | farm_partition_has_completed_travel 1
+mock_container_id="completed-arrival-new-generation"
+mock_director_log=""
+expect_not_ready
+mock_container_id="container-generation-1"
+rm -f "$test_cache_dir/dune-server-survival-1.stable"
 
 # Marker + current ready/alive state + three consecutive reports is Ready.
 mock_director_log=$'[ServerState] {"partitionId":1,"ready":true}\n[ServerState] {"partitionId":1,"ready":true}\n[ServerState] {"partitionId":1,"ready":true}'

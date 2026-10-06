@@ -20,6 +20,7 @@ export const PLAYER_TIER_ACTIONS = Object.freeze(new Set(["players:read", "guild
 const PLAYER_OWN_SUBRESOURCES = ["inventory", "vehicles", "bases", "currency", "solaris-coin"];
 const OWN_PLAYER_RE = new RegExp(`^/api/players/([^/]+)(?:/(${PLAYER_OWN_SUBRESOURCES.join("|")}))?$`);
 const OWN_GUILD_MEMBERS_RE = /^\/api\/guilds\/([^/]+)\/members$/;
+const CANONICAL_ID_RE = /^[1-9][0-9]{0,17}$/;
 const LIST_PATHS = new Set(["/api/players", "/api/players/online", "/api/players/search", "/api/guilds"]);
 
 // -> { kind: "open" }                      not a players/guilds route, this gate has no opinion
@@ -34,9 +35,10 @@ export function classifyPlayerTierRequest(path, method) {
   if (method !== "GET") return { kind: "deny" };
   if (LIST_PATHS.has(path)) return { kind: "scoped-list" };
   const guild = OWN_GUILD_MEMBERS_RE.exec(path);
-  if (guild) return { kind: "own-guild", id: guild[1] };
+  if (guild) return CANONICAL_ID_RE.test(guild[1]) ? { kind: "own-guild", id: guild[1] } : { kind: "deny" };
   const player = OWN_PLAYER_RE.exec(path);
-  // "online" and "search" are list routes handled above; they must never be read as ids.
-  if (player && player[1] !== "online" && player[1] !== "search") return { kind: "own-player", id: player[1] };
+  // Only a plain positive integer names a player. That also keeps named routes such as
+  // /api/players/deleted-characters (a server-wide list) from ever being read as an id.
+  if (player && CANONICAL_ID_RE.test(player[1])) return { kind: "own-player", id: player[1] };
   return { kind: "deny" };
 }
