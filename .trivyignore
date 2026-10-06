@@ -37,6 +37,15 @@ CVE-2026-14456  # libssl3t64/openssl
 # base-image bump.
 CVE-2026-11822  # libsqlite3-0 -- FTS5 arbitrary code execution; no fix in Debian
 CVE-2026-11824  # libsqlite3-0 -- arbitrary code execution/crash; no fix in Debian
+# Added 2026-10-06. python3.13 (explicit python3 install, issue #489): Debian
+# trixie tracker marks CVE-2026-19445 "<no-dsa> (Minor issue)", no fixed version
+# (trivy shows "affected", empty fix column) as of triage, so a version bump is
+# not available. The flaw is a use-after-free in a Python TLS SERVER whose SNI
+# callback reassigns SSLSocket.context; TLS clients and servers that wrap their
+# listening socket are unaffected. Exposure is nil: the console runs Python only
+# as stdlib scripts spawned by runner.js, never a TLS server, and the console's
+# own HTTP listener is Node. Re-check on the next apt layer rebuild.
+CVE-2026-19445  # libpython3.13-minimal/libpython3.13-stdlib/python3.13/python3.13-minimal -- no fix in Debian
 CVE-2026-24882  # dirmngr
 CVE-2026-41992  # gzip
 CVE-2026-42496  # perl-base

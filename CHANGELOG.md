@@ -15,6 +15,8 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ### Security
 
+- **CI scan gate: accepted CVE-2026-19445 (python3.13, no Debian fix).** `trivy-image-scan` began failing on every PR when this HIGH was published for the Debian `python3.13` packages the console image installs for `dune` scripts. Debian marks it `no-dsa` (minor) with no fixed version; it affects only Python TLS servers using an SNI callback that reassigns the context, which the console never runs. Recorded in `.trivyignore` with the triage reasoning; revisit on the next apt layer rebuild. No operator action.
+
 - **CI scan gate fixed: dev-dependency and bundled-npm advisories.** `console/web`'s lockfile moves `undici` 7.29.0 -> 7.30.0 (and `source-map-js` 1.2.1 -> 1.2.2) via `npm audit fix`, clearing the two HIGH osv-scanner findings; `console/api`'s runtime image no longer ships npm/npx (the container only runs `node /app/src/server.js`), which removes the bundled `brace-expansion`/`undici` packages trivy-image-scan was failing on (HIGH, base-image-lag class). No operator action; the console image rebuilds on the next `dune self-update`.
 
 ### Added
