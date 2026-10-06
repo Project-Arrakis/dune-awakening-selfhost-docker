@@ -38,27 +38,25 @@ beforeEach(() => {
 });
 
 describe("PlayerVehiclesTab", () => {
-  it("shows owned and shared vehicles with the same expandable vehicle presentation", async () => {
+  it("lists only vehicles the player owns, hiding ones merely shared with them", async () => {
     vi.mocked(vehiclesApi.forPlayer).mockResolvedValue(response());
     render(<PlayerVehiclesTab playerId="42" playerName="Kovalt" confirmAction={confirmAction} />);
 
     expect(await screen.findByText("Owned Bike")).toBeInTheDocument();
     expect(screen.getByText("Hagga Basin · Partition 1")).toBeInTheDocument();
     expect(vehiclesApi.forPlayer).toHaveBeenCalledWith("42");
-    expect(screen.getByText("Co-Owner")).toBeInTheDocument();
-    expect(screen.getByText("Duncan")).toBeInTheDocument();
-    expect(screen.getByLabelText("Player vehicle totals")).toHaveTextContent("2 Total");
+    expect(screen.queryByText("Shared Buggy")).not.toBeInTheDocument();
+    expect(screen.queryByText("Co-Owner")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Player vehicle totals")).toHaveTextContent("1 Owned");
-    expect(screen.getByLabelText("Player vehicle totals")).toHaveTextContent("1 Shared");
+    expect(screen.getByLabelText("Player vehicle totals")).not.toHaveTextContent("Shared");
 
-    fireEvent.click(screen.getByLabelText("Show components for Shared Buggy"));
-    expect(screen.getByText("Buggy Tread")).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Show components for Owned Bike"));
   });
 
   it("refreshes the filtered list on demand", async () => {
     vi.mocked(vehiclesApi.forPlayer).mockResolvedValue(response({ rows: [], totalCount: 0 }));
     render(<PlayerVehiclesTab playerId="42" playerName="Kovalt" confirmAction={confirmAction} />);
-    expect(await screen.findByText("Kovalt has no owned or shared vehicles.")).toBeInTheDocument();
+    expect(await screen.findByText("Kovalt has no owned vehicles.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     await waitFor(() => expect(vehiclesApi.forPlayer).toHaveBeenCalledTimes(2));
   });

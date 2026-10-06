@@ -28,7 +28,9 @@ export function PlayerVehiclesTab({ playerId, playerName, confirmAction }: Playe
     try {
       const result = await vehiclesApi.forPlayer(playerId);
       if (requestIdRef.current !== requestId) return;
-      setRows(result.rows || []);
+      // Only vehicles the player owns; ones merely shared with them are
+      // managed from their owner's page.
+      setRows((result.rows || []).filter((row) => row.relationship === "Owner"));
       setSupported(result.capabilities?.vehicles !== false);
       setCanEditPermissions(result.capabilities?.vehiclePermissions === true);
       setStorageSupported(result.capabilities?.vehicleStorage === true);
@@ -50,16 +52,13 @@ export function PlayerVehiclesTab({ playerId, playerName, confirmAction }: Playe
     return () => { requestIdRef.current += 1; };
   }, [load, playerId]);
 
-  const ownedCount = rows.filter((row) => row.relationship === "Owner").length;
-  const sharedCount = rows.length - ownedCount;
-
   return (
     <div className="playerAdmin_content">
       <section className="playerAdmin_box player-vehicles-panel">
         <div className="panel-title">
           <div>
             <h4>Vehicles</h4>
-            <p className="playerAdmin_note">Vehicles owned by or shared with {playerName}. Select a row to inspect its fitted components.</p>
+            <p className="playerAdmin_note">Vehicles owned by {playerName}. Select a row to inspect its fitted components.</p>
           </div>
           <button type="button" disabled={loading || !playerId} onClick={() => void load()}>Refresh</button>
         </div>
@@ -69,20 +68,18 @@ export function PlayerVehiclesTab({ playerId, playerName, confirmAction }: Playe
             ? <p className={`playerAdmin_note${supported ? " danger" : ""}`}>{message}</p>
             : <>
                 <div className="player-vehicles-summary" aria-label="Player vehicle totals">
-                  <span><strong>{rows.length}</strong> Total</span>
-                  <span><strong>{ownedCount}</strong> Owned</span>
-                  <span><strong>{sharedCount}</strong> Shared</span>
+                  <span><strong>{rows.length}</strong> Owned</span>
                 </div>
                 <VehicleTable
                   rows={rows}
                   context="player"
-                  emptyMessage={`${playerName} has no owned or shared vehicles.`}
+                  emptyMessage={`${playerName} has no owned vehicles.`}
                   canEditPermissions={canEditPermissions}
                   storageSupported={storageSupported}
                   confirmAction={confirmAction}
-                  // ownedCount above derives from row.relationship, which
-                  // shifts after a rank change -- refetch so the summary and
-                  // the table stay in sync with what was just saved.
+                  // Rows are filtered on row.relationship, which shifts after a
+                  // rank change -- refetch so the list stays in sync with what
+                  // was just saved.
                   onPermissionsSaved={() => void load()}
                 />
               </>}

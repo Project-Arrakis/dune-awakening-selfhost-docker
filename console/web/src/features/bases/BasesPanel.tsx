@@ -486,7 +486,17 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
     try {
       const result = playerId ? await basesApi.forPlayer(playerId, params) : await basesApi.list(params);
       if (requestIdRef.current !== requestId) return;
-      const nextRows = (result.rows || []).map(withCoordinates);
+      // The per-player view lists only bases the player owns; bases merely
+      // shared with them belong to someone else and are managed from that
+      // owner's page. The endpoint is unpaginated here, so filtering the
+      // rows (and deriving the totals from them) stays exact.
+      const allRows = (result.rows || []).map(withCoordinates);
+      const nextRows = playerId ? allRows.filter((row) => row.relationship === "Owner") : allRows;
+      const ownedOnlyTotals = playerId ? {
+        count: nextRows.length,
+        pieces: nextRows.reduce((sum, row) => sum + (Number(row.piece_count) || 0), 0),
+        placeables: nextRows.reduce((sum, row) => sum + (Number(row.placeable_count) || 0), 0)
+      } : null;
       setRows(nextRows);
       setCanRefill(Boolean(result.capabilities?.generatorRefill));
       setCanQueue(Boolean(result.capabilities?.generatorRefillQueue));
@@ -497,12 +507,18 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
       setCanQueueWater(Boolean(result.capabilities?.waterRefillQueue));
       setCanDeleteBase(Boolean(result.capabilities?.baseDelete));
       setCanQueueDelete(Boolean(result.capabilities?.baseDeleteQueue));
-      setTotalCount(result.totalCount || 0);
-      setTotalBases(result.totalBases || 0);
-      setTotalOwned(result.totalOwned || 0);
-      setTotalShared(result.totalShared || 0);
-      setTotalPieces(result.totalPieces || 0);
-      setTotalPlaceables(result.totalPlaceables || 0);
+      const nextTotalCount = ownedOnlyTotals ? ownedOnlyTotals.count : result.totalCount || 0;
+      const nextTotalBases = ownedOnlyTotals ? ownedOnlyTotals.count : result.totalBases || 0;
+      const nextTotalOwned = ownedOnlyTotals ? ownedOnlyTotals.count : result.totalOwned || 0;
+      const nextTotalShared = ownedOnlyTotals ? 0 : result.totalShared || 0;
+      const nextTotalPieces = ownedOnlyTotals ? ownedOnlyTotals.pieces : result.totalPieces || 0;
+      const nextTotalPlaceables = ownedOnlyTotals ? ownedOnlyTotals.placeables : result.totalPlaceables || 0;
+      setTotalCount(nextTotalCount);
+      setTotalBases(nextTotalBases);
+      setTotalOwned(nextTotalOwned);
+      setTotalShared(nextTotalShared);
+      setTotalPieces(nextTotalPieces);
+      setTotalPlaceables(nextTotalPlaceables);
       basesCache = {
         scope,
         q: params.q,
@@ -511,12 +527,12 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
         sortColumn: params.sortColumn,
         sortDirection: params.sortDirection,
         rows: nextRows,
-        totalCount: result.totalCount || 0,
-        totalBases: result.totalBases || 0,
-        totalOwned: result.totalOwned || 0,
-        totalShared: result.totalShared || 0,
-        totalPieces: result.totalPieces || 0,
-        totalPlaceables: result.totalPlaceables || 0,
+        totalCount: nextTotalCount,
+        totalBases: nextTotalBases,
+        totalOwned: nextTotalOwned,
+        totalShared: nextTotalShared,
+        totalPieces: nextTotalPieces,
+        totalPlaceables: nextTotalPlaceables,
         lastFetchedAt: Date.now()
       };
       // Re-run the instance-name effect on the same cycle. Its own dependency
@@ -1343,7 +1359,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
       <div className="panel-title">
         <div>
           <PanelHeading>Bases</PanelHeading>
-          {playerId && <p className="playerAdmin_note">Bases owned by or shared with {playerName}. Expand a row to use the same tools available on the main Bases page.</p>}
+          {playerId && <p className="playerAdmin_note">Bases owned by {playerName}. Expand a row to use the same tools available on the main Bases page.</p>}
         </div>
         {viewSwitch}
         <div className="action-row">
@@ -1363,9 +1379,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
       </div>
       {playerId
         ? <div className="player-vehicles-summary player-bases-summary" aria-label="Player base totals">
-            <span><strong>{totalBases.toLocaleString()}</strong> Total</span>
-            <span><strong>{totalOwned.toLocaleString()}</strong> Owned</span>
-            <span><strong>{totalShared.toLocaleString()}</strong> Shared</span>
+            <span><strong>{totalBases.toLocaleString()}</strong> Owned</span>
             <span><strong>{totalPieces.toLocaleString()}</strong> Building Pieces</span>
             <span><strong>{totalPlaceables.toLocaleString()}</strong> Placeables</span>
           </div>
