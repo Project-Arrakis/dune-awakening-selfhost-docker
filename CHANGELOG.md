@@ -9,6 +9,10 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ## Unreleased (on top of upstream v1.4.33)
 
+### Fixed
+
+- **Discord adapter migration no longer fails on a real Postgres (Core#1095).** The stale-link cleanup at the end of `migrateDiscordAdapterSchema()` compared `ps.player_controller_id::text` with an unqualified `player_controller_id` that bound to `dune.player_state`'s bigint column, so every `players/*` and `guilds/*` adapter route returned `500 operator does not exist: text = bigint` before any permission check. The outer link table is now aliased and referenced as `l.player_controller_id`. Operator note: this cleanup has never run successfully against a real database; on first run it removes link rows whose character no longer exists in `dune.player_state`. Take `dune db backup` first if you want a restore point. New test `discordAdapterMigrationSql.test.js` fails on the old SQL.
+
 ### Security
 
 - **CI scan gate fixed: dev-dependency and bundled-npm advisories.** `console/web`'s lockfile moves `undici` 7.29.0 -> 7.30.0 (and `source-map-js` 1.2.1 -> 1.2.2) via `npm audit fix`, clearing the two HIGH osv-scanner findings; `console/api`'s runtime image no longer ships npm/npx (the container only runs `node /app/src/server.js`), which removes the bundled `brace-expansion`/`undici` packages trivy-image-scan was failing on (HIGH, base-image-lag class). No operator action; the console image rebuilds on the next `dune self-update`.

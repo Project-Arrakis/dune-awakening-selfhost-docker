@@ -16401,8 +16401,12 @@ export async function migrateDiscordAdapterSchema(db) {
         where dal.discord_user_id = gs.discord_user_id and dal.player_controller_id = gs.player_controller_id
       )`);
     // Clean up stale link rows where the game character was deleted (M5, #183).
-    await tx.query(`delete from console.discord_account_links where not exists (select 1 from dune.player_state ps where ps.player_controller_id::text = player_controller_id)`);
-    await tx.query(`delete from console.discord_player_links where not exists (select 1 from dune.player_state ps where ps.player_controller_id::text = player_controller_id)`);
+    // The outer table is aliased `l` and referenced as l.player_controller_id: an
+    // unqualified player_controller_id inside the subquery binds to ps.player_controller_id
+    // (bigint), turning this into `ps.id::text = ps.id` and failing the WHOLE adapter
+    // migration with "operator does not exist: text = bigint" (Core#1095).
+    await tx.query(`delete from console.discord_account_links l where not exists (select 1 from dune.player_state ps where ps.player_controller_id::text = l.player_controller_id)`);
+    await tx.query(`delete from console.discord_player_links l where not exists (select 1 from dune.player_state ps where ps.player_controller_id::text = l.player_controller_id)`);
   };
   if (typeof db.transaction === "function") return db.transaction(migrate);
   return migrate(db);
