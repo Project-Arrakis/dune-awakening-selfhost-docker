@@ -516,10 +516,23 @@ async function resolvePlayerScopedIds(session, db) {
   if (session.tier !== "player") return { scoped: false, ids: new Set() };
   try {
     const chars = await duneDb.getAllLinkedPlayers(db, session.userId);
-    return { scoped: true, ids: new Set(chars.map(c => c.player_controller_id)) };
-  } catch {
+    // Drop null/empty/zero ids: "0" is player_state's placeholder controller id
+    // and would match unlinked rows (issue #1116 review).
+    const ids = chars
+      .map(c => c.player_controller_id)
+      .filter(id => id !== null && id !== undefined && String(id) !== "" && String(id) !== "0");
+    return { scoped: true, ids: new Set(ids.map(String)) };
+  } catch (error) {
+    // Fail closed (empty scope) but leave a trace so an outage is not
+    // indistinguishable from "no linked characters".
+    console.error(`player scope lookup failed: ${error && error.message ? error.message : error}`);
     return { scoped: true, ids: new Set() };
   }
+}
+
+async function playerScopeIds(session, db) {
+  const scope = await resolvePlayerScopedIds(session, db);
+  return scope.scoped ? Array.from(scope.ids) : undefined;
 }
 
 // requestHandler is shared, unmodified, between the main TCP listener and
@@ -1613,7 +1626,7 @@ async function handleApi(req, res, path) {
 
   if (path === "/api/players") return dbJson(res, async () => {
     const session = auth.readSession(req);
-    const scope = await resolvePlayerScopedIds(session, db);
+    const controllerIds = await playerScopeIds(session, db);
     return duneDb.listPlayers(db, {
       q: url.searchParams.get("q") || "",
       page: url.searchParams.get("page") || 0,
@@ -1622,16 +1635,21 @@ async function handleApi(req, res, path) {
       sortColumn: url.searchParams.get("sortColumn") || "character_name",
       sortDirection: url.searchParams.get("sortDirection") || "asc",
       bannedFlsIds: bannedFlsIds(config.repoRoot),
-      controllerIds: scope.scoped ? Array.from(scope.ids) : undefined
+      controllerIds
     });
   });
-  if (path === "/api/players/online") return dbJson(res, () => duneDb.listPlayers(db, {
+  if (path === "/api/players/online") return dbJson(res, async () => duneDb.listPlayers(db, {
     status: "online",
     page: url.searchParams.get("page") || 0,
     pageSize: url.searchParams.get("pageSize") || 200,
-    bannedFlsIds: bannedFlsIds(config.repoRoot)
+    bannedFlsIds: bannedFlsIds(config.repoRoot),
+    controllerIds: await playerScopeIds(session, db)
   }));
-  if (path === "/api/players/search") return dbJson(res, () => duneDb.listPlayers(db, { q: url.searchParams.get("q") || "", bannedFlsIds: bannedFlsIds(config.repoRoot) }));
+  if (path === "/api/players/search") return dbJson(res, async () => duneDb.listPlayers(db, {
+    q: url.searchParams.get("q") || "",
+    bannedFlsIds: bannedFlsIds(config.repoRoot),
+    controllerIds: await playerScopeIds(session, db)
+  }));
   if (path === "/api/guilds") return dbJson(res, () => duneDb.listGuilds(db, {
     q: url.searchParams.get("q") || "",
     page: url.searchParams.get("page") || 0,

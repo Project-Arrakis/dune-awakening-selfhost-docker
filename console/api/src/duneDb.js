@@ -1740,16 +1740,13 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
   if (status === "banned") where += ` and (${bannedExpression})`;
   // Scoping fails closed: an array (even an empty one) means "restrict to
   // these controllers"; only `undefined` means unscoped (issue #1116).
-  const scoped = Array.isArray(controllerIds);
-  const scopedIds = scoped ? controllerIds.map(String) : [];
-  if (scoped) {
-    if (scopedIds.length > 0) {
-      values.push(scopedIds);
-      where += ` and ps.player_controller_id::text = any($${values.length}::text[])`;
-    } else {
-      where += " and false";
-    }
-  }
+  const scopedIds = Array.isArray(controllerIds)
+    ? controllerIds.filter((id) => id !== null && id !== undefined && String(id) !== "").map(String)
+    : null;
+  const scopeClause = (paramIndex) => scopedIds === null ? ""
+    : scopedIds.length > 0 ? ` and ps.player_controller_id::text = any($${paramIndex}::text[])` : " and false";
+  if (scopedIds !== null && scopedIds.length > 0) values.push(scopedIds);
+  where += scopeClause(values.length);
   if (q) {
     values.push(`%${q}%`);
     const fuzzySearchParameter = values.length;
@@ -1847,10 +1844,10 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
       left join dune.player_state ps on ps.account_id = a.owner_account_id
       left join dune.accounts ac on ac.id = a.owner_account_id
       ${encryptedAccountsJoin}
-      where ${baseWhere}${scoped ? (scopedIds.length > 0 ? " and ps.player_controller_id::text = any($1::text[])" : " and false") : ""}
+      where ${baseWhere}${scopeClause(1)}
     )
     select count(distinct dedupe_key)::int as total_players
-    from player_rows`, scoped && scopedIds.length > 0 ? [scopedIds] : []) : null;
+    from player_rows`, scopedIds !== null && scopedIds.length > 0 ? [scopedIds] : []) : null;
 
   return {
     capabilities: { players: true, status, statusFilterApplied: hasOnlineStatus, banFilterApplied: true },
