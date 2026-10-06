@@ -673,7 +673,7 @@ export const REGEX_ACTIONS_BY_METHOD_PATTERN = [
   // hand-authored policy grants vehicles:mutate (roster edits, refuel, repair)
   // cannot have agreed to item destruction -- folding this in would silently
   // widen every existing narrow policy. Default tiers are unaffected: owner
-  // ("*") and admin ("vehicles:*") still match, moderator/player/observer hold
+  // ("*") and admin ("vehicles:*") still match, moderator/player hold
   // only vehicles:read.
   //
   // The bulk action is "vehicles:bulk-delete-items", NOT "vehicles:delete-items"

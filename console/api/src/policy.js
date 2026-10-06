@@ -131,11 +131,31 @@ export function evaluate(session, action, policies = null) {
   return allowed;
 }
 
+// `observer` was the pre-rename name of the (now stricter) `player` tier. It is
+// aliased, never honoured as a tier of its own: a stale session, a signed handoff
+// from an older bot, or a saved policy that still says "observer" must land on
+// the strict tier, not on a broader one or on nothing.
+export function normalizeTier(tier) {
+  return tier === "observer" ? "player" : tier;
+}
+
 export function resolveSessionTier(session) {
   if (!session) return "";
-  const tier = typeof session.tier === "string" ? session.tier : "";
-  const VALID_TIERS = new Set(["owner", "admin", "moderator", "player", "observer"]);
+  const tier = typeof session.tier === "string" ? normalizeTier(session.tier) : "";
+  const VALID_TIERS = new Set(["owner", "admin", "moderator", "player"]);
   return VALID_TIERS.has(tier) ? tier : "";
+}
+
+// A saved iam-policies.json written before the rename may carry an `observer`
+// document. validPolicyStore rejects unknown tiers wholesale, which would drop
+// the operator's owner/admin/moderator customisation back to defaults, so the
+// legacy key is removed first and a missing `player` is filled from the
+// defaults (the strict ones; an operator's explicit `player` document is kept).
+function sanitizePolicyStore(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  if (!Object.hasOwn(value, "observer")) return value;
+  const { observer: _legacy, ...rest } = value;
+  return Object.hasOwn(rest, "player") ? rest : { ...rest, player: DEFAULT_POLICIES.player };
 }
 
 // ---- Policy store ----
@@ -152,7 +172,7 @@ export function loadPolicies(repoRoot = null) {
   if (existsSync(filePath)) {
     try {
       const raw = readFileSync(filePath, "utf8");
-      const parsed = JSON.parse(raw);
+      const parsed = sanitizePolicyStore(JSON.parse(raw));
       if (validPolicyStore(parsed)) {
         _policies = parsed;
         // Reported, not rejected: discarding the document would silently
@@ -249,7 +269,8 @@ export function unknownActions(docs) {
   return dead;
 }
 
-export function setPolicies(docs, repoRoot = null) {
+export function setPolicies(inputDocs, repoRoot = null) {
+  const docs = sanitizePolicyStore(inputDocs);
   if (!validPolicyStore(docs)) {
     return { ok: false, error: "Policies must contain valid tier documents and Allow/Deny statements." };
   }
@@ -295,7 +316,7 @@ export function setPolicies(docs, repoRoot = null) {
 function validPolicyStore(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const tiers = Object.keys(value);
-  if (!tiers.length || tiers.some((tier) => !["owner", "admin", "moderator", "player", "observer"].includes(tier))) return false;
+  if (!tiers.length || tiers.some((tier) => !["owner", "admin", "moderator", "player"].includes(tier))) return false;
   return tiers.every((tier) => {
     const document = value[tier];
     if (!document || document.tier !== tier || !Array.isArray(document.statements)) return false;
@@ -315,7 +336,7 @@ function validPolicyStore(value) {
 
 // ---- Default policies (mirror the CAPABILITY_BY_TIER ladder) ----
 
-const DEFAULT_POLICIES = {
+export const DEFAULT_POLICIES = {
   owner: {
     version: 1,
     tier: "owner",
@@ -405,43 +426,19 @@ const DEFAULT_POLICIES = {
       ]},
     ]
   },
+  // Strict, own-record-scoped read tier (replaces the former `observer`, which
+  // held the same server-wide read grants). Everything a player may read is
+  // narrowed to their own characters/items and guild by playerTierGate.js and
+  // listPlayers/listGuilds scoping; only actions that have such scoping are
+  // granted. Further reads (bases, storage, vehicles, ...) stay off until each
+  // has its own ownership scoping.
   player: {
     version: 1,
     tier: "player",
     statements: [
       { Effect: "Allow", Action: [
-        "server:read",
-        "maps:read",
-        "sietches:read",
-        "deepdesert:read",
         "players:read",
         "guilds:read",
-        "bases:read",
-        "storage:read",
-        "blueprints:read",
-        "vehicles:read",
-        "exchange:read",
-        "landsraad:read",
-      ]},
-    ]
-  },
-  observer: {
-    version: 1,
-    tier: "observer",
-    statements: [
-      { Effect: "Allow", Action: [
-        "server:read",
-        "maps:read",
-        "sietches:read",
-        "deepdesert:read",
-        "players:read",
-        "guilds:read",
-        "bases:read",
-        "storage:read",
-        "blueprints:read",
-        "vehicles:read",
-        "exchange:read",
-        "landsraad:read",
       ]},
     ]
   },

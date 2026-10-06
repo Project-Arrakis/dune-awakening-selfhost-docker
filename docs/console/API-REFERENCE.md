@@ -146,6 +146,8 @@ query; API keys always use the shared cached path.
 
 ## Players
 
+> **`player`-tier sessions** see only their own data: `GET /api/players`, `/online` and `/search` return just the caller's linked characters, `GET /api/players/{id}` and its `inventory`, `vehicles`, `bases`, `currency` and `solaris-coin` sub-resources work only for the caller's own character, and every other `/api/players/**` path (and any non-GET) answers `404`. The same applies to `/api/guilds` (own guild only; `/members` returns names and ranks). See [console-iam.md](../console-iam.md).
+
 ### Listing & Search
 
 | Method | Route | Description | Parameters |
