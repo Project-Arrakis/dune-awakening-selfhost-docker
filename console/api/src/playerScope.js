@@ -1,3 +1,5 @@
+import { normalizeTier } from "./policy.js";
+
 // Which player controller ids a session may see. Only the player tier is
 // restricted; every other principal (owner/admin/moderator, password and
 // ADMIN_AUTH_DISABLED sessions, API keys, write-bridge principals) is unscoped.
@@ -7,7 +9,7 @@
 // The tier check must come first: owner sessions legitimately have no userId.
 export async function resolvePlayerScope(session, getLinkedPlayers, log = console.error) {
   if (!session) return { scoped: true, ids: new Set() };
-  if (session.tier !== "player") return { scoped: false, ids: new Set() };
+  if (normalizeTier(session.tier) !== "player") return { scoped: false, ids: new Set() };
   if (!session.userId) return { scoped: true, ids: new Set() };
   try {
     const chars = await getLinkedPlayers(session.userId);

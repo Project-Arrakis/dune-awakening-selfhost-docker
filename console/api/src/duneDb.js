@@ -2250,7 +2250,38 @@ const GUILD_SORT_COLUMNS = {
   guild_id: { order: ["guild_id"] }
 };
 
-export async function listGuilds(db, { q = "", page = 0, pageSize = 50, sortColumn = "guild_name", sortDirection = "asc" } = {}) {
+// Numeric-only, de-duplicated, non-zero ids as strings for a bigint[] parameter.
+// Anything that is not a plain positive integer is dropped rather than cast, so a
+// stray fls/funcom id string can neither throw nor widen a scope.
+function memberBigintIds(ids) {
+  return [...new Set((ids || []).map((id) => String(id ?? "").trim()).filter((id) => /^[1-9][0-9]{0,17}$/.test(id)))];
+}
+
+// Guild ids the given player controllers belong to. Resolves each controller to
+// the id spaces guild_members may use (controller, character actor, account),
+// exactly the trio portalGuild() has always matched, taken from the caller's OWN
+// linked characters and never from a request parameter.
+export async function guildIdsForPlayerControllers(db, controllerIds) {
+  const controllers = memberBigintIds(controllerIds);
+  if (controllers.length === 0) return [];
+  if (!(await tableExists(db, "guild_members")) || !(await tableExists(db, "player_state"))) return [];
+  const memberColumns = await columnsFor(db, "guild_members");
+  const guildColumn = firstExistingColumn(memberColumns, ["guild_id", "id"]);
+  const playerColumn = firstExistingColumn(memberColumns, ["player_id", "player_controller_id", "actor_id", "account_id", "player_pawn_id"]);
+  if (!guildColumn || !playerColumn) return [];
+  const result = await db.query(`
+    with own as (
+      select ps.player_controller_id::bigint as id from dune.player_state ps where ps.player_controller_id::text = any($1::text[])
+      union select ps.player_pawn_id::bigint from dune.player_state ps where ps.player_controller_id::text = any($1::text[])
+      union select ps.account_id::bigint from dune.player_state ps where ps.player_controller_id::text = any($1::text[])
+    )
+    select distinct gm.${quoteIdentifier(guildColumn)}::text as guild_id
+    from dune.guild_members gm
+    where gm.${quoteIdentifier(playerColumn)} = any (array(select id from own where id is not null and id <> 0))`, [controllers]);
+  return result.rows.map((row) => String(row.guild_id));
+}
+
+export async function listGuilds(db, { q = "", page = 0, pageSize = 50, sortColumn = "guild_name", sortDirection = "asc", guildIds } = {}) {
   if (!(await tableExists(db, "guilds"))) {
     return { ...unsupported("guilds", ["dune.guilds"]), totalCount: 0, totalGuilds: 0 };
   }
@@ -2281,6 +2312,17 @@ export async function listGuilds(db, { q = "", page = 0, pageSize = 50, sortColu
 
   const values = [];
   let where = "1=1";
+  // Fails closed, like listPlayers' controllerIds: an array (even empty) restricts
+  // to those guild ids; only `undefined` means unscoped. Non-numeric entries are dropped.
+  const guildScope = Array.isArray(guildIds) ? memberBigintIds(guildIds) : null;
+  if (guildScope !== null) {
+    if (guildScope.length > 0) {
+      values.push(guildScope);
+      where += ` and g.${quoteIdentifier(guildIdColumn)} = any($${values.length}::bigint[])`;
+    } else {
+      where += " and false";
+    }
+  }
   if (q) {
     values.push(`%${q}%`);
     where += ` and g.${quoteIdentifier(guildNameColumn)} ilike $${values.length}`;
@@ -2319,7 +2361,12 @@ export async function listGuilds(db, { q = "", page = 0, pageSize = 50, sortColu
     ) paged on true
     order by ${pagedOrder}`, values);
 
-  const totalsResult = await db.query("select count(*)::int as total_guilds from dune.guilds");
+  // Scoped like the page query, so a scoped caller does not learn the server-wide guild count.
+  const totalsResult = guildScope === null
+    ? await db.query("select count(*)::int as total_guilds from dune.guilds")
+    : guildScope.length > 0
+      ? await db.query(`select count(*)::int as total_guilds from dune.guilds g where g.${quoteIdentifier(guildIdColumn)} = any($1::bigint[])`, [guildScope])
+      : { rows: [{ total_guilds: 0 }] };
 
   const rows = result.rows
     .filter((row) => row.guild_id !== null && row.guild_id !== undefined)

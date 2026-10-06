@@ -489,3 +489,12 @@ test("createOAuthTierResolver treats a half-configured handoff as not configured
   assert.equal(result.tier, "owner");
   assert.equal(result.source, "bootstrap");
 });
+
+test("createHandoff resolveTier maps a legacy signed observer tier to player, not to a lockout", async () => {
+  const ts = Date.now();
+  const response = signedResponse({ userId: "143064109775060993", guildId: "143064109775060993", tier: "observer", ts });
+  const h = createHandoff({ secret: SECRET, botUrl: "http://localhost:9876", homeGuildId: "143064109775060993", fetchImpl: mockFetch(response) });
+  const result = await h.resolveTier({ userId: "143064109775060993" });
+  assert.equal(result.tier, "player");
+  assert.equal(result.reason, "");
+});

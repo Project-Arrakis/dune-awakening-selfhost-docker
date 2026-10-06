@@ -44,7 +44,15 @@ Session tier and identity stay in the in-memory session store; they are not plac
 
 ## Policies
 
-The default policies preserve full owner access and provide conservative defaults for future admin, moderator, player, and observer sessions. Password logins and `ADMIN_AUTH_DISABLED=1` create owner sessions, so existing Console installations keep their current behavior.
+The default policies preserve full owner access and provide conservative defaults for admin, moderator and player sessions. Password logins and `ADMIN_AUTH_DISABLED=1` create owner sessions, so existing Console installations keep their current behavior.
+
+### The `player` tier is strict, and `observer` no longer exists
+
+`player` is own-record-scoped and read-only: a player sees their own characters and items, and the guild they belong to, and nothing else. The default `player` policy therefore grants only `players:read` and `guilds:read`; `server`, `maps`, `bases`, `storage`, `vehicles`, `blueprints`, `exchange` and `landsraad` reads are not granted, because none of them is scoped to the caller yet.
+
+On top of the policy, a second gate (`console/api/src/playerTierGate.js`) applies to every player-tier session **whatever iam-policies.json says**: the session may only ever hold `players:read` and `guilds:read`; `GET /api/players`, `/online` and `/search` return only the caller's linked characters; `GET /api/players/{id}` and its `inventory`, `vehicles`, `bases`, `currency` and `solaris-coin` sub-resources work only when `{id}` is one of the caller's own characters; `GET /api/guilds` lists only the caller's own guild and `GET /api/guilds/{id}/members` works only for it (names and ranks only). Every other path under `/api/players/` and `/api/guilds/`, and every non-GET method, answers 404. A caller with no linked character sees nothing, and so does a failed lookup.
+
+`observer` was the earlier name of this tier, with the same broad read grants. It is removed. For compatibility it is aliased, never honoured as its own tier: an old session or a signed Discord handoff that says `observer` becomes `player`, and a saved iam-policies.json that still contains an `observer` document loads with that key dropped (your other tiers are kept; a missing `player` is filled from the strict defaults). **Upgrade note:** people who signed in as `observer`/`player` and used to browse server-wide Bases, Storage, Vehicles or Maps now see only their own data; to give a tier more, grant it to `moderator`, not `player`.
 
 Policy documents use this shape:
 
@@ -105,7 +113,7 @@ Updates that remove the owner's `settings:write` access are rejected so the loca
 | `players:repair` | gear, faction reputation, landsraad quests, login queue, vehicle decay, refuel, refill water |
 | `players:recover` | character recovery |
 
-**`players:mutate` is no longer in the catalog, but it still means what it meant.** See [Upgrading a policy that names a removed action](#upgrading-a-policy-that-names-a-removed-action) below. Shipped defaults are unchanged — `owner` (`*`) and `admin` (`players:*`) still reach everything, and `moderator`/`player`/`observer` are untouched.
+**`players:mutate` is no longer in the catalog, but it still means what it meant.** See [Upgrading a policy that names a removed action](#upgrading-a-policy-that-names-a-removed-action) below. Shipped defaults are unchanged — `owner` (`*`) and `admin` (`players:*`) still reach everything, and `moderator`/`player` are untouched.
 
 `guilds:mutate` was split for the same reason. `DELETE /api/guilds/{guildId}` is **disband** — it destroys the guild — and it shared one action with promoting a member, so a roster fix and a deletion were the same grant.
 
@@ -133,7 +141,7 @@ Add and remove stay one action deliberately: two directions of the same roster k
 | `bases:edit-backup` | reassign a picked-up base to another player, rename it, or move it to another map |
 | `bases:delete-backup` | permanently delete a picked-up base and everything stored in it |
 
-`bases:write-config` is the consent case rather than the blast-radius one: every other action here acts on one base and is reversible on that base, whereas the thresholds and intervals govern the automation for *every* enrolled base at once. An operator granted `bases:mutate` agreed to enroll bases, not to retune the policy behind all of them. It follows the per-feature settings convention (`exchange:write-config`, `maps:write-config`). Shipped defaults are unchanged: `owner` (`*`) and `admin` (`bases:*`) reach it, and `moderator`/`player`/`observer` keep `bases:read` only, so they can read the settings but not save them.
+`bases:write-config` is the consent case rather than the blast-radius one: every other action here acts on one base and is reversible on that base, whereas the thresholds and intervals govern the automation for *every* enrolled base at once. An operator granted `bases:mutate` agreed to enroll bases, not to retune the policy behind all of them. It follows the per-feature settings convention (`exchange:write-config`, `maps:write-config`). Shipped defaults are unchanged: `owner` (`*`) and `admin` (`bases:*`) reach it, and `moderator` keeps `bases:read` only, so it can read the settings but not save them (`player` no longer holds `bases:read`).
 
 `bases:import-backup` is a consent action: import creates a whole base (actors, pieces, stored items) for a player, so no `bases:read` or `bases:mutate` grant is read as consent to it; owner (`*`) and admin (`bases:*`) reach it, moderator/player/observer do not. `bases:edit-backup` is split out on the same grounds: reassigning hands a player a whole base. `bases:export-backup` is too: the file carries every item stored in the base and imports as a whole base on any server, so a `bases:read` grant is not consent to it. Listing base backups and the blueprint download stay under `bases:read`.
 

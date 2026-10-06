@@ -54,7 +54,8 @@ import { fetchWithTimeoutAndRetry } from "./services/httpWithRetry.js";
 import { createHandoff } from "./integrations/discord/handoff.js";
 import { actionForRoute, ROUTE_ACTIONS, NAMESPACES } from "./actions.js";
 import { resolvePlayerScope } from "./playerScope.js";
-import { evaluate, loadPolicies, getAllPolicies, setPolicies, resolveAllowedActions, allKnownActions } from "./policy.js";
+import { evaluate, loadPolicies, getAllPolicies, setPolicies, resolveAllowedActions, allKnownActions, resolveSessionTier, normalizeTier } from "./policy.js";
+import { classifyPlayerTierRequest, PLAYER_TIER_ACTIONS } from "./playerTierGate.js";
 import { discordAdapterEnabled, discordWritesEnabled } from "./integrations/discord/adapter.js";
 // [Layer 3 integration audit fix, LOW, issue #1043] The 5 header constants
 // and getWriteBridgeToken previously imported here became dead once
@@ -163,6 +164,9 @@ try {
 const policyLoad = loadPolicies(config.repoRoot);
 if (policyLoad.invalid) {
   console.warn(`IAM policy file at ${policyLoad.path} is not a valid policy store; using built-in defaults.`);
+}
+if ((policyLoad.playerCappedActions || []).length > 0) {
+  console.warn(`IAM policy notice: the saved player policy grants ${policyLoad.playerCappedActions.length} action(s) the strict player tier can never use (it is capped at players:read and guilds:read): ${policyLoad.playerCappedActions.slice(0, 8).join(", ")}${policyLoad.playerCappedActions.length > 8 ? ", ..." : ""}. Grant them to moderator instead.`);
 }
 for (const { tier, pattern, successors } of policyLoad.deprecatedActions || []) {
   // Still enforced with its original meaning (see REMOVED_ACTION_ALIASES), so
@@ -533,6 +537,52 @@ async function filterForPlayerScope(session, db, data, getter) {
 
 async function resolvePlayerScopedIds(session, db) {
   return resolvePlayerScope(session, (userId) => duneDb.getAllLinkedPlayers(db, userId));
+}
+
+// Second gate for the strict player tier (see playerTierGate.js). Returns true
+// when it has already answered the request. Fails closed: any lookup error is a 404.
+async function enforcePlayerTier(res, path, method, action, session) {
+  if (action && !PLAYER_TIER_ACTIONS.has(action)) {
+    json(res, 403, { error: "Your account does not have permission to access this resource." });
+    return true;
+  }
+  const route = classifyPlayerTierRequest(path, method);
+  if (route.kind === "open" || route.kind === "scoped-list") return false;
+  const notFound = () => { json(res, 404, { error: "Not found." }); return true; };
+  if (route.kind === "deny") return notFound();
+  try {
+    const scope = await resolvePlayerScopedIds(session, db);
+    if (route.kind === "own-player") {
+      // Same decode the handlers use, but only a plain canonical integer is accepted, so
+      // the gate and the handler can never disagree about which id a path names.
+      const rawId = decodeURIComponent(route.id);
+      if (!/^[1-9][0-9]{0,17}$/.test(rawId)) return notFound();
+      const target = await duneDb.resolvePlayerTarget(db, rawId);
+      return target.controllerId && scope.ids.has(String(target.controllerId)) ? false : notFound();
+    }
+    if (route.kind === "own-guild") {
+      const guildIds = await duneDb.guildIdsForPlayerControllers(db, Array.from(scope.ids));
+      const rawGuildId = decodeURIComponent(route.id);
+      if (!/^[1-9][0-9]{0,17}$/.test(rawGuildId)) return notFound();
+      return guildIds.includes(rawGuildId) ? false : notFound();
+    }
+  } catch (error) {
+    console.error(`player tier gate lookup failed: ${error && error.message ? error.message : error}`);
+  }
+  return notFound();
+}
+
+// Guild scope for the guild list: undefined (unscoped) for every tier but player.
+// Empty on lookup failure, so a failure shows nothing rather than everything.
+async function playerGuildScopeIds(session, db) {
+  const scope = await resolvePlayerScopedIds(session, db);
+  if (!scope.scoped) return undefined;
+  try {
+    return await duneDb.guildIdsForPlayerControllers(db, Array.from(scope.ids));
+  } catch (error) {
+    console.error(`player guild scope lookup failed: ${error && error.message ? error.message : error}`);
+    return [];
+  }
 }
 
 async function playerScopeIds(session, db) {
@@ -1404,6 +1454,10 @@ async function handleApi(req, res, path) {
   if (!action || !evaluate(session, action)) {
     return json(res, 403, { error: "Your account does not have permission to access this resource." });
   }
+  if (resolveSessionTier(session) === "player") {
+    const blocked = await enforcePlayerTier(res, path, req.method, action, session);
+    if (blocked) return;
+  }
   // The key's own scope grid, applied on top of the policy engine. This is the
   // check that actually constrains a key (see the tier comment in apiKeys.js).
   // settings:* and database:* are denied inside allows(), so a key can never
@@ -1720,19 +1774,25 @@ async function handleApi(req, res, path) {
   // Must stay above the /api/players/<id>/... routes further down, which would
   // otherwise capture "deleted-characters" as a player id.
   if (path === "/api/players/deleted-characters") return dbJson(res, () => duneDb.listDeletedCharacterAssets(db));
-  if (path === "/api/guilds") return dbJson(res, () => duneDb.listGuilds(db, {
+  if (path === "/api/guilds") return dbJson(res, async () => duneDb.listGuilds(db, {
     q: url.searchParams.get("q") || "",
     page: url.searchParams.get("page") || 0,
     pageSize: url.searchParams.get("pageSize") || 50,
     sortColumn: url.searchParams.get("sortColumn") || "guild_name",
-    sortDirection: url.searchParams.get("sortDirection") || "asc"
+    sortDirection: url.searchParams.get("sortDirection") || "asc",
+    guildIds: await playerGuildScopeIds(session, db)
   }));
   if (path.match(/^\/api\/guilds\/[^/]+\/members\/[^/]+\/promote$/) && req.method === "POST") return guildPromoteRoute(req, res, path);
   if (path.match(/^\/api\/guilds\/[^/]+\/members\/[^/]+\/demote$/) && req.method === "POST") return guildDemoteRoute(req, res, path);
   if (path.match(/^\/api\/guilds\/[^/]+\/members$/) && req.method === "POST") return guildAddMemberRoute(req, res, path);
   if (path.match(/^\/api\/guilds\/[^/]+\/members\/[^/]+$/) && req.method === "DELETE") return guildRemoveMemberRoute(req, res, path);
   if (path.match(/^\/api\/guilds\/[^/]+$/) && req.method === "DELETE") return guildDisbandRoute(req, res, path);
-  if (path.match(/^\/api\/guilds\/[^/]+\/members$/)) return dbJson(res, () => duneDb.guildMembers(db, decodeURIComponent(path.split("/")[3])));
+  if (path.match(/^\/api\/guilds\/[^/]+\/members$/)) return dbJson(res, async () => {
+    const members = await duneDb.guildMembers(db, decodeURIComponent(path.split("/")[3]));
+    // A player sees who is in their own guild by name and rank, not the member's internal ids.
+    if (resolveSessionTier(session) !== "player" || !Array.isArray(members.rows)) return members;
+    return { ...members, rows: members.rows.map(({ character_name, role_id }) => ({ character_name, role_id })) };
+  });
   if (path === "/api/bases") return dbJson(res, () => duneDb.listBases(db, {
     q: url.searchParams.get("q") || "",
     page: url.searchParams.get("page") || 0,
@@ -8676,21 +8736,21 @@ async function handleDiscordTokenExchange(req, res) {
   }
 
   loginRateLimiter.recordSuccess(rateKey);
-  // Mint a read-only observer session, not owner. The Atrium page gate
-  // (`/atrium/`) authorizes on session userId, not tier, so observer is
+  // Mint a read-only player session, not owner. The Atrium page gate
+  // (`/atrium/`) authorizes on session userId, not tier, so player is
   // sufficient for the page's purpose; granting owner would hand full
   // console-admin rights to a page-access credential (issue #403). An
   // operator who needs console administration uses the password or the
   // tier-resolving Discord callback flow, not this endpoint.
   const session = auth.makeSession({
-    tier: "observer",
+    tier: "player",
     userId: identity.userId,
     username: identity.username,
     guildId: config.discordHomeGuildId
   });
 
   setSessionCookie(res, session, config);
-  audit(config, req, "auth.oauth.exchange", { ok: true, userId: identity.userId, tier: "observer" });
+  audit(config, req, "auth.oauth.exchange", { ok: true, userId: identity.userId, tier: "player" });
   return json(res, 200, { ok: true, authenticated: true, csrfToken: session.csrf });
 }
 
@@ -8796,9 +8856,9 @@ async function handleOAuthCallback(req, res) {
     audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: "not_authorized" });
     return html(res, 403, oauthErrorPage("Discord sign-in succeeded, but this account is not authorized to sign in to this console. If you believe it should be, contact this server's administrator."));
   }
-  const session = auth.makeSession({ tier: resolved.tier, userId: identity.userId, username: identity.username, guildId: config.discordHomeGuildId });
+  const session = auth.makeSession({ tier: normalizeTier(resolved.tier), userId: identity.userId, username: identity.username, guildId: config.discordHomeGuildId });
   res.setHeader("Set-Cookie", [sessionCookieValue(session, config), clearOAuthStateCookie(config.secureCookies)]);
-  audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: true, tier: resolved.tier });
+  audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: true, tier: normalizeTier(resolved.tier) });
   return html(res, 200, oauthReturnPage());
 }
 
