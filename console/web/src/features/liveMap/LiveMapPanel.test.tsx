@@ -553,10 +553,10 @@ const deepDesert = {
   image: "/images/maps/deep-desert.png",
   width: 4096,
   height: 4096,
-  minX: -1177656,
-  maxX: 1072344,
-  minY: -1177066,
-  maxY: 1072934,
+  minX: -1268450,
+  maxX: 1158400,
+  minY: -1261434,
+  maxY: 1165416,
   flipY: false,
   defaultPartitionId: 8
 };
@@ -597,8 +597,8 @@ it("draws the sector grid on the Deep Desert, with a full 9x9 of labels", async 
 
   const grid = container.querySelector("svg.live-map-sector-grid");
   expect(grid).not.toBeNull();
-  // The 8 interior lines each way (the outer edge is off the map), and a label per cell.
-  expect(grid!.querySelectorAll("line")).toHaveLength(16);
+  // 10 lines each way, and a label per cell.
+  expect(grid!.querySelectorAll("line")).toHaveLength(20);
   expect(grid!.querySelectorAll("text")).toHaveLength(81);
   // The corners the game's own map art carries, the letter running up the screen.
   const labels = [...grid!.querySelectorAll("text")].map((node) => node.textContent);
@@ -957,7 +957,7 @@ it("hands the sector grid's lines to the terrain while tilted, keeps its labels,
   await screen.findByRole("button", { name: "Base: Low" });
   const slider = await screen.findByRole("slider", { name: "Tilt" });
   sizeFrame(container);
-  expect(container.querySelectorAll("svg.live-map-sector-grid line")).toHaveLength(16);
+  expect(container.querySelectorAll("svg.live-map-sector-grid line")).toHaveLength(20);
 
   fireEvent.change(slider, { target: { value: "45" } });
   const tilted = container.querySelector("svg.live-map-sector-grid.is-3d");
@@ -979,7 +979,7 @@ it("hands the sector grid's lines to the terrain while tilted, keeps its labels,
 
   fireEvent.click(screen.getByRole("button", { name: "Top-Down" }));
   expect(container.querySelector("svg.live-map-sector-grid.is-3d")).toBeNull();
-  expect(container.querySelectorAll("svg.live-map-sector-grid line")).toHaveLength(16);
+  expect(container.querySelectorAll("svg.live-map-sector-grid line")).toHaveLength(20);
   expect(container.querySelectorAll("svg.live-map-sector-grid text")).toHaveLength(81);
 });
 

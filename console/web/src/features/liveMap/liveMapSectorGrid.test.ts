@@ -7,7 +7,7 @@ import { projectToScreen, screenToWorldAtZ } from "./terrain/terrainCamera";
 const DEEP_DESERT: LiveMapConfig = {
   key: "DeepDesert", label: "The Deep Desert", actorMap: "DeepDesert",
   image: "/images/maps/deep-desert.png", width: 4096, height: 4096,
-  minX: -1177656, maxX: 1072344, minY: -1177066, maxY: 1072934,
+  minX: -1268450, maxX: 1158400, minY: -1261434, maxY: 1165416,
   flipY: false, defaultPartitionId: 8
 };
 const HAGGA: LiveMapConfig = { ...DEEP_DESERT, key: "HaggaBasin", actorMap: "HaggaBasin" };
@@ -46,9 +46,12 @@ describe("sectorForWorldPoint", () => {
     expect(sectorForWorldPoint(-52656, Y1 + 1)).toBeNull();
   });
 
-  it("covers the whole map rect, which is smaller than the grid", () => {
-    expect(sectorForWorldPoint(DEEP_DESERT.minX, DEEP_DESERT.minY)).toBe("I1");
-    expect(sectorForWorldPoint(DEEP_DESERT.maxX, DEEP_DESERT.maxY)).toBe("A9");
+  it("lies inside the map rect, which is the grid squared up", () => {
+    expect(X0).toBe(DEEP_DESERT.minX);
+    expect(X1).toBe(DEEP_DESERT.maxX);
+    expect(Y0).toBeGreaterThan(DEEP_DESERT.minY);
+    expect(Y1).toBeLessThan(DEEP_DESERT.maxY);
+    expect(DEEP_DESERT.maxY - DEEP_DESERT.minY).toBe(DEEP_DESERT.maxX - DEEP_DESERT.minX);
   });
 
   // In-game map labels read at exact positions (2026-10-04), plus three older
@@ -66,15 +69,15 @@ describe("sectorForWorldPoint", () => {
 });
 
 describe("sectorGridFor", () => {
-  it("returns the 8 interior lines per axis and 81 labels", () => {
+  it("returns 10 lines per axis and 81 labels", () => {
     const grid = sectorGridFor(DEEP_DESERT)!;
-    expect(grid.lines).toHaveLength(16);
+    expect(grid.lines).toHaveLength(20);
     expect(grid.labels).toHaveLength(81);
   });
 
-  it("draws no outer edge, which lies beyond the map rect", () => {
+  it("marks only the outer lines as edges", () => {
     const grid = sectorGridFor(DEEP_DESERT)!;
-    expect(grid.lines.filter((line) => line.edge)).toHaveLength(0);
+    expect(grid.lines.filter((line) => line.edge)).toHaveLength(4);
   });
 
   it("places labels where the sector lookup agrees they belong", () => {
@@ -99,14 +102,17 @@ describe("sectorGridFor", () => {
     expect(sectorGridFor(HAGGA)).toBeNull();
   });
 
-  it("cuts lines and cells to the map rect, because the grid is larger than it", () => {
+  it("spans the map's width exactly and all but a sliver of its height", () => {
     const grid = sectorGridFor(DEEP_DESERT)!;
-    const xs = [...grid.lines.flatMap((line) => [line.x1, line.x2]), ...grid.labels.flatMap((l) => [l.x0, l.x1])];
-    const ys = [...grid.lines.flatMap((line) => [line.y1, line.y2]), ...grid.labels.flatMap((l) => [l.y0, l.y1])];
+    const xs = grid.lines.flatMap((line) => [line.x1, line.x2]);
+    const ys = grid.lines.flatMap((line) => [line.y1, line.y2]);
     expect(Math.min(...xs)).toBeCloseTo(0, 6);
     expect(Math.max(...xs)).toBeCloseTo(DEEP_DESERT.width, 6);
-    expect(Math.min(...ys)).toBeCloseTo(0, 6);
-    expect(Math.max(...ys)).toBeCloseTo(DEEP_DESERT.height, 6);
+    // The rect is the grid squared up: under 4 px of 4096 spare at each end.
+    expect(Math.min(...ys)).toBeGreaterThan(0);
+    expect(Math.min(...ys)).toBeLessThan(4);
+    expect(Math.max(...ys)).toBeLessThan(DEEP_DESERT.height);
+    expect(Math.max(...ys)).toBeGreaterThan(DEEP_DESERT.height - 4);
   });
 });
 

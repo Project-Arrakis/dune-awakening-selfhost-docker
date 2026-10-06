@@ -6,10 +6,10 @@ import type { SectorGridSpec } from "./terrain/types";
 /**
  * The Deep Desert's 9x9 lettered sector grid.
  *
- * Measured in game, not derived from the map config: the grid is larger than the
- * terrain rect in `LIVE_MAP_CONFIGS` and slightly off its centre, and its cells
- * are not square. Two grid crossings were located to a few hundred uu by reading
- * the in-game map label at known positions (see docs/console/live-map.md).
+ * Measured in game: two grid crossings were located to a few hundred uu by
+ * reading the in-game map label at known positions (see
+ * docs/console/live-map.md). The cells are not square. The Deep Desert rect in
+ * `LIVE_MAP_CONFIGS` is this grid squared up, so keep the two in step.
  *
  * **I is at the top and A at the bottom**: world +Y draws downward in the panel,
  * so the row index counts down from the high-Y edge. Easy to get upside down by
@@ -79,26 +79,17 @@ export function labelAnchorInView(
  * Grid lines and cell labels in the panel's map-pixel space, so they scale and
  * scroll with the markers by multiplying through by `zoom` exactly as a marker
  * does. Returns null for a map that has no sector grid.
- *
- * The grid reaches past the map rect, so lines and cells are cut to the rect:
- * the outer edge is not drawn flat, and an edge cell's label sits in the part
- * of the cell that is on the map.
  */
 export function sectorGridFor(config: LiveMapConfig): { lines: SectorGridLine[]; labels: SectorGridLabel[] } | null {
   if (config.key !== "DeepDesert") return null;
 
   const at = (x: number, y: number) => worldToLiveMapPoint({ x, y }, config);
-  const left = Math.max(X0, config.minX);
-  const right = Math.min(X0 + DIVISIONS * CELL_X, config.maxX);
-  const low = Math.max(Y0, config.minY);
-  const high = Math.min(Y_TOP, config.maxY);
+  const x1 = X0 + DIVISIONS * CELL_X;
   const lines: SectorGridLine[] = [];
   for (let i = 0; i <= DIVISIONS; i++) {
     const edge = i === 0 || i === DIVISIONS;
-    const x = X0 + i * CELL_X;
-    const y = Y0 + i * CELL_Y;
-    const vertical = x >= left && x <= right ? [at(x, low), at(x, high)] : [];
-    const horizontal = y >= low && y <= high ? [at(left, y), at(right, y)] : [];
+    const vertical = [at(X0 + i * CELL_X, Y0), at(X0 + i * CELL_X, Y_TOP)];
+    const horizontal = [at(X0, Y0 + i * CELL_Y), at(x1, Y0 + i * CELL_Y)];
     if (vertical[0] && vertical[1]) {
       lines.push({ x1: vertical[0].px, y1: vertical[0].py, x2: vertical[1].px, y2: vertical[1].py, edge });
     }
@@ -110,15 +101,10 @@ export function sectorGridFor(config: LiveMapConfig): { lines: SectorGridLine[];
   const labels: SectorGridLabel[] = [];
   for (let row = 0; row < DIVISIONS; row++) {
     for (let column = 0; column < DIVISIONS; column++) {
-      // Columns run with +X, rows run against +Y.
-      const cx0 = Math.max(left, X0 + column * CELL_X);
-      const cx1 = Math.min(right, X0 + (column + 1) * CELL_X);
-      const cy0 = Math.max(low, Y_TOP - (row + 1) * CELL_Y);
-      const cy1 = Math.min(high, Y_TOP - row * CELL_Y);
-      if (cx1 <= cx0 || cy1 <= cy0) continue;
-      const centre = at((cx0 + cx1) / 2, (cy0 + cy1) / 2);
-      const near = at(cx0, cy0);
-      const far = at(cx1, cy1);
+      // Cell centre: columns run with +X, rows run against +Y.
+      const centre = at(X0 + (column + 0.5) * CELL_X, Y_TOP - (row + 0.5) * CELL_Y);
+      const near = at(X0 + column * CELL_X, Y_TOP - row * CELL_Y);
+      const far = at(X0 + (column + 1) * CELL_X, Y_TOP - (row + 1) * CELL_Y);
       if (!centre || !near || !far) continue;
       labels.push({
         text: `${String.fromCharCode(65 + row)}${column + 1}`,

@@ -48,7 +48,7 @@ const UV_LOCATION = 8;
 // Instances under this radius, in framebuffer pixels, are skipped. Not 1.0:
 // POI hulls are built from sub-pixel pieces and would vanish from the overview.
 const CULL_MIN_RADIUS_PX = 0.5;
-// How far past the mapped square the tilted view draws, world uu. The outside
+// How far past the layout square the terrain draws, world uu. The outside
 // rock that ships is limited to the same distance, so none is sliced by the clip.
 const EDGE_APRON = 375000;
 // CSS pixels per texel of the depth copy markers are tested against.
@@ -758,8 +758,9 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     gl.uniform1f(t.footZ, meta.zmin);
     gl.uniform1f(t.zhi, meta.zmin + (meta.zmax - meta.zmin) * 0.35);
     gl.uniform2f(t.c, meta.cx, meta.cy);
-    // Tilted, the clip moves out to take in the rock that stands past the edge.
-    const apron = camera ? EDGE_APRON : 0;
+    // The clip takes in the sand and rock past the square: the map rect and the
+    // tilted view both reach beyond it.
+    const apron = EDGE_APRON;
     gl.uniform1f(t.half, meta.half + apron);
     gl.uniform1f(t.apron, apron);
     gl.activeTexture(gl.TEXTURE1);
