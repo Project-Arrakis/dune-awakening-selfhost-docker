@@ -1,15 +1,30 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createHmac } from "node:crypto";
+import { createHmac, scryptSync } from "node:crypto";
 import { createAuth, clearSessionCookie, setSessionCookie, json, serializeJsonResponse } from "../src/auth.js";
 
-test("auth creates readable signed sessions", () => {
+test("auth creates readable signed sessions", async () => {
   const auth = createAuth({ sessionSecret: "secret", adminPassword: "admin", authDisabled: false });
   const session = auth.makeSession();
   const req = { headers: { cookie: `asc_session=${encodeURIComponent(session.cookie)}` } };
   assert.equal(auth.readSession(req)?.id, session.id);
-  assert.equal(auth.passwordMatches("admin"), true);
-  assert.equal(auth.passwordMatches("wrong"), false);
+  assert.equal(await auth.passwordMatches("admin"), true);
+  assert.equal(await auth.passwordMatches("wrong"), false);
+});
+
+test("auth accepts a file-backed scrypt password from another Console build", async () => {
+  const password = "Dummy-Console-Password-123";
+  const salt = "0123456789abcdef0123456789abcdef";
+  const key = scryptSync(password, salt, 64, { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 });
+  const auth = createAuth({
+    sessionSecret: "secret",
+    adminPassword: `scrypt$${salt}$${key.toString("hex")}`,
+    adminPasswordEnvManaged: false,
+    authDisabled: false
+  });
+
+  assert.equal(await auth.passwordMatches(password), true);
+  assert.equal(await auth.passwordMatches("wrong"), false);
 });
 
 test("auth keeps tier and identity in the server-side session while the cookie remains opaque", () => {
@@ -126,7 +141,7 @@ test("makeSession defaults to owner tier and carries identity fields", () => {
   assert.equal(readBack?.username, "operator");
 });
 
-test("ADMIN_AUTH_DISABLED=1 returns dev owner session, bypasses password and CSRF", () => {
+test("ADMIN_AUTH_DISABLED=1 returns dev owner session, bypasses password and CSRF", async () => {
   const auth = createAuth({ sessionSecret: "secret", adminPassword: "admin", authDisabled: true });
   const req = { method: "POST", headers: {} };
   const res = fakeResponse();
@@ -135,7 +150,7 @@ test("ADMIN_AUTH_DISABLED=1 returns dev owner session, bypasses password and CSR
   assert.equal(session?.tier, "owner");
   assert.equal(session?.csrf, "dev");
   assert.equal(res.status, null);
-  assert.equal(auth.passwordMatches("anything"), false); // disabled doesn't skip passwordMatches
+  assert.equal(await auth.passwordMatches("anything"), false); // disabled doesn't skip passwordMatches
 });
 
 test("logout deletes session and cookie is cleared", () => {

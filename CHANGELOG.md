@@ -7,9 +7,15 @@ whatever upstream version is currently checked out, per the versioning
 convention documented in this account's operating docs. Entries are in
 Keep a Changelog style, grouped by upstream base version, newest first.
 
-## Unreleased (on top of upstream v1.4.19)
+## Unreleased (on top of upstream v1.4.33)
+
+### Security
+
+- **CI scan gate fixed: dev-dependency and bundled-npm advisories.** `console/web`'s lockfile moves `undici` 7.29.0 -> 7.30.0 (and `source-map-js` 1.2.1 -> 1.2.2) via `npm audit fix`, clearing the two HIGH osv-scanner findings; `console/api`'s runtime image no longer ships npm/npx (the container only runs `node /app/src/server.js`), which removes the bundled `brace-expansion`/`undici` packages trivy-image-scan was failing on (HIGH, base-image-lag class). No operator action; the console image rebuilds on the next `dune self-update`.
 
 ### Added
+
+- **Spice field management reimplemented under Maps → Interactive Modifiers → Custom Settings.** Before Patch 1.5, the old `Spice Fields` tab let operators edit per-type max active/primed field counts and spawn weights, backed by `dune.spicefield_types` -- that table is completely gone from the live game database (verified directly against a running server, not just its columns), so that control surface cannot be restored, and there is no per-size (Small/Medium/Large) or per-map (Hagga Basin vs. Deep Desert) replacement anywhere in the current game server. What does still exist: 9 real, native `SpiceHarvestingSystem` `UserGame.ini` settings (global spawn pacing, visibility/replication, and yield) that were already defined in this fork's settings schema. They were technically reachable before this change -- via the generic "UserGame" tab's per-target Modifier Category dropdown, auto-grouped under a category name derived from their native section (`/Script/DuneSandbox.SpiceHarvestingSystem` → "Spice Harvesting System") -- but not under a curated "Spice Fields" label, not documented, and not anywhere near where an operator following the old read-only tab's own "supported resource rates are available under Custom Settings" pointer would think to look. Explicitly categorized and given real descriptions, then surfaced as a new, always-visible **global** section under Custom Settings (not gated behind that tab's per-map Target selector, since these settings apply server-wide) -- reads/writes go through the existing Global-scope UserGame.ini mechanism the "UserGame" tab already uses, not the Custom Settings tab's own `ServerCustomSettings.ini` path, since these are real UserGame.ini keys. Deliberately excluded from the plain "UserGame" tab's own field list (now that they're categorized) to avoid a second, unsynchronized editable copy of the same values. Operators upgrading need no action; the read-only "Active Spice Fields" tab is unaffected.
 
 - **New public-tier `world/coriolis` route: farm-wide Coriolis storm seed and next-cycle timing** (issue #942, companion to `Project-Arrakis/mentat`#370, "Chronicles of Kanly" rollout, `meta`#64). Reuses the existing `resolveCoriolisCycle()` (`services/coriolisSeed.js`, already used by the general `/api/map/markers`/`/api/map/spice` routes and its own 30s cache) rather than reimplementing it, and rather than the originally-proposed SSH-into-the-game-server-host approach, which would have contradicted this project's established "Mentat has no direct filesystem/SSH access, only the console adapter API" architecture. New `CORIOLIS_READ` capability, granted at **public tier** (alongside `STATUS_READ`) since storm timing is genuinely public in-game knowledge, unlike most other read capabilities.
 
@@ -531,6 +537,29 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   three times over). `scan_named_destination_failures` also now calls
   `docker ps` once per invocation instead of once per source map (3x
   fewer calls). Operators upgrading need no action.
+
+- **Follow-up: `scan_rejected_story_returns` reopened, then re-closed, the
+  same class of gap.** This function was gated as part of the original
+  fix above, sharing `NAMED_DESTINATION_SCAN_SECONDS` (60s) with the
+  unrelated `scan_named_destination_failures`. Upstream reverted that
+  gate for this function entirely (`471c3151`, "Keep story-return
+  recovery responsive") because 60s made a player waiting on a stuck
+  story return wait too long — a real complaint, but the fix reopened
+  the original unbounded-`docker logs`-per-tick condition for this one
+  function specifically (it also runs from a faster, separate 2-second
+  background loop, `follow_director_travel_demand`, not just the main
+  5-second loop). Fixed by giving it its own dedicated interval,
+  `DUNE_AUTOSCALER_STORY_RETURN_RECOVERY_SCAN_SECONDS` (default 5s),
+  instead of either sharing the slower interval or having no gate at
+  all. Verified the default is safe with a real measurement, not just
+  reasoning: `docker logs --since 10m dune-director` against live
+  production took ~0.44s wall-clock, negligible CPU — under a 9% duty
+  cycle even if the gate fired continuously every 5s. Operators
+  upgrading need no action; the new env var is optional with a safe
+  default. `tests/autoscaler-heal-scan-rate-limit-test.sh` extended to
+  cover this function's gate directly (a mutation-tested Eight Hats
+  review found the existing test suite would pass green even with the
+  gate fully removed or degraded to a no-op interval of `0` — closed).
 
 - **Corrected a systematic wrong `volume` value affecting live container
   capacity math for 70 of the 99 `raw_resource`/`refined_resource`/`component`

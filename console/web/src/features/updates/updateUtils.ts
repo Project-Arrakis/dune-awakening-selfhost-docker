@@ -11,7 +11,7 @@ export function parseUpdateTask(task: Task) {
   const latest = firstVersionMatch(text, [/latest(?: release| build| version)?\s*[:=]\s*([^\n]+)/i, /remote(?: build| version)?\s*[:=]\s*([^\n]+)/i, /available(?: build| version)?\s*[:=]\s*([^\n]+)/i]);
   const repository = firstVersionMatch(text, [/github repo\s*[:=]\s*([^\n]+)/i]);
   const versions = { current, latest, repository };
-  if (task.status === "failed") return { status: "Check Failed", ...versions, reason: task.errorMessage || summarizeCommandText(text) };
+  if (task.status === "failed") return { status: "Check Failed", ...versions, reason: updateCheckFailureReason(task.errorMessage || "", text) };
   if (task.status !== "succeeded") return { status: "Checking...", ...versions, reason: task.progressMessage || "" };
   const updateAvailable = /update available|newer|can update|available update/i.test(text);
   const latestStatus = /up to date|already latest|no update|latest/i.test(text) && !updateAvailable;
@@ -19,6 +19,15 @@ export function parseUpdateTask(task: Task) {
   if (updateAvailable) return { status: "Update Available", ...versions, reason: summarizeCommandText(text) };
   if (latestStatus) return { status: "Latest", ...versions, reason: summarizeCommandText(text) };
   return { status: current || latest ? "Completed" : "Version details unavailable", ...versions, reason: current || latest ? summarizeCommandText(text) : "Unable to parse version details from completed check." };
+}
+
+function updateCheckFailureReason(errorMessage: string, taskText: string) {
+  const error = String(errorMessage || "").trim();
+  if (!/^dune update check failed with exit \d+$/i.test(error)) return error || summarizeCommandText(taskText);
+  if (/timed out|timeout/i.test(taskText)) {
+    return "Steam did not finish the game update check in time. Try again in a few minutes. No game files were changed.";
+  }
+  return "The game update check could not be completed. Try again in a few minutes. No game files were changed.";
 }
 
 export function loadPersistedUpdateTask(key: string) {

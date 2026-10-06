@@ -248,6 +248,16 @@ export const ROUTE_ACTIONS = {
   // it's a read of this same in-flight connection's own status.
   "GET /api/integrations/discord/hosted-bot/auto-invite/confirmation-status": "settings:discord-bot-hosted-oauth",
 
+  // dune-awakening-selfhost-docker#853/mentat-link#183: the role-picker
+  // widget's own backend -- same tier as the self-hosted path's sibling
+  // GET /api/settings/discord-bot (updates:read) and
+  // POST .../role-ids (updates:apply). This is role/tier assignment, the
+  // same conceptual action as the self-hosted route, just relayed through
+  // mentat instead of written directly to local env vars -- not the
+  // owner-only settings:* class the credential-forwarding routes above use.
+  "GET /api/integrations/discord/hosted-bot/roles":  "updates:read",
+  "POST /api/integrations/discord/hosted-bot/roles": "updates:apply",
+
   // --- Players (read) ---
   "GET /api/players":                          "players:read",
   "GET /api/players/online":                   "players:read",

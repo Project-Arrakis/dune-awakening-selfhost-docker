@@ -245,7 +245,7 @@ function summarizeDatabase(text) {
 
 function summarizeRabbit(text) {
   const lines = sectionLines(text, "RabbitMQ game connections");
-  if (lines.some((line) => /checking/i.test(line))) return "Ready";
+  if (lines.some((line) => /check(?:ing|ed) by readiness/i.test(line))) return "Ready";
   const director = numberAfterLabel(lines, "Director connections");
   const game = numberAfterLabel(lines, "Game server connections");
   return director >= 1 && game >= 1 ? "Ready" : "Warn";

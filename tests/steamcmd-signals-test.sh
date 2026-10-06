@@ -89,4 +89,22 @@ if steamcmd_log_needs_manifest_repair "$cdn_state_log"; then
   exit 1
 fi
 
+update_source="$repo_root/runtime/scripts/update.sh"
+# shellcheck disable=SC2016 # Match the literal shell source, not this test's cmd.
+check_block="$(sed -n '/if \[ "$cmd" = "check" \]/,/^skip_preflight=0$/p' "$update_source")"
+grep -Fq 'DUNE_STEAMCMD_CHECK_MAX_ATTEMPTS:-2' <<<"$check_block"
+grep -Fq 'DUNE_STEAMCMD_CHECK_RETRY_SLEEP:-5' <<<"$check_block"
+grep -Fq 'DUNE_STEAMCMD_CHECK_TIMEOUT_SECONDS:-45' <<<"$check_block"
+grep -Fq 'timeout --signal=TERM --kill-after=5s' <<<"$check_block"
+grep -Fq 'SteamCMD returned complete build metadata before its shutdown timed out; continuing with that result.' <<<"$check_block"
+grep -Fq '{ [ "$steamcmd_rc" -eq 124 ] || [ "$steamcmd_rc" -eq 137 ]; } && [ -n "$remote_build" ]' <<<"$check_block"
+if grep -Fq 'DUNE_STEAMCMD_CONTENT_MAX_ATTEMPTS' <<<"$check_block"; then
+  echo "read-only update checks must not inherit the long install retry policy" >&2
+  exit 1
+fi
+grep -Fq 'DUNE_STEAMCMD_CONTENT_MAX_ATTEMPTS:-6' "$update_source"
+grep -Fq 'UPDATE_CHECK_CACHE_FILE="runtime/generated/game-update-check.json"' "$update_source"
+# shellcheck disable=SC2016 # Match the literal shell source, not this test's variable.
+grep -Fq 'rm -f "$UPDATE_CHECK_CACHE_FILE"' "$update_source"
+
 echo "SteamCMD content-host failure signals detected correctly"

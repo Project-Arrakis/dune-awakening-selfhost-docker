@@ -207,6 +207,9 @@ test("builds allowlisted command arguments without shell interpolation", () => {
   assert.deepEqual(buildDuneArgs("userSettingsGlobalValues"), ["usersettings", "global-values"]);
   assert.deepEqual(buildDuneArgs("userSettingsMapValues", { map: "Survival_1" }), ["usersettings", "map-values", "Survival_1"]);
   assert.deepEqual(buildDuneArgs("userSettingsPartitionValues", { map: "Survival_1", partitionId: 1 }), ["usersettings", "partition-values", "Survival_1", "1"]);
+  assert.deepEqual(buildDuneArgs("userSettingsServerCustomValues", { scope: "serverCustomGlobal", map: "Survival_1" }), ["usersettings", "server-custom-values", "global", "Survival_1", ""]);
+  assert.deepEqual(buildDuneArgs("userSettingsServerCustomValues", { scope: "serverCustomPartition", map: "Survival_1", partitionId: 1 }), ["usersettings", "server-custom-values", "partition", "Survival_1", "1"]);
+  assert.deepEqual(buildDuneArgs("userSettingsSave", { scope: "serverCustomMap", map: "Overmap", values: { gathering_amount: "2.0" } }).slice(0, 5), ["usersettings", "bulk-save", "serverCustomMap", "Overmap", ""]);
   assert.deepEqual(buildDuneArgs("userSettingsResetAndRestart", { scope: "global" }), ["usersettings", "reset-global-game"]);
   assert.deepEqual(buildDuneArgs("userSettingsResetAndRestart", { scope: "mapEngine", map: "Survival_1" }), ["usersettings", "reset-map-engine", "Survival_1"]);
   assert.deepEqual(buildDuneArgs("userSettingsResetAndRestart", { scope: "partitionEngine", map: "Survival_1", partitionId: 3 }), ["usersettings", "reset-partition-engine", "Survival_1", "3"]);
@@ -388,12 +391,21 @@ test("redacts token-like sensitive values", () => {
 // generic rules rather than a list of names, so a variable added later is
 // covered without anyone remembering to add it here.
 test("redacts credentials in any URI scheme, not only postgres", () => {
-  for (const uri of ["amqp://admin:RmqS3cret@rabbitmq:5672", "redis://user:hunter2@cache:6379", "https://bob:pw123@example.com/x"]) {
+  const longScheme = `a${"b".repeat(200)}+secure`;
+  for (const uri of ["amqp://admin:RmqS3cret@rabbitmq:5672", "redis://user:hunter2@cache:6379", "https://bob:pw123@example.com/x", `${longScheme}://user:longSchemeSecret@example.com/x`]) {
     const output = redact(uri);
-    assert.doesNotMatch(output, /RmqS3cret|hunter2|pw123/);
+    assert.doesNotMatch(output, /RmqS3cret|hunter2|pw123|longSchemeSecret/);
     // The host has to survive -- redacting it would make the error useless.
     assert.match(output, /@(rabbitmq|cache|example\.com)/);
   }
+});
+
+test("redaction remains fast on long uncontrolled input", () => {
+  const input = `${"-".repeat(500_000)}! not-a-uri DUNE_COMMAND_AUTH_TOKEN=${"x".repeat(500_000)}`;
+  const started = Date.now();
+  const output = redact(input);
+  assert.ok(Date.now() - started < 2_000);
+  assert.doesNotMatch(output, /x{100}/);
 });
 
 test("redacts any *_TOKEN / *_SECRET / *_KEY assignment by shape", () => {

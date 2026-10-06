@@ -42,7 +42,7 @@ import { createDeathPoller } from "./deathPoller.js";
 import { updateEnvFileValue as updateEnvValue } from "./services/envFile.js";
 import { funcomAuthMismatchDetected, matchingFuncomAuthLines, saveFuncomTokenValue as writeFuncomToken, validDockerSince } from "./services/funcomAuth.js";
 import { readCharacterTransferSettings, saveCharacterTransferSettings } from "./services/characterTransferSettings.js";
-import { handleDiscordAdapterRoute, isDiscordAdapterRoute, readDiscordBotApiToken } from "./integrations/discord/routes.js";
+import { handleDiscordAdapterRoute, isDiscordAdapterRoute, readDiscordBotApiToken, WRITE_BRIDGE_SOCKET_FILENAME } from "./integrations/discord/routes.js";
 import { createPendingStateStore, exchangeDiscordAuthCode, fetchDiscordIdentity, createOAuthTierResolver, buildAuthorizeUrl, oauthStateCookie, clearOAuthStateCookie, constantTimeStringEqual } from "./integrations/discord/oauth.js";
 import { fetchOwnedDiscordGuilds, createPendingRegistrationStore, hostedBotOAuthStateCookie, clearHostedBotOAuthStateCookie, hostedBotRegistrationHandleCookie, clearHostedBotRegistrationHandleCookie, hostedBotOAuthReturnPage } from "./integrations/discord/hostedBotOAuth.js";
 import { buildAutoInviteAuthorizeUrl, createAutoInvitePendingStateStore, autoInviteStateCookie, clearAutoInviteStateCookie, autoInviteCompletePage, autoInviteConfirmationIdCookie, clearAutoInviteConfirmationIdCookie } from "./integrations/discord/autoInvite.js";
@@ -50,7 +50,13 @@ import { fetchWithTimeoutAndRetry } from "./services/httpWithRetry.js";
 import { createHandoff } from "./integrations/discord/handoff.js";
 import { actionForRoute, ROUTE_ACTIONS, NAMESPACES } from "./actions.js";
 import { evaluate, loadPolicies, getAllPolicies, setPolicies, resolveAllowedActions, allKnownActions } from "./policy.js";
-import { discordAdapterEnabled } from "./integrations/discord/adapter.js";
+import { discordAdapterEnabled, discordWritesEnabled } from "./integrations/discord/adapter.js";
+// [Layer 3 integration audit fix, LOW, issue #1043] The 5 header constants
+// and getWriteBridgeToken previously imported here became dead once
+// resolveWriteBridgePrincipal absorbed that logic -- removed.
+import { resolveWriteBridgePrincipal } from "./integrations/discord/writeBridgeCredential.js";
+import { startWriteBridgeSocketServer } from "./integrations/discord/writeBridgeSocketServer.js";
+import { selfCheckWriteActionRoutes, checkConfirmPhrasesAgainstRealHandlers } from "./integrations/discord/writeActionRoutes.js";
 import { initializeDiscordAdapterSchema } from "./integrations/discord/schema.js";
 import { customizationGrantOutcome, liveItemGrantOk, liveItemGrantPublished, liveItemGrantWarning, summarizeCustomizationGrantResults } from "./grantResults.js";
 import { primeMessageOfTheDayOnlineState, readMessageOfTheDay, recordMessageOfTheDayScanFailure, restoreMessageOfTheDay, runMessageOfTheDayScan, saveMessageOfTheDay } from "./services/messageOfTheDay.js";
@@ -228,7 +234,7 @@ async function requireFreshTier3Proof(req, res, body, { auditUrl, action, actor 
   if (!rate.allowed) {
     return deny(429, { error: "Too many attempts. Please wait a few minutes, then try again." }, "rate_limited", { "retry-after": String(rate.retryAfterSeconds) });
   }
-  if (!auth.passwordMatches(body.currentPassword)) {
+  if (!(await auth.passwordMatches(body.currentPassword))) {
     credentialProofRateLimiter.recordFailure(rateKey);
     return deny(400, { error: "Current password is incorrect." }, "bad_password");
   }
@@ -516,8 +522,52 @@ async function resolvePlayerScopedIds(session, db) {
   }
 }
 
-createServer(async (req, res) => {
-  if (config.allowedIps.length) {
+// requestHandler is shared, unmodified, between the main TCP listener and
+// the Discord write bridge's Unix-socket listener (issue #215, docs/rw-
+// architecture.md section 3.1 -- "no parallel implementation"). `opts`
+// declares a default of {} for defense-in-depth (docs/rw-architecture.md
+// 3.2, round-6 correction): even a future refactor that accidentally drops
+// the explicit third argument fails safe (opts.viaWriteBridgeSocket reads
+// as undefined/falsy) rather than throwing and hanging every request --
+// this exact bug, un-guarded, was CRITICAL #756 in this design's own
+// history. The TCP listener below must NEVER omit this argument regardless.
+async function requestHandler(req, res, opts = {}) {
+  // [Layer 3 integration audit fix, HIGH, issue #1036] This parse used to
+  // run with no try/catch of its own, above/outside the function's main
+  // try/catch below. A request-target Node's raw HTTP parser accepts but
+  // WHATWG URL parsing rejects (e.g. an absolute-form proxy-style target
+  // with an out-of-range port) threw here before reaching that try/catch --
+  // caught only by the createServer callback's own unhandledRejection
+  // logging (see below), which never writes a response, silently hanging
+  // the connection instead of a graceful 400.
+  let path;
+  try {
+    path = new URL(req.url || "/", "http://localhost").pathname;
+  } catch {
+    res.writeHead(400, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "Malformed request URL." }));
+    return;
+  }
+
+  // Write-bridge credential resolution (docs/rw-architecture.md 3.2/3.4,
+  // round-4/5/6 corrections, CRITICAL #750/#757/#763's fix chain): this
+  // must run BEFORE the config.allowedIps gate, not after it -- the real
+  // ADMIN_ALLOWED_IPS check below runs unconditionally, before handleApi is
+  // ever reached, and a Unix-socket connection's remoteAddress is always
+  // undefined (normalizing to ""), which can never match a configured
+  // allowlist entry. Without this exemption, every write-bridge request
+  // would be unconditionally 403'd for any operator running the documented,
+  // code-enforced ADMIN_ALLOWED_IPS compensating control -- exactly the
+  // security-conscious operator population this feature must not break.
+  // Resolving here, once, and threading the result through rather than
+  // re-checking inside handleApi also means this credential is never
+  // consulted a second time with a subtly different check (the "two copies
+  // silently diverge" risk this design doc repeatedly flags elsewhere).
+  const writeBridgePrincipal = opts.viaWriteBridgeSocket
+    ? resolveWriteBridgePrincipal({ headers: req.headers, method: req.method, path, viaWriteBridgeSocket: true })
+    : null;
+
+  if (!writeBridgePrincipal && config.allowedIps.length) {
     const remoteIp = (req.socket.remoteAddress || "").replace(/^::ffff:/, "");
     if (!config.allowedIps.includes(remoteIp)) {
       res.writeHead(403, { "content-type": "application/json" });
@@ -527,7 +577,8 @@ createServer(async (req, res) => {
   }
   try {
     if (req.url?.startsWith("/api/")) {
-      await handleApi(req, res);
+      if (writeBridgePrincipal) req._writeBridgePrincipal = writeBridgePrincipal;
+      await handleApi(req, res, path);
       return;
     }
     if (req.url?.startsWith("/atrium/")) {
@@ -552,6 +603,23 @@ createServer(async (req, res) => {
     const payload = apiErrorPayload(error);
     json(res, payload.status, payload.body);
   }
+}
+
+createServer((req, res) => {
+  // [Layer 3 integration audit fix, HIGH, issue #1036] Defense in depth
+  // alongside requestHandler's own now-complete try/catch coverage above:
+  // if a future change reintroduces a code path that throws/rejects before
+  // requestHandler's try/catch is reached, this .catch() is the last line
+  // of defense against a silently hung connection with no response ever
+  // written -- it degrades to a generic 500 rather than leaving the client
+  // waiting forever.
+  Promise.resolve(requestHandler(req, res, { viaWriteBridgeSocket: false })).catch((error) => {
+    console.error(`Unhandled requestHandler error: ${redact(error?.message || "Unexpected error.")}`);
+    if (!res.headersSent) {
+      res.writeHead(500, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "Unexpected error." }));
+    }
+  });
 }).listen(config.port, config.host, () => {
   console.log(`${config.appName} API listening on http://${config.host}:${config.port}`);
   if (config.host === "0.0.0.0") {
@@ -582,6 +650,59 @@ createServer(async (req, res) => {
     initializeDiscordAdapterSchema(db).catch((error) => {
       console.warn(`Discord adapter schema initialization failed: ${redact(error?.message || "Unexpected error.")}`);
     });
+  }
+  // Hop B's internal-loopback listener (issue #215, docs/rw-architecture.md
+  // section 3.1). Only started when the write bridge is actually enabled --
+  // an operator who hasn't opted into Discord-driven mutations gets no new
+  // listening socket at all. startWriteBridgeSocketServer() itself fails
+  // safe (root-UID refusal, live-listener collision) rather than throwing,
+  // so a startup issue here degrades write/execute to a 503, never crashes
+  // the main console.
+  if (discordWritesEnabled(config)) {
+    // Boot-time route-table consistency check (issue #1020): catches a
+    // WRITE_ACTION_ROUTES entry whose (method, path) no longer resolves to a
+    // real Core route, or whose declared policyAction has drifted from
+    // actions.js's real one -- exactly the class of bug issue #1012 found by
+    // hand. Deliberately fails safe: a problem here disables the whole
+    // subsystem (never starts the socket) rather than crashing Core's boot,
+    // matching selfCheckWriteActionRoutes()'s own documented contract.
+    const writeActionRouteProblems = selfCheckWriteActionRoutes();
+    if (writeActionRouteProblems.length) {
+      console.warn("Discord write bridge disabled: WRITE_ACTION_ROUTES failed its startup consistency check:");
+      for (const problem of writeActionRouteProblems) console.warn(`  - ${problem}`);
+    } else {
+      checkConfirmPhrasesAgainstRealHandlers().then((confirmPhraseProblems) => {
+        if (confirmPhraseProblems.length) {
+          console.warn("Discord write bridge disabled: a confirmPhrase check against a real target handler failed:");
+          for (const problem of confirmPhraseProblems) console.warn(`  - ${problem}`);
+          return;
+        }
+        const writeBridgeSocketPath = join(config.generatedDir, WRITE_BRIDGE_SOCKET_FILENAME);
+        startWriteBridgeSocketServer({
+          socketPath: writeBridgeSocketPath,
+          // Forwards whatever opts writeBridgeSocketServer.js's own createServer
+          // callback passes (issue #1024) -- that call site is the single
+          // source of truth for "this request came from the write-bridge
+          // socket," not a second, independently-hardcoded copy here. Before
+          // this fix, this closure ignored its own third argument and
+          // hardcoded { viaWriteBridgeSocket: true } itself, so
+          // writeBridgeSocketServer.js's own value was silently discarded --
+          // illusory defense-in-depth, not a live bug (both agreed), but a
+          // future edit to one side with no effect on the other.
+          requestListener: (req, res, opts) => requestHandler(req, res, opts)
+        }).then(({ disabled, reason }) => {
+          if (disabled) {
+            console.warn(`Discord write bridge socket did not start (${reason}). Discord write commands will fail closed with a 503.`);
+          } else {
+            console.log(`Discord write bridge listening on ${writeBridgeSocketPath}`);
+          }
+        }).catch((error) => {
+          console.warn(`Discord write bridge socket startup failed: ${redact(error?.message || "Unexpected error.")}`);
+        });
+      }).catch((error) => {
+        console.warn(`Discord write bridge disabled: confirmPhrase self-check itself failed unexpectedly: ${redact(error?.message || "Unexpected error.")}`);
+      });
+    }
   }
   ensureExchangeHistory(db).catch((error) => {
     console.warn(`Market transaction recorder initialization failed: ${redact(error?.message || "Unexpected error.")}`);
@@ -869,9 +990,16 @@ function requireAction(req, res, action) {
   return true;
 }
 
-async function handleApi(req, res) {
+async function handleApi(req, res, path) {
+  // `url` (for its .searchParams -- query-string reads throughout this
+  // function) is re-derived here from the same immutable req.url
+  // requestHandler already parsed for `path`. This is a second, cheap parse
+  // of the same input, not a divergence risk: `path` (the value requestHandler
+  // computed and the write-bridge credential check's exact-match scoping
+  // relies on) is passed in as a parameter and never recomputed here, so the
+  // one value that actually needs "reuse the same canonicalized value, never
+  // re-parse" (docs/rw-architecture.md 3.2's round-3 correction) still is.
   const url = new URL(req.url, "http://localhost");
-  const path = url.pathname;
 
   if (path === "/api/health") return json(res, 200, { ok: true, app: config.appName });
   if (path === "/api/auth/state") {
@@ -896,7 +1024,7 @@ async function handleApi(req, res) {
       return json(res, 429, { error: "Too many sign-in attempts. Please wait a few minutes, then try again." }, { "retry-after": String(rate.retryAfterSeconds) });
     }
     const body = await readJson(req);
-    if (!config.authDisabled && !auth.passwordMatches(body.password)) {
+    if (!config.authDisabled && !(await auth.passwordMatches(body.password))) {
       loginRateLimiter.recordFailure(rateKey);
       return json(res, 401, { error: "Incorrect password. Please try again!" });
     }
@@ -1220,7 +1348,16 @@ async function handleApi(req, res) {
     }
   }
 
-  const session = bearer?.session || auth.requireAuth(req, res);
+  // req._writeBridgePrincipal (issue #215): a third short-circuit option,
+  // matching the exact pattern `bearer?.session` already establishes for
+  // "a non-cookie principal skips auth.requireAuth() (and its CSRF check)
+  // entirely" -- reusing this already-proven integration pattern instead of
+  // introducing a second, structurally different mechanism for the same
+  // class of decision. Already fully resolved (token + exact-path-match
+  // verified) by requestHandler before handleApi was ever called; never
+  // re-verified here, per this design's own "never re-verify a credential a
+  // second time with a subtly different check" principle.
+  const session = bearer?.session || req._writeBridgePrincipal || auth.requireAuth(req, res);
   if (!session) return;
   req.authSession = session;
   // Stashed for requireAction(), the second gate a body-dependent route runs
@@ -2521,6 +2658,141 @@ async function handleApi(req, res) {
     }
     audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/auto-invite/confirmation-status"), "hosted-bot.auto-invite.confirmation-status", { ok: true, status });
     return json(res, 200, { status, guildName: status === "confirmed" ? String(statusBody?.guildName || "") : undefined });
+  }
+
+  // ---- Hosted-bot role-picker (dune-awakening-selfhost-docker#853,
+  // mentat-link#183) ---- Relays to mentat's already-shipped
+  // GET/POST /api/consoles/:guildId/roles via mentat-link's proxy, the
+  // same "Core never holds MENTAT_PROXY_SHARED_SECRET" pattern as the
+  // auto-invite routes above. The connected guildId comes from Core's own
+  // persisted state (persistHostedBotConnectedGuild), never from the
+  // caller -- there is exactly one guild a given console can be connected
+  // to at a time, so there is nothing for a client-supplied guildId to
+  // legitimately select between.
+  if (path === "/api/integrations/discord/hosted-bot/roles" && req.method === "GET") {
+    const state = readDiscordBotSettingsState(config);
+    // Same fail-closed ordering as /register and /auto-invite/start above
+    // -- cheapest, most fundamental check first, before any network work.
+    if (state.deploymentChoice !== "hosted") {
+      return json(res, 403, { error: "This console isn't configured for the hosted bot." });
+    }
+    if (!state.hostedBotConnectedGuildId) {
+      return json(res, 400, { error: "This console isn't connected to a Discord server yet." });
+    }
+    const adapterToken = readDiscordAdapterTokenForHostedBot(config);
+    if (!adapterToken) {
+      return json(res, 500, { error: "Could not prepare this console's adapter token." });
+    }
+    let mentatLinkResponse;
+    try {
+      mentatLinkResponse = await fetchWithTimeoutAndRetry(
+        `${config.mentatLinkRolesUrlBase}/${encodeURIComponent(state.hostedBotConnectedGuildId)}/roles`,
+        { method: "GET", headers: { authorization: `Bearer ${adapterToken}` } },
+        { timeoutMs: 15000 }
+      );
+    } catch {
+      audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/roles"), "hosted-bot.roles.get", { ok: false, reason: "mentat_unreachable" });
+      return json(res, 502, { error: "Couldn't reach the hosted bot service. Try again in a moment." });
+    }
+    if (!mentatLinkResponse.ok) {
+      audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/roles"), "hosted-bot.roles.get", { ok: false, reason: "mentat_rejected", status: mentatLinkResponse.status });
+      return json(res, 502, { error: "Could not load this server's roles. Try again in a moment." });
+    }
+    let rolesBody;
+    try {
+      rolesBody = await mentatLinkResponse.json();
+    } catch {
+      rolesBody = null;
+    }
+    audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/roles"), "hosted-bot.roles.get", { ok: true, cacheStale: Boolean(rolesBody?.cacheStale) });
+    return json(res, 200, { roles: Array.isArray(rolesBody?.roles) ? rolesBody.roles : [], cacheStale: Boolean(rolesBody?.cacheStale) });
+  }
+  if (path === "/api/integrations/discord/hosted-bot/roles" && req.method === "POST") {
+    const state = readDiscordBotSettingsState(config);
+    if (state.deploymentChoice !== "hosted") {
+      return json(res, 403, { error: "This console isn't configured for the hosted bot." });
+    }
+    if (!state.hostedBotConnectedGuildId) {
+      return json(res, 400, { error: "This console isn't connected to a Discord server yet." });
+    }
+    const adapterToken = readDiscordAdapterTokenForHostedBot(config);
+    if (!adapterToken) {
+      return json(res, 500, { error: "Could not prepare this console's adapter token." });
+    }
+    const body = normalizeSettingsBody(await readJson(req));
+    // The hosted wire contract (design doc §4.4/§4.7, mentat's own
+    // guildRoles.js) is array-shaped (["123", "456"]), unlike the
+    // self-hosted form's comma-separated STRING fields --
+    // resolveRoleIdsTier()/validateDiscordRoleIds() above are built for
+    // the latter, so this route validates the array shape directly,
+    // reusing validateDiscordRoleIds()'s existing snowflake-pattern check
+    // per element (via a comma-join) rather than duplicating that regex.
+    function resolveHostedRoleIdsTier(fieldName, currentTierIds) {
+      if (!(fieldName in body)) return { ok: true, roleIds: currentTierIds };
+      const value = body[fieldName];
+      if (!Array.isArray(value)) return { ok: false, error: `${fieldName} must be an array of Discord role IDs.` };
+      return validateDiscordRoleIds(value.join(","));
+    }
+    const player = resolveHostedRoleIdsTier("playerRoleIds", state.roleIds.player);
+    if (!player.ok) return json(res, 400, { error: player.error });
+    const moderator = resolveHostedRoleIdsTier("moderatorRoleIds", state.roleIds.moderator);
+    if (!moderator.ok) return json(res, 400, { error: moderator.error });
+    const admin = resolveHostedRoleIdsTier("adminRoleIds", state.roleIds.admin);
+    if (!admin.ok) return json(res, 400, { error: admin.error });
+
+    // Same owner-only escalation guard as the self-hosted path's
+    // POST /api/settings/discord-bot/role-ids -- an admin-tier session
+    // must not be able to grant itself (or anyone) admin-tier Discord
+    // roles through this route just because it reaches mentat instead of
+    // writing local env vars directly.
+    if (discordAdminRoleIdsChanged(state.roleIds.admin, admin.roleIds) && session.tier !== "owner") {
+      audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/roles"), "hosted-bot.roles.post", { ok: false, reason: "admin_role_change_requires_owner" });
+      return json(res, 403, { error: "Changing admin-tier Discord role mappings requires owner access." });
+    }
+
+    let mentatLinkResponse;
+    try {
+      mentatLinkResponse = await fetchWithTimeoutAndRetry(
+        `${config.mentatLinkRolesUrlBase}/${encodeURIComponent(state.hostedBotConnectedGuildId)}/roles`,
+        {
+          method: "POST",
+          headers: { authorization: `Bearer ${adapterToken}`, "content-type": "application/json" },
+          body: JSON.stringify({ playerRoleIds: player.roleIds, moderatorRoleIds: moderator.roleIds, adminRoleIds: admin.roleIds })
+        },
+        { timeoutMs: 15000 }
+      );
+    } catch {
+      audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/roles"), "hosted-bot.roles.post", { ok: false, reason: "mentat_unreachable" });
+      return json(res, 502, { error: "Couldn't reach the hosted bot service. Your role selections were not saved -- try again in a moment." });
+    }
+    // A 409 tier-conflict is a real, expected outcome the picker surfaces
+    // as an inline validation error (design doc §4.7/§6) -- relayed as-is,
+    // not collapsed into the generic 502 path below.
+    if (mentatLinkResponse.status === 409) {
+      let conflictBody;
+      try {
+        conflictBody = await mentatLinkResponse.json();
+      } catch {
+        conflictBody = null;
+      }
+      audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/roles"), "hosted-bot.roles.post", { ok: false, reason: "tier_conflict" });
+      return json(res, 409, { conflict: conflictBody?.conflict ?? null });
+    }
+    if (!mentatLinkResponse.ok) {
+      audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/roles"), "hosted-bot.roles.post", { ok: false, reason: "mentat_rejected", status: mentatLinkResponse.status });
+      return json(res, 502, { error: "Could not save this server's roles. Try again in a moment." });
+    }
+    // Design doc §4.7 point 3: Core's own local role-ID fields become a
+    // display cache only once this flow is in play -- mentat's DB write is
+    // authoritative, matching the same principle already established for
+    // guild registration itself (persistHostedBotConnectedGuild). No
+    // discordAdapterApply restart task is queued here (unlike the
+    // self-hosted route's own 202 response) -- there is no local adapter
+    // process to restart for the hosted bot; mentat enforces RBAC on its
+    // own already-running connection.
+    updateDiscordBotRoleIds(config, { player: player.roleIds, moderator: moderator.roleIds, admin: admin.roleIds });
+    audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/roles"), "hosted-bot.roles.post", { ok: true, playerCount: player.roleIds.length, moderatorCount: moderator.roleIds.length, adminCount: admin.roleIds.length });
+    return json(res, 200, { applied: true });
   }
 
   if (path === "/api/settings" && req.method === "POST") return writeConfig(req, res);
@@ -3940,6 +4212,25 @@ async function task(req, res, type, operation, payload) {
   } catch (error) {
     return json(res, 400, { error: redact(error?.message || "Unexpected error.") });
   }
+  // [Layer 3 integration audit fix, MEDIUM, issue #1056] task() is the one
+  // shared dispatch point behind /api/server/stop|start|restart|restart-service,
+  // /api/updates/*, /api/backups/*, and every other applyMutationRateLimit-free
+  // route above that calls it -- none of them ever throttled, unlike the 40+
+  // other mutation routes in this file that already call
+  // applyMutationRateLimit individually. The Discord write bridge's Hop B
+  // reuses this exact function unchanged (docs/rw-architecture.md 3.1's "no
+  // parallel implementation" principle), so a write-bridge-driven
+  // server.stop/restart/start loop had no cooldown beyond the nonce store's
+  // unrelated 20-pending-preview cap. Fixed at this single choke point,
+  // scoped by `type`/`operation`, rather than duplicated per call site or
+  // reimplemented as a separate write-bridge-only limiter: req.authSession is
+  // already correctly populated for a write-bridge request
+  // (resolveWriteBridgePrincipal sets id:"discord:<userId>", issue #1040), so
+  // this shares one real rate-limit budget per actor+operation across both
+  // the web console and the write bridge, rather than letting an attacker
+  // double their effective rate by interleaving both paths against two
+  // independent counters.
+  if (!applyMutationRateLimit(req, res, `task:${type}:${operation}`)) return;
   if (await maybeQueueRestart(req, res, type, operation, payload)) return;
   audit(config, req, `task.${operation}`, payload);
   return json(res, 202, { task: tasks.create(type, operation, payload) });
@@ -4459,13 +4750,15 @@ async function userSettingsValuesRoute(res, url) {
       ? "userSettingsMapEngineValues"
       : scope === "partitionEngine"
         ? "userSettingsPartitionEngineValues"
+    : scope.startsWith("serverCustom")
+      ? "userSettingsServerCustomValues"
     : scope === "partition"
       ? "userSettingsPartitionValues"
       : scope === "map"
         ? "userSettingsMapValues"
         : "userSettingsGlobalValues";
   try {
-    const result = await runDune(config, buildDuneArgs(operation, { map, partitionId }), { timeoutMs: 8000 });
+    const result = await runDune(config, buildDuneArgs(operation, { scope, map, partitionId }), { timeoutMs: 8000 });
     return json(res, 200, { stdout: result.stdout || "" });
   } catch (error) {
     return json(res, 500, { error: redact(error?.message || "Unexpected error.") });
@@ -4501,7 +4794,7 @@ async function userSettingsRawWriteRoute(req, res) {
 }
 
 function userSettingsTaskPayload(body) {
-  const scope = ["engine", "mapEngine", "partitionEngine", "global", "map", "partition", "profile"].includes(String(body.scope || "")) ? String(body.scope) : "map";
+  const scope = ["engine", "mapEngine", "partitionEngine", "global", "map", "partition", "serverCustomGlobal", "serverCustomMap", "serverCustomPartition", "profile"].includes(String(body.scope || "")) ? String(body.scope) : "map";
   const map = String(body.map || "Survival_1");
   const partitionId = String(body.partitionId || "").trim();
   const values = body.values && typeof body.values === "object" && !Array.isArray(body.values) ? body.values : {};
@@ -4552,6 +4845,7 @@ function readDeferredRestartPending(config) {
 }
 
 function deferredRestartLabel(payload) {
+  if (String(payload.scope).startsWith("serverCustom")) return payload.scope === "serverCustomGlobal" ? "Custom settings" : `Custom settings (${payload.map})`;
   if (payload.scope === "engine" || payload.scope === "mapEngine" || payload.scope === "partitionEngine") return "UserEngine settings";
   if (payload.scope === "global" || payload.scope === "profile") return "UserGame settings";
   return payload.map ? `UserGame settings (${payload.map})` : "UserGame settings";
@@ -4563,7 +4857,7 @@ function deferredRestartLabel(payload) {
 // to restart every game service to actually apply, not just the map that
 // happened to be selected in the editor.
 function restartPayload(scope, map, partitionId) {
-  if (scope === "profile" || scope === "engine" || scope === "mapEngine" || scope === "partitionEngine" || scope === "global") {
+  if (scope === "profile" || scope === "engine" || scope === "mapEngine" || scope === "partitionEngine" || scope === "global" || scope === "serverCustomGlobal") {
     return { restartMode: "stack", restartLabel: "all game services" };
   }
   const normalizedMap = String(map || "").toLowerCase();
@@ -4672,7 +4966,18 @@ async function playerTeleportRoute(req, res, path) {
   if (!applyMutationRateLimit(req, res, "players.adminTeleport")) return;
   const playerId = decodeURIComponent(path.split("/")[3]);
   try {
-    const payload = await duneDb.teleportPlayer(db, playerId, body);
+    const payload = await duneDb.teleportPlayer(db, playerId, body, { allowOfflineCoordinates: true });
+    if (payload.path === "offline") {
+      audit(config, req, "player.teleport.offline", {
+        playerId: redact(playerId),
+        supported: payload.supported,
+        partitionId: payload.result?.partitionId,
+        x: payload.result?.x,
+        y: payload.result?.y,
+        z: payload.result?.z
+      });
+      return json(res, payload.supported ? 200 : 409, payload);
+    }
     buildDuneArgs("adminTeleport", payload);
     audit(config, req, "task.adminTeleport", { ...payload, playerId: redact(payload.playerId) });
     return json(res, 202, { task: tasks.create("admin", "adminTeleport", payload), message: payload.message });
@@ -7791,6 +8096,19 @@ async function handleOAuthCallback(req, res) {
 
 function applyMutationRateLimit(req, res, scope) {
   const sessionId = req.authSession?.id || "anonymous";
+  // [Layer 3 integration audit fix, MEDIUM, issue #1040] For a request that
+  // arrived over the Discord write bridge's Unix-domain-socket listener
+  // (Hop B reuses these exact same mutation route handlers unchanged),
+  // req.socket.remoteAddress is always undefined -- there is no real
+  // network peer to report an IP for. This deliberately, structurally
+  // collapses the IP dimension to the constant "unknown" for every
+  // write-bridge-originated mutation; there is no meaningful substitute
+  // value to use instead (the write-bridge credential is one shared,
+  // process-lifetime token, not something that varies per request). Per-
+  // actor isolation for this principal type relies entirely on sessionId
+  // (resolveWriteBridgePrincipal sets id:"discord:<userId>", unique per
+  // Discord actor) -- documented here explicitly so this isn't mistaken
+  // for an oversight if it's ever investigated.
   const remoteIp = (req.socket?.remoteAddress || "unknown").replace(/^::ffff:/, "");
   const key = `${scope}:${sessionId}:${remoteIp}`;
   const limit = mutationRateLimiter.check(key);

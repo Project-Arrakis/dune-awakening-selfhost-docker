@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Task } from "../../api/setup";
-import { isDetachedStackUpdateTask, isUpdatedConsoleReady, summarizeStackUpdateProgress } from "./UpdatesPanel";
+import { gameUpdateTerminalStatus, isDetachedStackUpdateTask, isUpdatedConsoleReady, summarizeStackUpdateProgress } from "./UpdatesPanel";
+import { parseUpdateTask } from "./updateUtils";
 
 function detachedTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -74,5 +75,38 @@ describe("detached console update progress", () => {
       message: "Update complete.",
       consoleReplaced: false
     }, "v1.3.97", "v1.3.98")).toBe(false);
+  });
+});
+
+describe("game update terminal status", () => {
+  it("replaces the raw update-check exit code with helpful retry guidance", () => {
+    const task = detachedTask({
+      operation: "updateCheck",
+      status: "failed",
+      errorMessage: "dune update check failed with exit 2",
+      logLines: [{ timestamp: "2026-09-19T14:30:00Z", stream: "stderr", line: "SteamCMD metadata check timed out after 45s." }]
+    });
+
+    expect(parseUpdateTask(task)).toMatchObject({
+      status: "Check Failed",
+      reason: "Steam did not finish the game update check in time. Try again in a few minutes. No game files were changed."
+    });
+  });
+
+  it("replaces a stale Updating badge with the task failure", () => {
+    const task = detachedTask({
+      operation: "updateApply",
+      status: "failed",
+      currentStep: "Failed",
+      progressMessage: "Database update exited with status 1.",
+      errorMessage: "Database update exited with status 1."
+    });
+
+    expect(gameUpdateTerminalStatus(task, { status: "Updating", current: "24653560", latest: "25351779" })).toEqual({
+      status: "Update Failed",
+      current: "24653560",
+      latest: "25351779",
+      reason: "Database update exited with status 1."
+    });
   });
 });

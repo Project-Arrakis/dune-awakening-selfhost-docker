@@ -34,9 +34,9 @@ import { withLiveMapSector } from "../liveMapSector.js";
 // - "flour_sand" -- always decode-only, no archive: there's no historical
 //   pool data for flour sand at all, on either map. Unverified assumption:
 //   the bit-packing decode has only been validated against spice ground
-//   truth (field_kind_id=1); it should apply identically since it's a
-//   property of the engine's spawn system, not spice-specific, but this is
-//   genuinely untested for field_kind_id=0.
+//   truth; it should apply identically since it's a property of the
+//   engine's spawn system, not spice-specific, but this is genuinely
+//   untested for flour sand.
 //
 // The archive/learned pool are an accuracy/completeness enhancement for
 // spice, not a hard requirement: spice_active and flour_sand both work

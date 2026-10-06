@@ -1717,6 +1717,7 @@ body.debug .technical-details { display: block; }
 .playerAdmin_teleportModeRow > select:first-of-type { width: 230px; max-width: 230px; flex: 0 0 230px; }
 .playerAdmin_teleportModeRow > .playerAdmin_destinationBaseSelect { width: min(620px, 100%); max-width: 620px; }
 .playerAdmin_coordinateInputs { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.playerAdmin_coordinateInputs .playerAdmin_coordinatePartitionSelect { width: min(360px, 100%); max-width: 360px; }
 .playerAdmin_coordinateInputs input { width: 112px; max-width: 112px; }
 .playerAdmin_teleportPanel .action-help-note { margin: 0; }
 .playerAdmin_teleportPanel .action-help-note.warning { color: #ffc77c; }
@@ -6318,6 +6319,16 @@ td .inline-action-result-wrap { flex: 1 0 100%; justify-content: flex-start; min
 .settings-category .settings-grid-roomy { padding: 14px; }
 .settings-selector-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin-bottom: 12px; }
 .settings-selector-row .compact-select { min-width: min(100%, 280px); }
+.spicefield-settings-heading { margin: 22px 0 12px; padding-top: 18px; border-top: 1px solid rgba(214, 185, 140, .18); }
+.spicefield-settings-heading h3 { margin: 0 0 6px; color: var(--title); font-size: 14px; }
+.spicefield-settings-heading p { margin: 0; color: var(--muted); font-size: 12px; }
+.spicefield-settings-scope { margin: 0 0 8px !important; color: var(--accent) !important; font-size: 12px; font-weight: 600; }
+.spicefield-settings-scope strong { font-weight: 700; color: var(--title); }
+/* Distinct from the plain .empty placeholder other grids use for "select a
+   Target" -- this is a deliberate exclusion (Overmap has no spice fields),
+   not an unfilled state, so it gets its own icon/border rather than reusing
+   the generic empty look an operator could mistake for a bug. */
+.spicefield-overmap-notice { display: flex; align-items: center; gap: 8px; border: 1px solid rgba(214, 185, 140, .3); border-radius: 6px; padding: 10px 12px; background: var(--panel-muted); }
 .spicefields-toolbar { align-items: end; }
 .spicefields-toolbar .wide-field { flex: 1 1 420px; }
 .spicefields-refresh-button { flex: 0 0 auto; margin-bottom: 0; min-height: 42px; }
@@ -6509,6 +6520,7 @@ td .inline-action-result-wrap { flex: 1 0 100%; justify-content: flex-start; min
   .playerAdmin_factionControls { flex-wrap: wrap; }
   .playerAdmin_teleportModeRow, .playerAdmin_coordinateInputs { width: 100%; align-items: stretch; flex-wrap: wrap; }
   .playerAdmin_teleportModeRow > span, .playerAdmin_teleportModeRow > select, .playerAdmin_teleportModeRow > select:first-of-type { width: 100%; max-width: none; flex: 1 1 100%; }
+  .playerAdmin_coordinateInputs .playerAdmin_coordinatePartitionSelect { width: 100%; max-width: none; flex: 1 1 100%; }
   .playerAdmin_coordinateInputs input { flex: 1 1 92px; width: auto; max-width: none; }
 }
 

@@ -298,7 +298,7 @@ reads/writes them. All are relative to the repo root.
 | `runtime/generated/` | Yes | Ephemeral/derived state written by running scripts: battlegroup identity, image-tag resolution, per-partition port reservations, map/sietch/Deep-Desert config, systemd-timer state (auto-update, restart-schedule, IP-change-restart, shutdown-protection), the IAM policy store (`iam-policies.json`), the admin command audit log. Created empty by `dune init`. |
 | `runtime/backups/` | Yes | `db/` (database backups), `self-update/` (both the CLI's own Git-state-repair tarballs and `self-update.sh`'s own backups), `system/` (encrypted full-system archives from `dune db backup-system`). |
 | `runtime/data/` | No (shipped in the repo) | Static reference/lookup JSON shipped with the repo for `dune admin` item/vehicle/skill-module/XP-event-tag lookups — not operator-generated. |
-| `runtime/defaults/` | No (shipped in the repo) | `UserEngine.ini`, `UserGame.ini` — default engine config templates referenced by the multi-server documentation and `usersettings.py`. |
+| `runtime/defaults/` | No (shipped in the repo) | `UserEngine.ini`, `UserGame.ini` — default engine config templates referenced by the multi-server documentation and `usersettings.py`. Patch-1.5 native difficulty controls are materialized into each server's `Saved/Config/LinuxServer/ServerCustomSettings.ini`. |
 
 `.env` is also git-ignored and holds the resolved Compose project name plus
 every operator-set configuration value (see `.env.example` for the full,

@@ -27,11 +27,11 @@ type Props = {
 const SUB_FIEF_ACCESS_LEVEL: BaseAccessLevel = 3;
 const ACCESS_LEVEL_OPTIONS: BaseAccessLevel[] = [1, 2, 3, 4, 5];
 const ACCESS_LEVEL_LABELS: Record<BaseAccessLevel, string> = {
-  1: "Public",
-  2: "Guild",
+  1: "Owner",
+  2: "Co-Owner",
   3: "Associate",
-  4: "Co-Owner",
-  5: "Owner"
+  4: "Guild",
+  5: "Public"
 };
 
 // Mirrors CHILD_ACCESS_GROUP_ORDER/CHILD_ACCESS_GROUP_LABELS in duneDb.js.

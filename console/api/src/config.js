@@ -285,6 +285,14 @@ export function loadConfig() {
     // above, and the same test-only override need (mentat-link.darkdante.org
     // is a real, live, reachable hostname).
     mentatLinkConfirmationStatusUrl: process.env.MENTAT_LINK_CONFIRMATION_STATUS_URL || "https://mentat-link.darkdante.org/api/consoles/auto-invite/confirmation-status",
+    // dune-awakening-selfhost-docker#853/mentat-link#183: the role-picker
+    // backend's proxy leg -- a base URL, not a full endpoint, since the
+    // real path needs the connected guild's own id interpolated in
+    // (`${mentatLinkRolesUrlBase}/${guildId}/roles`). Same "Core never
+    // holds MENTAT_PROXY_SHARED_SECRET" reasoning as the two auto-invite
+    // URLs above (calls go through mentat-LINK's proxy, not directly to
+    // mentat-backend), and the same test-only override need.
+    mentatLinkRolesUrlBase: process.env.MENTAT_LINK_ROLES_URL_BASE || "https://mentat-link.darkdante.org/api/consoles",
     // The redirect_uri embedded in the Discord authorize URL this flow
     // builds -- a FIXED value (mentat-link's own callback route), unlike
     // the OLD flow's operator-configured discordHostedBotOAuthRedirectUri.
@@ -352,7 +360,8 @@ export function loadConfig() {
     maxJsonBytes: Number(process.env.ADMIN_MAX_JSON_BYTES || 2 * 1024 * 1024),
     maxUploadBytes: Number(process.env.ADMIN_MAX_UPLOAD_BYTES || 1024 * 1024 * 1024),
     commandTimeoutMs: Number(process.env.ADMIN_COMMAND_TIMEOUT_MS || 120000),
-    updateCheckCacheMs: Number(process.env.ADMIN_UPDATE_CHECK_CACHE_MS || 5 * 60 * 1000),
+    updateCheckCacheMs: Number(process.env.ADMIN_UPDATE_CHECK_CACHE_MS || 30 * 60 * 1000),
+    updateCheckCacheFile: resolve(generatedDir, "game-update-check.json"),
     staticDir: process.env.ADMIN_STATIC_DIR || resolve(repoRoot, "console/web/dist"),
     allowedIps: parseAllowedIps(process.env.ADMIN_ALLOWED_IPS)
   };

@@ -1,3 +1,5 @@
+import { blueprintForGameDownload } from "./blueprintGameFormat.js";
+
 const DEFAULT_CATALOG_URL = "https://blueprints.dunedocker.app/api/v1/blueprints";
 const REQUEST_TIMEOUT_MS = 10_000;
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
@@ -138,7 +140,7 @@ export async function getCommunityBlueprint(idValue, options = {}) {
   const placeables = Array.isArray(row.blueprint.placeables) ? row.blueprint.placeables.length : 0;
   const pentashields = Array.isArray(row.blueprint.pentashields) ? row.blueprint.pentashields.length : 0;
   if (instances + placeables + pentashields > MAX_BLUEPRINT_PIECES) throw catalogError("That Blueprint exceeds the supported piece limit.", 413);
-  return { summary: publicSummary(row), blueprint: row.blueprint };
+  return { summary: publicSummary(row), blueprint: blueprintForGameDownload(row.blueprint) };
 }
 
 export async function getCommunityBlueprintPreview(idValue, options = {}) {

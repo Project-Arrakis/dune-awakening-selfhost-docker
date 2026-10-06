@@ -413,6 +413,13 @@ if is_running dune-postgres; then
 
   if [ "$partition_count" -gt 0 ]; then
     mark_ok "world_partition rows: $partition_count"
+    if runtime/scripts/reconcile-world-partitions.sh --check >/dev/null 2>&1; then
+      mark_ok "official world partitions"
+    else
+      mark_fail "official world partitions"
+      echo "     Installed map definitions are missing from the database. Run:"
+      echo "       runtime/scripts/dune start"
+    fi
   else
     mark_fail "world_partition rows: 0"
     echo "     Fresh init needs canonical world partitions. Run:"

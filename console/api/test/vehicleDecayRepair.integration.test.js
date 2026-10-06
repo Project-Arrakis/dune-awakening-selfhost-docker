@@ -71,7 +71,12 @@ test("real PostgreSQL: vehicle durability repair uses current durability and inf
       [10, 200, "CurrentOnly", durability(20)],
       [11, 201, "CurrentOnly", durability(100)],
       [12, 200, "MissingCurrent", durability(undefined, 10)],
-      [13, 201, "MissingCurrent", durability(undefined, 100)]
+      [13, 201, "MissingCurrent", durability(undefined, 100)],
+      // Historical Console repairs could infer the already-inflated current
+      // value as the cap for these exact Mk6 modules. Their verified in-game
+      // maximum is 2000, even if the row says 3557 (178%).
+      [14, 200, "OrnithopterMediumEngine_6", durability(3557, 3557, 3557)],
+      [15, 200, "ORNITHOPTERMEDIUMGENERATOR_6", durability(500, 3557, 3557)]
     ];
     for (const row of rows) {
       await pool.query(
@@ -82,12 +87,12 @@ test("real PostgreSQL: vehicle durability repair uses current durability and inf
 
     const result = await repairVehicleDecay(pgTransactionalDb(pool), 100, { thresholdPercent: 50 });
 
-    assert.equal(result.scanned, 12);
+    assert.equal(result.scanned, 14);
     assert.equal(result.vehicles, 2);
-    assert.equal(result.comparable, 9);
+    assert.equal(result.comparable, 11);
     assert.equal(result.missingMaximum, 1);
     assert.equal(result.missingCurrent, 2);
-    assert.equal(result.repaired, 4);
+    assert.equal(result.repaired, 6);
     assert.equal(result.repairedVehicles, 1);
 
     const repaired = await pool.query(`
@@ -106,6 +111,8 @@ test("real PostgreSQL: vehicle durability repair uses current durability and inf
     assert.deepEqual(values.get(7), { current: 200, decayed: 200 });
     assert.deepEqual(values.get(8), { current: 100, decayed: 100 });
     assert.deepEqual(values.get(10), { current: 100, decayed: 0 });
+    assert.deepEqual(values.get(14), { current: 2000, decayed: 2000 });
+    assert.deepEqual(values.get(15), { current: 2000, decayed: 2000 });
     assert.deepEqual(values.get(3), { current: 50, decayed: 50 });
     assert.deepEqual(values.get(5), { current: 5, decayed: 10 });
     assert.deepEqual(values.get(6), { current: 1, decayed: 1 });

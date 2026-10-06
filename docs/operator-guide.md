@@ -205,7 +205,11 @@ the Web UI's Updates panel — do not confuse them:
   `dune update auto enable [interval-minutes] ...` / `disable` /
   `status`, backed by a systemd timer that runs 5 minutes after boot and
   then repeats on a rolling interval (default: every 60 minutes,
-  configurable via the first argument to `auto enable`).
+  configurable via the first argument to `auto enable`). A successful Web
+  Console check is cached for 30 minutes and survives Console restarts;
+  **Refresh Game Check** always requests a live result. Read-only checks use
+  two short, bounded Steam attempts by default, while actual installations
+  retain the longer content-host retry policy needed for downloads.
 - **`dune self-update`** (alias `dune stack-update`) — updates **this
   repository/stack itself** (fetching a new GitHub release of
   `dune-awakening-selfhost-docker`). Subcommands: `check`, `list`,

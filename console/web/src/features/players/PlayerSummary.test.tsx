@@ -173,7 +173,7 @@ describe("PlayerSummary", () => {
       vi.mocked(playersApi.currency).mockResolvedValue({
         rows: [
           { currency_id: 0, balance: 5000, label: "Solari Credit" },
-          { currency_id: 1, balance: 250, label: "Scrip" }
+          { currency_id: 1, balance: 250, label: "House Credit" }
         ],
         capabilities: {}
       });
@@ -187,7 +187,7 @@ describe("PlayerSummary", () => {
       await waitFor(() => {
         expect(screen.getByText("Solari Credit")).toBeInTheDocument();
         expect(screen.getByText((5000).toLocaleString())).toBeInTheDocument();
-        expect(screen.getByText("Scrip")).toBeInTheDocument();
+        expect(screen.getByText("House Credit")).toBeInTheDocument();
         expect(screen.getByText((250).toLocaleString())).toBeInTheDocument();
       });
     });

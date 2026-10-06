@@ -28,6 +28,7 @@ import {
   readPreviousDirectoryInstallationKey,
   readPublicModifierMetadata,
   readPublicModifiers,
+  readModifiersByScope,
   readDirectorySettings,
   readGameBuild,
   reconcilePublicProbe
@@ -60,12 +61,16 @@ test("player portal client configuration uses generated allowlisted INIs and rej
   };
   const result = await collectPlayerPortalClientConfiguration({ repoRoot: "/repo" }, runner);
   assert.equal(result.available, true);
-  assert.match(result.installPath, /WindowsClient$/);
+  assert.match(result.installPath, /Windows$/);
+  assert.match(result.gameInstallPath, /Windows$/);
+  assert.match(result.engineInstallPath, /Windows$/);
   assert.match(result.gameIni, /m_WaterConsumptionRate=2/);
   assert.equal(calls.length, 2);
 
   const unsafe = await collectPlayerPortalClientConfiguration({}, async () => ({ stdout: "ServerPassword=hunter2\n" }));
   assert.equal(unsafe.available, false);
+  assert.match(unsafe.gameInstallPath, /Windows$/);
+  assert.match(unsafe.engineInstallPath, /Windows$/);
   assert.equal(unsafe.gameIni, "");
 });
 
@@ -346,6 +351,66 @@ test("heartbeat includes an empty Discord invite so stale directory links are re
 
   assert.equal(Object.hasOwn(payload, "discordInvite"), true);
   assert.equal(payload.discordInvite, "");
+});
+
+// readModifiersByScope (dune-awakening-selfhost-docker#938, #the-atlas):
+// distinct from readPublicModifiers() above -- keeps global vs. per-
+// partition scope instead of collapsing everything into one flat map.
+test("readModifiersByScope reports non-default global values, ignoring keys with no partition override", () => {
+  const files = fixture();
+  const path = join(files.generatedDir, "gameplay-profile.ini");
+  try {
+    writeFileSync(path, [
+      "[Engine:ConsoleVariables]",
+      "Dune.GlobalMiningOutputMultiplier=2.0",
+      "",
+      "[Global:/Script/DuneSandbox.BuildingSettings]",
+      "m_bBuildingRestrictionLimitsEnabled=False"
+    ].join("\n"));
+    assert.deepEqual(readModifiersByScope(path), {
+      global: { "Mining Output": "2x", "Building Restriction Limits": "Disabled" },
+      partitions: {}
+    });
+  } finally {
+    files.cleanup();
+  }
+});
+
+test("readModifiersByScope only surfaces a per-partition entry when it genuinely differs from the effective global value", () => {
+  const files = fixture();
+  const path = join(files.generatedDir, "gameplay-profile.ini");
+  try {
+    writeFileSync(path, [
+      "[Engine:ConsoleVariables]",
+      "Dune.GlobalMiningOutputMultiplier=2.0",
+      "",
+      // Same as the global value -- must NOT show up as a partition override.
+      "[Partition:Survival_1:1:ConsoleVariables]",
+      "Dune.GlobalMiningOutputMultiplier=2.0",
+      "",
+      // Genuinely different from the global value -- a real override.
+      "[Partition:Survival_1:37:ConsoleVariables]",
+      "Dune.GlobalMiningOutputMultiplier=5.0",
+      "",
+      // No global value set for this key anywhere -- compared against the
+      // hardcoded default (1.0) instead.
+      "[Partition:DeepDesert_1:8:ConsoleVariables]",
+      "Dune.GlobalVehicleMiningOutputMultiplier=3.0"
+    ].join("\n"));
+    assert.deepEqual(readModifiersByScope(path), {
+      global: { "Mining Output": "2x" },
+      partitions: {
+        "Survival_1:37": { "Mining Output": "5x" },
+        "DeepDesert_1:8": { "Vehicle Mining Output": "3x" }
+      }
+    });
+  } finally {
+    files.cleanup();
+  }
+});
+
+test("readModifiersByScope returns empty global/partitions for a missing file instead of throwing", () => {
+  assert.deepEqual(readModifiersByScope("/nonexistent/gameplay-profile.ini"), { global: {}, partitions: {} });
 });
 
 function fixture() {

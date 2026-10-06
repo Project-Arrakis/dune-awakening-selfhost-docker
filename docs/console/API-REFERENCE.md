@@ -120,6 +120,11 @@ When the Restart Queue is enabled, the restart routes above (`/api/server/restar
 | POST | `/api/updates/qa/apply` | Apply the latest QA pre-release build | None |
 | POST | `/api/updates/qa/reinstall-release` | Reinstall the public release, overwriting a QA pre-release build | None |
 
+Successful game checks are cached for 30 minutes in
+`runtime/generated/game-update-check.json`, including across Console restarts.
+Authenticated browser requests may pass `fresh: true` to force a live Steam
+query; API keys always use the shared cached path.
+
 ---
 
 ## Backups
@@ -162,7 +167,7 @@ Player rows include `total_playtime_seconds`. The console samples `player_state.
 | GET | `/api/players/{playerId}/solaris-coin` | Get Solaris Coin total | `playerId` |
 | GET | `/api/players/{playerId}/factions` | Get faction reputation | `playerId` |
 | GET | `/api/players/{playerId}/intel` | Get intel data | `playerId` |
-| GET | `/api/players/{playerId}/specs` | Get skill specializations | `playerId` |
+| GET | `/api/players/{playerId}/specs` | Get skill specializations. Each `skillModules` row carries the raw `skill_points_spent` (the game stores a cumulative point *cost*, not a rank) plus `max_level` from the catalog and the `level` resolved against that module's `pointLadder` in `runtime/data/admin-skill-modules.json` — read `level` for the rank | `playerId` |
 | GET | `/api/players/{playerId}/position` | Get player position on map | `playerId` |
 | GET | `/api/players/{playerId}/progression` | Get level and progression | `playerId` |
 | GET | `/api/players/{playerId}/vitals` | Get health/hydration/addiction | `playerId` |
@@ -442,10 +447,11 @@ always immediate rather than queued when the map is live. See
 name, type, owner, map, and exact id. Response fields mirror the paginated-list
 convention (`rows`, `totalCount`, unfiltered `totalVehicles`). Owner resolves from
 the rank-1 permission holder, falling back to the actor's account owner; the
-`shared_with` roster is the rank 2/3 holders. A component's maximum durability is
-read from its own stats blob (`MaxDurability`, else the decayed cap). If no stored
-maximum exists, it is inferred only when at least two non-null current-durability
-observations exist for the same template; inferred rows set `maxInferred: true`.
+`shared_with` roster is the rank 2/3 holders. A component's maximum durability uses
+a verified game-data override when one is available, then its own stats blob
+(`MaxDurability`, else the decayed cap). If no known or stored maximum exists, it
+is inferred only when at least two non-null current-durability observations exist
+for the same template; inferred rows set `maxInferred: true`.
 Missing current durability remains null and is never treated as 0% or 100%.
 `condition_percent` is the lowest comparable component and
 `condition_estimated` reports whether an inferred maximum contributed. Fuel
@@ -976,7 +982,7 @@ See [../integrations/discord-integration/README.md](../integrations/discord-inte
 | GET | `/api/integrations/discord/services` | Services list | `services:read` |
 | GET | `/api/integrations/discord/population` | Player population | `population:read` |
 | POST | `/api/integrations/discord/world/coriolis` | Farm-wide Coriolis storm seed + next-cycle timing (meta#64, mentat#370) -- public tier | `coriolis:read` |
-| POST | `/api/integrations/discord/world/atlas` | Per-sietch PvP/PvE + live sandstorm status + Coriolis cycle, for #the-atlas (meta#64, mentat#376) -- public tier | `atlas:read` |
+| POST | `/api/integrations/discord/world/atlas` | Per-sietch PvP/PvE + live sandstorm status + Coriolis cycle + non-default world/per-sietch modifiers (`worldModifiers`, per-sietch `modifiers`), for #the-atlas (meta#64, mentat#376) -- public tier. Each sietch's `loginPassword` (the real `Bgd.ServerLoginPassword`) is only populated when the calling actor's `roleIds` intersect `DUNE_ATLAS_PASSWORD_ROLE_IDS` (comma-separated role IDs) -- `null` otherwise, regardless of tier. This is independent of any Discord channel permission setup; set the same value on mentat's own `DUNE_ATLAS_PASSWORD_ROLE_IDS` so its scheduled refresh actually receives the password. | `atlas:read` |
 | GET | `/api/integrations/discord/version` | Adapter version | None |
 | GET | `/api/integrations/discord/servers` | Servers list | None |
 | GET | `/api/integrations/discord/ports` | Ports list | None |
@@ -1039,6 +1045,8 @@ See [../integrations/discord-integration/README.md](../integrations/discord-inte
 | POST | `/api/integrations/discord/hosted-bot/auto-invite/start` | Start the fully-automated auto-invite flow: silently enables the hosted-bot adapter token if needed, asks mentat-link to mint a pending state, and returns the single Discord consent-screen `authorizeUrl` for the console to open in a popup | `settings:discord-bot-hosted-oauth` | owner |
 | GET | `/api/integrations/discord/hosted-bot/auto-invite/complete` | Popup return leg reached via mentat-link's signed bounce page; verifies the double-submit state cookie and renders a small page that `postMessage`s the outcome (`ok`/`guildName`/`reason`/`reclaimed`/`confirmationId`) back to the opener before closing | `settings:discord-bot-hosted-oauth` | owner |
 | GET | `/api/integrations/discord/hosted-bot/auto-invite/confirmation-status` | Round 4 completion-signal poll: forwards `confirmationId` to mentat-link's own `/confirmation-status` proxy and returns `{status, guildName?}`; on `status: "confirmed"`, persists the connected guild the same way the old `/register` route does | `settings:discord-bot-hosted-oauth` | owner |
+| GET | `/api/integrations/discord/hosted-bot/roles` | Role-picker widget's read side (#853/mentat-link#183): relays to mentat's own `GET /api/consoles/:guildId/roles` via mentat-link's proxy for the console's connected guild, returning `{roles, cacheStale}` | `updates:read` | admin+ |
+| POST | `/api/integrations/discord/hosted-bot/roles` | Role-picker widget's write side: relays `{playerRoleIds, moderatorRoleIds, adminRoleIds}` (array-shaped, unlike the self-hosted `/role-ids` route's comma-separated strings) to mentat, which enforces the tier-conflict check and writes `guild_roles` directly -- no restart is queued, mentat's write is authoritative. A `409` tier conflict is relayed as-is. Changing admin-tier role IDs requires owner access, same as the self-hosted route. | `updates:apply` | admin+ (owner for admin-tier changes) |
 
 ---
 
