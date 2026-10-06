@@ -15,6 +15,8 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ### Security
 
+- **Player-tier sessions can no longer list every player (#1116).** `GET /api/players` returned the whole player list, and an unscoped `totalPlayers`, to a player-tier session that had no linked characters or whose linked-character lookup failed, because an empty scope was treated as no scope. `listPlayers` now treats any `controllerIds` array, including an empty one, as a restriction (empty yields no rows) and scopes `totalPlayers` the same way; only `undefined` means unscoped. No operator action. New tests in `db.test.js` fail on the old code.
+
 - **CI scan gate fixed: dev-dependency and bundled-npm advisories.** `console/web`'s lockfile moves `undici` 7.29.0 -> 7.30.0 (and `source-map-js` 1.2.1 -> 1.2.2) via `npm audit fix`, clearing the two HIGH osv-scanner findings; `console/api`'s runtime image no longer ships npm/npx (the container only runs `node /app/src/server.js`), which removes the bundled `brace-expansion`/`undici` packages trivy-image-scan was failing on (HIGH, base-image-lag class). No operator action; the console image rebuilds on the next `dune self-update`.
 
 ### Added

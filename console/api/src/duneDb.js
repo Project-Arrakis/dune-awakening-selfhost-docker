@@ -1738,9 +1738,17 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
     if (status === "offline") where += ` and not (${bannedExpression}) and coalesce(ps.online_status::text, '') <> 'Online'`;
   }
   if (status === "banned") where += ` and (${bannedExpression})`;
-  if (controllerIds && controllerIds.length > 0) {
-    values.push(controllerIds.map(String));
-    where += ` and ps.player_controller_id::text = any($${values.length}::text[])`;
+  // Scoping fails closed: an array (even an empty one) means "restrict to
+  // these controllers"; only `undefined` means unscoped (issue #1116).
+  const scoped = Array.isArray(controllerIds);
+  const scopedIds = scoped ? controllerIds.map(String) : [];
+  if (scoped) {
+    if (scopedIds.length > 0) {
+      values.push(scopedIds);
+      where += ` and ps.player_controller_id::text = any($${values.length}::text[])`;
+    } else {
+      where += " and false";
+    }
   }
   if (q) {
     values.push(`%${q}%`);
@@ -1839,10 +1847,10 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
       left join dune.player_state ps on ps.account_id = a.owner_account_id
       left join dune.accounts ac on ac.id = a.owner_account_id
       ${encryptedAccountsJoin}
-      where ${baseWhere}
+      where ${baseWhere}${scoped ? (scopedIds.length > 0 ? " and ps.player_controller_id::text = any($1::text[])" : " and false") : ""}
     )
     select count(distinct dedupe_key)::int as total_players
-    from player_rows`) : null;
+    from player_rows`, scoped && scopedIds.length > 0 ? [scopedIds] : []) : null;
 
   return {
     capabilities: { players: true, status, statusFilterApplied: hasOnlineStatus, banFilterApplied: true },
