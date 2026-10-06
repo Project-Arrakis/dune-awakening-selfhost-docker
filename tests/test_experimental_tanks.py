@@ -23,6 +23,61 @@ IMAGE = 'sha256:' + '1' * 64
 
 
 class TankTests(unittest.TestCase):
+    def test_versioned_manifest_rejects_unknown_and_traversal(self):
+        for tag in ('../2134304', '2134304-0-shipping/../../', '9999999-0-shipping', ''):
+            self.assertIsNone(tanks.manifest(tag))
+        with tempfile.TemporaryDirectory() as directory, patch.object(tanks, 'ROOT', Path(directory)):
+            target = Path(directory) / 'patches/experimental-tanks/2141883'
+            target.mkdir(parents=True)
+            (target / 'manifest.json').write_text(json.dumps({'worldTag': TAG, 'version': 'r6.0'}))
+            with self.assertRaisesRegex(ValueError, 'manifest'):
+                tanks.manifest('2141883-0-shipping')
+
+    def test_new_build_assets_and_build_context_are_versioned(self):
+        tag = '2141883-0-shipping'
+        spec = tanks.manifest(tag)
+        self.assertFalse(spec['gameplayVerified'])
+        for name, expected in spec['assets'].items():
+            path = ROOT / 'patches/experimental-tanks/2141883/assets' / name
+            self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), expected)
+        calls = []
+        def command(*args, **kwargs):
+            calls.append(args)
+            if args[:2] == ('docker', 'create'):
+                return 'fixture-container'
+            if args[:2] == ('docker', 'cp'):
+                Path(args[-1]).write_bytes(b'fixture')
+            if args[:2] == ('docker', 'build'):
+                context = Path(args[-1])
+                self.assertEqual(set(p.name for p in (context / 'assets').iterdir()), set(spec['assets']))
+                self.assertIn('2141883-0-shipping', (context / 'Dockerfile').read_text())
+                self.assertIn('redblink-dune-tanks:2141883-r6.0-candidate', args)
+            if args[:3] == ('docker', 'image', 'inspect'):
+                return IMAGE
+            if args[:2] == ('docker', 'run'):
+                return spec['patchedSha256'] + ' executable'
+            return ''
+        with patch.dict(os.environ, {'DUNE_GAME_SERVER_IMAGE': ''}), patch.object(tanks, 'base_image_id', return_value=IMAGE), patch.object(tanks, 'patch_binary', return_value=b'patched'), patch.object(tanks, 'run', side_effect=command):
+            self.assertEqual(tanks.build(tag), IMAGE)
+        self.assertFalse(any('2134304' in str(arg) for call in calls for arg in call))
+
+    def test_rebased_overlay_excludes_shared_item_registries(self):
+        report = json.loads((ROOT / 'patches/experimental-tanks/2141883/source/candidate-asset-report.json').read_text())
+        self.assertFalse(report['gameplayVerified'])
+        self.assertEqual(set(report['packages']), {
+            'Vehicles/Modules/DT_Tank_Modules', 'Vehicles/DT_VehicleTemplates',
+            'Vehicles/Modules/DT_Buggy_Modules', 'Vehicles/Blueprints/GroundVehicles/BP_Tank_CHOAM',
+        })
+        self.assertEqual(set(report['unchangedSharedTables']), {'CDT_BaseItems', 'DT_BaseItems_Vehicles', 'DT_ItemTableBuildables'})
+        self.assertEqual(set(report['presetNames']), set(tanks.PRESETS))
+
+    def test_bad_asset_path_fails_before_docker(self):
+        spec = {**tanks.manifest(TAG), 'assets': {'../outside': 'unused'}}
+        with patch.object(tanks, 'manifest', return_value=spec), patch.object(tanks, 'run') as docker, patch.dict(os.environ, {'DUNE_GAME_SERVER_IMAGE': ''}):
+            with self.assertRaisesRegex(ValueError, 'filename'):
+                tanks.build(TAG)
+            docker.assert_not_called()
+
     def test_build_diagnostics_do_not_pollute_resolved_image_stdout(self):
         with patch.object(tanks.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)) as execute:
             tanks.run('docker', 'build', 'fixture', diagnostics=True)

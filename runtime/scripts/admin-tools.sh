@@ -1149,17 +1149,18 @@ login_queue_player_id() {
 
 rmq_login_queues() {
   require_rmq_game_running
-  docker exec "$RMQ_CONTAINER" rabbitmqctl -q list_queues name consumers messages state 2>/dev/null \
+  docker exec "$RMQ_CONTAINER" rabbitmqctl -q list_queues name consumers messages state owner_pid \
     | awk -F '\t' '$1 ~ /_queue$/ { print }'
 }
 
 rmq_login_queue_row() {
-  local queue="$1"
-  rmq_login_queues | awk -F '\t' -v queue="$queue" '$1 == queue { print; found = 1 } END { exit found ? 0 : 1 }'
+  local queue="$1" rows
+  rows="$(rmq_login_queues)" || return 2
+  printf '%s\n' "$rows" | awk -F '\t' -v queue="$queue" '$1 == queue { print; found = 1 } END { exit found ? 0 : 1 }'
 }
 
 login_queues_command() {
-  local show_all=0 rows row queue consumers messages state player status_row online_status map shown=0
+  local show_all=0 rows row queue consumers messages state owner player status_row online_status map shown=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --all) show_all=1 ;;
@@ -1175,7 +1176,7 @@ login_queues_command() {
   fi
 
   printf '%-24s %-9s %-9s %-10s %-12s %s\n' "Player" "Consumers" "Messages" "State" "DB Status" "Map"
-  while IFS=$'\t' read -r queue consumers messages state; do
+  while IFS=$'\t' read -r queue consumers messages state owner; do
     [ -n "${queue:-}" ] || continue
     player="$(login_queue_player_id "$queue")"
     status_row="$(player_status_for_fls "$player" || true)"
@@ -1197,7 +1198,7 @@ login_queues_command() {
 }
 
 repair_login_queue_command() {
-  local target="${1:-}" yes=0 force=0 queue player row consumers messages state status_row online_status map answer payload output rc
+  local target="${1:-}" yes=0 force=0 queue player row consumers messages state owner status_row online_status map answer payload output rc
   [ -n "$target" ] || { echo "Usage: dune admin repair-login-queue <player-fls-id|queue-name> [--yes] [--force]" >&2; exit 2; }
   shift || true
   while [ "$#" -gt 0 ]; do
@@ -1211,13 +1212,19 @@ repair_login_queue_command() {
 
   queue="$(normalize_login_queue_name "$target")"
   player="$(login_queue_player_id "$queue")"
-  row="$(rmq_login_queue_row "$queue" || true)"
-  if [ -z "$row" ]; then
-    echo "No RabbitMQ login queue exists for $(redact_fls "$player")."
-    return 0
+  if row="$(rmq_login_queue_row "$queue")"; then
+    :
+  else
+    rc=$?
+    if [ "$rc" -eq 1 ]; then
+      echo "No RabbitMQ login queue exists for $(redact_fls "$player"). Nothing needs to be deleted."
+      return 0
+    fi
+    echo "Could not inspect the login queue. Nothing was deleted. Check RabbitMQ and try again." >&2
+    return 1
   fi
 
-  IFS=$'\t' read -r queue consumers messages state <<< "$row"
+  IFS=$'\t' read -r queue consumers messages state owner <<< "$row"
   status_row="$(player_status_for_fls "$player" || true)"
   IFS='|' read -r online_status map <<< "$status_row"
   online_status="${online_status:-Unknown}"
@@ -1226,7 +1233,17 @@ repair_login_queue_command() {
   echo "Target queue: $queue"
   echo "Player:       $(redact_fls "$player")"
   echo "Queue state:  consumers=${consumers:-0} messages=${messages:-0} state=${state:-unknown}"
+  echo "Client connection: $([ -n "${owner:-}" ] && printf 'Connected' || printf 'No exclusive owner')"
   echo "DB status:    $online_status${map:+ on $map}"
+
+  if ! [[ "${consumers:-}" =~ ^[0-9]+$ ]] || [ "${state:-}" != running ]; then
+    echo "The queue is not in a verified idle state. Nothing was deleted." >&2
+    return 1
+  fi
+  if [ "$consumers" -gt 0 ] || [ -n "${owner:-}" ]; then
+    echo "The login queue is still in use. Nothing was deleted. Close the game, wait for the client to disconnect, then try again." >&2
+    return 1
+  fi
 
   if printf '%s' "$online_status" | grep -Eiq '^online$' && [ "$force" != "1" ]; then
     echo "Refusing to delete the login queue because the player still appears Online." >&2
@@ -1245,11 +1262,22 @@ repair_login_queue_command() {
 
   payload="{\"Queue\":\"$queue\",\"PlayerId\":\"$player\",\"Consumers\":\"${consumers:-0}\",\"Messages\":\"${messages:-0}\",\"State\":\"${state:-unknown}\",\"DbStatus\":\"$online_status\"}"
   set +e
-  output="$(docker exec "$RMQ_CONTAINER" rabbitmqctl -q delete_queue "$queue" 2>&1)"
+  # The broker checks consumers atomically as well: a client can reconnect
+  # between inspection and deletion. --force bypasses stale DB status only.
+  output="$(docker exec "$RMQ_CONTAINER" rabbitmqctl -q delete_queue "$queue" --if-unused 2>&1)"
   rc=$?
   set -e
   if [ "$rc" -ne 0 ]; then
+    if row="$(rmq_login_queue_row "$queue")"; then
+      :
+    else
+      if [ "$?" -eq 1 ]; then
+        echo "The login queue is already gone. Nothing else was deleted."
+        return 0
+      fi
+    fi
     printf '%s\n' "$output" >&2
+    echo "The queue was not repaired. Close the game, wait for the client to disconnect, then try again. Active queues are never forcibly deleted." >&2
     audit_admin_action "RepairLoginQueue" "$(redact_fls "$player")" "$queue" "$payload" "rabbitmq-game" "failed" "$output"
     exit "$rc"
   fi

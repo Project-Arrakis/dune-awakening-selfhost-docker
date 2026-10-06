@@ -30,9 +30,15 @@ def read_state():
 
 
 def manifest(tag):
-    if tag != '2134304-0-shipping':
+    if not re.fullmatch(r'[0-9]+-0-shipping', tag):
         return None
-    return json.loads((ROOT / 'patches/experimental-tanks/2134304/manifest.json').read_text())
+    path = ROOT / 'patches/experimental-tanks' / tag.split('-', 1)[0] / 'manifest.json'
+    if not path.is_file():
+        return None
+    spec = json.loads(path.read_text())
+    if spec.get('worldTag') != tag or not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9_.-]*', spec.get('version', '')):
+        raise ValueError('The Tank manifest does not match the requested game build.')
+    return spec
 
 
 INTERRUPTED_APPLY = 'The previous operation was interrupted. Apply Tank settings again to reconcile Hagga.'
@@ -271,15 +277,20 @@ def build(tag):
         raise ValueError('This game build is not supported by Experimental Tanks.')
     if os.environ.get('DUNE_GAME_SERVER_IMAGE'):
         raise ValueError('Remove the custom global game image override before enabling Experimental Tanks.')
-    assets = ROOT / 'patches/experimental-tanks/2134304/assets'
+    build_number = tag.split('-', 1)[0]
+    directory = ROOT / 'patches/experimental-tanks' / build_number
+    assets = directory / 'assets'
     for name, expected in spec['assets'].items():
+        if Path(name).name != name or name in ('', '.', '..'):
+            raise ValueError('The Tank manifest contains an invalid asset filename.')
         if hashlib.sha256((assets / name).read_bytes()).hexdigest() != expected:
             raise ValueError(f'Tank asset checksum mismatch: {name}')
     # Do not pull a possibly different base or modify the official tag.
     base_id = base_image_id(spec)
     # Imported Funcom archives can lack registry metadata. Give the verified
     # local image its own build-only tag, without retagging the official image.
-    base_tag = 'redblink-dune-tank-base:2134304-' + base_id[7:19]
+    base_tag = f'redblink-dune-tank-base:{build_number}-' + base_id[7:19]
+    image_tag = f'redblink-dune-tanks:{build_number}-{spec["version"]}'
     run('docker', 'tag', base_id, base_tag)
     with tempfile.TemporaryDirectory(prefix='dune-tank-build-') as temp:
         context = Path(temp)
@@ -293,10 +304,10 @@ def build(tag):
         patched.chmod(0o755)
         (context / 'clean').unlink()
         shutil.copytree(assets, context / 'assets')
-        shutil.copy(ROOT / 'patches/experimental-tanks/2134304/Dockerfile', context)
+        shutil.copy(directory / 'Dockerfile', context)
         run('docker', 'build', '--pull=false', '--network=none', '--build-arg',
-            'BASE_IMAGE=' + base_tag, '-t', 'redblink-dune-tanks:2134304-r5.8', str(context), diagnostics=True)
-    image_id = run('docker', 'image', 'inspect', '--format', '{{.Id}}', 'redblink-dune-tanks:2134304-r5.8', capture=True).strip()
+            'BASE_IMAGE=' + base_tag, '-t', image_tag, str(context), diagnostics=True)
+    image_id = run('docker', 'image', 'inspect', '--format', '{{.Id}}', image_tag, capture=True).strip()
     actual = run('docker', 'run', '--rm', '--network=none', '--entrypoint', 'sha256sum', image_id, BINARY, capture=True).split()[0]
     if actual != spec['patchedSha256']:
         raise ValueError('Built Tank image failed executable verification.')

@@ -1,0 +1,23 @@
+{
+  "candidateOnly": true,
+  "gameplayVerified": false,
+  "version": "r6.0-candidate",
+  "worldTag": "2141883-0-shipping",
+  "baseImage": "registry.funcom.com/funcom/self-hosting/seabass-server@sha256:167c8bb1ef7137a43d086e022f02c965839c33277682c7cac78e7d68881335e5",
+  "baseConfigId": "sha256:df99c7800fb44624c20836783638651f85ed1824d67550bdebb19b66316ba213",
+  "cleanSha256": "91a3cfb069dd44c67354c88b8d9a1cf1f1300dd971b462b9f8feba6da8a46150",
+  "patchedSha256": "5aaa4d66fa35c09085651f1a5ea40717af9975762f7017ffbb2b058d1f04460c",
+  "assets": {
+    "pakchunk999-RegisTank-r6_0-2141883-LinuxServer_P.pak": "9fd38ec6c7fede35688c7f748fece813947e64e47b25cd7e53bf0b70cf5be02f",
+    "pakchunk999-RegisTank-r6_0-2141883-LinuxServer_P.ucas": "3d7e5f792f2d0cebf78c43958ee74d1a2ee48b191294e3a6106081b9041d6787",
+    "pakchunk999-RegisTank-r6_0-2141883-LinuxServer_P.utoc": "96ea73496a4720140f2d974d49537033d583aa20220146b537215a39543f5de1"
+  },
+  "sites": [
+    [234071954, "488d3de792ffffe892e50302", "909090909090909090909090"],
+    [262126560, "4d8b4c24e8", "4531c99090"],
+    [262200800, "0f8512010000", "90e912010000"],
+    [265643297, "0f849d010000", "e99e01000090"],
+    [265644894, "488b8568ffffff", "31c09090909090"],
+    [265667540, "488b4008", "31c09090"]
+  ]
+}

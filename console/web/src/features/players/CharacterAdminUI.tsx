@@ -1343,7 +1343,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
           };
         }, `${playerName}'s vehicle durability was repaired.`, { actionType: "Repair Vehicle Decay", target: playerName, amount: `${threshold}%` });
       }}>Repair Vehicles</button><InlineActionResult result={playerAdmin_actionResult} resultKey="repairVehicleDecay" /></div></div><div className="playerAdmin_section playerAdmin_dangerSection"><h5>Danger Zone</h5><div className="playerAdmin_buttonRow"><button className="danger" disabled={!actionPlayerId || playerAdmin_actionResult?.pending} onClick={async () => {
-        if (!(await confirmAction(`Repair ${playerName}'s login queue? Use this only when the player is stuck on connection errors and is not actually in-game.`, {
+        if (!(await confirmAction(`Repair ${playerName}'s login queue? Ask the player to close the game first. Active queues will not be deleted. Use this only for a player stuck on connection errors.`, {
           title: "Repair Login Queue",
           confirmLabel: "Repair Queue",
           danger: true,
