@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { discordAdapterSettingsApi, type DiscordBotSettingsState } from "../../api/discordAdapterSettings";
-import { discordHostedBotApi, type OwnedDiscordGuild } from "../../api/discordHostedBotApi";
+import { discordHostedBotApi, type OwnedDiscordGuild, type HostedBotDiscordRole, type HostedBotRoleTierConflict } from "../../api/discordHostedBotApi";
 import { updatesApi } from "../../api/updates";
 import { persistUpdateTask, loadPersistedUpdateTask } from "../updates/updateUtils";
 import { ConfirmDialog, type ConfirmDialogRequest, type ConfirmDialogOutcome } from "../../components/common/ConfirmDialog";
@@ -188,6 +188,17 @@ type Phase = "loading" | "disabled" | "enabling" | "enabled" | "failed";
 // showing everything at once with no context.
 type WizardStep = 1 | 2 | 3;
 
+// dune-awakening-selfhost-docker#853: the manual fallback fields are a
+// single comma-separated string (matching the self-hosted form's existing
+// convention), but the hosted wire contract (design doc §4.4/§4.7) is
+// array-shaped -- this is the client-side half of the same split
+// validateDiscordRoleIds() does server-side. Deliberately permissive here
+// (no snowflake-pattern check) -- the server is the real validator either
+// way, this only needs to produce the right shape.
+function parseRoleIdList(value: string): string[] {
+  return value.split(",").map((part) => part.trim()).filter(Boolean);
+}
+
 // Same shape as loadPersistedUpdateTask/persistUpdateTask in updateUtils.ts
 // (typeof-window guard, try/catch around localStorage access), just for a
 // plain string value instead of a Task -- there's no shared helper for that
@@ -252,6 +263,20 @@ export function DiscordBotSection() {
   const [playerRoleIds, setPlayerRoleIds] = useState("");
   const [moderatorRoleIds, setModeratorRoleIds] = useState("");
   const [adminRoleIds, setAdminRoleIds] = useState("");
+  // dune-awakening-selfhost-docker#853/mentat-link#183: the role-picker
+  // widget's own state. `hostedRoleAssignments` maps a Discord role id to
+  // its picked tier ("" means no tier) -- a single role-to-tier assignment
+  // table, not three independent multi-selects, so a role can never be
+  // assigned to two tiers at once (design doc §4.6's stated rationale for
+  // this option over the other two). The manual comma-separated fields
+  // above remain the fallback whenever this can't be used (cacheStale, load
+  // error, or self-hosted).
+  const [hostedRoles, setHostedRoles] = useState<HostedBotDiscordRole[] | null>(null);
+  const [hostedRolesCacheStale, setHostedRolesCacheStale] = useState(false);
+  const [hostedRolesLoading, setHostedRolesLoading] = useState(false);
+  const [hostedRolesLoadError, setHostedRolesLoadError] = useState("");
+  const [hostedRoleAssignments, setHostedRoleAssignments] = useState<Record<string, "player" | "moderator" | "admin" | "">>({});
+  const [hostedRolesConflict, setHostedRolesConflict] = useState<HostedBotRoleTierConflict>(null);
   const [error, setError] = useState("");
   const [confirmRequest, setConfirmRequest] = useState<ConfirmDialogRequest | null>(null);
   // Transient, in-memory only -- never persisted to localStorage or logged
@@ -613,6 +638,130 @@ export function DiscordBotSection() {
     }, CONFIRMATION_POLL_INTERVAL_MS);
     return () => { stopped = true; window.clearInterval(interval); };
   }, [autoInviteStatus, wizardStep]);
+
+  // dune-awakening-selfhost-docker#853/mentat-link#183: fetch the guild's
+  // real Discord roles the moment the operator reaches wizard step 2 in the
+  // hosted case, OR is already in the ongoing management view (phase ===
+  // "enabled") -- the same picker renders in both places (day-1 setup and
+  // day-2 role changes), matching this file's own existing precedent of
+  // sharing UI between the wizard and the management view (see
+  // renderAutoInviteConnection/renderHostedBotConnection's own comments).
+  // Deliberately keyed on [wizardStep, choice, phase], not re-run on every
+  // keystroke -- the picker's own selections come from
+  // hostedRoleAssignments state, independent of this fetch. A stale
+  // in-flight fetch from a Back/Continue round trip, or a wizard->enabled
+  // transition, is discarded via the `cancelled` flag, matching the
+  // confirmation-poll effect's own cleanup convention immediately above.
+  useEffect(() => {
+    if (choice !== "hosted") return;
+    if (wizardStep !== 2 && phase !== "enabled") return;
+    let cancelled = false;
+    setHostedRolesLoading(true);
+    setHostedRolesLoadError("");
+    discordHostedBotApi.fetchRoles().then((result) => {
+      if (cancelled) return;
+      setHostedRoles(result.roles);
+      setHostedRolesCacheStale(result.cacheStale);
+      // Seed the picker's assignments from whatever's already persisted
+      // (playerRoleIds/etc, populated by refresh() from the server's own
+      // display-cache state) -- so re-entering step 2 doesn't silently
+      // reset a previously-saved configuration back to "no tier" for
+      // every role.
+      const assignments: Record<string, "player" | "moderator" | "admin" | ""> = {};
+      for (const role of result.roles) assignments[role.id] = "";
+      for (const id of parseRoleIdList(playerRoleIds)) if (id in assignments) assignments[id] = "player";
+      for (const id of parseRoleIdList(moderatorRoleIds)) if (id in assignments) assignments[id] = "moderator";
+      for (const id of parseRoleIdList(adminRoleIds)) if (id in assignments) assignments[id] = "admin";
+      setHostedRoleAssignments(assignments);
+    }).catch((err) => {
+      if (cancelled) return;
+      setHostedRolesLoadError(err instanceof Error ? err.message : "Could not load this server's roles.");
+    }).finally(() => {
+      if (!cancelled) setHostedRolesLoading(false);
+    });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- deliberately
+    // NOT re-run when playerRoleIds/moderatorRoleIds/adminRoleIds change;
+    // those are only read once, at fetch time, to seed initial assignments
+    // (see comment above) -- including them here would re-fetch and reset
+    // in-progress picker selections on every keystroke in the manual
+    // fallback fields.
+  }, [wizardStep, choice, phase]);
+
+  // A role assigned to two tiers at once is prevented by construction (one
+  // radio group per role, see the picker's own render below) -- this exists
+  // only to turn the resulting per-role map into the three arrays the wire
+  // contract (and the manual fallback fields) both use.
+  function groupHostedRoleAssignments() {
+    const grouped = { playerRoleIds: [] as string[], moderatorRoleIds: [] as string[], adminRoleIds: [] as string[] };
+    for (const [roleId, tier] of Object.entries(hostedRoleAssignments)) {
+      if (tier === "player") grouped.playerRoleIds.push(roleId);
+      else if (tier === "moderator") grouped.moderatorRoleIds.push(roleId);
+      else if (tier === "admin") grouped.adminRoleIds.push(roleId);
+    }
+    return grouped;
+  }
+
+  // Whether the picker actually has usable data right now -- if not, the
+  // manual fallback fields are the only real path (design doc §4.3/§4.6).
+  function hostedRolePickerUsable() {
+    return Boolean(hostedRoles) && !hostedRolesCacheStale && !hostedRolesLoadError;
+  }
+
+  async function handleSaveHostedRoles() {
+    if (submitting) return;
+    setSubmitting(true);
+    setError("");
+    setHostedRolesConflict(null);
+    try {
+      // Real gap found writing this handler: the enabled-view's own choice
+      // toggle (updateChoice(), used by the "Hosted bot"/"Self-hosting"
+      // buttons in that view) is purely local state -- it relies entirely
+      // on a subsequent Save bundling `deploymentChoice` into its own POST
+      // body to ever reach the server (see handleUpdateRoleIds()'s own
+      // comment). This hosted-roles endpoint's wire contract is mentat's
+      // own array-shaped API, not something to overload with an unrelated
+      // field -- persist the choice via the existing, dedicated endpoint
+      // instead, same as chooseAndAdvance() already does for wizard step 1.
+      await discordAdapterSettingsApi.setChoice("hosted");
+      const payload = hostedRolePickerUsable()
+        ? groupHostedRoleAssignments()
+        : {
+            playerRoleIds: parseRoleIdList(playerRoleIds),
+            moderatorRoleIds: parseRoleIdList(moderatorRoleIds),
+            adminRoleIds: parseRoleIdList(adminRoleIds)
+          };
+      const result = await discordHostedBotApi.saveRoles(payload);
+      if (!result.ok) {
+        if (result.kind === "conflict") {
+          setHostedRolesConflict(result.conflict);
+          setError("One of these roles is already assigned to a different tier -- fix the conflict below and try again.");
+          // The conflict message and the picker it refers to ("adjust your
+          // selection above") only render on step 2 -- send the operator
+          // back there rather than leaving them stuck on step 3 with a
+          // conflict message about a picker they can no longer see. This
+          // is a no-op when already on step 2 (the enabled-view's own
+          // "Save Role IDs" button calls this same handler with no wizard
+          // step at all).
+          setWizardStep(2);
+        } else {
+          setError(result.message);
+        }
+        return;
+      }
+      // No restart task here -- unlike handleUpdateRoleIds()'s self-hosted
+      // path, mentat's own DB write is authoritative and the hosted bot's
+      // connection isn't a local process this console restarts (design doc
+      // §4.7 point 3). refresh() alone picks up the now-updated display
+      // cache and confirms `enabled` is still true (it already was, from
+      // wizard step 1's silent enable() call).
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSubmitting(false);
+    }
+  }
 
   function autoInviteFailureMessage(reason: string) {
     switch (reason) {
@@ -1251,6 +1400,60 @@ export function DiscordBotSection() {
     }
   }
 
+  // dune-awakening-selfhost-docker#853/mentat-link#183: single role-to-tier
+  // assignment table (design doc §4.6 option 2) -- one row per real Discord
+  // role, one radio group per row, so a role can never land in two tiers at
+  // once, by construction, rather than being caught after the fact by
+  // mentat's own findRoleTierConflict() (409 response, still handled below
+  // as defense-in-depth against a stale picker/concurrent-edit race, just
+  // no longer the primary way a conflict is normally avoided).
+  function renderHostedRolePicker() {
+    if (hostedRolesLoading) return <p className="muted" role="status">Loading this server's roles…</p>;
+    if (hostedRolesLoadError) {
+      return <p className="muted" role="status">{hostedRolesLoadError} Use the manual fields below instead.</p>;
+    }
+    if (hostedRolesCacheStale || !hostedRoles) {
+      return <p className="muted" role="status">The bot hasn't reconnected to this server's role list yet. Use the manual fields below instead.</p>;
+    }
+    if (hostedRoles.length === 0) {
+      return <p className="muted">This server has no roles yet (other than @everyone). Add some in Discord, then come back here.</p>;
+    }
+    const tiers = [
+      { value: "player" as const, label: "Player" },
+      { value: "moderator" as const, label: "Moderator" },
+      { value: "admin" as const, label: "Admin" },
+      { value: "" as const, label: "None" }
+    ];
+    return (
+      <table className="settings-role-picker-table">
+        <thead>
+          <tr>
+            <th>Discord role</th>
+            {tiers.map((tier) => <th key={tier.label}>{tier.label}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {[...hostedRoles].sort((a, b) => b.position - a.position).map((role) => (
+            <tr key={role.id}>
+              <td>{role.name}</td>
+              {tiers.map((tier) => (
+                <td key={tier.label}>
+                  <input
+                    type="radio"
+                    name={`hosted-role-tier-${role.id}`}
+                    aria-label={`${role.name}: ${tier.label}`}
+                    checked={(hostedRoleAssignments[role.id] || "") === tier.value}
+                    onChange={() => setHostedRoleAssignments((prev) => ({ ...prev, [role.id]: tier.value }))}
+                  />
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    );
+  }
+
   // Phase 6 (dune-awakening-selfhost-docker#832/#865): the new, primary
   // hosted-bot connection UI -- one button, one Discord consent screen,
   // covering both bot-install and ownership verification (design doc G1).
@@ -1560,9 +1763,34 @@ export function DiscordBotSection() {
             <div className="settings-wizard-step">
               <p>Configure roles</p>
               <p className="muted">Map Discord roles to console permission tiers (optional). You can skip this now and set it up later from this same page.</p>
-              <label>Player role IDs (optional)<input value={playerRoleIds} onChange={(event) => setPlayerRoleIds(event.target.value)} placeholder="Comma-separated Discord role IDs" /></label>
-              <label>Moderator role IDs (optional)<input value={moderatorRoleIds} onChange={(event) => setModeratorRoleIds(event.target.value)} placeholder="Comma-separated Discord role IDs" /></label>
-              <label>Admin role IDs (optional)<input value={adminRoleIds} onChange={(event) => setAdminRoleIds(event.target.value)} placeholder="Comma-separated Discord role IDs" /></label>
+              {choice === "hosted" && renderHostedRolePicker()}
+              {hostedRolesConflict && (
+                <p className="settings-role-picker-conflict" role="alert">
+                  Role conflict: this role is currently assigned to <strong>{hostedRolesConflict.currentTier || "another tier"}</strong>,
+                  it can't also be <strong>{hostedRolesConflict.requestedTier || "a different tier"}</strong>. Adjust your selection above.
+                </p>
+              )}
+              {/* Manual fallback -- always reachable (design doc §4.6): the
+                  self-hosted path needs these structurally, and the hosted
+                  path needs them whenever the picker above isn't usable
+                  (cacheStale, load error). Collapsed by default only when
+                  the picker IS usable, so it doesn't look like a second,
+                  competing way to do the same thing when there's already a
+                  working one on screen. */}
+              {choice === "hosted" && hostedRolePickerUsable() ? (
+                <details className="settings-role-picker-manual-fallback">
+                  <summary>Enter role IDs manually instead</summary>
+                  <label>Player role IDs (optional)<input value={playerRoleIds} onChange={(event) => setPlayerRoleIds(event.target.value)} placeholder="Comma-separated Discord role IDs" /></label>
+                  <label>Moderator role IDs (optional)<input value={moderatorRoleIds} onChange={(event) => setModeratorRoleIds(event.target.value)} placeholder="Comma-separated Discord role IDs" /></label>
+                  <label>Admin role IDs (optional)<input value={adminRoleIds} onChange={(event) => setAdminRoleIds(event.target.value)} placeholder="Comma-separated Discord role IDs" /></label>
+                </details>
+              ) : (
+                <>
+                  <label>Player role IDs (optional)<input value={playerRoleIds} onChange={(event) => setPlayerRoleIds(event.target.value)} placeholder="Comma-separated Discord role IDs" /></label>
+                  <label>Moderator role IDs (optional)<input value={moderatorRoleIds} onChange={(event) => setModeratorRoleIds(event.target.value)} placeholder="Comma-separated Discord role IDs" /></label>
+                  <label>Admin role IDs (optional)<input value={adminRoleIds} onChange={(event) => setAdminRoleIds(event.target.value)} placeholder="Comma-separated Discord role IDs" /></label>
+                </>
+              )}
               <button onClick={() => setWizardStep(1)}>Back</button>
               <button onClick={() => setWizardStep(3)}>Continue</button>
             </div>
@@ -1570,16 +1798,21 @@ export function DiscordBotSection() {
 
           {wizardStep === 3 && choice === "hosted" && (
             <div className="settings-wizard-step">
-              <p>Restart</p>
+              <p>Save roles</p>
               {/* Independent UI/UX review (LOW L2): nothing on screen told
                   the operator why this step is worded differently from
                   the self-hosted path's "Enable Discord Bot Integration"
                   below -- the asymmetry could read as inconsistency
                   rather than the deliberate difference it is (the adapter
                   was already silently enabled back in step 1). */}
-              <p className="muted">Your adapter and Discord connection were already set up in step 1 -- this just saves your role mappings and briefly restarts the console to apply them.</p>
+              {/* dune-awakening-selfhost-docker#853: no restart happens
+                  here anymore -- this now saves through mentat (design doc
+                  §4.7 point 3), which enforces its own RBAC on an
+                  already-running connection, not a local adapter process
+                  this console needs to restart. */}
+              <p className="muted">Your adapter and Discord connection were already set up in step 1 -- this just saves your role mappings.</p>
               <button onClick={() => setWizardStep(2)}>Back</button>
-              <button disabled={submitting} onClick={() => { void handleUpdateRoleIds(); }}>Save &amp; Restart</button>
+              <button disabled={submitting} onClick={() => { void handleSaveHostedRoles(); }}>Save Roles</button>
             </div>
           )}
 
@@ -1637,10 +1870,33 @@ export function DiscordBotSection() {
               <input readOnly type="password" value="••••••••••••••••••••••••••••••••" />
             </label>
           )}
-          <label>Player role IDs<input value={playerRoleIds} onChange={(event) => setPlayerRoleIds(event.target.value)} /></label>
-          <label>Moderator role IDs<input value={moderatorRoleIds} onChange={(event) => setModeratorRoleIds(event.target.value)} /></label>
-          <label>Admin role IDs<input value={adminRoleIds} onChange={(event) => setAdminRoleIds(event.target.value)} /></label>
-          <button disabled={submitting || autoInvitePending} onClick={() => { void handleUpdateRoleIds(); }}>Save Role IDs</button>
+          {/* dune-awakening-selfhost-docker#853/mentat-link#183: same
+              picker, and the same manual-fallback-vs-picker-usable
+              disclosure logic, as wizard step 2 -- day-2 role changes go
+              through the identical mentat-backed save path as day-1 setup,
+              never the self-hosted env-var route. */}
+          {choice === "hosted" && renderHostedRolePicker()}
+          {hostedRolesConflict && (
+            <p className="settings-role-picker-conflict" role="alert">
+              Role conflict: this role is currently assigned to <strong>{hostedRolesConflict.currentTier || "another tier"}</strong>,
+              it can't also be <strong>{hostedRolesConflict.requestedTier || "a different tier"}</strong>. Adjust your selection above.
+            </p>
+          )}
+          {choice === "hosted" && hostedRolePickerUsable() ? (
+            <details className="settings-role-picker-manual-fallback">
+              <summary>Enter role IDs manually instead</summary>
+              <label>Player role IDs<input value={playerRoleIds} onChange={(event) => setPlayerRoleIds(event.target.value)} /></label>
+              <label>Moderator role IDs<input value={moderatorRoleIds} onChange={(event) => setModeratorRoleIds(event.target.value)} /></label>
+              <label>Admin role IDs<input value={adminRoleIds} onChange={(event) => setAdminRoleIds(event.target.value)} /></label>
+            </details>
+          ) : (
+            <>
+              <label>Player role IDs<input value={playerRoleIds} onChange={(event) => setPlayerRoleIds(event.target.value)} /></label>
+              <label>Moderator role IDs<input value={moderatorRoleIds} onChange={(event) => setModeratorRoleIds(event.target.value)} /></label>
+              <label>Admin role IDs<input value={adminRoleIds} onChange={(event) => setAdminRoleIds(event.target.value)} /></label>
+            </>
+          )}
+          <button disabled={submitting || autoInvitePending} onClick={() => { void (choice === "hosted" ? handleSaveHostedRoles() : handleUpdateRoleIds()); }}>Save Role IDs</button>
           <button disabled={submitting || autoInvitePending} onClick={() => { void handleRegenerate(); }}>Regenerate Token</button>
           <button disabled={submitting || autoInvitePending} onClick={() => { void handleDisable(); }}>Disable Discord Bot Integration</button>
           {autoInvitePending && <p className="muted" role="status">Role/token actions are paused while a Discord connection request is in progress.</p>}

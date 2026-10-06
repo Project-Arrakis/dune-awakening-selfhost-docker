@@ -214,7 +214,6 @@ SERVER_CUSTOM_FIELDS = {
     "player_shield_damage_absorption_multiplier": (SERVER_CUSTOM_SETTINGS_SECTION, "PlayerShieldDamageAbsorptionMultiplier", "1.000000"),
     "npc_shield_damage_absorption_multiplier": (SERVER_CUSTOM_SETTINGS_SECTION, "NPCShieldDamageAbsorptionMultiplier", "1.000000"),
     "heat_buildup_rate": (SERVER_CUSTOM_SETTINGS_SECTION, "HeatBuildupRate", "1.000000"),
-    "cold_buildup_rate": (SERVER_CUSTOM_SETTINGS_SECTION, "ColdBuildupRate", "1.000000"),
     "thirst_multiplier": (SERVER_CUSTOM_SETTINGS_SECTION, "ThirstMultiplier", "1.000000"),
     "drop_equipment_on_death": (SERVER_CUSTOM_SETTINGS_SECTION, "DropEquipmentOnDeath", "Default"),
     "allow_dynamic_building_damage": (SERVER_CUSTOM_SETTINGS_SECTION, "bAllowDynamicBuildingDamage", "True"),
@@ -226,7 +225,7 @@ SERVER_CUSTOM_FIELDS = {
     "fiefdom_limit": (SERVER_CUSTOM_SETTINGS_SECTION, "FiefdomLimit", "3"),
     "building_piece_limit_multiplier": (SERVER_CUSTOM_SETTINGS_SECTION, "BuildingPieceLimitMultiplier", "1.000000"),
     "building_infinite_stability": (SERVER_CUSTOM_SETTINGS_SECTION, "bBuildingInfiniteStability", "False"),
-    "base_backup_tool_time_restriction": (SERVER_CUSTOM_SETTINGS_SECTION, "BaseBackupToolTimeRestriction", "10.000000"),
+    "base_backup_tool_time_restriction": (SERVER_CUSTOM_SETTINGS_SECTION, "BaseBackupToolTimeRestriction", "16.000000"),
     "landsraad_contribution_multiplier": (SERVER_CUSTOM_SETTINGS_SECTION, "LandsraadContributionMultiplier", "1.000000"),
     "landsraad_specialization_xp_multiplier": (SERVER_CUSTOM_SETTINGS_SECTION, "LandsraadSpecializationXpMultiplier", "1.000000"),
     "landsraad_faction_standing_multiplier": (SERVER_CUSTOM_SETTINGS_SECTION, "LandsraadFactionStandingMultiplier", "1.000000"),
@@ -237,7 +236,7 @@ SERVER_CUSTOM_FIELD_CATEGORIES = {
     **{key: "Combat" for key in ("pvp_mode", "player_damage_to_player", "player_damage_to_npc", "player_damage_to_vehicle", "npc_health", "npc_damage_to_player", "npc_damage_to_npc", "npc_respawn_multiplier", "pvp_damage_structures", "player_shield_damage_absorption_multiplier", "npc_shield_damage_absorption_multiplier")},
     **{key: "Progression" for key in ("global_xp_multiplier", "combat_xp", "gathering_xp", "mission_xp", "intel_points_gain_multiplier")},
     **{key: "Crafting And Resources" for key in ("gathering_amount", "crafting_cost", "water_extraction_rate", "crafting_time_multiplier", "building_cost_multiplier", "resource_respawn_speed", "loot_respawn_speed", "fuel_burn_time_multiplier", "inventory_volume_multiplier")},
-    **{key: "Survival" for key in ("player_stamina_drain", "heat_buildup_rate", "cold_buildup_rate", "thirst_multiplier", "allow_sandstorms", "allow_sandworms", "sandworm_consequences")},
+    **{key: "Survival" for key in ("player_stamina_drain", "heat_buildup_rate", "thirst_multiplier", "allow_sandstorms", "allow_sandworms", "sandworm_consequences")},
     **{key: "Death And Durability" for key in ("item_durability_drain_multiplier", "enable_item_max_durability_loss", "drop_equipment_on_death", "player_death_loot_rule")},
     **{key: "Building" for key in ("allow_dynamic_building_damage", "building_restriction_limits_enabled", "fiefdom_limit", "building_piece_limit_multiplier", "building_infinite_stability", "base_backup_tool_time_restriction")},
     **{key: "Landsraad" for key in ("landsraad_contribution_multiplier", "landsraad_specialization_xp_multiplier", "landsraad_faction_standing_multiplier", "landsraad_disable_decree_reroll_limit")},
@@ -384,6 +383,15 @@ ENGINE_FIELD_CATEGORIES = {
     "deathstill_conversion_time_override": "Environment",
     "double_difficulty_loot_enabled": "Loot",
     "regenerate_per_player_loot_enabled": "Loot",
+    "spice_spawning_active": "Spice Fields",
+    "spice_prime_rate_seconds": "Spice Fields",
+    "spice_manager_tick_rate_seconds": "Spice Fields",
+    "spice_manager_refresh_rate_seconds": "Spice Fields",
+    "spice_global_manager_refresh_rate_seconds": "Spice Fields",
+    "spice_player_must_witness_bloom": "Spice Fields",
+    "spice_bloom_long_range_replication": "Spice Fields",
+    "spice_field_long_range_replication": "Spice Fields",
+    "spice_node_value_to_resource_ratio": "Spice Fields",
 }
 
 # Free-text field descriptions shown in the console UI. Only populated for
@@ -435,6 +443,15 @@ FIELD_DESCRIPTIONS = {
     "coriolis_cycle_start_hour": "UTC hour (0-23). Regional master schedules: Europe 05, North America 10, South America 08, Asia 09, and Oceania 19.",
     "coriolis_cycle_start_minute": "UTC minute (0-59) for the Coriolis cycle start.",
     "coriolis_cycle_start_seed_index": "Funcom's seed index for the base Coriolis cycle. Leave at 0 unless intentionally coordinating a different cycle seed.",
+    "spice_spawning_active": "Intended as a master on/off for the spice spawning system, but observed on a live server to NOT reliably stop new spice fields from spawning when set to False -- new fields continued to appear during testing. Treat this field as unreliable until further investigated; do not rely on it to fully halt spawning. See issue #998 for the evidence and follow-up.",
+    "spice_prime_rate_seconds": "Seconds a spice field spends 'priming' (visible but not yet harvestable) before becoming active. Lower = fields become harvestable sooner after appearing.",
+    "spice_manager_tick_rate_seconds": "How often (seconds) the spice manager re-evaluates spawn/despawn state. Lower = more responsive but more frequent server work.",
+    "spice_manager_refresh_rate_seconds": "How often (seconds) the spice manager does a full refresh pass. Distinct from the tick rate above -- this is the slower, heavier pass.",
+    "spice_global_manager_refresh_rate_seconds": "How often (seconds) the global (cross-map) spice manager refreshes. Affects spawn pacing at the whole-server level, not a single map.",
+    "spice_player_must_witness_bloom": "If true, a spice bloom must actually be seen by a player to register/replicate. False lets blooms happen unwitnessed.",
+    "spice_bloom_long_range_replication": "Whether spice blooms replicate to clients beyond normal render range. True can make distant blooms visible/audible sooner.",
+    "spice_field_long_range_replication": "Whether spice fields themselves replicate to clients beyond normal render range, independent of the bloom replication setting above.",
+    "spice_node_value_to_resource_ratio": "Yield multiplier: how much harvestable spice resource a field produces per unit of its underlying node value. This is NOT a spawn-count or field-size control -- it only affects how much spice an already-spawned field yields.",
 }
 
 FIELD_LABELS = {

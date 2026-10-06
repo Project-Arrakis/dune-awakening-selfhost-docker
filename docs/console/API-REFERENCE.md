@@ -982,7 +982,7 @@ See [../integrations/discord-integration/README.md](../integrations/discord-inte
 | GET | `/api/integrations/discord/services` | Services list | `services:read` |
 | GET | `/api/integrations/discord/population` | Player population | `population:read` |
 | POST | `/api/integrations/discord/world/coriolis` | Farm-wide Coriolis storm seed + next-cycle timing (meta#64, mentat#370) -- public tier | `coriolis:read` |
-| POST | `/api/integrations/discord/world/atlas` | Per-sietch PvP/PvE + live sandstorm status + Coriolis cycle, for #the-atlas (meta#64, mentat#376) -- public tier | `atlas:read` |
+| POST | `/api/integrations/discord/world/atlas` | Per-sietch PvP/PvE + live sandstorm status + Coriolis cycle + non-default world/per-sietch modifiers (`worldModifiers`, per-sietch `modifiers`), for #the-atlas (meta#64, mentat#376) -- public tier. Each sietch's `loginPassword` (the real `Bgd.ServerLoginPassword`) is only populated when the calling actor's `roleIds` intersect `DUNE_ATLAS_PASSWORD_ROLE_IDS` (comma-separated role IDs) -- `null` otherwise, regardless of tier. This is independent of any Discord channel permission setup; set the same value on mentat's own `DUNE_ATLAS_PASSWORD_ROLE_IDS` so its scheduled refresh actually receives the password. | `atlas:read` |
 | GET | `/api/integrations/discord/version` | Adapter version | None |
 | GET | `/api/integrations/discord/servers` | Servers list | None |
 | GET | `/api/integrations/discord/ports` | Ports list | None |
@@ -1045,6 +1045,8 @@ See [../integrations/discord-integration/README.md](../integrations/discord-inte
 | POST | `/api/integrations/discord/hosted-bot/auto-invite/start` | Start the fully-automated auto-invite flow: silently enables the hosted-bot adapter token if needed, asks mentat-link to mint a pending state, and returns the single Discord consent-screen `authorizeUrl` for the console to open in a popup | `settings:discord-bot-hosted-oauth` | owner |
 | GET | `/api/integrations/discord/hosted-bot/auto-invite/complete` | Popup return leg reached via mentat-link's signed bounce page; verifies the double-submit state cookie and renders a small page that `postMessage`s the outcome (`ok`/`guildName`/`reason`/`reclaimed`/`confirmationId`) back to the opener before closing | `settings:discord-bot-hosted-oauth` | owner |
 | GET | `/api/integrations/discord/hosted-bot/auto-invite/confirmation-status` | Round 4 completion-signal poll: forwards `confirmationId` to mentat-link's own `/confirmation-status` proxy and returns `{status, guildName?}`; on `status: "confirmed"`, persists the connected guild the same way the old `/register` route does | `settings:discord-bot-hosted-oauth` | owner |
+| GET | `/api/integrations/discord/hosted-bot/roles` | Role-picker widget's read side (#853/mentat-link#183): relays to mentat's own `GET /api/consoles/:guildId/roles` via mentat-link's proxy for the console's connected guild, returning `{roles, cacheStale}` | `updates:read` | admin+ |
+| POST | `/api/integrations/discord/hosted-bot/roles` | Role-picker widget's write side: relays `{playerRoleIds, moderatorRoleIds, adminRoleIds}` (array-shaped, unlike the self-hosted `/role-ids` route's comma-separated strings) to mentat, which enforces the tier-conflict check and writes `guild_roles` directly -- no restart is queued, mentat's write is authoritative. A `409` tier conflict is relayed as-is. Changing admin-tier role IDs requires owner access, same as the self-hosted route. | `updates:apply` | admin+ (owner for admin-tier changes) |
 
 ---
 

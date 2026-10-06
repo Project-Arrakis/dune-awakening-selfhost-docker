@@ -76,6 +76,7 @@ test("reports adapter health with isolated link-state writes", async () => {
     "/api/integrations/discord/ops/dashboard",
     "/api/integrations/discord/ops/economy",
     "/api/integrations/discord/ops/inventory",
+    "/api/integrations/discord/ops/location",
     "/api/integrations/discord/ops/prometheus",
     "/api/integrations/discord/ops/resources",
     "/api/integrations/discord/ops/soc",
@@ -104,20 +105,26 @@ test("reports adapter health with isolated link-state writes", async () => {
     "/api/integrations/discord/status",
     "/api/integrations/discord/version",
     "/api/integrations/discord/world/atlas",
+    "/api/integrations/discord/write/execute",
+    "/api/integrations/discord/write/preview",
     "/api/integrations/discord/world/coriolis"
   ].sort());
   // ops/activity, ops/combat, ops/resources, ops/economy, ops/inventory,
   // ops/soc, ops/prometheus are now wired to real data sources and moved
-  // to liveRoutes (see the seven assertions above — soc via an in-memory
+  // to liveRoutes (see the assertions above — soc via an in-memory
   // rolling counter over the audit log, prometheus via a real HTTP
   // integration against an optional metrics stack that may itself report
-  // "not running", neither a SQL query like the other five). The
-  // remaining OPS route (location) is intentionally, permanently out of
-  // scope for this addon (per-player location tracking already belongs
-  // to the Console's own map UI — decided 2026-07-24) and is correctly,
-  // permanently reported as planned.
-  assert.ok(result.plannedRoutes.includes("/api/integrations/discord/ops/location"));
-  assert.ok(!result.liveRoutes.includes("/api/integrations/discord/ops/location"));
+  // "not running", neither a SQL query like the other five). ops/location
+  // (issue #1001) is ALSO now live -- but wired to opsLocationProvider()'s
+  // permanent, dated (2026-07-24) placeholder response, not real
+  // per-player tracking, which stays intentionally out of scope for this
+  // addon (that data already belongs to the Console's own map UI). "Live"
+  // here means "returns an honest, well-formed response instead of a
+  // 404" -- it does not mean the underlying tracking capability exists,
+  // matching ops/prometheus's own precedent of a live route that can
+  // itself report "not currently available".
+  assert.ok(!result.plannedRoutes.includes("/api/integrations/discord/ops/location"));
+  assert.ok(result.liveRoutes.includes("/api/integrations/discord/ops/location"));
   assert.ok(result.liveRoutes.includes("/api/integrations/discord/ops/soc"));
   assert.ok(result.liveRoutes.includes("/api/integrations/discord/ops/inventory"));
   assert.ok(result.liveRoutes.includes("/api/integrations/discord/ops/prometheus"));
@@ -244,6 +251,8 @@ test("exposes only allowlisted adapter route names", () => {
     "/api/integrations/discord/status",
     "/api/integrations/discord/version",
     "/api/integrations/discord/world/atlas",
+    "/api/integrations/discord/write/execute",
+    "/api/integrations/discord/write/preview",
     "/api/integrations/discord/world/coriolis"
   ].sort());
   // guild-character-grants/* (issue #696) is a deliberate, narrow
@@ -265,8 +274,21 @@ test("exposes only allowlisted adapter route names", () => {
     "/api/integrations/discord/guild-character-grants/disable",
     "/api/integrations/discord/guild-character-grants/default"
   ]);
+  // write/preview, write/execute (issue #215) are a second, deliberate
+  // exception -- unlike guild-character-grants, these genuinely ARE the
+  // write bridge's own destructive-action entry points; the name is
+  // accurate, not accidental. Their real security is enforced by the
+  // actor-signature + capability + per-action-tier + nonce stack
+  // (docs/rw-architecture.md sections 3.2/3.3a/3.8), never by keeping the
+  // route name innocuous -- allowlisted here for the same reason
+  // guild-character-grants is: a conscious, reviewed exception, not a
+  // silent bypass of what this lint exists to catch.
+  const WRITE_BRIDGE_ALLOWLIST = new Set([
+    "/api/integrations/discord/write/preview",
+    "/api/integrations/discord/write/execute"
+  ]);
   for (const route of routes) {
-    if (GUILD_CHARACTER_GRANTS_ALLOWLIST.has(route)) continue;
+    if (GUILD_CHARACTER_GRANTS_ALLOWLIST.has(route) || WRITE_BRIDGE_ALLOWLIST.has(route)) continue;
     assert.doesNotMatch(route, /write|execute|delete|restore|kick|grant|teleport|reset|admin/i);
   }
 });
@@ -855,6 +877,159 @@ test("world/atlas route is reachable at public tier and returns the built atlas"
     });
   } finally {
     try { unlinkSync(tokenFile); } catch {}
+  }
+});
+
+// [Security regression test, real finding from automated PR review,
+// 2026-09-27] ATLAS_READ is public tier — the route must never pass
+// includePasswords: true to the atlas builder unless the calling actor's
+// OWN roleIds are independently checked against DUNE_ATLAS_PASSWORD_ROLE_IDS.
+// A Discord channel's own permission lock has no bearing on this route.
+//
+// [CRITICAL regression test, Layer 2 audit, 2026-09-28] The role check
+// above is only trustworthy once the actor signature is cryptographically
+// verified. This test now covers BOTH modes explicitly: unsigned (no
+// DUNE_DISCORD_ACTOR_SECRET configured), where a self-reported allowlisted
+// role must NOT be enough, and signed, where a properly-verified
+// allowlisted role must work correctly. It also asserts against the
+// REAL HTTP JSON response body's loginPassword field (via a builder that
+// actually shapes its output based on the received flag), not just an
+// internal call argument — closing the QA audit's finding that the
+// previous version of this test never proved the boolean was honored
+// all the way to the wire.
+function fakeAtlasBuilderHonoringIncludePasswords() {
+  return async (_config, _db, options) => ({
+    coriolisSeed: null,
+    coriolisNextCycleAt: null,
+    sietches: {
+      HaggaBasin: [{
+        map: "HaggaBasin", partitionId: "1", serverDisplayName: "Sietch Kadir",
+        runtimeStatus: "RUNNING", combatState: "PVE", sandstormActive: false, sandstormLastStartAt: null,
+        loginPassword: options?.includePasswords ? "Shai-Hulud-42" : null,
+        modifiers: {}
+      }],
+      DeepDesert: []
+    }
+  });
+}
+
+test("world/atlas route never includes the real password for a self-reported role when no actor secret is configured", async () => {
+  const tokenFile = "/tmp/discord-adapter-atlas-password-unsigned-test-token.txt";
+  writeFileSync(tokenFile, "server-test-token");
+  const testConfig = { discordBotApiTokenFile: tokenFile, discordAdapterEnabled: true, auditLog: "/tmp/discord-adapter-atlas-password-unsigned-test-audit.jsonl", generatedDir: "/tmp/discord-adapter-atlas-password-unsigned-test-generated" };
+  const db = { query: async () => ({ rows: [], rowCount: 0 }) };
+  const OLD_ROLE_IDS = process.env.DUNE_ATLAS_PASSWORD_ROLE_IDS;
+  const OLD_SECRET = process.env.DUNE_DISCORD_ACTOR_SECRET;
+  process.env.DUNE_ATLAS_PASSWORD_ROLE_IDS = "role-naib";
+  delete process.env.DUNE_DISCORD_ACTOR_SECRET;
+
+  try {
+    await new Promise((resolve, reject) => {
+      const server = createServer(async (req, res) => {
+        const url = new URL(req.url || "/", "http://local");
+        const path = url.pathname;
+        const readJson = async () => {
+          const chunks = [];
+          for await (const chunk of req) chunks.push(chunk);
+          return Buffer.concat(chunks).length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
+        };
+        const json = (r, code, body) => { r.writeHead(code, { "content-type": "application/json" }); r.end(JSON.stringify(body)); };
+        await handleDiscordAdapterRoute({ req, res, path, config: testConfig, readJson, json, db, sietchAtlasBuilder: fakeAtlasBuilderHonoringIncludePasswords() });
+      });
+      const auth = { authorization: "Bearer server-test-token" };
+      const route = "/api/integrations/discord/world/atlas";
+
+      server.listen(async () => {
+        try {
+          const base = `http://127.0.0.1:${server.address().port}`;
+
+          // No signature at all -- just an unverified, self-reported claim
+          // of the allowlisted role. Before the fix, this alone was enough
+          // to receive the real password; anyone holding just the shared
+          // bearer token could do this.
+          const response = await fetch(`${base}${route}`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ actor: actor(["role-naib"]) })
+          });
+          assert.equal(response.status, 200);
+          const body = await response.json();
+          assert.equal(body.sietches.HaggaBasin[0].loginPassword, null, "an unverified role claim must never unlock the real password");
+
+          server.close();
+          resolve();
+        } catch (e) { server.close(); reject(e); }
+      });
+    });
+  } finally {
+    try { unlinkSync(tokenFile); } catch {}
+    if (OLD_ROLE_IDS === undefined) delete process.env.DUNE_ATLAS_PASSWORD_ROLE_IDS;
+    else process.env.DUNE_ATLAS_PASSWORD_ROLE_IDS = OLD_ROLE_IDS;
+    if (OLD_SECRET !== undefined) process.env.DUNE_DISCORD_ACTOR_SECRET = OLD_SECRET;
+  }
+});
+
+test("world/atlas route includes the real password only for a cryptographically verified actor holding an allowlisted role", async () => {
+  const tokenFile = "/tmp/discord-adapter-atlas-password-signed-test-token.txt";
+  writeFileSync(tokenFile, "server-test-token");
+  const testConfig = { discordBotApiTokenFile: tokenFile, discordAdapterEnabled: true, auditLog: "/tmp/discord-adapter-atlas-password-signed-test-audit.jsonl", generatedDir: "/tmp/discord-adapter-atlas-password-signed-test-generated" };
+  const db = { query: async () => ({ rows: [], rowCount: 0 }) };
+  const OLD_ROLE_IDS = process.env.DUNE_ATLAS_PASSWORD_ROLE_IDS;
+  const OLD_SECRET = process.env.DUNE_DISCORD_ACTOR_SECRET;
+  process.env.DUNE_ATLAS_PASSWORD_ROLE_IDS = "role-naib,role-fedaykin";
+  process.env.DUNE_DISCORD_ACTOR_SECRET = "integration-test-atlas-password-secret";
+  const { signActorPayload, ACTOR_SIGNATURE_HEADER, ACTOR_TIMESTAMP_HEADER } = await import("../src/integrations/discord/actorSignature.js");
+
+  try {
+    await new Promise((resolve, reject) => {
+      const server = createServer(async (req, res) => {
+        const url = new URL(req.url || "/", "http://local");
+        const path = url.pathname;
+        const readJson = async () => {
+          const chunks = [];
+          for await (const chunk of req) chunks.push(chunk);
+          return Buffer.concat(chunks).length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
+        };
+        const json = (r, code, body) => { r.writeHead(code, { "content-type": "application/json" }); r.end(JSON.stringify(body)); };
+        await handleDiscordAdapterRoute({ req, res, path, config: testConfig, readJson, json, db, sietchAtlasBuilder: fakeAtlasBuilderHonoringIncludePasswords() });
+      });
+      const auth = { authorization: "Bearer server-test-token" };
+      const route = "/api/integrations/discord/world/atlas";
+
+      const signedRequest = async (roleIds) => {
+        const requestActor = actor(roleIds);
+        const timestamp = Math.floor(Date.now() / 1000);
+        const { signature } = signActorPayload(requestActor, "integration-test-atlas-password-secret", timestamp, route);
+        return fetch(`${base}${route}`, {
+          method: "POST",
+          headers: { ...auth, "content-type": "application/json", [ACTOR_SIGNATURE_HEADER]: signature, [ACTOR_TIMESTAMP_HEADER]: String(timestamp) },
+          body: JSON.stringify({ actor: requestActor })
+        });
+      };
+      let base;
+
+      server.listen(async () => {
+        base = `http://127.0.0.1:${server.address().port}`;
+        try {
+          // Properly signed, no allowlisted role: still must not receive the password.
+          const noRole = await signedRequest(["role-houseless"]);
+          assert.equal((await noRole.json()).sietches.HaggaBasin[0].loginPassword, null);
+
+          // Properly signed AND holding an allowlisted role: the real, legitimate case.
+          const withRole = await signedRequest(["role-naib"]);
+          assert.equal((await withRole.json()).sietches.HaggaBasin[0].loginPassword, "Shai-Hulud-42");
+
+          server.close();
+          resolve();
+        } catch (e) { server.close(); reject(e); }
+      });
+    });
+  } finally {
+    try { unlinkSync(tokenFile); } catch {}
+    if (OLD_ROLE_IDS === undefined) delete process.env.DUNE_ATLAS_PASSWORD_ROLE_IDS;
+    else process.env.DUNE_ATLAS_PASSWORD_ROLE_IDS = OLD_ROLE_IDS;
+    if (OLD_SECRET === undefined) delete process.env.DUNE_DISCORD_ACTOR_SECRET;
+    else process.env.DUNE_DISCORD_ACTOR_SECRET = OLD_SECRET;
   }
 });
 
@@ -1589,12 +1764,14 @@ test("account-link verify route rate limits independently from the single-link v
 // OPS observability routes — real data wiring (Phase 1/2 of the cross-repo
 // stats/live-data remediation effort). ops/activity, ops/combat,
 // ops/resources, ops/economy, ops/inventory, ops/soc, ops/prometheus are
-// now backed by real data sources via opsProvider.js; the remaining OPS
-// route (location) remains an unimplemented placeholder pending a
-// privacy-consideration decision. Exercises the actual HTTP route path
-// (not just the provider function directly) to prove db reaches the
-// provider correctly through handleDiscordAdapterRoute()'s routing.
-test("ops/activity, ops/inventory, ops/soc, and ops/prometheus routes return real data (or a real, specific 'unavailable' reason) through the HTTP route path, ops/location remains a planned placeholder", async () => {
+// now backed by real data sources via opsProvider.js. ops/location (issue
+// #1001) is also live, but wired to opsLocationProvider()'s permanent,
+// dated (2026-07-24) placeholder response — real per-player tracking
+// stays intentionally out of scope for this addon. Exercises the actual
+// HTTP route path (not just the provider function directly) to prove db
+// reaches the provider correctly through handleDiscordAdapterRoute()'s
+// routing.
+test("ops/activity, ops/inventory, ops/soc, and ops/prometheus routes return real data (or a real, specific 'unavailable' reason) through the HTTP route path, ops/location returns its permanent planned placeholder live (not 404)", async () => {
   const tokenFile = "/tmp/discord-adapter-ops-live-test-token.txt";
   writeFileSync(tokenFile, "server-test-token");
   const testConfig = { discordBotApiTokenFile: tokenFile, discordAdapterEnabled: true, auditLog: "/tmp/discord-adapter-ops-live-test-audit.jsonl", generatedDir: "/tmp/discord-adapter-ops-live-test-generated" };
@@ -1714,24 +1891,25 @@ test("ops/activity, ops/inventory, ops/soc, and ops/prometheus routes return rea
           assert.equal(prometheusBody.result.status, "planned");
           assert.equal(prometheusBody.result.reason, "metrics_stack_not_running", "must report the specific reason, distinct from a generically unimplemented route");
 
-          // ops/location is intentionally, permanently out of scope for
-          // this addon (per-player location tracking already belongs to
-          // the Console's own map UI — decided 2026-07-24) and, unlike
-          // the other OPS routes, is not wired into opsRoutes' dispatch
-          // table at all (no capability defined for it, since it will
-          // never return real data) -- the route correctly 404s through
-          // the same dispatch path every other unrecognized route does,
-          // rather than a fake 200 placeholder response. Confirmed via
-          // discordAdapterHealth()'s own plannedRoutes/liveRoutes split
-          // (tested separately, above) that this is reported accurately
-          // to callers who ask about capability, without ever needing a
-          // live HTTP round-trip to a route that can never do anything.
+          // ops/location (issue #1001): real per-player tracking is
+          // intentionally, permanently out of scope for this addon
+          // (already belongs to the Console's own map UI — decided
+          // 2026-07-24), but the ROUTE itself is now wired into
+          // opsRoutes' dispatch table like every sibling OPS route,
+          // returning opsLocationProvider()'s honest, well-formed
+          // placeholder — never a 404, matching ops/prometheus's own
+          // precedent of a live route that can itself report
+          // "not currently available".
           const locationResponse = await fetch(`${base}/api/integrations/discord/ops/location`, {
             method: "POST",
             headers: { ...auth, "content-type": "application/json" },
             body: JSON.stringify({ actor: observerActor })
           });
-          assert.equal(locationResponse.status, 404);
+          assert.equal(locationResponse.status, 200);
+          const locationBody = await locationResponse.json();
+          assert.equal(locationBody.ok, true);
+          assert.equal(locationBody.status, "planned");
+          assert.equal(locationBody.domain, "location");
 
           server.close();
           resolve();

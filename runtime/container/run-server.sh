@@ -11,6 +11,7 @@ main() {
     config_path="/home/dune/.config/Epic/Unreal Engine/Engine/Config"
     [ -d "$config_path" ] && [ ! -L "$config_path" ] && rm -rf "$config_path"
     ln -sfn /home/dune/server/DuneSandbox/Saved/UserSettings "$config_path"
+    chown -R dune:nogroup /home/dune/.config
 
     echo "Trying to fetch external address"
     local external_address=""

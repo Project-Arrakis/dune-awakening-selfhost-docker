@@ -89,6 +89,15 @@ export type SpicefieldTypeRow = {
   global_spawn_weight: number | null;
 };
 
+export type ActiveSpicefieldRow = {
+  field_id: string;
+  map_name: string;
+  field_type: "Small" | "Medium" | "Large";
+  dimension_index: number;
+  spawn_time: number;
+  value_remaining: number;
+};
+
 export type PartitionCombatState = "PVP" | "PVE" | "CONFLICT" | "UNKNOWN";
 export type MapCombatState = "PVP" | "PVE" | "MIXED" | "CONFLICT" | "UNKNOWN";
 export type PartitionRuntimeStatus = "RUNNING" | "STARTING" | "OFFLINE" | "STOPPED" | "UNASSIGNED" | "UNKNOWN";
@@ -157,7 +166,7 @@ export const mapsApi = {
   memorySwap: () => api<MemorySwapState>("/api/maps/memory/swap"),
   setMemorySwap: (body: { enabled: boolean; perServerGiB?: number; poolGiB?: number; swappiness?: number; confirmation: string }) => post<{ task: Task }>("/api/maps/memory/swap", body),
   setMemory: (body: { map: string; memory: string; confirmation: string }) => post<{ task: Task }>("/api/maps/memory", { ...body, action: "set" }),
-  spicefields: () => api<{ capabilities?: Record<string, boolean>; rows: SpicefieldTypeRow[]; reason?: string }>("/api/maps/spicefields"),
+  spicefields: () => api<{ capabilities?: Record<string, boolean>; mode?: "legacy" | "resourcefields"; rows: SpicefieldTypeRow[]; activeFields?: ActiveSpicefieldRow[]; reason?: string }>("/api/maps/spicefields"),
   updateSpicefield: (typeId: number | string, body: { max_globally_active: number; max_globally_primed: number; is_spawning_active: boolean; global_spawn_weight: number }) =>
     api<{ ok: boolean; updatedRows: number; row: SpicefieldTypeRow }>(`/api/maps/spicefields/${encodeURIComponent(String(typeId))}`, { method: "PATCH", body: JSON.stringify(body) }),
   choamTerminals: () => api<ChoamTerminalOverview>("/api/maps/choam-terminals"),

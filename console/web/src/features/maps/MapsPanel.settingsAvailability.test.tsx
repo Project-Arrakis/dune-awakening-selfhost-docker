@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mapsApi } from "../../api/maps";
 import { MapsPanel } from "./MapsPanel";
@@ -73,6 +73,23 @@ beforeEach(() => {
 });
 
 describe("MapsPanel modifier availability", () => {
+  it("keeps credits story maps dynamic and explains their fresh-process lifecycle", async () => {
+    const api = mapsApi as unknown as Record<string, ReturnType<typeof vi.fn>>;
+    api.status.mockResolvedValue({
+      maps: { stdout: JSON.stringify({ maps: [{ map: "CB_Story_OrbitalMonitor", status: "Ready", mode: "Dynamic", partitionId: "32" }] }) },
+      services: { stdout: "" },
+      readiness: { stdout: "" }
+    });
+
+    renderMapsPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+
+    expect(screen.getByText(/completed instance is retired/i)).toBeVisible();
+    expect(screen.getByLabelText("Mode")).toHaveValue("dynamic");
+    expect(screen.queryByRole("option", { name: "Always On" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Overmap Active" })).not.toBeInTheDocument();
+  });
+
   it("force despawns the whole map instead of only its first partition", async () => {
     const api = mapsApi as unknown as Record<string, ReturnType<typeof vi.fn>>;
     api.status.mockResolvedValue({
@@ -152,5 +169,212 @@ describe("MapsPanel modifier availability", () => {
     expect(await screen.findByDisplayValue("2.000000")).toBeVisible();
     expect(api.userSettingsValues).toHaveBeenCalledWith("serverCustomPartition", "Overmap", "2");
     expect(screen.getByText("ServerCustomSettings.ini", { exact: false })).toBeVisible();
+  });
+
+  it("shows the global Spice Fields section under Custom Settings without needing a Target selected, and saves at Global scope", async () => {
+    const api = mapsApi as unknown as Record<string, ReturnType<typeof vi.fn>>;
+    api.status.mockResolvedValue({
+      maps: { stdout: JSON.stringify({ maps: [{ map: "Overmap", status: "Ready", mode: "Core Map", partitionId: "2" }] }) },
+      services: { stdout: "" },
+      readiness: { stdout: "" }
+    });
+    api.userSettingsSchema.mockResolvedValue({
+      engine: [], mapEngine: [], partitionEngine: [], partition: [],
+      game: [{
+        scope: "game", id: "spice_manager_tick_rate_seconds", section: "/Script/DuneSandbox.SpiceHarvestingSystem",
+        key: "m_ManagerTickRateInSeconds", default: "5.000000", type: "number", clientFile: "", category: "Spice Fields",
+        description: "How often (seconds) the spice manager re-evaluates spawn/despawn state."
+      }],
+      serverCustom: []
+    });
+    // Two distinct mapsApi.userGame() calls happen: the always-on global Spice
+    // Fields load (map="__global__", no explicit Target selection needed) and,
+    // separately, the per-target "UserGame" tab's own load once a Target is
+    // picked. Assert on the call args rather than a single blanket mock so a
+    // regression that stops the global load firing independently is caught.
+    api.userGame.mockImplementation((map: string) =>
+      Promise.resolve(map === "__global__" ? { stdout: "spice_manager_tick_rate_seconds\t9.000000\n" } : { stdout: "" })
+    );
+
+    renderMapsPanel();
+    const modifiers = await screen.findByRole("button", { name: "Expand Interactive Modifiers" });
+    await waitFor(() => expect(modifiers).toBeEnabled());
+    fireEvent.click(modifiers);
+    fireEvent.click(screen.getByRole("tab", { name: "Custom Settings" }));
+
+    // No Target selected at all -- the section must still be visible and
+    // populated, proving it isn't gated behind userGameName like the rest
+    // of this tab.
+    expect(await screen.findByDisplayValue("9.000000")).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Spice Fields" })).toBeVisible();
+    await waitFor(() => expect(api.userGame).toHaveBeenCalledWith("__global__", undefined));
+
+    // Scoped button names (not just "Save"/"Discard Changes") are load-bearing
+    // here: the Custom Settings section's own Save/Discard/Restore Defaults
+    // buttons are also on screen (disabled, no Target selected), and a
+    // regression back to identically-named buttons across both action rows
+    // would make this test itself ambiguous, not just the real UI.
+    // Restore Defaults is enabled whenever the section has fields at all
+    // (it doesn't depend on dirty state, unlike Save/Discard) -- just confirm
+    // both sections' buttons are independently present and distinctly named.
+    expect(screen.getByRole("button", { name: "Restore Spice Field Defaults" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Restore Custom Settings Defaults" })).toBeInTheDocument();
+
+    // The "Filter Custom Settings" search box is shared with the
+    // target-scoped grid above (disabled without a Target), but it also
+    // drives the always-visible Spice Fields grid -- it must not be
+    // disabled just because no Target is selected.
+    expect(screen.getByLabelText("Filter Custom Settings")).toBeEnabled();
+
+    fireEvent.change(screen.getByDisplayValue("9.000000"), { target: { value: "3.000000" } });
+
+    // Discard reverts to the last-loaded value, not the field's schema default.
+    fireEvent.click(screen.getByRole("button", { name: "Discard Spice Field Changes" }));
+    expect(await screen.findByDisplayValue("9.000000")).toBeVisible();
+
+    fireEvent.change(screen.getByDisplayValue("9.000000"), { target: { value: "3.000000" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save Spice Fields" }));
+
+    await waitFor(() => expect(api.saveUserSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ scope: "global", map: "Survival_1", values: { spice_manager_tick_rate_seconds: "3.000000" } })
+    ));
+  });
+
+  // Mirrors the live confirmation from issue #996's Test 2 (a Deep Desert
+  // partition-scoped spice override surviving a Coriolis re-roll) -- this is
+  // the frontend half of the same capability, not just the backend write
+  // path (already known-generic before this test existed).
+  it("scopes Spice Fields to the selected Deep Desert partition once a Target is chosen, instead of always writing Global", async () => {
+    const api = mapsApi as unknown as Record<string, ReturnType<typeof vi.fn>>;
+    api.status.mockResolvedValue({
+      maps: { stdout: "" },
+      services: { stdout: "8 | DeepDesert_1 | 0 | | server1 | 33001 | 33101 | true | true" },
+      readiness: { stdout: "" }
+    });
+    api.userSettingsSchema.mockResolvedValue({
+      engine: [], mapEngine: [], partitionEngine: [], partition: [],
+      game: [{
+        scope: "game", id: "spice_prime_rate_seconds", section: "/Script/DuneSandbox.SpiceHarvestingSystem",
+        key: "m_PrimeRateInSeconds", default: "30.000000", type: "number", clientFile: "", category: "Spice Fields",
+        description: "Seconds a spice field spends priming before becoming harvestable."
+      }],
+      serverCustom: []
+    });
+    api.userGame.mockImplementation((map: string, partitionId?: string) =>
+      Promise.resolve(
+        map === "DeepDesert_1" && partitionId === "8"
+          ? { stdout: "spice_prime_rate_seconds\t111.000000\n" }
+          : { stdout: "spice_prime_rate_seconds\t30.000000\n" }
+      )
+    );
+
+    renderMapsPanel();
+    const modifiers = await screen.findByRole("button", { name: "Expand Interactive Modifiers" });
+    await waitFor(() => expect(modifiers).toBeEnabled());
+    fireEvent.click(modifiers);
+    fireEvent.click(screen.getByRole("tab", { name: "Custom Settings" }));
+
+    // Before selecting a Target, the section shows Global's value.
+    expect(await screen.findByDisplayValue("30.000000")).toBeVisible();
+
+    fireEvent.change(screen.getByLabelText("Target"), { target: { value: "DeepDesert_1::8" } });
+
+    // After selecting the partition, it reloads to that partition's own value.
+    expect(await screen.findByDisplayValue("111.000000")).toBeVisible();
+    await waitFor(() => expect(api.userGame).toHaveBeenCalledWith("DeepDesert_1", "8"));
+
+    fireEvent.change(screen.getByDisplayValue("111.000000"), { target: { value: "222.000000" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save Spice Fields" }));
+
+    await waitFor(() => expect(api.saveUserSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ scope: "partition", map: "DeepDesert_1", partitionId: "8", values: { spice_prime_rate_seconds: "222.000000" } })
+    ));
+  });
+
+  it("shows a distinct explanatory notice instead of the Spice Fields grid when Overmap is selected, and disables its action row", async () => {
+    const api = mapsApi as unknown as Record<string, ReturnType<typeof vi.fn>>;
+    api.status.mockResolvedValue({
+      maps: { stdout: JSON.stringify({ maps: [{ map: "Overmap", status: "Ready", mode: "Core Map", partitionId: "2" }] }) },
+      services: { stdout: "" },
+      readiness: { stdout: "" }
+    });
+    api.userSettingsSchema.mockResolvedValue({
+      engine: [], mapEngine: [], partitionEngine: [], partition: [],
+      game: [{
+        scope: "game", id: "spice_manager_tick_rate_seconds", section: "/Script/DuneSandbox.SpiceHarvestingSystem",
+        key: "m_ManagerTickRateInSeconds", default: "5.000000", type: "number", clientFile: "", category: "Spice Fields",
+        description: "How often (seconds) the spice manager re-evaluates spawn/despawn state."
+      }],
+      serverCustom: []
+    });
+    api.userGame.mockImplementation((map: string) =>
+      Promise.resolve(map === "__global__" ? { stdout: "spice_manager_tick_rate_seconds\t5.000000\n" } : { stdout: "" })
+    );
+
+    renderMapsPanel();
+    const modifiers = await screen.findByRole("button", { name: "Expand Interactive Modifiers" });
+    await waitFor(() => expect(modifiers).toBeEnabled());
+    fireEvent.click(modifiers);
+    fireEvent.click(screen.getByRole("tab", { name: "Custom Settings" }));
+    expect(await screen.findByDisplayValue("5.000000")).toBeVisible();
+
+    fireEvent.change(screen.getByLabelText("Target"), { target: { value: "Overmap::2" } });
+
+    expect(await screen.findByText(/doesn.t host spice fields/i)).toBeVisible();
+    expect(screen.queryByDisplayValue("5.000000")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save Spice Fields" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Discard Spice Field Changes" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Restore Spice Field Defaults" })).toBeDisabled();
+  });
+
+  it("excludes Spice Fields from the plain UserGame tab's field list, so there is exactly one editable surface per field", async () => {
+    const api = mapsApi as unknown as Record<string, ReturnType<typeof vi.fn>>;
+    api.status.mockResolvedValue({
+      maps: { stdout: JSON.stringify({ maps: [{ map: "Overmap", status: "Ready", mode: "Core Map", partitionId: "2" }] }) },
+      services: { stdout: "" },
+      readiness: { stdout: "" }
+    });
+    api.userSettingsSchema.mockResolvedValue({
+      engine: [], mapEngine: [], partitionEngine: [], partition: [],
+      game: [
+        {
+          scope: "game", id: "spice_manager_tick_rate_seconds", section: "/Script/DuneSandbox.SpiceHarvestingSystem",
+          key: "m_ManagerTickRateInSeconds", default: "5.000000", type: "number", clientFile: "", category: "Spice Fields",
+          description: ""
+        },
+        {
+          scope: "game", id: "gathering_amount", section: "/Script/DuneSandbox.GuildSettings",
+          key: "GatheringAmount", default: "1.000000", type: "number", clientFile: "", category: "Multipliers",
+          description: ""
+        }
+      ],
+      serverCustom: []
+    });
+    api.userGame.mockResolvedValue({ stdout: "" });
+
+    renderMapsPanel();
+    const modifiers = await screen.findByRole("button", { name: "Expand Interactive Modifiers" });
+    await waitFor(() => expect(modifiers).toBeEnabled());
+    fireEvent.click(modifiers);
+    fireEvent.click(screen.getByRole("tab", { name: "UserGame" }));
+    // Global, not a specific map/partition: userGameFields reads schema.game
+    // only at Global scope -- a partition target would read schema.partition
+    // instead (a separate schema key), which isn't what this diff touches.
+    fireEvent.change(screen.getByLabelText("Target"), { target: { value: "__global__::" } });
+
+    // The unrelated field is present, proving the target/tab actually loaded
+    // -- if this were also missing, the exclusion test below would be
+    // meaningless (both could be absent for an unrelated reason).
+    const categorySelect = await screen.findByLabelText("Modifier Category");
+    await waitFor(() => expect(categorySelect).toBeEnabled());
+    const categoryOptions = within(categorySelect).getAllByRole("option");
+    expect(categoryOptions.some((option) => option.textContent === "Multipliers (1)")).toBe(true);
+
+    // The Spice Fields category itself must not appear in the UserGame tab's
+    // category selector at all -- this is the exact scenario the Architect
+    // hat flagged: without this exclusion, editing the same field here and
+    // in the dedicated Custom Settings section would use two independent,
+    // never-cross-invalidated draft states.
+    expect(categoryOptions.some((option) => /Spice Fields/.test(option.textContent || ""))).toBe(false);
   });
 });

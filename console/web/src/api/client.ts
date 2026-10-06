@@ -2,6 +2,26 @@ import { getServerPorts } from "./serverPorts";
 
 export type ApiResult<T = unknown> = Promise<T>;
 
+// dune-awakening-selfhost-docker#853: every non-2xx response used to
+// collapse into a bare `Error(friendlyMessage)`, discarding the response's
+// actual status code and structured JSON body. Existing callers that only
+// ever read `.message` are unaffected (ApiError extends Error and still
+// populates it identically) -- this exists so a caller that genuinely needs
+// the structured body (e.g. the role-picker's 409 tier-conflict payload,
+// which must be rendered as an inline validation error, not a generic
+// failure message) can `catch (e) { if (e instanceof ApiError && e.status
+// === 409) ... }` instead of parsing a message string.
+export class ApiError extends Error {
+  status: number;
+  body: unknown;
+  constructor(message: string, status: number, body: unknown) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.body = body;
+  }
+}
+
 let csrfToken: string | null = null;
 export const AUTH_SESSION_EXPIRED_EVENT = "dune-console-auth-session-expired";
 export const AUTH_SESSION_EXPIRED_MESSAGE = "Your browser login session expired. Sign in again to continue.";
@@ -64,7 +84,7 @@ async function apiRequest<T>(path: string, options: RequestInit = {}, csrfRetrie
     throw new Error(AUTH_SESSION_EXPIRED_MESSAGE);
   }
   if (response.ok && invalidJsonResponse) throw new Error(INVALID_RESPONSE_MESSAGE);
-  if (!response.ok) throw new Error(friendlyApiError(String(record.error || `Request failed: ${response.status}`)));
+  if (!response.ok) throw new ApiError(friendlyApiError(String(record.error || `Request failed: ${response.status}`)), response.status, data);
   return data as T;
 }
 

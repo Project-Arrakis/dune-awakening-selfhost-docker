@@ -17,7 +17,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const serverSrc = readFileSync(join(__dirname, "../src/server.js"), "utf8");
 
 // Extract all path+method combinations from the handleApi if/else chain.
-// The function starts with "async function handleApi(req, res)" and uses
+// The function starts with "async function handleApi(req, res, path)" and uses
 // flat if/else by path. We look for patterns like:
 //   if (path === "/api/foo") return ...
 //   if (path === "/api/foo" && req.method === "GET") return ...
@@ -25,7 +25,7 @@ function extractRoutes(source) {
   const routes = [];
 
   // find handleApi body — from "async function handleApi" to end of function
-  const funcMatch = source.match(/async function handleApi\(req,\s*res\)\s*\{/);
+  const funcMatch = source.match(/async function handleApi\(req,\s*res,\s*path\)\s*\{/);
   if (!funcMatch) return routes;
   const start = funcMatch.index + funcMatch[0].length;
 

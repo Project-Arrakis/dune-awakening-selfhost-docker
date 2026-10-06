@@ -19,6 +19,11 @@ SERVER_ID_MAP_FILE="${DUNE_AUTOSCALER_SERVER_ID_MAP_FILE:-runtime/generated/auto
 DEMAND_FILE="${DUNE_AUTOSCALER_DEMAND_FILE:-runtime/generated/autoscaler-demand.tsv}"
 DEMAND_EVENT_FILE="${DUNE_AUTOSCALER_DEMAND_EVENT_FILE:-runtime/generated/autoscaler-demand-events.tsv}"
 HUB_TRAVEL_FILE="${DUNE_AUTOSCALER_HUB_TRAVEL_FILE:-runtime/generated/autoscaler-hub-travel.tsv}"
+HUB_TRAVEL_RETENTION_SECONDS="${DUNE_AUTOSCALER_HUB_TRAVEL_RETENTION_SECONDS:-86400}"
+if ! [[ "$HUB_TRAVEL_RETENTION_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "Invalid DUNE_AUTOSCALER_HUB_TRAVEL_RETENTION_SECONDS; using 86400 seconds." >&2
+  HUB_TRAVEL_RETENTION_SECONDS=86400
+fi
 DEEPDESERT_TRAVEL_FILE="${DUNE_AUTOSCALER_DEEPDESERT_TRAVEL_FILE:-runtime/generated/autoscaler-deepdesert-travel.tsv}"
 DIRECTOR_HEAL_FILE="${DUNE_AUTOSCALER_DIRECTOR_HEAL_FILE:-runtime/generated/autoscaler-director-heal.tsv}"
 SIETCH_TOPOLOGY_MAINTENANCE_FILE="${DUNE_SIETCH_TOPOLOGY_MAINTENANCE_FILE:-runtime/generated/sietch-topology-maintenance}"
@@ -82,6 +87,13 @@ NAMED_DESTINATION_SINCE_SECONDS="$(duration_to_seconds "$NAMED_DESTINATION_SINCE
 PROACTIVE_HAGGA_SCAN_SECONDS="$(validate_scan_seconds DUNE_AUTOSCALER_PROACTIVE_HAGGA_SCAN_SECONDS "${DUNE_AUTOSCALER_PROACTIVE_HAGGA_SCAN_SECONDS:-15}" 15 "$SINCE_SECONDS")"
 DEEPDESERT_LOADING_SCAN_SECONDS="$(validate_scan_seconds DUNE_AUTOSCALER_DEEPDESERT_LOADING_SCAN_SECONDS "${DUNE_AUTOSCALER_DEEPDESERT_LOADING_SCAN_SECONDS:-15}" 15 "$SINCE_SECONDS")"
 NAMED_DESTINATION_SCAN_SECONDS="$(validate_scan_seconds DUNE_AUTOSCALER_NAMED_DESTINATION_SCAN_SECONDS "${DUNE_AUTOSCALER_NAMED_DESTINATION_SCAN_SECONDS:-60}" 60 "$NAMED_DESTINATION_SINCE_SECONDS")"
+# Deliberately its own interval, not a share of NAMED_DESTINATION_SCAN_SECONDS
+# (used by the unrelated scan_named_destination_failures): a player waiting on
+# a rejected story return to recover feels every second of this gate, so it
+# defaults far shorter than the 60s named-destination-failure interval it
+# used to share, while still staying well clear of an unbounded per-tick
+# `docker logs` loop (the original bug -- see director_heal_due below).
+STORY_RETURN_RECOVERY_SCAN_SECONDS="$(validate_scan_seconds DUNE_AUTOSCALER_STORY_RETURN_RECOVERY_SCAN_SECONDS "${DUNE_AUTOSCALER_STORY_RETURN_RECOVERY_SCAN_SECONDS:-5}" 5 "$NAMED_DESTINATION_SINCE_SECONDS")"
 AUTOSCALER_STARTED_AT="$(date +%s)"
 
 mkdir -p "$(dirname "$STATE_FILE")"
@@ -112,6 +124,7 @@ echo "IGW socket health scan: ${IGW_SOCKET_HEALTH_SCAN_SECONDS}s"
 echo "Proactive Hagga handoff scan: ${PROACTIVE_HAGGA_SCAN_SECONDS}s"
 echo "Deep Desert loading response scan: ${DEEPDESERT_LOADING_SCAN_SECONDS}s"
 echo "Named destination failure scan: ${NAMED_DESTINATION_SCAN_SECONDS}s"
+echo "Story return recovery scan: ${STORY_RETURN_RECOVERY_SCAN_SECONDS}s"
 echo "State file: ${STATE_FILE}"
 echo
 
@@ -486,33 +499,55 @@ director_heal_set() {
   local key="$1"
   local value="$2"
   local tmp
-  tmp="$(mktemp)"
 
-  awk -F '\t' -v key="$key" '$1 != key { print }' "$DIRECTOR_HEAL_FILE" > "$tmp"
-  printf '%s\t%s\n' "$key" "$value" >> "$tmp"
-  mv "$tmp" "$DIRECTOR_HEAL_FILE"
+  (
+    flock -x 9
+    tmp="$(mktemp)"
+    awk -F '\t' -v key="$key" '$1 != key { print }' "$DIRECTOR_HEAL_FILE" > "$tmp"
+    printf '%s\t%s\n' "$key" "$value" >> "$tmp"
+    mv "$tmp" "$DIRECTOR_HEAL_FILE"
+  ) 9>"${DIRECTOR_HEAL_FILE}.lock"
 }
 
 director_heal_clear() {
   local key="$1"
   local tmp
-  tmp="$(mktemp)"
 
-  awk -F '\t' -v key="$key" '$1 != key { print }' "$DIRECTOR_HEAL_FILE" > "$tmp"
-  mv "$tmp" "$DIRECTOR_HEAL_FILE"
+  (
+    flock -x 9
+    tmp="$(mktemp)"
+    awk -F '\t' -v key="$key" '$1 != key { print }' "$DIRECTOR_HEAL_FILE" > "$tmp"
+    mv "$tmp" "$DIRECTOR_HEAL_FILE"
+  ) 9>"${DIRECTOR_HEAL_FILE}.lock"
 }
 
+# director_heal_due inlines its own set (rather than calling director_heal_set)
+# because both take the same flock -- a nested flock attempt on the same lock
+# file from within an already-held lock would deadlock. The check-then-set
+# sequence itself must be one atomic critical section, not two separate
+# locked operations: scan_rejected_story_returns is called from two
+# independently-running loops (the main loop and the faster
+# follow_director_travel_demand background loop), so an unlocked
+# get-then-conditionally-set here would let both loops read the same stale
+# "last due" timestamp and both treat the scan as due at once, defeating the
+# gate's own purpose on exactly the schedule where it matters most.
 director_heal_due() {
   local key="$1"
   local interval="$2"
-  local now last
+  local now last tmp
 
-  now="$(date +%s)"
-  last="$(director_heal_get "scan:${key}" 2>/dev/null || true)"
-  if [ -n "$last" ] && [ $((now - last)) -lt "$interval" ]; then
-    return 1
-  fi
-  director_heal_set "scan:${key}" "$now"
+  (
+    flock -x 9
+    now="$(date +%s)"
+    last="$(director_heal_get "scan:${key}" 2>/dev/null || true)"
+    if [ -n "$last" ] && [ $((now - last)) -lt "$interval" ]; then
+      exit 1
+    fi
+    tmp="$(mktemp)"
+    awk -F '\t' -v key="scan:${key}" '$1 != key { print }' "$DIRECTOR_HEAL_FILE" > "$tmp"
+    printf '%s\t%s\n' "scan:${key}" "$now" >> "$tmp"
+    mv "$tmp" "$DIRECTOR_HEAL_FILE"
+  ) 9>"${DIRECTOR_HEAL_FILE}.lock"
 }
 
 repair_chat_exchanges_due() {
@@ -715,7 +750,10 @@ named_destination_source_rows() {
 
 hub_travel_seen() {
   local flow_id="$1"
-  awk -F '\t' -v flow="$flow_id" '$1 == flow { found=1; exit } END { exit(found ? 0 : 1) }' "$HUB_TRAVEL_FILE"
+  (
+    flock -s 9
+    awk -F '\t' -v flow="$flow_id" '$1 == flow { found=1; exit } END { exit(found ? 0 : 1) }' "$HUB_TRAVEL_FILE"
+  ) 9>"${HUB_TRAVEL_FILE}.lock"
 }
 
 remember_hub_travel() {
@@ -724,12 +762,17 @@ remember_hub_travel() {
   local source_map="$3"
   local destination_map="$4"
   local ts="$5"
-  local tmp
+  local tmp cutoff
 
-  tmp="$(mktemp)"
-  awk -F '\t' -v flow="$flow_id" '$1 != flow { print }' "$HUB_TRAVEL_FILE" > "$tmp"
-  printf '%s\t%s\t%s\t%s\t%s\n' "$flow_id" "$account_id" "$source_map" "$destination_map" "$ts" >> "$tmp"
-  mv "$tmp" "$HUB_TRAVEL_FILE"
+  cutoff=$((ts - HUB_TRAVEL_RETENTION_SECONDS))
+  (
+    flock -x 9
+    tmp="$(mktemp)"
+    awk -F '\t' -v flow="$flow_id" -v cutoff="$cutoff" \
+      '$1 != flow && $5 ~ /^[0-9]+$/ && $5 >= cutoff { print }' "$HUB_TRAVEL_FILE" > "$tmp"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$flow_id" "$account_id" "$source_map" "$destination_map" "$ts" >> "$tmp"
+    mv "$tmp" "$HUB_TRAVEL_FILE"
+  ) 9>"${HUB_TRAVEL_FILE}.lock"
 }
 
 deepdesert_travel_seen() {
@@ -2035,14 +2078,6 @@ PY
           return_dimension_index = $target_dimension
         where account_id = $account_id;
 
-        delete from dune.travel_return_info
-        where player_controller_id in (
-          select id
-          from dune.actors
-          where owner_account_id = $account_id
-            and class = '/Game/Dune/Characters/Player/BP_DunePlayerController.BP_DunePlayerController_C'
-        );
-
         do \$\$
         declare
           respawn_identity_column text;
@@ -2083,9 +2118,9 @@ PY
 }
 
 scan_rejected_story_returns() {
-  local director_log_file rejected_rows
+  local director_log_file rejected_rows completed_rows
 
-  director_heal_due rejected_story_returns "$NAMED_DESTINATION_SCAN_SECONDS" || return 0
+  director_heal_due rejected_story_returns "$STORY_RETURN_RECOVERY_SCAN_SECONDS" || return 0
 
   director_log_file="$(mktemp)"
   docker logs --timestamps --since "$NAMED_DESTINATION_SINCE" dune-director > "$director_log_file" 2>&1 || true
@@ -2102,7 +2137,7 @@ refusal_re = re.compile(
     r'Player ([A-F0-9]+) requested WorldPartition \{ '
     r'PartitionId = ([0-9]+), ServerId = ([A-Za-z0-9_+\-/]+), Map = (Survival_1), .*?'
     r'DimensionIndex = ([0-9]+), .*?\}\. Teleport not allowed, returning to WorldPartition \{ '
-    r'PartitionId = ([0-9]+), ServerId = ([A-Za-z0-9_+\-/]+), '
+    r'PartitionId = ([0-9]+), ServerId = ([A-Za-z0-9_+\-/]*), '
     r'Map = (CB_Story_(?:DestroyedZanovar|OrbitalMonitor)), .*?'
     r'DimensionIndex = ([0-9]+), .*?\}, setting return dimension to ([0-9]+)\.'
 )
@@ -2153,11 +2188,73 @@ PY
   )"
   rm -f "$director_log_file"
 
+  # Completed credits maps mark the player offline before the client submits
+  # its next LoginRequest. Recover during that window so the Director sees the
+  # pawn in Hagga on the first request; otherwise suppressing the synthetic
+  # story demand correctly prevents the loop but leaves the client waiting on
+  # a queue it must cancel manually.
+  completed_rows="$(psql_value "
+    select
+      'COMPLETED-' || ps.account_id || '-' || source_wp.partition_id || '|' ||
+      a.\"user\" || '|' ||
+      target_wp.partition_id || '|' ||
+      target_wp.server_id || '|' ||
+      target_wp.map || '|' ||
+      coalesce(target_wp.dimension_index, 0) || '|' ||
+      source_wp.partition_id || '|' ||
+      source_wp.server_id || '|' ||
+      source_wp.map || '|' ||
+      coalesce(source_wp.dimension_index, 0)
+    from dune.accounts a
+    join dune.player_state ps on ps.account_id = a.id
+    join dune.actors pawn on pawn.id = ps.player_pawn_id
+    join dune.world_partition source_wp
+      on source_wp.partition_id = pawn.partition_id
+     and source_wp.map in ('CB_Story_DestroyedZanovar', 'CB_Story_OrbitalMonitor')
+     and coalesce(source_wp.server_id, '') <> ''
+    join dune.farm_state source_fs
+      on source_fs.server_id = source_wp.server_id
+     and source_fs.ready = true
+     and source_fs.alive = true
+    join dune.journey_story_node completed_story
+      on completed_story.character_id = ps.id
+     and completed_story.story_node_id = case source_wp.map
+       when 'CB_Story_DestroyedZanovar' then 'DA_MQ_TheGreatConventionPt3.DestroyedZanovar'
+       when 'CB_Story_OrbitalMonitor' then 'DA_MQ_TheGreatConventionPt3.FourtyFears'
+     end
+     and completed_story.complete_condition_state = 'true'::jsonb
+    left join dune.travel_return_info tri
+      on tri.player_controller_id = ps.player_controller_id
+    join dune.world_partition target_wp
+      on dune.upgrade_map_name(target_wp.map) = dune.upgrade_map_name(
+        case
+          when tri.player_controller_id is null then 'Survival_1'
+          else tri.map
+        end
+      )
+     and coalesce(target_wp.dimension_index, 0) = coalesce(ps.return_dimension_index, 0)
+     and coalesce(target_wp.server_id, '') <> ''
+    join dune.farm_state target_fs
+      on target_fs.server_id = target_wp.server_id
+     and target_fs.ready = true
+     and target_fs.alive = true
+    where ps.online_status = 'Offline';
+  ")"
+  if [ -n "$completed_rows" ]; then
+    rejected_rows="${completed_rows}${rejected_rows:+$'\n'}${rejected_rows}"
+  fi
+
   while IFS='|' read -r request_id funcom_id target_partition target_server target_map target_dimension source_partition source_server source_map _source_dimension; do
     [ -n "${request_id:-}" ] || continue
     hub_travel_seen "$request_id" && continue
 
-    local account_id
+    local account_id source_server_predicate initial_source_predicate
+    source_server_predicate="false"
+    initial_source_predicate="ps.previous_server_partition_id = $source_partition"
+    if [ -n "$source_server" ]; then
+      source_server_predicate="ps.server_id = '$source_server'"
+      initial_source_predicate="($source_server_predicate or $initial_source_predicate)"
+    fi
     account_id="$(psql_value "
       select a.id
       from dune.accounts a
@@ -2172,39 +2269,116 @@ PY
        and target_fs.ready = true
        and target_fs.alive = true
       where a.\"user\" = '$funcom_id'
-        and ps.server_id in ('$source_server', '$target_server')
+        and (ps.server_id = '$target_server' or $initial_source_predicate)
       limit 1;
     ")"
     [ -n "$account_id" ] || continue
 
-    local moved_account_id
-    moved_account_id="$(psql_value "
-      with moved as (
-        update dune.encrypted_player_state
-        set
-          server_id = '$target_server',
-          previous_server_partition_id = $target_partition,
-          return_dimension_index = $target_dimension,
-          pending_respawn_location_id = null
-        where account_id = $account_id
-          and server_id in ('$source_server', '$target_server')
-        returning account_id
-      ), cleared_return as (
-        delete from dune.travel_return_info
-        where player_controller_id in (
-          select id
-          from dune.actors
-          where owner_account_id in (select account_id from moved)
-            and class = '/Game/Dune/Characters/Player/BP_DunePlayerController.BP_DunePlayerController_C'
-        )
-        returning player_controller_id
+    local recovery_result moved_row moved_account_id recovery_source
+    recovery_result="$(psql_value "
+      set search_path to dune, public;
+      with eligible as (
+        select
+          ps.account_id,
+          case
+            when cardinality(stranded.stranded_vehicle_ids) > 0
+             and fallback.location is not null then row(
+              (fallback.location).x,
+              (fallback.location).y,
+              (fallback.location).z + 300
+            )::dune.vector
+            when tri.player_controller_id is not null then (tri.transform).location
+            else row(
+              (fallback.location).x,
+              (fallback.location).y,
+              (fallback.location).z + 300
+            )::dune.vector
+          end as return_location,
+          case
+            when cardinality(stranded.stranded_vehicle_ids) > 0
+             and fallback.location is not null then 'owned-respawn'
+            when tri.player_controller_id is not null then 'saved-return'
+            else 'owned-respawn'
+          end as recovery_source,
+          stranded.stranded_vehicle_ids
+        from dune.player_state ps
+        join dune.actors pawn on pawn.id = ps.player_pawn_id
+        left join dune.travel_return_info tri on tri.player_controller_id = ps.player_controller_id
+        join dune.world_partition target_wp
+          on target_wp.partition_id = $target_partition
+         and target_wp.server_id = '$target_server'
+         and target_wp.map = '$target_map'
+         and coalesce(target_wp.dimension_index, 0) = $target_dimension
+        join dune.farm_state target_fs
+          on target_fs.server_id = target_wp.server_id
+         and target_fs.ready = true
+         and target_fs.alive = true
+        left join lateral (
+          select coalesce(array_agg(vehicle.id), array[]::bigint[]) as stranded_vehicle_ids
+            from dune.actors vehicle
+            join dune.vehicles on vehicles.id = vehicle.id
+            join dune.permission_actor_rank owner_permission
+              on owner_permission.permission_actor_id = vehicle.id
+             and owner_permission.player_id = ps.player_controller_id
+             and owner_permission.rank = 1::smallint
+            where vehicle.partition_id = pawn.partition_id
+              and vehicle.state = 'Default'
+        ) stranded on true
+        left join lateral (
+          select candidate.location
+          from (
+            select
+              (respawn_actor.transform).location as location,
+              count(*) over (partition by prl.\"group\") as candidate_count,
+              dense_rank() over (
+                order by case prl.\"group\" when 'BaseTotem' then 0 else 1 end
+              ) as priority_rank
+            from dune.player_respawn_locations prl
+            join dune.actors respawn_actor on respawn_actor.id = prl.locator_actor_id
+            where prl.character_id = ps.id
+              and prl.\"group\" in ('BaseTotem', 'Vehicle')
+              and respawn_actor.partition_id = target_wp.partition_id
+              and dune.upgrade_map_name(respawn_actor.map) = dune.upgrade_map_name(target_wp.map)
+          ) candidate
+          where candidate.candidate_count = 1
+            and candidate.priority_rank = 1
+          limit 1
+        ) fallback on true
+        where ps.account_id = $account_id
+          and pawn.partition_id = $source_partition
+          and (
+            dune.upgrade_map_name(tri.map) = dune.upgrade_map_name(target_wp.map)
+            or fallback.location is not null
+          )
+          and dune.is_player_offline('$funcom_id')
       )
-      select account_id from moved;
+      select eligible.account_id || '|' || eligible.recovery_source || '|' || cardinality(eligible.stranded_vehicle_ids)
+        || coalesce(recovered_vehicles.stored::text, '')
+      from eligible
+      cross join lateral (
+        select case
+          when cardinality(eligible.stranded_vehicle_ids) > 0
+          then dune.store_recovered_vehicles_wiped_before_spawn(
+            eligible.stranded_vehicle_ids,
+            'RecoveredFromLostState'::dune.recoveredvehiclereason,
+            false
+          )
+          else null
+        end
+      ) recovered_vehicles(stored)
+      cross join lateral dune.admin_move_offline_player_to_partition(
+        '$funcom_id',
+        $target_partition,
+        eligible.return_location
+      ) moved;
     ")"
+    moved_row="$(tail -n 1 <<< "$recovery_result")"
+    local recovered_vehicle_count
+    IFS='|' read -r moved_account_id recovery_source recovered_vehicle_count <<< "$moved_row"
     [ "$moved_account_id" = "$account_id" ] || continue
 
     remember_hub_travel "$request_id" "$account_id" "$source_map" "$target_map" "$(date +%s)"
-    echo "STORY-RETURN account=$account_id request=$request_id from=$source_map partition=$source_partition to=$target_map partition=$target_partition dimension=$target_dimension"
+    echo "STORY-RETURN account=$account_id request=$request_id action=moved-pawn location=$recovery_source recovered_vehicles=${recovered_vehicle_count:-0} from=$source_map partition=$source_partition to=$target_map partition=$target_partition dimension=$target_dimension"
   done <<< "$rejected_rows"
 }
 
@@ -2213,8 +2387,8 @@ scan_idle_servers() {
   local map_filter
 
   case "$scope" in
-    fresh-process) map_filter="and fs.map = 'CB_Overland_S_06'" ;;
-    standard) map_filter="and fs.map <> 'CB_Overland_S_06'" ;;
+    fresh-process) map_filter="and fs.map in ('CB_Overland_S_06', 'CB_Story_DestroyedZanovar', 'CB_Story_OrbitalMonitor')" ;;
+    standard) map_filter="and fs.map not in ('CB_Overland_S_06', 'CB_Story_DestroyedZanovar', 'CB_Story_OrbitalMonitor')" ;;
     *) echo "WARN invalid idle scan scope: $scope" >&2; return 1 ;;
   esac
 
@@ -2232,9 +2406,14 @@ scan_idle_servers() {
     left join lateral (
       select count(*) as effective_players
       from dune.player_state ps
+      left join dune.actors pawn on pawn.id = ps.player_pawn_id
       left join dune.farm_state pfs on pfs.server_id = ps.server_id
       where (
         ps.server_id = fs.server_id
+        or (
+          wp.partition_id is not null
+          and pawn.partition_id = wp.partition_id
+        )
         or (
           wp.partition_id is not null
           and ps.previous_server_partition_id = wp.partition_id
@@ -2377,8 +2556,12 @@ scan_live_player_partition_alignment() {
       coalesce(ps.previous_server_partition_id::text, '')
     from dune.player_state ps
     join dune.world_partition wp on wp.server_id = ps.server_id
+    join dune.actors pawn
+      on pawn.id = ps.player_pawn_id
+     and pawn.partition_id = wp.partition_id
     where ps.online_status <> 'Offline'
       and coalesce(ps.server_id, '') <> ''
+      and wp.map not in ('CB_Story_DestroyedZanovar', 'CB_Story_OrbitalMonitor')
       and (
         ps.previous_server_partition_id is distinct from wp.partition_id
         or ps.return_dimension_index is distinct from wp.dimension_index
@@ -2417,6 +2600,11 @@ import hashlib
 import re
 import sys
 
+story_return_refusal_pattern = re.compile(
+    r"Teleport not allowed, returning to WorldPartition \{ .*?"
+    r"Map = (CB_Story_(?:DestroyedZanovar|OrbitalMonitor)),"
+)
+
 classical_pattern = re.compile(
     r"Processing travel queue for ClassicalInstancing group ([A-Za-z0-9_]+) "
     r"\(servers: \[[^\]]*\], num: ([0-9]+)\)"
@@ -2427,8 +2615,15 @@ request_pattern = re.compile(
 )
 
 seen = set()
+rejected_story_demands = {}
 
 for line in sys.stdin:
+    refusal = story_return_refusal_pattern.search(line)
+    if refusal:
+        map_name = refusal.group(1)
+        rejected_story_demands[map_name] = rejected_story_demands.get(map_name, 0) + 1
+        continue
+
     match = classical_pattern.search(line)
     if match:
         map_name = match.group(1)
@@ -2436,10 +2631,14 @@ for line in sys.stdin:
         instancing_mode = "ClassicalInstancing"
         if map_name == "DeepDesert_1":
             continue
-        # Smugglers Run is handled from its original request below. Repeated
-        # queue summaries can arrive after the player is already connected and
-        # must not recreate a completed inbound-travel hold.
-        if map_name == "CB_Overland_S_06":
+        # Fresh-process maps are handled from their original request below.
+        # Repeated queue summaries can arrive after the player is already
+        # connected and must not recreate a completed inbound-travel hold.
+        if map_name in {
+            "CB_Overland_S_06",
+            "CB_Story_DestroyedZanovar",
+            "CB_Story_OrbitalMonitor",
+        }:
             continue
     else:
         match = request_pattern.search(line)
@@ -2448,6 +2647,15 @@ for line in sys.stdin:
         num = int(match.group(1))
         map_name = match.group(2)
         instancing_mode = match.group(3)
+
+        # A login refusal for a pawn left in either credits story map is
+        # immediately followed by a generic Director demand for that same
+        # map. It is return traffic, not legitimate inbound story demand.
+        # Starting capacity for it races the offline recovery and lets the
+        # stale story grant move the pawn back after recovery reached Hagga.
+        if rejected_story_demands.get(map_name, 0) > 0:
+            rejected_story_demands[map_name] -= 1
+            continue
 
     if num <= 0:
         continue
@@ -2474,6 +2682,9 @@ for line in sys.stdin:
 # allocator watching this queue; keep the Docker equivalent independent too.
 follow_director_travel_demand() {
   while true; do
+    # Recover exact credits-return refusals before considering the generic
+    # map demand emitted by the Director for the same login attempt.
+    scan_rejected_story_returns || echo "WARN story return scan failed; retrying"
     scan_travel_demand || echo "WARN travel demand scan failed; retrying"
     sleep "$DEMAND_INTERVAL"
   done
