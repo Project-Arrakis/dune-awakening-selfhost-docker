@@ -23,6 +23,13 @@ IMAGE = 'sha256:' + '1' * 64
 
 
 class TankTests(unittest.TestCase):
+    def test_build_diagnostics_do_not_pollute_resolved_image_stdout(self):
+        with patch.object(tanks.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)) as execute:
+            tanks.run('docker', 'build', 'fixture', diagnostics=True)
+            self.assertIs(execute.call_args.kwargs['stdout'], sys.stderr)
+            tanks.run('docker', 'image', 'inspect', IMAGE, capture=True)
+            self.assertEqual(execute.call_args.kwargs['stdout'], subprocess.PIPE)
+
     def test_interrupted_launch_recovers_saved_policy_without_restarting(self):
         for enabled in (False, True):
             with tempfile.TemporaryDirectory() as directory:

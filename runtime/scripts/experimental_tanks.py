@@ -11,6 +11,7 @@ import fcntl
 import re
 import time
 import signal
+import sys
 from dune_psql import query_tsv
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -97,8 +98,9 @@ def save(state):
             os.unlink(name)
 
 
-def run(*args, capture=False):
-    return subprocess.run(args, check=True, text=True, stdout=subprocess.PIPE if capture else None).stdout
+def run(*args, capture=False, diagnostics=False):
+    return subprocess.run(args, check=True, text=True,
+                          stdout=subprocess.PIPE if capture else sys.stderr if diagnostics else None).stdout
 
 
 def hagga_is_ready(partition, name):
@@ -293,7 +295,7 @@ def build(tag):
         shutil.copytree(assets, context / 'assets')
         shutil.copy(ROOT / 'patches/experimental-tanks/2134304/Dockerfile', context)
         run('docker', 'build', '--pull=false', '--network=none', '--build-arg',
-            'BASE_IMAGE=' + base_tag, '-t', 'redblink-dune-tanks:2134304-r5.8', str(context))
+            'BASE_IMAGE=' + base_tag, '-t', 'redblink-dune-tanks:2134304-r5.8', str(context), diagnostics=True)
     image_id = run('docker', 'image', 'inspect', '--format', '{{.Id}}', 'redblink-dune-tanks:2134304-r5.8', capture=True).strip()
     actual = run('docker', 'run', '--rm', '--network=none', '--entrypoint', 'sha256sum', image_id, BINARY, capture=True).split()[0]
     if actual != spec['patchedSha256']:
