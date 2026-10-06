@@ -9,6 +9,35 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
+test("fresh status readers never receive cached Ready and share the current refresh", async () => {
+  let now = 1000;
+  const cache = createReadCommandCache({ ttlMs: 100, staleMs: 500, clock: () => now });
+  await cache.run("readiness", async () => "Ready");
+  for (const time of [1050, 1200]) {
+    now = time;
+    const gate = deferred();
+    let runs = 0;
+    const work = () => { runs += 1; return gate.promise; };
+    const first = cache.run("readiness", work, { fresh: true });
+    const second = cache.run("readiness", work, { fresh: true });
+    gate.resolve("Loading");
+    assert.deepEqual(await Promise.all([first, second]), ["Loading", "Loading"]);
+    assert.equal(runs, 1);
+  }
+});
+
+test("fresh reads wait for an existing background refresh instead of returning stale Ready", async () => {
+  let now = 1000;
+  const cache = createReadCommandCache({ ttlMs: 100, staleMs: 500, clock: () => now });
+  await cache.run("readiness", async () => "Ready");
+  now = 1100;
+  const gate = deferred();
+  assert.equal(await cache.run("readiness", () => gate.promise), "Ready");
+  const current = cache.run("readiness", () => { throw new Error("must share refresh"); }, { fresh: true });
+  gate.resolve("Loading");
+  assert.equal(await current, "Loading");
+});
+
 test("concurrent readers share one in-flight command and its result", async () => {
   const gate = deferred();
   const cache = createReadCommandCache();

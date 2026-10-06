@@ -17,7 +17,7 @@ import { PlayerSummary } from "./PlayerSummary";
 import { PlayerVehiclesTab } from "./PlayerVehiclesTab";
 import { SpecializationTab } from "./SpecializationTab";
 import { journeyActionsAvailable } from "./journeySafety";
-import { adminTaskFailureDetail, friendlyCraftingSource, friendlyInlineError, friendlyVehicleName, friendlyVehicleTemplateName, parseSkillModuleRows, parseVehicleCatalog, playerAdmin_bulkItemFailure, playerAdmin_friendlyFailure, playerAdmin_taskFailureMessage, playerAssignedFaction, splitInventoryByGroup, titleCaseWords, vehicleSpawnDistanceLabel, vehicleSpawnOffsetUnits } from "./playerAdminUtils";
+import { adminTaskFailureDetail, friendlyCraftingSource, friendlyInlineError, friendlyVehicleName, friendlyVehicleTemplateName as vehicleTemplateLabel, parseSkillModuleRows, parseVehicleCatalog, playerAdmin_bulkItemFailure, playerAdmin_friendlyFailure, playerAdmin_taskFailureMessage, playerAssignedFaction, splitInventoryByGroup, titleCaseWords, vehicleSpawnDistanceLabel, vehicleSpawnOffsetUnits } from "./playerAdminUtils";
 import { BlueprintsPanel } from "../blueprints/BlueprintsPanel";
 import { BaseBackupsView } from "../bases/BaseBackupsView";
 import { BuildingUnlocksTab } from "./BuildingUnlocksTab";
@@ -162,6 +162,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
   const [playerAdmin_vehicleId, playerAdmin_setVehicleId] = useState("");
   const [playerAdmin_vehicleTemplate, playerAdmin_setVehicleTemplate] = useState("");
   const [playerAdmin_vehicleCatalog, playerAdmin_setVehicleCatalog] = useState<Record<string, string[]>>({});
+  const friendlyVehicleTemplateName = (value: string) => vehicleTemplateLabel(value, playerAdmin_vehicleId);
   const [playerAdmin_vehicleDecayThreshold, playerAdmin_setVehicleDecayThreshold] = useState("50");
   const [playerAdmin_characterRecovery, playerAdmin_setCharacterRecovery] = useState<CharacterRecoveryInspection | null>(null);
   const [playerAdmin_characterRecoveryLoading, playerAdmin_setCharacterRecoveryLoading] = useState(false);
@@ -1342,7 +1343,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
           };
         }, `${playerName}'s vehicle durability was repaired.`, { actionType: "Repair Vehicle Decay", target: playerName, amount: `${threshold}%` });
       }}>Repair Vehicles</button><InlineActionResult result={playerAdmin_actionResult} resultKey="repairVehicleDecay" /></div></div><div className="playerAdmin_section playerAdmin_dangerSection"><h5>Danger Zone</h5><div className="playerAdmin_buttonRow"><button className="danger" disabled={!actionPlayerId || playerAdmin_actionResult?.pending} onClick={async () => {
-        if (!(await confirmAction(`Repair ${playerName}'s login queue? Use this only when the player is stuck on connection errors and is not actually in-game.`, {
+        if (!(await confirmAction(`Repair ${playerName}'s login queue? Ask the player to close the game first. Active queues will not be deleted. Use this only for a player stuck on connection errors.`, {
           title: "Repair Login Queue",
           confirmLabel: "Repair Queue",
           danger: true,

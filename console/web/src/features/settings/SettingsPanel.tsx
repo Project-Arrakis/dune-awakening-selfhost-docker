@@ -9,6 +9,7 @@ import { restartConsoleAndReload } from "../../lib/consoleRestart";
 import { DiscordBotSection } from "./DiscordBotSection";
 import { firstDefined, formatUiSentence, friendlyColumnName } from "../../lib/display";
 import { ApiKeysSection } from "./ApiKeysSection";
+import { ExperimentalFeatures } from "./ExperimentalFeatures";
 
 // Authenticator apps display codes as "123 456" and the server strips whitespace
 // (auth/totp.js) precisely so a paste of that form validates. Do not add
@@ -942,7 +943,10 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
           duplicate render, since this branch already pins that component
           once at the top of settings-section-stack (see the UAT comment
           above `<RuntimeSettingsSummary settings={settings} />` near line
-          863), a 2026-09-11 UAT decision upstream doesn't have. */}
+          863), a 2026-09-11 UAT decision upstream doesn't have. The
+          <ExperimentalFeatures> render that rides in the same upstream hunk
+          is kept. */}
+      <ExperimentalFeatures confirmAction={confirmAction} />
       <div className={`playerAdmin_toggle settings-web-port-toggle ${webPortOpen ? "open" : ""}`}>
         <button className="playerAdmin_toggleHeader" aria-label={webPortOpen ? "Collapse Web Console Port" : "Expand Web Console Port"} onClick={() => setWebPortOpen(!webPortOpen)}>{webPortOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Web Console Port</span></button>
         {webPortOpen && <div className="playerAdmin_toggleBody">

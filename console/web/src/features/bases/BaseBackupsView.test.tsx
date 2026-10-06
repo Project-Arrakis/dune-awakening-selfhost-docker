@@ -163,7 +163,7 @@ describe("BaseBackupsView", () => {
 
   it("shows an import timeout with its step and keeps it on screen", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    vi.mocked(baseBackupsApi.importFile).mockRejectedValue(new ApiError(timeoutBody("import").error, 504, timeoutBody("import")));
+    vi.mocked(baseBackupsApi.importFile).mockRejectedValue(new ApiError(timeoutBody("import").error, 503, timeoutBody("import")));
     render(<BaseBackupsView onError={vi.fn()} confirmAction={vi.fn().mockResolvedValue(true)} />);
     await screen.findByText("Test Base");
     chooseFile();
@@ -183,7 +183,7 @@ describe("BaseBackupsView", () => {
   });
 
   it("shows an export timeout instead of a generic download failure", async () => {
-    vi.mocked(baseBackupsApi.download).mockRejectedValue(new ApiError(timeoutBody("export").error, 504, timeoutBody("export")));
+    vi.mocked(baseBackupsApi.download).mockRejectedValue(new ApiError(timeoutBody("export").error, 503, timeoutBody("export")));
     render(<BaseBackupsView onError={vi.fn()} confirmAction={vi.fn()} />);
     fireEvent.click(await screen.findByRole("button", { name: "Export Test Base" }));
     expect(await screen.findByText("Export Timed Out")).toBeInTheDocument();

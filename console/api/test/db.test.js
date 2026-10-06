@@ -1,4 +1,5 @@
 import test, { beforeEach } from "node:test";
+import { supportsStoredVehicleDelete } from "../src/duneDb.js";
 import { deleteAllVehicleStorageItems, deleteMultipleVehicleStorageItems, deleteVehicleStorageItem, isVehicleStorageModule, listVehicles, portalVehicleDisplayName, vehicleStorage, vehicleStorageDeleteSafety } from "../src/duneDb.js";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -2351,6 +2352,27 @@ test("listVehicles labels a vehicle with its nearest-marker sub-region", async (
   assert.equal(result.rows[0].region, "Hagga Rift");
 });
 
+test("listVehicles reports every vehicle capability as off when it is unsupported", async () => {
+  const missingTable = {
+    query: async (text, values = []) => (text.includes("to_regclass")
+      ? { rows: [{ exists: !String(values[0] || "").includes("vehicle_modules") }] }
+      : { rows: [] })
+  };
+  const failing = {
+    query: async (text) => {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("module_durability")) throw new Error("boom");
+      return { rows: [] };
+    }
+  };
+  for (const db of [missingTable, failing]) {
+    const { capabilities } = await listVehicles(db, {});
+    for (const key of ["vehicles", "vehiclePermissions", "vehicleDelete", "vehicleDeleteQueue", "vehicleStorage", "vehicleStoredDelete"]) {
+      assert.equal(capabilities[key], false, `${key} must be an explicit false`);
+    }
+  }
+});
+
 test("listVehicles returns unsupported when a required table is missing", async () => {
   const db = {
     query: async (text, values = []) => {
@@ -2403,6 +2425,165 @@ test("listVehicles parameterizes the search term", async () => {
   assert.ok(mainQuery.values.includes(injection));
   assert.ok(!mainQuery.text.includes(injection));
   assert.match(mainQuery.text, /ilike \$\d/);
+});
+
+test("listVehicles applies the status filter from a fixed allowlist", async () => {
+  async function mainQueryFor(options) {
+    const calls = [];
+    const db = {
+      query: async (text, values = []) => {
+        calls.push({ text, values });
+        if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+        if (text.includes("total_vehicles")) return { rows: [{ total_vehicles: 0 }] };
+        return { rows: [] };
+      }
+    };
+    await listVehicles(db, options);
+    return calls.find((call) => call.text.includes("module_durability"));
+  }
+
+  // Travel always counts as owned -- a vehicle in transit has a player attached.
+  const owned = await mainQueryFor({ status: "owned" });
+  assert.ok(owned.text.includes(
+    "(vc.lifecycle_state = 'Travel' or (coalesce(own.owner, '') <> '' and vc.lifecycle_state not in ('VehicleBackup', 'VehicleRecovery')))"));
+
+  const unowned = await mainQueryFor({ status: "unowned" });
+  assert.ok(unowned.text.includes(
+    "(vc.lifecycle_state <> 'Travel' and coalesce(own.owner, '') = '' and vc.lifecycle_state not in ('VehicleBackup', 'VehicleRecovery'))"));
+
+  const recovery = await mainQueryFor({ status: "recovery" });
+  assert.match(recovery.text, /where vc\.lifecycle_state = 'VehicleRecovery'/);
+  const backup = await mainQueryFor({ status: "backup" });
+  assert.match(backup.text, /where vc\.lifecycle_state = 'VehicleBackup'/);
+
+  // "all", an omitted status, and an unknown value add no status predicate --
+  // and the unknown value is never interpolated or bound.
+  const injection = "owned' or 1=1 --";
+  for (const options of [{ status: "all" }, {}, { status: injection }]) {
+    const query = await mainQueryFor(options);
+    assert.doesNotMatch(query.text, /vc\.lifecycle_state (=|<>|not in)/);
+    assert.doesNotMatch(query.text, /coalesce\(own\.owner, ''\) (<>|=) ''/);
+    assert.ok(!query.text.includes(injection));
+    assert.ok(!query.values.includes(injection));
+  }
+
+  // Combines with the search term rather than replacing it.
+  const combined = await mainQueryFor({ status: "backup", q: "bike" });
+  assert.match(combined.text, /ilike \$1[\s\S]*and vc\.lifecycle_state = 'VehicleBackup'/);
+});
+
+test("listVehicles resolves a stored vehicle's owner from the recovery and backup records", async () => {
+  async function mainQueryFor(columnsByTable) {
+    const calls = [];
+    const db = {
+      query: async (text, values = []) => {
+        calls.push({ text, values });
+        if (text.includes("information_schema.columns")) {
+          return { rows: (columnsByTable[values[1]] || []).map((column_name) => ({ column_name })) };
+        }
+        if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+        if (text.includes("total_vehicles")) return { rows: [{ total_vehicles: 0 }] };
+        return { rows: [] };
+      }
+    };
+    await listVehicles(db, {});
+    return calls.find((call) => call.text.includes("module_durability")).text;
+  }
+  const recovered = /from dune\.recovered_vehicles sv\s+join dune\.player_state ps on ps\.id=sv\.character_id\s+where sv\.vehicle_id=vc\.id/;
+  const backedUp = /from dune\.backup_vehicles sv\s+join dune\.player_state ps on ps\.id=sv\.character_id/;
+
+  const full = await mainQueryFor({
+    player_state: ["id", "account_id", "character_name"],
+    recovered_vehicles: ["vehicle_id", "character_id"],
+    backup_vehicles: ["vehicle_id", "character_id"]
+  });
+  assert.match(full, recovered);
+  assert.match(full, backedUp);
+
+  // Every relation the fallback names is probed: a schema missing any piece
+  // omits that fallback instead of failing the whole list.
+  const noRecoveryOwner = await mainQueryFor({
+    player_state: ["id"], recovered_vehicles: ["vehicle_id"], backup_vehicles: ["vehicle_id", "character_id"]
+  });
+  assert.doesNotMatch(noRecoveryOwner, /dune\.recovered_vehicles/);
+  assert.match(noRecoveryOwner, backedUp);
+
+  const noPlayerStateId = await mainQueryFor({
+    player_state: ["account_id"], recovered_vehicles: ["vehicle_id", "character_id"], backup_vehicles: ["vehicle_id", "character_id"]
+  });
+  assert.doesNotMatch(noPlayerStateId, /dune\.(recovered|backup)_vehicles/);
+
+  assert.doesNotMatch(await mainQueryFor({}), /dune\.(recovered|backup)_vehicles/);
+});
+
+// Every relation and column the stored delete reads has to be probed, or the
+// panel offers a button that fails on click.
+const STORED_DELETE_COLUMNS = {
+  actors: ["id", "state", "owner_account_id"],
+  recovered_vehicles: ["vehicle_id", "character_id", "time_stored", "reason"],
+  backup_vehicles: ["vehicle_id", "character_id"],
+  player_state: ["id", "account_id", "character_name", "online_status"]
+};
+
+function storedDeleteDb(columnsByTable, { functions = true } = {}) {
+  const calls = [];
+  return {
+    calls,
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("information_schema.columns")) {
+        return { rows: (columnsByTable[values[1]] || []).map((column_name) => ({ column_name })) };
+      }
+      if (text.includes("to_regprocedure")) return { rows: [{ exists: functions }] };
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("total_vehicles")) return { rows: [{ total_vehicles: 0 }] };
+      return { rows: [] };
+    }
+  };
+}
+
+test("supportsStoredVehicleDelete needs every column the stored delete reads", async () => {
+  assert.equal(await supportsStoredVehicleDelete(storedDeleteDb(STORED_DELETE_COLUMNS)), true);
+
+  for (const [table, column] of [
+    ["actors", "state"],
+    ["recovered_vehicles", "vehicle_id"], ["recovered_vehicles", "character_id"],
+    ["recovered_vehicles", "time_stored"], ["recovered_vehicles", "reason"],
+    ["player_state", "id"], ["player_state", "account_id"],
+    ["player_state", "character_name"], ["player_state", "online_status"]
+  ]) {
+    const columns = { ...STORED_DELETE_COLUMNS, [table]: STORED_DELETE_COLUMNS[table].filter((name) => name !== column) };
+    assert.equal(await supportsStoredVehicleDelete(storedDeleteDb(columns)), false, `must be unsupported without ${table}.${column}`);
+  }
+
+  // No point offering it where the vehicle delete itself is unavailable.
+  assert.equal(await supportsStoredVehicleDelete(storedDeleteDb(STORED_DELETE_COLUMNS, { functions: false })), false);
+  assert.equal(await supportsStoredVehicleDelete(storedDeleteDb(STORED_DELETE_COLUMNS), { vehicleDelete: false }), false);
+});
+
+test("listVehicles reports vehicleStoredDelete and selects when a vehicle was stored", async () => {
+  const supported = storedDeleteDb(STORED_DELETE_COLUMNS);
+  const result = await listVehicles(supported, {});
+  assert.equal(result.capabilities.vehicleDelete, true);
+  assert.equal(result.capabilities.vehicleStoredDelete, true);
+  const query = supported.calls.find((call) => call.text.includes("module_durability")).text;
+  assert.match(query, /select sv\.time_stored from dune\.recovered_vehicles sv where sv\.vehicle_id=vc\.id limit 1\) as stored_at/);
+  assert.match(query, /select sv\.reason::text from dune\.recovered_vehicles sv where sv\.vehicle_id=vc\.id limit 1\) as stored_reason/);
+
+  // Without the recovery columns the list still works: null placeholders, and
+  // the capability is off so the row keeps its disabled Delete.
+  const older = storedDeleteDb({ ...STORED_DELETE_COLUMNS, recovered_vehicles: ["vehicle_id"] });
+  const olderResult = await listVehicles(older, {});
+  assert.equal(olderResult.capabilities.vehicles, true);
+  assert.equal(olderResult.capabilities.vehicleStoredDelete, false);
+  const olderQuery = older.calls.find((call) => call.text.includes("module_durability")).text;
+  assert.match(olderQuery, /null::timestamptz as stored_at, null::text as stored_reason/);
+  assert.doesNotMatch(olderQuery, /sv\.time_stored/);
+
+  // Vehicle delete itself unsupported: the stored delete is never offered.
+  const noDelete = await listVehicles(storedDeleteDb(STORED_DELETE_COLUMNS, { functions: false }), {});
+  assert.equal(noDelete.capabilities.vehicleDelete, false);
+  assert.equal(noDelete.capabilities.vehicleStoredDelete, false);
 });
 
 test("vehicle pages and player portal share conservative health calculations", async () => {
@@ -10111,11 +10292,12 @@ test("deleteVehicleStorageItem refuses to pick when a vehicle backs more than on
 });
 
 test("deleteVehicleStorageItem refuses every blocked vehicle state", async () => {
-  for (const state of ["Travel", "VehicleBackup", "VehicleRecovery"]) {
+  // Worded with the labels the Vehicles list shows, not the raw enum value.
+  for (const [state, phrase] of [["Travel", "In Transit"], ["VehicleBackup", "in Vehicle Backup"], ["VehicleRecovery", "Stored for Recovery"]]) {
     const db = fakeVehicleDeleteDb([], { items: [CARGO_ITEM], actorState: state });
     await assert.rejects(
       () => deleteVehicleStorageItem(db, 2008, "501"),
-      new RegExp(`currently ${state} and its cargo cannot be changed`),
+      new RegExp(`is ${phrase} and its cargo cannot be changed`),
       `${state} should refuse`
     );
   }
@@ -10126,7 +10308,7 @@ test("deleteVehicleStorageItem reads patch 1.5 inline actor lifecycle state", as
   const db = fakeVehicleDeleteDb(calls, { items: [CARGO_ITEM], actorState: "VehicleRecovery", inlineActorState: true });
   await assert.rejects(
     () => deleteVehicleStorageItem(db, 2008, "501"),
-    /currently VehicleRecovery and its cargo cannot be changed/
+    /is Stored for Recovery and its cargo cannot be changed/
   );
   assert.equal(calls.some((call) => call.text.includes("select state::text as state from dune.actors")), true);
   assert.equal(calls.some((call) => call.text.includes("from dune.actor_state")), false);
@@ -10289,7 +10471,7 @@ test("deleteMultipleVehicleStorageItems rejects an empty list and an oversized b
 
 test("deleteMultipleVehicleStorageItems refuses a blocked vehicle state", async () => {
   const db = fakeVehicleDeleteDb([], { items: [{ item_id: "501", template_id: "X", stack_size: 1 }], actorState: "Travel" });
-  await assert.rejects(() => deleteMultipleVehicleStorageItems(db, 2008, ["501"]), /currently Travel/);
+  await assert.rejects(() => deleteMultipleVehicleStorageItems(db, 2008, ["501"]), /is In Transit and its cargo/);
 });
 
 test("deleteAllVehicleStorageItems reads the list fresh inside the deleting transaction", async () => {
@@ -10318,7 +10500,7 @@ test("deleteAllVehicleStorageItems reports an already-empty hold distinctly", as
 
 test("deleteAllVehicleStorageItems refuses a blocked vehicle state", async () => {
   const db = fakeVehicleDeleteDb([], { items: [{ item_id: "501", template_id: "X", stack_size: 1 }], actorState: "VehicleBackup" });
-  await assert.rejects(() => deleteAllVehicleStorageItems(db, 2008), /currently VehicleBackup/);
+  await assert.rejects(() => deleteAllVehicleStorageItems(db, 2008), /is in Vehicle Backup and its cargo/);
 });
 
 test("vehicleStorageDeleteSafety reports the blocking state and withholds deletion", async () => {
@@ -10326,7 +10508,7 @@ test("vehicleStorageDeleteSafety reports the blocking state and withholds deleti
   assert.equal(blocked.safe, false);
   assert.equal(blocked.known, true);
   assert.equal(blocked.state, "VehicleRecovery");
-  assert.match(blocked.reason, /currently VehicleRecovery/);
+  assert.match(blocked.reason, /is Stored for Recovery and its cargo/);
 
   const ok = await vehicleStorageDeleteSafety(fakeVehicleDeleteDb([], { actorState: null }), 2008);
   assert.equal(ok.safe, true);

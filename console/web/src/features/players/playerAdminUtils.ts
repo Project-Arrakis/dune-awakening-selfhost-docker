@@ -121,14 +121,25 @@ export function friendlyVehicleName(value: string) {
     OrnithopterTransport: "Transport Ornithopter",
     Sandbike: "Sandbike",
     Sandcrawler: "Sandcrawler",
-    Tank: "Tank",
+    Tank: "Regis Tank",
     TreadWheel: "Treadwheel"
   };
   const raw = String(value || "").trim();
   return labels[raw] || titleCaseWords(raw.replace(/([a-z])([A-Z])/g, "$1 $2"));
 }
 
-export function friendlyVehicleTemplateName(value: string) {
+export function friendlyVehicleTemplateName(value: string, vehicleId?: string) {
+  if (vehicleId === "Tank") {
+    const presets: Record<string, string> = {
+      T0: "Tier 6 Booster Dart",
+      T6_CombatDart: "Tier 6 Booster Rocket",
+      T6_CombatFire: "Tier 6 Booster Flame",
+      T6_DartInventory: "Tier 6 Inventory Dart",
+      T6_RocketInventory: "Tier 6 Inventory Rocket",
+      T6_FireInventory: "Tier 6 Inventory Flame"
+    };
+    if (presets[value]) return presets[value];
+  }
   const raw = String(value || "").trim();
   if (!raw) return "Manual Template";
   if (raw === "Container") return "Container";

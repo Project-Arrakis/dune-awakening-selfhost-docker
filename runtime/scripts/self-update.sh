@@ -677,6 +677,7 @@ local_state_paths() {
   cat <<'EOF'
 .env
 runtime/generated/battlegroup.env
+runtime/generated/experimental-tanks.json
 runtime/generated/db-backup.env
 runtime/generated/director-character-transfer.ini
 runtime/generated/director-capacity.ini
@@ -802,6 +803,7 @@ backup_current_stack() {
 remove_backed_up_project_files() {
   local backup_dir="$1"
   local manifest path relative target parent unsafe_path blocked_path
+  local -a removal_batch=()
 
   [ -s "$backup_dir/project-files.tgz" ] || return 0
   unsafe_path=""
@@ -823,7 +825,7 @@ remove_backed_up_project_files() {
     esac
     target="$ROOT_DIR/$relative"
     if [ -f "$target" ] || [ -L "$target" ]; then
-      parent="$(dirname "$target")"
+      parent="${target%/*}"
       if [ ! -w "$parent" ] || [ ! -x "$parent" ]; then
         blocked_path="$target"
         break
@@ -852,9 +854,16 @@ remove_backed_up_project_files() {
     [ -n "$relative" ] || continue
     target="$ROOT_DIR/$relative"
     if [ -f "$target" ] || [ -L "$target" ]; then
-      rm -f "$target"
+      removal_batch+=("$target")
+      if [ "${#removal_batch[@]}" -ge 256 ]; then
+        rm -f -- "${removal_batch[@]}"
+        removal_batch=()
+      fi
     fi
   done < "$manifest"
+  if [ "${#removal_batch[@]}" -gt 0 ]; then
+    rm -f -- "${removal_batch[@]}"
+  fi
 
   rm -f "$manifest"
 }

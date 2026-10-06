@@ -106,7 +106,7 @@ container_logs_have_udp_listener() {
   [ -n "$container" ] || return 1
   is_running "$container" || return 1
 
-  docker_timeout docker logs --tail "$log_tail_lines" "$container" 2>&1 \
+  container_logs "$container" \
     | grep -Eq "listening for (Clients|Servers) on [0-9.]+:${port}\\b"
 }
 
@@ -129,7 +129,12 @@ check_udp() {
 
 container_logs() {
   local container="$1"
-  docker_timeout docker logs --tail "$log_tail_lines" "$container" 2>&1 || true
+  local started_at
+  # Docker retains previous process logs after an automatic restart. Only the
+  # current attempt can establish listeners, readiness or a startup failure.
+  started_at="$(docker_timeout docker inspect -f '{{.State.StartedAt}}' "$container" 2>/dev/null)" || return 0
+  [ -n "$started_at" ] || return 0
+  docker_timeout docker logs --since "$started_at" --tail "$log_tail_lines" "$container" 2>&1 || true
 }
 
 container_partition_id() {
@@ -375,7 +380,7 @@ director_fls_ready() {
     return 1
   fi
 
-  logs="$(docker_timeout docker logs --tail 3000 dune-director 2>&1 || true)"
+  logs="$(container_logs dune-director)"
 
   director_fls_logs_ready "$logs"
 }

@@ -162,6 +162,8 @@ test("long-running server tasks get an extended timeout", () => {
   const config = { commandTimeoutMs: 5000 };
 
   assert.equal(taskTimeoutMs(config, "status"), 5000);
+  assert.equal(taskTimeoutMs(config, "adminSpawnVehicle"), 5 * 60 * 1000);
+  assert.equal(taskTimeoutMs({ commandTimeoutMs: 600000 }, "adminSpawnVehicle"), 600000);
   // Depot downloads get their own, longer floor: a 30-minute kill lands
   // mid-SteamCMD and needs fix-steamcmd afterward.
   assert.equal(taskTimeoutMs(config, "updateInstallAssets"), 4 * 60 * 60 * 1000);

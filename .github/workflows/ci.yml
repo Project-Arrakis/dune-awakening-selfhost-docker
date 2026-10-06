@@ -114,6 +114,14 @@ jobs:
         run: bash tests/ready-configured-ports-test.sh
       - name: Test stable farm readiness gating
         run: bash tests/farm-readiness-test.sh
+      - name: Test current-start readiness and login queue safety
+        run: |
+          bash tests/ready-current-start-test.sh
+          python3 tests/test_admin_login_queue.py
+      - name: Test experimental Tank image policy and spawn safety
+        run: |
+          python3 tests/test_experimental_tanks.py
+          python3 tests/test_admin_spawn_freshness.py
       - name: Test database updater role restoration
         run: bash tests/update-db-role-privilege-test.sh
       - name: Test installer shell portability

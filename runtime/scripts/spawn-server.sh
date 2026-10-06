@@ -45,7 +45,6 @@ source runtime/scripts/image-tags.sh
 source runtime/scripts/sietch-login-password-args.sh
 source runtime/scripts/fake-k8s-serviceaccount.sh
 
-IMAGE="$(resolve_game_server_image)"
 
 TOKEN_FILE="runtime/secrets/funcom-token.txt"
 RMQ_SECRET_FILE="runtime/secrets/rmq-http-token-auth-secret.txt"
@@ -371,6 +370,10 @@ if [ -z "$ROW" ]; then
 fi
 
 IFS='|' read -r PARTITION_ID MAP_NAME DIMENSION_INDEX LABEL ASSIGNED_SERVER <<< "$ROW"
+if [ -f runtime/generated/experimental-tanks.json ]; then
+  python3 runtime/scripts/experimental_tanks.py launch-guard "$MAP_NAME"
+fi
+IMAGE="$(resolve_game_server_image "$MAP_NAME")"
 
 mkdir -p runtime/generated
 PARTITION_SPAWN_LOCK_FILE="runtime/generated/spawn-partition-${PARTITION_ID}.lock"

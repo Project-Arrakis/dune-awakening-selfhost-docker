@@ -180,12 +180,34 @@ farm_noncore_db_ready_age_sufficient() {
   [ "$age" -ge "$farm_ready_db_fallback_min_age_seconds" ]
 }
 
+farm_partition_has_completed_travel() {
+  local partition_id="$1" target server_id map_name
+  target="$(psql_app_value "select server_id || '|' || map from dune.world_partition where partition_id = ${partition_id};" 2>/dev/null | tr -d '\r')" || return 1
+  IFS='|' read -r server_id map_name <<< "$target"
+  [ -n "$server_id" ] && [ -n "$map_name" ] || return 1
+  python3 -c '
+import re, sys
+partition, server, destination = sys.argv[1:]
+arrivals = set()
+for line in sys.stdin.read().splitlines():
+    if "Handling travel completion : TravelCompletion {" in line:
+        fields = dict(re.findall(r"(FlsId|FlowId|MapName|PartitionId|ServerID) = ([^,}\s]+)", line))
+        if fields.get("PartitionId") == partition and fields.get("ServerID") == server and fields.get("MapName") == destination:
+            if fields.get("FlowId") and fields.get("FlsId"):
+                arrivals.add((fields["FlowId"], fields["FlsId"]))
+    match = re.search(r"Handling travel completion for ([^: ]+): ([^ ]+) to ([^ ]+) \(instancingMode=", line)
+    if match and match[3] == destination and (match[1], match[2]) in arrivals:
+        sys.exit(0)
+sys.exit(1)
+' "$partition_id" "$server_id" "$map_name"
+}
+
 farm_partition_has_stable_director_reports() {
   local partition_id="$1"
   local required_reports="${2:-1}"
   local container="${3:-}"
   local container_id="" director_id="" container_started_at=""
-  local reports report_count
+  local reports report_count director_logs
 
   [ "$required_reports" -gt 0 ] 2>/dev/null || return 0
 
@@ -200,15 +222,26 @@ farm_partition_has_stable_director_reports() {
     fi
   fi
 
-  reports="$(
-    {
+  director_logs="$(
       if [ -n "$container_started_at" ]; then
         farm_docker_timeout docker logs --since "$container_started_at" \
           --tail "$farm_ready_director_tail_lines" dune-director 2>&1
       else
         farm_docker_timeout docker logs --tail "$farm_ready_director_tail_lines" dune-director 2>&1
       fi
-    } \
+  )" || return 1
+
+  # A completed arrival proves this exact current-generation server accepts
+  # players. Do not keep showing Loading while waiting for extra heartbeats.
+  # The caller still requires ready/alive DB state; never trust another server,
+  # a request alone, or a completion from before this container was created.
+  if [ -n "$container_started_at" ] && [[ "$director_logs" == *"Handling travel completion : TravelCompletion {"* ]] \
+    && printf '%s\n' "$director_logs" | farm_partition_has_completed_travel "$partition_id"; then
+    farm_cache_stable_reports "$container" "$partition_id" "$container_id" "$director_id" || true
+    return 0
+  fi
+
+  reports="$(printf '%s\n' "$director_logs" \
       | grep -F "\"partitionId\":${partition_id}," \
       | sed -n 's/.*"ready":\(true\|false\).*/\1/p' \
       | tail -n "$required_reports"

@@ -1907,7 +1907,8 @@ async function handleApi(req, res) {
     page: url.searchParams.get("page") || 0,
     pageSize: url.searchParams.get("pageSize") || 50,
     sortColumn: url.searchParams.get("sortColumn") || "name",
-    sortDirection: url.searchParams.get("sortDirection") || "asc"
+    sortDirection: url.searchParams.get("sortDirection") || "asc",
+    status: url.searchParams.get("status") || "all"
   }));
   if (path === "/api/vehicles/pending-deletes") return pendingVehicleDeletesRoute(res);
   if (path === "/api/vehicles/permission-candidates") return vehiclePermissionCandidatesRoute(res, url);
@@ -1919,6 +1920,7 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/vehicles\/[^/]+\/storage\/items$/) && req.method === "DELETE") return vehicleStorageItemsDeleteRoute(req, res, path);
   if (path.match(/^\/api\/vehicles\/[^/]+\/storage\/all-items$/) && req.method === "DELETE") return vehicleStorageAllItemsDeleteRoute(req, res, path);
   if (path.match(/^\/api\/vehicles\/[^/]+\/queued-delete$/) && req.method === "DELETE") return vehicleCancelQueuedDeleteRoute(req, res, path);
+  if (path.match(/^\/api\/vehicles\/[^/]+\/stored$/) && req.method === "DELETE") return vehicleStoredDeleteRoute(req, res, path);
   if (path.match(/^\/api\/vehicles\/[^/]+$/) && req.method === "DELETE") return vehicleDeleteRoute(req, res, path);
   if (path === "/api/admin/items/catalog") return json(res, 200, { rows: listCatalogItems(config.repoRoot, { q: url.searchParams.get("q") || "", limit: url.searchParams.get("limit") || 500 }) });
   if (path === "/api/admin/items/search") return commandJson(res, "adminItemSearch", { q: url.searchParams.get("q") || "" });
@@ -2933,6 +2935,14 @@ async function handleApi(req, res) {
   }
 
   if (path === "/api/settings/server-startup" && req.method === "POST") return serverStartupSettingsRoute(req, res);
+  if (path === "/api/settings/experimental-tanks" && req.method === "GET") {
+    const result = await runDune(config, buildDuneArgs("experimentalTanksStatus"));
+    if (result.code !== 0) return json(res, 503, { error: result.stderr || "Experimental Tank settings could not be read." });
+    return json(res, 200, JSON.parse(result.stdout));
+  }
+  if (path === "/api/settings/experimental-tanks" && req.method === "POST") {
+    return task(req, res, "settings", "experimentalTanksApply", await readJson(req));
+  }
   if (path === "/api/settings" && req.method === "POST") return writeConfig(req, res);
   if (path === "/api/settings") return json(res, 200, await setupState());
 
@@ -3792,7 +3802,9 @@ async function mapStatusRoute(res, url) {
         ["services", "servers"],
         ["readiness", "readiness"],
         ["autoscaler", "autoscalerStatus"]
-      ].map(async ([key, operation]) => [key, await safeCommand(operation, {}, statusCommandCache)])));
+      ].map(async ([key, operation]) => [key, await safeCommand(operation, {}, statusCommandCache, {
+        fresh: key === "services" || key === "readiness"
+      })])));
   return json(res, 200, buildMapStatusResponse(results, { includeRaw: includeRawStatus(url) }));
 }
 
@@ -4155,10 +4167,10 @@ async function marketItemsSaveRoute(req, res) {
   }
 }
 
-async function safeCommand(operation, payload = {}, cache = readCommandCache) {
+async function safeCommand(operation, payload = {}, cache = readCommandCache, cacheOptions = {}) {
   try {
     const args = buildDuneArgs(operation, payload);
-    const result = await cache.run(JSON.stringify(args), () => runDune(config, args));
+    const result = await cache.run(JSON.stringify(args), () => runDune(config, args), cacheOptions);
     return { operation, stdout: result.stdout, stderr: result.stderr, exitCode: result.code };
   } catch (error) {
     return { operation, stdout: redact(error.stdout || ""), stderr: redact(error.stderr || error?.message || "Unexpected error."), exitCode: error.code || 1 };
@@ -6854,8 +6866,8 @@ function vehicleDeletePending(vehicleId) {
 
 const VEHICLE_DELETE_PENDING_MESSAGE = "This vehicle has a pending delete queued and cannot be modified. Cancel the delete first.";
 
-// Mirrors baseDeleteRoute. No baseBackedUp equivalent to check -- a vehicle
-// has no "picked up" state.
+// Mirrors baseDeleteRoute. No baseBackedUp check: Vehicle Backup and Stored for
+// Recovery are lifecycle states deleteVehicleCompletely refuses itself.
 async function vehicleDeleteRoute(req, res, path) {
   const vehicleId = Number(decodeURIComponent(path.split("/")[3]));
   if (!Number.isInteger(vehicleId) || vehicleId < 1 || vehicleId > Number.MAX_SAFE_INTEGER) {
@@ -6887,6 +6899,43 @@ async function vehicleDeleteRoute(req, res, path) {
       if (!queued) {
         try { duneDb.cancelQueuedVehicleDelete(config.repoRoot, vehicleId); } catch {}
       }
+    }
+  }, { vehicleId });
+}
+
+// Like requireAction, but writes no response: for shaping what a caller who
+// already passed the gate is told.
+function principalMay(req, action) {
+  const session = req.authSession;
+  if (!session || !evaluate(session, action)) return false;
+  return !req.authApiKey || apiKeys.allows(req.authApiKey, action);
+}
+
+// Deletes a vehicle that is Stored for Recovery. Its own route so it carries
+// its own action and phrase. Never queued: a stored vehicle is on no map.
+async function vehicleStoredDeleteRoute(req, res, path) {
+  const vehicleId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isInteger(vehicleId) || vehicleId < 1 || vehicleId > Number.MAX_SAFE_INTEGER) {
+    return json(res, 400, { error: "Invalid vehicle ID" });
+  }
+  // Also require vehicles:delete, so Deny vehicles:delete + Allow vehicles:*
+  // cannot reach this. handleApi already checked vehicles:stored-delete.
+  if (!requireAction(req, res, "vehicles:delete")) return;
+  return directDbMutation(req, res, "vehicles.stored-delete", "DELETE STORED VEHICLE", async () => {
+    try {
+      // Before the backup: see storedVehicleDeletePreflight.
+      await duneDb.storedVehicleDeletePreflight(db, vehicleId);
+      await runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "vehicle-delete" } });
+      const result = await duneDb.deleteVehicleCompletely(db, vehicleId, { storedRecoveryOnly: true });
+      // Drop an ordinary delete queued while the vehicle was still on a map.
+      try { duneDb.cancelQueuedVehicleDelete(config.repoRoot, vehicleId); } catch {}
+      return { ...result, backupCreated: true };
+    } catch (error) {
+      // Who is online is players:read information; withhold it from other callers.
+      if (error?.code === duneDb.STORED_VEHICLE_OWNER_ONLINE && !principalMay(req, "players:read")) {
+        throw new Error("This stored vehicle cannot be deleted right now. Try again later.");
+      }
+      throw error;
     }
   }, { vehicleId });
 }
