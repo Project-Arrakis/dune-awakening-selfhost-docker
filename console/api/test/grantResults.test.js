@@ -40,15 +40,15 @@ test("live item grants fail verification when only part of the quantity arrived"
 test("customization grants keep accepted but immediately consumed tokens distinct from failures", () => {
   assert.deepEqual(
     customizationGrantOutcome({ ok: false, published: true }),
-    { ok: true, verified: false, deliveryRequested: true }
+    { ok: true, verified: false, inventoryVerified: false, ownershipVerified: false, deliveryRequested: true }
   );
   assert.deepEqual(
     customizationGrantOutcome({ ok: false, published: false }),
-    { ok: false, verified: false, deliveryRequested: false }
+    { ok: false, verified: false, inventoryVerified: false, ownershipVerified: false, deliveryRequested: false }
   );
   assert.deepEqual(
     customizationGrantOutcome({ ok: true, published: true }),
-    { ok: true, verified: true, deliveryRequested: false }
+    { ok: true, verified: false, inventoryVerified: true, ownershipVerified: false, deliveryRequested: false }
   );
 });
 

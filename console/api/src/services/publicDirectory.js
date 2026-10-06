@@ -240,7 +240,56 @@ const PUBLIC_MODIFIER_SETTINGS = new Map([
   publicModifier("/Script/DuneSandbox.AugmentSettings", "m_JackpotRollPercentage", "Augment Jackpot Chance", "0.950000", "inverseRatioPercent"),
   publicModifier("/Script/DuneSandbox.AugmentSettings", "m_MaxRangedWeaponAugments", "Ranged Weapon Augments", "3", "number"),
   publicModifier("/Script/DuneSandbox.AugmentSettings", "m_MaxMeleeWeaponAugments", "Melee Weapon Augments", "3", "number"),
-  publicModifier("/Script/DuneSandbox.AugmentSettings", "m_MaxArmorAugments", "Armor Augments", "2", "number")
+  publicModifier("/Script/DuneSandbox.AugmentSettings", "m_MaxArmorAugments", "Armor Augments", "2", "number"),
+  // Native Custom Settings are a separate namespace. Never report arbitrary
+  // profile keys, credentials, or unmanaged settings from this section.
+  ...[
+    ["PVPMode", "PvP Mode", "Limited", "text"],
+    ["GatheringAmount", "Gathering Amount", "1", "multiplier"],
+    ["CraftingCost", "Crafting Cost", "1", "multiplier"],
+    ["WaterExtractionRate", "Water Extraction Rate", "1", "multiplier"],
+    ["CraftingTimeMultiplier", "Crafting Time", "1", "multiplier"],
+    ["BuildingCostMultiplier", "Building Cost", "1", "multiplier"],
+    ["ResourceRespawnSpeed", "Resource Respawn Speed", "1", "multiplier"],
+    ["LootRespawnSpeed", "Loot Respawn Speed", "1", "multiplier"],
+    ["FuelBurnTimeMultiplier", "Fuel Burn Time", "1", "multiplier"],
+    ["InventoryVolumeMultiplier", "Inventory Volume", "1", "multiplier"],
+    ["PlayerDamageToPlayer", "Player Damage To Players", "1", "multiplier"],
+    ["PlayerDamageToNPC", "Player Damage To NPCs", "1", "multiplier"],
+    ["PlayerDamageToVehicle", "Player Damage To Vehicles", "1", "multiplier"],
+    ["PlayerStaminaDrain", "Player Stamina Drain", "1", "multiplier"],
+    ["IntelPointsGainMultiplier", "Intel Points Gain", "1", "multiplier"],
+    ["NPCHealth", "NPC Health", "1", "multiplier"],
+    ["NPCDamageToPlayer", "NPC Damage To Players", "1", "multiplier"],
+    ["NPCDamageToNPC", "NPC Damage To NPCs", "1", "multiplier"],
+    ["NPCRespawnMultiplier", "NPC Respawn", "1", "multiplier"],
+    ["PVPDamageStructures", "PvP Structure Damage", "1", "multiplier"],
+    ["GlobalXpMultiplier", "Global XP", "1", "multiplier"],
+    ["CombatXp", "Combat XP", "1", "multiplier"],
+    ["GatheringXp", "Gathering XP", "1", "multiplier"],
+    ["MissionXp", "Mission XP", "1", "multiplier"],
+    ["ItemDurabilityDrainMultiplier", "Item Durability Drain", "1", "multiplier"],
+    ["bEnableItemMaxDurabilityLoss", "Item Maximum Durability Loss", "True", "boolean"],
+    ["PlayerShieldDamageAbsorptionMultiplier", "Player Shield Absorption", "1", "multiplier"],
+    ["NPCShieldDamageAbsorptionMultiplier", "NPC Shield Absorption", "1", "multiplier"],
+    ["HeatBuildupRate", "Heat Buildup", "1", "multiplier"],
+    ["ThirstMultiplier", "Thirst", "1", "multiplier"],
+    ["DropEquipmentOnDeath", "Equipment Drop On Death", "Default", "text"],
+    ["bAllowDynamicBuildingDamage", "Environmental Building Damage", "True", "boolean"],
+    ["bAllowSandstorms", "Custom Sandstorms", "True", "boolean"],
+    ["bAllowSandworms", "Custom Sandworms", "True", "boolean"],
+    ["SandwormConsequences", "Sandworm Consequences", "All", "text"],
+    ["PlayerDeathLootRule", "Player Death Loot Rule", "DependsOnSecurityZone", "text"],
+    ["bIsBuildingRestrictionsEnabled", "Custom Building Restrictions", "True", "boolean"],
+    ["FiefdomLimit", "Sub-fief Limit", "3", "number"],
+    ["BuildingPieceLimitMultiplier", "Building Piece Limit", "1", "multiplier"],
+    ["bBuildingInfiniteStability", "Infinite Building Stability", "False", "boolean"],
+    ["BaseBackupToolTimeRestriction", "Base Reconstruction Cooldown", "16", "hours"],
+    ["LandsraadContributionMultiplier", "Landsraad Contribution", "1", "multiplier"],
+    ["LandsraadSpecializationXpMultiplier", "Landsraad Specialization XP", "1", "multiplier"],
+    ["LandsraadFactionStandingMultiplier", "Landsraad Faction Standing", "1", "multiplier"],
+    ["bLandsraadDisableDecreeRerollLimit", "Unlimited Landsraad Decree Rerolls", "False", "boolean"]
+  ].map(([key, label, defaultValue, format]) => publicModifier("/Script/DuneSandbox.UserServerCustomSettings", key, label, defaultValue, format))
 ]);
 
 const PLAYER_PORTAL_MAP_MARKER_TYPES = new Set([
@@ -979,6 +1028,15 @@ export function buildHeartbeatPayload(identity, snapshot) {
 
 export async function collectPublicMetadata(repoRoot, db) {
   const modifierMetadata = readPublicModifierMetadata(resolve(repoRoot, "runtime/generated/gameplay-profile.ini"), { repoRoot });
+  const transfer = readCharacterTransferSettings({ repoRoot }).settings;
+  const transfers = {
+    incomingPolicy: transfer.IncomingCharacterTransfers,
+    outgoingAllowed: transfer.AcceptOutgoingCharacterTransfers === true,
+    freeFrom: transfer.FreeToTransferCharactersFrom === true,
+    freeTo: transfer.FreeToTransferCharactersTo === true,
+    worldClosed: transfer.ForceIsWorldClosed === true,
+    worldClosingSoon: transfer.ForceIsWorldClosingSoon === true
+  };
   let progression = { characters: 0, averageLevel: 0, highestLevel: 0 };
   if (db) {
     try {
@@ -995,7 +1053,7 @@ export async function collectPublicMetadata(repoRoot, db) {
       // Public directory reporting must remain healthy if progression is unavailable.
     }
   }
-  return { ...modifierMetadata, progression };
+  return { ...modifierMetadata, progression, transfers };
 }
 
 export function readPublicModifiers(path) {
@@ -1146,9 +1204,9 @@ function publicModifierSection(header) {
 
 function publicModifierScope(header) {
   const parts = header.split(":");
-  if (parts[0] === "Engine" || parts[0] === "Global") return { scope: "global", map: "", partitionId: null, section: parts.slice(1).join(":") };
-  if (parts[0] === "Map" || parts[0] === "MapEngine") return { scope: "map", map: safePublicScopeText(parts[1], 80), partitionId: null, section: parts.slice(2).join(":") };
-  if (parts[0] === "Partition" || parts[0] === "PartitionEngine") {
+  if (["Engine", "Global", "ServerCustomGlobal"].includes(parts[0])) return { scope: "global", map: "", partitionId: null, section: parts.slice(1).join(":") };
+  if (["Map", "MapEngine", "ServerCustomMap"].includes(parts[0])) return { scope: "map", map: safePublicScopeText(parts[1], 80), partitionId: null, section: parts.slice(2).join(":") };
+  if (["Partition", "PartitionEngine", "ServerCustomPartition"].includes(parts[0])) {
     const partitionId = Number(parts[2]);
     return { scope: "partition", map: safePublicScopeText(parts[1], 80), partitionId: Number.isInteger(partitionId) && partitionId >= 0 && partitionId <= 100000 ? partitionId : null, section: parts.slice(3).join(":") };
   }
@@ -1252,7 +1310,7 @@ function publicModifierValuesEqual(value, defaultValue, format) {
     const right = modifierBoolean(defaultValue);
     return left !== null && right !== null && left === right;
   }
-  if (["multiplier", "number", "ratioPercent", "inverseRatioPercent", "percent", "duration", "days", "meters"].includes(format)) {
+  if (["multiplier", "number", "ratioPercent", "inverseRatioPercent", "percent", "duration", "hours", "days", "meters"].includes(format)) {
     const left = Number(value);
     const right = Number(defaultValue);
     return Number.isFinite(left) && Number.isFinite(right) && left === right;
@@ -1277,6 +1335,7 @@ function formatPublicModifierValue(value, format) {
   }
   if (format === "percent") return `${readable}%`;
   if (format === "duration") return formatPublicDuration(number);
+  if (format === "hours") return formatPublicDuration(number * 3600);
   if (format === "days") return `${readable} ${number === 1 ? "day" : "days"}`;
   if (format === "meters") return `${readable} m`;
   return readable;

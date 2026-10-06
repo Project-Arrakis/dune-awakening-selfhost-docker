@@ -165,13 +165,13 @@ test("revalidates the catalog with ETags and serves validated stale data on HTTP
   };
   try {
     const fresh = await fetchCommunityAddons(fetchImpl, "https://example.test/index.json");
-    now += 5 * 60 * 1000 + 1;
+    now += 60 * 60 * 1000 + 1;
     mode = "not-modified";
     const revalidated = await fetchCommunityAddons(fetchImpl, "https://example.test/index.json");
     assert.equal(requests[1].headers["if-none-match"], '"catalog-v1"');
     assert.deepEqual(revalidated, fresh);
 
-    now += 5 * 60 * 1000 + 1;
+    now += 60 * 60 * 1000 + 1;
     mode = "limited";
     const stale = await fetchCommunityAddons(fetchImpl, "https://example.test/index.json");
     assert.deepEqual(stale, fresh);
@@ -179,6 +179,163 @@ test("revalidates the catalog with ETags and serves validated stale data on HTTP
   } finally {
     Date.now = originalNow;
   }
+});
+
+test("anonymous catalogs use raw GitHub and do not refetch at the UI polling interval", async () => {
+  const previousToken = process.env.DUNE_SELF_UPDATE_TOKEN;
+  delete process.env.DUNE_SELF_UPDATE_TOKEN;
+  const originalNow = Date.now;
+  let now = 1_800_000_000_000;
+  Date.now = () => now;
+  const requests = [];
+  const fetchImpl = async (url, options) => {
+    requests.push({ url, options });
+    return { ok: true, status: 200, json: async () => ({ schemaVersion: 1, addons: [] }) };
+  };
+  try {
+    await fetchCommunityAddons(fetchImpl);
+    for (let i = 0; i < 11; i++) {
+      now += 5 * 60_000;
+      await fetchCommunityAddons(fetchImpl);
+    }
+    assert.equal(requests.length, 1);
+    assert.match(requests[0].url, /^https:\/\/raw\.githubusercontent\.com\//);
+    assert.equal(requests[0].options.headers.authorization, undefined);
+  } finally {
+    Date.now = originalNow;
+    if (previousToken === undefined) delete process.env.DUNE_SELF_UPDATE_TOKEN;
+    else process.env.DUNE_SELF_UPDATE_TOKEN = previousToken;
+  }
+});
+
+test("rate-limited authenticated catalog falls back once without exposing credentials", async () => {
+  const previousToken = process.env.DUNE_SELF_UPDATE_TOKEN;
+  process.env.DUNE_SELF_UPDATE_TOKEN = "catalog-test-token";
+  const requests = [];
+  const fetchImpl = async (url, options) => {
+    requests.push({ url, options });
+    if (String(url).startsWith("https://api.github.com/")) return { ok: false, status: 403 };
+    return { ok: true, status: 200, json: async () => ({ schemaVersion: 1, addons: [] }) };
+  };
+  try {
+    await fetchCommunityAddons(fetchImpl);
+    assert.equal(requests.length, 2);
+    assert.equal(requests[0].options.headers.authorization, "Bearer catalog-test-token");
+    assert.match(requests[1].url, /^https:\/\/raw\.githubusercontent\.com\//);
+    assert.equal(requests[1].options.headers.authorization, undefined);
+    assert.equal(requests[1].options.headers["if-none-match"], undefined);
+  } finally {
+    if (previousToken === undefined) delete process.env.DUNE_SELF_UPDATE_TOKEN;
+    else process.env.DUNE_SELF_UPDATE_TOKEN = previousToken;
+  }
+});
+
+test("cold catalog failures respect retry advice rather than repeating request bursts", async () => {
+  const originalNow = Date.now;
+  let now = 1_800_000_000_000;
+  Date.now = () => now;
+  let requests = 0;
+  const fetchImpl = async () => {
+    requests++;
+    return { ok: false, status: 429, headers: { get: name => name === "retry-after" ? "600" : "" } };
+  };
+  try {
+    await assert.rejects(fetchCommunityAddons(fetchImpl, "https://example.test/index.json"), /429/);
+    now += 5 * 60_000;
+    await assert.rejects(fetchCommunityAddons(fetchImpl, "https://example.test/index.json"), /429/);
+    assert.equal(requests, 1);
+    now += 5 * 60_000 + 1;
+    await assert.rejects(fetchCommunityAddons(fetchImpl, "https://example.test/index.json"), /429/);
+    assert.equal(requests, 2);
+  } finally { Date.now = originalNow; }
+});
+
+test("anonymous fallback is bounded and a failed alternate host preserves primary backoff", async () => {
+  const previousToken = process.env.DUNE_SELF_UPDATE_TOKEN;
+  delete process.env.DUNE_SELF_UPDATE_TOKEN;
+  const originalNow = Date.now;
+  let now = 1_800_000_000_000;
+  Date.now = () => now;
+  const requests = [];
+  const fetchImpl = async (url, options) => {
+    requests.push({ url, options });
+    if (String(url).startsWith("https://api.github.com/")) throw new TypeError("alternate unavailable");
+    return { ok: false, status: 429, headers: { get: name => name === "retry-after" ? "600" : "" } };
+  };
+  try {
+    await assert.rejects(fetchCommunityAddons(fetchImpl), /429/);
+    assert.equal(requests.length, 2);
+    assert.match(requests[1].url, /^https:\/\/api\.github\.com\//);
+    assert.equal(requests[1].options.headers.authorization, undefined);
+    now += 5 * 60_000;
+    await assert.rejects(fetchCommunityAddons(fetchImpl), /429/);
+    assert.equal(requests.length, 2);
+  } finally {
+    Date.now = originalNow;
+    if (previousToken === undefined) delete process.env.DUNE_SELF_UPDATE_TOKEN;
+    else process.env.DUNE_SELF_UPDATE_TOKEN = previousToken;
+  }
+});
+
+test("catalog failure backoff cannot serve stale data after its lifetime", async () => {
+  const originalNow = Date.now;
+  let now = 1_800_000_000_000;
+  Date.now = () => now;
+  let limited = false;
+  let requests = 0;
+  const fetchImpl = async () => {
+    requests++;
+    if (limited) return { ok: false, status: 429, headers: { get: name => name === "retry-after" ? "7200" : "" } };
+    return { ok: true, status: 200, json: async () => ({ schemaVersion: 1, addons: [] }) };
+  };
+  try {
+    const fresh = await fetchCommunityAddons(fetchImpl, "https://example.test/index.json");
+    now += 23 * 60 * 60_000;
+    limited = true;
+    assert.deepEqual(await fetchCommunityAddons(fetchImpl, "https://example.test/index.json"), fresh);
+    now += 60 * 60_000 + 1;
+    await assert.rejects(fetchCommunityAddons(fetchImpl, "https://example.test/index.json"), /429/);
+    assert.equal(requests, 2, "backoff applies even after stale data expires");
+  } finally { Date.now = originalNow; }
+});
+
+test("a failed optional manifest retains the catalog and other validated metadata", async () => {
+  const originalNow = Date.now;
+  let now = 1_800_000_000_000;
+  Date.now = () => now;
+  const requests = [];
+  const manifest = {
+    id: "good-addon", name: "Good", version: "1.0.0", type: "ui",
+    sourceUrl: "https://github.com/example/good", permissions: ["players:read"],
+    downloadUrl: "https://example.test/good.zip", sha256: "a".repeat(64)
+  };
+  const fetchImpl = async (url, options) => {
+    requests.push({ url, options });
+    if (url.endsWith("bad.json")) return { ok: false, status: 503 };
+    if (url.endsWith("good.json")) return {
+      ok: true, status: 200, headers: { get: () => '"manifest"' }, json: async () => manifest
+    };
+    if (options.headers["if-none-match"]) return { ok: false, status: 304 };
+    return { ok: true, status: 200, headers: { get: () => '"index"' }, json: async () => ({
+      schemaVersion: 1, addons: ["good", "bad"].map(id => ({
+        id: `${id}-addon`, name: id, version: "1.0.0", manifestUrl: `https://example.test/${id}.json`
+      }))
+    }) };
+  };
+  try {
+    const first = await fetchCommunityAddons(fetchImpl, "https://example.test/index.json");
+    assert.equal(first.addons.length, 2);
+    assert.equal(first.addons[0].sourceUrl, manifest.sourceUrl);
+    assert.deepEqual(first.addons[0].permissions, manifest.permissions);
+    now += 5 * 60_000;
+    await fetchCommunityAddons(fetchImpl, "https://example.test/index.json");
+    assert.equal(requests.length, 3);
+    now += 60 * 60_000;
+    const refreshed = await fetchCommunityAddons(fetchImpl, "https://example.test/index.json");
+    assert.equal(refreshed.addons[0].sourceUrl, manifest.sourceUrl);
+    assert.equal(requests[3].options.headers["if-none-match"], '"index"');
+    assert.equal(requests[4].options.headers["if-none-match"], '"manifest"');
+  } finally { Date.now = originalNow; }
 });
 
 test("never sends the GitHub token to addon release downloads", async () => {

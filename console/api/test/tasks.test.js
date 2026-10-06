@@ -27,6 +27,39 @@ test("task manager creates and completes allowlisted dune tasks", async () => {
   assert.match(task.logLines.map((line) => line.line).join("\n"), /task:status/);
 });
 
+test("Console update checks share concurrent work and cache exit 100 results", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-console-check-"));
+  const duneScript = join(dir, "dune");
+  writeFileSync(duneScript, "#!/usr/bin/env bash\necho call >> calls\nsleep .05\necho 'Current version: v1.0.0'\necho 'Latest version: v1.1.0'\nexit 100\n", { mode: 0o700 });
+  const manager = new TaskManager({ duneScript, repoRoot: dir, taskRetention: 20, commandTimeoutMs: 5000 });
+  const first = manager.create("updates", "selfUpdateCheck", {});
+  const second = manager.create("updates", "selfUpdateCheck", {});
+  for (const id of [first.id, second.id]) {
+    const task = await waitForTask(manager, id);
+    assert.equal(task.status, "succeeded", task.errorMessage);
+    assert.equal(task.exitCode, 100);
+  }
+  const third = await waitForTask(manager, manager.create("updates", "selfUpdateCheck", {}).id);
+  assert.equal(third.status, "succeeded");
+  assert.match(third.logLines.map(line => line.line).join("\n"), /Reusing update check result/);
+  assert.equal(readFileSync(join(dir, "calls"), "utf8"), "call\n");
+  assert.equal(taskTimeoutMs({ commandTimeoutMs: 300000 }, "selfUpdateCheck"), 120000);
+});
+
+test("failed Console checks retain diagnostics and back off repeated requests", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-console-failed-check-"));
+  const duneScript = join(dir, "dune");
+  writeFileSync(duneScript, "#!/usr/bin/env bash\necho call >> calls\necho 'Current version: v1.0.0'\necho 'provider unavailable' >&2\nexit 2\n", { mode: 0o700 });
+  const manager = new TaskManager({ duneScript, repoRoot: dir, taskRetention: 20, commandTimeoutMs: 5000 });
+  for (let i = 0; i < 2; i++) {
+    const task = await waitForTask(manager, manager.create("updates", "selfUpdateCheck", {}).id);
+    assert.equal(task.status, "failed");
+    assert.match(task.logLines.map(line => line.line).join("\n"), /provider unavailable/);
+    assert.match(task.logLines.map(line => line.line).join("\n"), /Current version/);
+  }
+  assert.equal(readFileSync(join(dir, "calls"), "utf8"), "call\n");
+});
+
 test("game update check exit 100 is treated as update-available success", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-task-update-"));
   const duneScript = join(dir, "dune");
@@ -45,6 +78,17 @@ test("game update check exit 100 is treated as update-available success", async 
   assert.equal(task.status, "succeeded");
   assert.equal(task.exitCode, 100);
   assert.match(task.logLines.map((line) => line.line).join("\n"), /Update available/);
+});
+
+test("failed startup surfaces a registry limit instead of a generic exit code", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-task-registry-limit-"));
+  const duneScript = join(dir, "dune");
+  writeFileSync(duneScript, "#!/usr/bin/env bash\necho 'Image: registry.funcom.com/funcom/self-hosting/db-utils:123'\necho 'docker: Error response from daemon: toomanyrequests' >&2\nexit 1\n", { mode: 0o700 });
+  const manager = new TaskManager({ duneScript, repoRoot: dir, taskRetention: 20, commandTimeoutMs: 5000 });
+  const created = manager.create("server", "start", {});
+  const task = await waitForTask(manager, created.id);
+  assert.equal(task.status, "failed");
+  assert.equal(task.errorMessage, "Funcom registry request limit reached. Try again later; no retry time was provided.");
 });
 
 test("game update check failure keeps Steam diagnostics and gives retry guidance", async () => {
@@ -118,6 +162,13 @@ test("long-running server tasks get an extended timeout", () => {
   const config = { commandTimeoutMs: 5000 };
 
   assert.equal(taskTimeoutMs(config, "status"), 5000);
+  assert.equal(taskTimeoutMs(config, "adminSpawnVehicle"), 5 * 60 * 1000);
+  assert.equal(taskTimeoutMs({ commandTimeoutMs: 600000 }, "adminSpawnVehicle"), 600000);
+  // Depot downloads get their own, longer floor: a 30-minute kill lands
+  // mid-SteamCMD and needs fix-steamcmd afterward.
+  assert.equal(taskTimeoutMs(config, "updateInstallAssets"), 4 * 60 * 60 * 1000);
+  assert.equal(taskTimeoutMs(config, "updateApply"), 4 * 60 * 60 * 1000);
+  assert.equal(taskTimeoutMs(config, "init"), 4 * 60 * 60 * 1000);
   assert.equal(taskTimeoutMs(config, "start"), 30 * 60 * 1000);
   assert.equal(taskTimeoutMs(config, "stop"), 30 * 60 * 1000);
   assert.equal(taskTimeoutMs(config, "restartAll"), 30 * 60 * 1000);

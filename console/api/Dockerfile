@@ -16,11 +16,27 @@ ENV NODE_ENV=production
 # Runtime tools required by RedBlink dune scripts when the web admin runs in a container.
 # We install small OS tools through apt, then install Docker CLI + Compose plugin
 # as standalone binaries to avoid pulling the heavy docker.io Debian package.
+# The psql client is what decides how the console's publisher loops reach the
+# database. runtime/scripts/lib/postgres.sh and runtime/scripts/dune_psql.py
+# prefer a TCP connection to the port start-postgres.sh publishes on loopback
+# and fall back to `docker exec dune-postgres psql` when no client is installed
+# -- and this image had none, so every query from here took the fallback.
+# publish-deepdesert-overrides.sh alone re-queries every ten seconds and fans
+# out over every partition, and each exec spawns a conmon pair that lingers for
+# the engine's exit delay. The container runs with network_mode: host (see
+# docker-compose.web.yml), so 127.0.0.1 here really is the host's loopback and
+# really does reach the published port.
 # gnupg (gpg) is required by `dune db backup-system`'s authenticated
 # (AEAD/OCB) archive encryption when the backup is triggered from the
-# Web Console rather than a host shell -- confirmed this was NOT already
-# present in this image, which would make that command fail here even
-# though it worked on a real host with gnupg installed via install.sh.
+# Web Console rather than a host shell. The VERSION is what matters, not
+# just the package: --aead-algo landed in GnuPG 2.3, and bookworm caps at
+# 2.2.40, which rejects the flag outright -- so this image could install
+# gnupg and still fail every system backup, after dumping the whole
+# database. bookworm-backports carries the same 2.2.40, so the base is
+# trixie (Debian 13), whose gnupg 2.4.7 supports it. db.sh preflights the
+# capability and refuses to downgrade to an unauthenticated cipher, so an
+# older base fails loudly rather than silently weakening the archive.
+#
 # python3 must be installed EXPLICITLY, not inherited. It used to arrive for
 # free: the previous base was node:20-bookworm, whose full Debian image ships
 # python3-minimal. Commit c248780e (2026-08-20, issue #54's Trivy-driven base
@@ -60,6 +76,7 @@ RUN apt-get update \
         netcat-openbsd \
         gnupg \
         python3 \
+        postgresql-client \
     && rm -rf /var/lib/apt/lists/* \
     && arch="$(dpkg --print-architecture)" \
     && case "$arch" in \

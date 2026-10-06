@@ -148,15 +148,15 @@ test("real PostgreSQL: a vehicle in a blocked state refuses every delete and kee
     const db = pgTransactionalDb(pool);
     await assert.rejects(
       () => deleteVehicleStorageItem(db, BLOCKED_VEHICLE_ID, "7007"),
-      /currently VehicleRecovery and its cargo cannot be changed/
+      /is Stored for Recovery and its cargo cannot be changed/
     );
     await assert.rejects(
       () => deleteMultipleVehicleStorageItems(db, BLOCKED_VEHICLE_ID, ["7007"]),
-      /currently VehicleRecovery/
+      /is Stored for Recovery and its cargo/
     );
     await assert.rejects(
       () => deleteAllVehicleStorageItems(db, BLOCKED_VEHICLE_ID),
-      /currently VehicleRecovery/
+      /is Stored for Recovery and its cargo/
     );
     assert.equal(await stackSize(pool, "7007"), 12);
   });

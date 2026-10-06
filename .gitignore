@@ -37,3 +37,11 @@ __pycache__/
 *.pyc
 .security-reports/
 runtime/local-static/
+
+# Never let a contributor's global ignore swallow tracked source. The standard
+# VisualStudio gitignore template contains `Backup*/`, which on a
+# case-insensitive filesystem (Windows, macOS) matches
+# console/web/src/features/backups/ -- new files there were silently untracked
+# with no warning. A repo .gitignore outranks core.excludesFile, so this wins.
+# Scoped to console/ on purpose: runtime/backups/ above stays ignored.
+!console/**/backups/
