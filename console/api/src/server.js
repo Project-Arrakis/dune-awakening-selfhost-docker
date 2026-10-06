@@ -49,6 +49,7 @@ import { buildAutoInviteAuthorizeUrl, createAutoInvitePendingStateStore, autoInv
 import { fetchWithTimeoutAndRetry } from "./services/httpWithRetry.js";
 import { createHandoff } from "./integrations/discord/handoff.js";
 import { actionForRoute, ROUTE_ACTIONS, NAMESPACES } from "./actions.js";
+import { resolvePlayerScope } from "./playerScope.js";
 import { evaluate, loadPolicies, getAllPolicies, setPolicies, resolveAllowedActions, allKnownActions } from "./policy.js";
 import { discordAdapterEnabled, discordWritesEnabled } from "./integrations/discord/adapter.js";
 // [Layer 3 integration audit fix, LOW, issue #1043] The 5 header constants
@@ -512,22 +513,7 @@ async function filterForPlayerScope(session, db, data, getter) {
 }
 
 async function resolvePlayerScopedIds(session, db) {
-  if (!session || !session.userId) return { scoped: true, ids: new Set() };
-  if (session.tier !== "player") return { scoped: false, ids: new Set() };
-  try {
-    const chars = await duneDb.getAllLinkedPlayers(db, session.userId);
-    // Drop null/empty/zero ids: "0" is player_state's placeholder controller id
-    // and would match unlinked rows (issue #1116 review).
-    const ids = chars
-      .map(c => c.player_controller_id)
-      .filter(id => id !== null && id !== undefined && String(id) !== "" && String(id) !== "0");
-    return { scoped: true, ids: new Set(ids.map(String)) };
-  } catch (error) {
-    // Fail closed (empty scope) but leave a trace so an outage is not
-    // indistinguishable from "no linked characters".
-    console.error(`player scope lookup failed: ${error && error.message ? error.message : error}`);
-    return { scoped: true, ids: new Set() };
-  }
+  return resolvePlayerScope(session, (userId) => duneDb.getAllLinkedPlayers(db, userId));
 }
 
 async function playerScopeIds(session, db) {
@@ -1625,7 +1611,6 @@ async function handleApi(req, res, path) {
   }
 
   if (path === "/api/players") return dbJson(res, async () => {
-    const session = auth.readSession(req);
     const controllerIds = await playerScopeIds(session, db);
     return duneDb.listPlayers(db, {
       q: url.searchParams.get("q") || "",
