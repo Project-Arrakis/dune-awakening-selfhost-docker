@@ -61,7 +61,15 @@ export function readRestartHistory(config, { limit = 100 } = {}) {
 
 function readRows(file) {
   if (!existsSync(file)) return [];
-  return readFileSync(file, "utf8").split(/\r?\n/).filter(Boolean).flatMap((line) => {
+  let text;
+  try {
+    text = readFileSync(file, "utf8");
+  } catch {
+    // An unreadable history file (for example left root-owned by a root-run console)
+    // must not turn every GET /api/server/restart-history into a 500.
+    return [];
+  }
+  return text.split(/\r?\n/).filter(Boolean).flatMap((line) => {
     try { return [normalizeRow(JSON.parse(line))]; } catch { return []; }
   });
 }

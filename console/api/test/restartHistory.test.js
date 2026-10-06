@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { appendRestartHistory, readRestartHistory, recordTaskRestart, restartDescriptor } from "../src/services/restartHistory.js";
@@ -57,4 +57,21 @@ test("the latest Battlegroup restart remains visible beyond the table row limit"
   assert.equal(result.rows.length, 100);
   assert.equal(result.rows.some((row) => row.id === "bg"), false);
   assert.equal(result.lastBattlegroupRestart.id, "bg");
+});
+
+// Issue #1132: a history file the console cannot read (e.g. left root-owned by a
+// root-run console) must not break GET /api/server/restart-history.
+test("an unreadable restart history file reads as empty instead of throwing", () => {
+  const dir = mkdtempSync(join(tmpdir(), "restart-history-"));
+  // A directory at the file path makes readFileSync throw (EISDIR) for any user, root included.
+  mkdirSync(join(dir, "restart-history.jsonl"));
+  const result = readRestartHistory({ restartHistoryFile: join(dir, "restart-history.jsonl") });
+  assert.deepEqual(result.rows, []);
+  assert.equal(result.lastBattlegroupRestart, null);
+});
+
+test("restart-history.jsonl is handed back by the root-ownership repair (issue #1132)", () => {
+  const source = readFileSync(new URL("../src/config.js", import.meta.url), "utf8");
+  const repair = source.slice(source.indexOf("function repairRootOwnedHostState"));
+  assert.match(repair, /resolve\(repoRoot, "runtime\/generated\/restart-history\.jsonl"\)/);
 });
