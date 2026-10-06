@@ -1,8 +1,8 @@
 import { BFS, BVS, CFS, DFS, FS, RFS, RVS, VS } from "./shaders";
 import { invert4, isOccluded } from "./terrainOcclusion";
 import type { DepthGrid } from "./terrainOcclusion";
-import { buildDrawCalls, interpolateHeightField, markHoveringRock, cullInstances, depthRange, instanceCircles, INSTANCE_FLOATS, orthoFromWorldRect, applyCanvasSize, withOutside } from "./terrainGeometry";
-import type { CulledDraw } from "./terrainGeometry";
+import { buildDrawCalls, buildLodIndices, interpolateHeightField, markHoveringRock, cullInstances, depthRange, instanceCircles, INSTANCE_FLOATS, orthoFromWorldRect, applyCanvasSize, withOutside } from "./terrainGeometry";
+import type { CulledDraw, LodRange } from "./terrainGeometry";
 import { cameraClipMatrix, cullRectForCamera, scaleAt, screenToWorldAtZ } from "./terrainCamera";
 import type { TerrainCamera } from "./terrainCamera";
 import type { LayoutAssets, SharedAssets } from "./terrainAssets";
@@ -48,6 +48,12 @@ const UV_LOCATION = 8;
 // Instances under this radius, in framebuffer pixels, are skipped. Not 1.0:
 // POI hulls are built from sub-pixel pieces and would vanish from the overview.
 const CULL_MIN_RADIUS_PX = 0.5;
+// Instances under this radius, in framebuffer pixels, draw with reduced
+// triangles. A layout is mostly POI kit pieces of 500-2,300 triangles that are
+// a few pixels across at map zoom. The grid is the lattice vertices snap to: a
+// coarser one is faster but thins the POI hulls out at map zoom.
+const LOD_RADIUS_PX = 8;
+const LOD_GRID = 8;
 // How far past the layout square the terrain draws, world uu. The outside
 // rock that ships is limited to the same distance, so none is sliced by the clip.
 const EDGE_APRON = 375000;
@@ -305,6 +311,9 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
   let bPos: WebGLBuffer | null = null;
   let bNrm: WebGLBuffer | null = null;
   let bIdx: WebGLBuffer | null = null;
+  // Reduced triangles for small instances (see buildLodIndices), and where each mesh's start.
+  let bIdxLod: WebGLBuffer | null = null;
+  let lodRanges: LodRange[] = [];
   let bHfIdx: WebGLBuffer | null = null;
   let hfIndexCount = 0;
   let texHf: WebGLTexture | null = null;
@@ -395,6 +404,12 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
       bPos = upload(gl.ARRAY_BUFFER, geometry.subarray(0, nrmAt));
       bNrm = upload(gl.ARRAY_BUFFER, geometry.subarray(nrmAt, idxAt));
       bIdx = upload(gl.ELEMENT_ARRAY_BUFFER, geometry.subarray(idxAt));
+      if (bIdxLod) gl.deleteBuffer(bIdxLod);
+      const lod = buildLodIndices(library, geometry, LOD_GRID);
+      bIdxLod = gl.createBuffer();
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, bIdxLod);
+      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, lod.indices, gl.STATIC_DRAW);
+      lodRanges = lod.ranges;
       if (det1) gl.deleteTexture(det1);
       if (det2) gl.deleteTexture(det2);
       if (texBrk) gl.deleteTexture(texBrk);
@@ -506,15 +521,18 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
       gl.vertexAttribDivisor(1, 0);
       gl.vertexAttribPointer(1, 2, gl.BYTE, true, 2, call.vo * 2);
 
-      gl.bindBuffer(gl.ARRAY_BUFFER, bCull);
-      const base = kept.off * INSTANCE_STRIDE;
-      for (let k = 0; k < 6; k++) {
-        const location = k < 5 ? 2 + k : 7;
-        const size = k >= 4 ? 1 : 3;
-        gl.enableVertexAttribArray(location);
-        gl.vertexAttribPointer(location, size, gl.FLOAT, false, INSTANCE_STRIDE, base + INSTANCE_OFFSETS[k]);
-        gl.vertexAttribDivisor(location, 1);
-      }
+      const bindInstances = (first: number) => {
+        gl.bindBuffer(gl.ARRAY_BUFFER, bCull);
+        const base = first * INSTANCE_STRIDE;
+        for (let k = 0; k < 6; k++) {
+          const location = k < 5 ? 2 + k : 7;
+          const size = k >= 4 ? 1 : 3;
+          gl.enableVertexAttribArray(location);
+          gl.vertexAttribPointer(location, size, gl.FLOAT, false, INSTANCE_STRIDE, base + INSTANCE_OFFSETS[k]);
+          gl.vertexAttribDivisor(location, 1);
+        }
+      };
+      bindInstances(kept.off);
 
       // The game's diffuse, for the meshes that carry one.
       if (rockTextured && call.texLayer !== undefined && call.uvo !== undefined) {
@@ -531,8 +549,17 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
         gl.uniform1f(t.texOn, 0);
       }
 
+      // Small instances take the reduced triangles; a mesh that reduces to nothing keeps its own.
+      const reduced = lodRanges[call.mesh];
+      const far = reduced && reduced.ic > 0 ? kept.far : 0;
+      const near = kept.n - far;
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, bIdx);
-      gl.drawElementsInstanced(gl.TRIANGLES, call.ic, gl.UNSIGNED_SHORT, call.io * 2, kept.n);
+      if (near > 0) gl.drawElementsInstanced(gl.TRIANGLES, call.ic, gl.UNSIGNED_SHORT, call.io * 2, near);
+      if (far > 0) {
+        bindInstances(kept.off + near);
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, bIdxLod);
+        gl.drawElementsInstanced(gl.TRIANGLES, reduced.ic, gl.UNSIGNED_SHORT, reduced.io * 2, far);
+      }
     }
   }
 
@@ -734,7 +761,10 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
       const threshold = cam
         ? (x: number, y: number) => CULL_MIN_RADIUS_PX * scaleAt(cam, x, y, cam.cz) * (cssWidth / fw)
         : CULL_MIN_RADIUS_PX * ((view.maxX - view.minX) / fw);
-      const result = cullInstances(calls, instFloats, circles, view, threshold, packed);
+      const lodRadius = cam
+        ? (x: number, y: number) => LOD_RADIUS_PX * scaleAt(cam, x, y, cam.cz) * (cssWidth / fw)
+        : LOD_RADIUS_PX * ((view.maxX - view.minX) / fw);
+      const result = cullInstances(calls, instFloats, circles, view, threshold, packed, lodRadius);
       culled = result.draws;
       gl.bindBuffer(gl.ARRAY_BUFFER, bCull);
       gl.bufferData(gl.ARRAY_BUFFER, packed.subarray(0, result.total * INSTANCE_FLOATS), gl.DYNAMIC_DRAW);
@@ -920,7 +950,7 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     draw,
     dispose() {
       canvas.removeEventListener("webglcontextlost", onLost as EventListener);
-      for (const buffer of [bPos, bNrm, bIdx, bHfIdx, bUV, bCull, quad]) if (buffer) gl.deleteBuffer(buffer);
+      for (const buffer of [bPos, bNrm, bIdx, bIdxLod, bHfIdx, bUV, bCull, quad]) if (buffer) gl.deleteBuffer(buffer);
       for (const texture of [texHf, det1, det2, texBrk, rockTex, accTex, accDepth, occTex, pickTex]) if (texture) gl.deleteTexture(texture);
       if (pickDepth) gl.deleteRenderbuffer(pickDepth);
       if (pickFbo) gl.deleteFramebuffer(pickFbo);
