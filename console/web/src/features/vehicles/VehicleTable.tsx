@@ -10,6 +10,8 @@ import { VehicleStorageOverlay } from "./VehicleStorageOverlay";
 
 const GLOBAL_COLUMNS = ["name", "type", "owner", "shared_with", "condition_percent", "fuel_percent", "location"];
 const PLAYER_COLUMNS = ["name", "type", "condition_percent", "fuel_percent", "location"];
+// Shown when a player's list mixes access levels; hidden when every row is the same level.
+const PLAYER_ACCESS_COLUMNS = ["name", "type", "relationship", "owner", "condition_percent", "fuel_percent", "location"];
 const COLUMN_LABELS: Record<string, string> = {
   name: "Vehicle",
   type: "Type",
@@ -24,6 +26,7 @@ const COLUMN_LABELS: Record<string, string> = {
 type VehicleTableProps = {
   rows: VehicleRow[];
   context?: "global" | "player";
+  showAccessColumns?: boolean;
   emptyMessage?: string;
   sortColumn?: string;
   sortDirection?: SortDirection;
@@ -202,7 +205,7 @@ function renderComponent(module: VehicleModule, index: number) {
 }
 
 export function VehicleTable({
-  rows, context = "global", emptyMessage = "No vehicles have been found yet.", sortColumn, sortDirection, onSort,
+  rows, context = "global", showAccessColumns = false, emptyMessage = "No vehicles have been found yet.", sortColumn, sortDirection, onSort,
   canEditPermissions = false, onPermissionsSaved, focusVehicleId, focusNonce, confirmAction,
   canDeleteVehicle = false, canDeleteStoredVehicle = false, storageSupported = false, onError, queuedDeleteVehicleIds, deletingId, cancelingDeleteId, onDeleteVehicle, onCancelQueuedDelete
 }: VehicleTableProps) {
@@ -215,7 +218,7 @@ export function VehicleTable({
   const [instanceNames, setInstanceNames] = useState<Map<string, string>>(new Map());
   const expandedContentRef = useRef<HTMLDivElement>(null);
   const satisfiedFocusNonceRef = useRef<number | undefined>(undefined);
-  const columns = context === "player" ? PLAYER_COLUMNS : GLOBAL_COLUMNS;
+  const columns = context === "player" ? (showAccessColumns ? PLAYER_ACCESS_COLUMNS : PLAYER_COLUMNS) : GLOBAL_COLUMNS;
   const partitionMapsKey = [...new Set(rows.map((row) => vehiclePartitionMap(row.map)).filter(Boolean))].sort().join(",");
 
   useEffect(() => {

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { vehiclesApi, type VehicleRow } from "../../api/vehicles";
+import type { PlayerAccessFilter } from "../../api/bases";
 import { VehicleTable } from "../vehicles/VehicleTable";
 
 function errorText(error: unknown) {
@@ -20,6 +21,7 @@ export function PlayerVehiclesTab({ playerId, playerName, confirmAction }: Playe
   const [storageSupported, setStorageSupported] = useState(false);
   const [message, setMessage] = useState("");
   const [truncated, setTruncated] = useState(false);
+  const [access, setAccess] = useState<PlayerAccessFilter>("owner");
   const requestIdRef = useRef(0);
 
   const load = useCallback(async () => {
@@ -27,12 +29,12 @@ export function PlayerVehiclesTab({ playerId, playerName, confirmAction }: Playe
     setLoading(true);
     setMessage("");
     try {
-      const result = await vehiclesApi.forPlayer(playerId);
+      const result = await vehiclesApi.forPlayer(playerId, { access });
       if (requestIdRef.current !== requestId) return;
-      // Only vehicles the player owns; ones merely shared with them are
-      // managed from their owner's page.
-      setTruncated(Number(result.totalCount || 0) > (result.rows || []).length);
-      setRows((result.rows || []).filter((row) => row.relationship === "Owner"));
+      // The server applies the access filter; re-checking here also covers an
+      // older API that ignores the parameter.
+      const wanted = access === "owner" ? "Owner" : access === "coowner" ? "Co-Owner" : "";
+      setRows((result.rows || []).filter((row) => !wanted || row.relationship === wanted));
       setSupported(result.capabilities?.vehicles !== false);
       setCanEditPermissions(result.capabilities?.vehiclePermissions === true);
       setStorageSupported(result.capabilities?.vehicleStorage === true);
@@ -47,7 +49,7 @@ export function PlayerVehiclesTab({ playerId, playerName, confirmAction }: Playe
     } finally {
       if (requestIdRef.current === requestId) setLoading(false);
     }
-  }, [playerId]);
+  }, [playerId, access]);
 
   useEffect(() => {
     if (playerId) void load();
@@ -60,9 +62,19 @@ export function PlayerVehiclesTab({ playerId, playerName, confirmAction }: Playe
         <div className="panel-title">
           <div>
             <h4>Vehicles</h4>
-            <p className="playerAdmin_note">Vehicles owned by {playerName}. Select a row to inspect its fitted components.</p>
+            <p className="playerAdmin_note">{access === "owner" ? `Vehicles owned by ${playerName}.` : access === "coowner" ? `Vehicles ${playerName} co-owns.` : `Vehicles ${playerName} owns or has owner, co-owner or associate access to (guild and public access are not listed).`} Select a row to inspect its fitted components.</p>
           </div>
-          <button type="button" disabled={loading || !playerId} onClick={() => void load()}>Refresh</button>
+          <div className="action-row">
+            <label className="inline-filter-label">
+              Access
+              <select value={access} onChange={(event) => setAccess(event.target.value as PlayerAccessFilter)}>
+                <option value="owner">Owned</option>
+                <option value="coowner">Co-owner</option>
+                <option value="all">All (owner, co-owner, associate)</option>
+              </select>
+            </label>
+            <button type="button" disabled={loading || !playerId} onClick={() => void load()}>Refresh</button>
+          </div>
         </div>
         {loading
           ? <div className="loading-panel"><span className="spinner" aria-hidden="true" /><strong className="loading-dots">Loading Vehicles</strong></div>
@@ -70,13 +82,14 @@ export function PlayerVehiclesTab({ playerId, playerName, confirmAction }: Playe
             ? <p className={`playerAdmin_note${supported ? " danger" : ""}`}>{message}</p>
             : <>
                 <div className="player-vehicles-summary" aria-label="Player vehicle totals">
-                  <span><strong>{rows.length}</strong> Owned</span>
+                  <span><strong>{rows.length}</strong> {access === "owner" ? "Owned" : access === "coowner" ? "Co-owned" : "Total"}</span>
                 </div>
                 {truncated && <p className="playerAdmin_note danger">This player has more vehicles than can be listed here; some owned vehicles may be missing.</p>}
                 <VehicleTable
                   rows={rows}
                   context="player"
-                  emptyMessage={`${playerName} has no owned vehicles.`}
+                  showAccessColumns={access === "all"}
+                  emptyMessage={`${playerName} has no ${access === "owner" ? "owned " : access === "coowner" ? "co-owned " : ""}vehicles.`}
                   canEditPermissions={canEditPermissions}
                   storageSupported={storageSupported}
                   confirmAction={confirmAction}

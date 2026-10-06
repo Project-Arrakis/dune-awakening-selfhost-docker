@@ -199,6 +199,13 @@ const ENROLL_ALLOWED = new Set([
   "/api/auth/me",
 ]);
 
+// Access filter for a player's Bases/Vehicles lists. Anything unrecognised
+// (including a missing parameter, i.e. every older client) means "all".
+function playerAccessParam(url) {
+  const value = url.searchParams.get("access");
+  return value === "owner" || value === "coowner" ? value : "all";
+}
+
 // Fail-closed responder for a second-factor store error on the login path.
 // Distinguishes a NEWER-version file (deploy rollback: the state is GOOD -- the
 // operator must upgrade, NOT delete) from genuine corruption, so the 503 text
@@ -1909,12 +1916,13 @@ async function handleApi(req, res, path) {
   if (path.match(/^\/api\/players\/[^/]+\/customizations$/) && req.method === "GET") return customizationGrantsRoute(res, path);
   if (path.match(/^\/api\/players\/[^/]+\/journey$/)) return dbPlayerRoute(res, path, (database, playerId) => duneDb.playerJourney(database, playerId, journeyTagsData));
   if (path.match(/^\/api\/players\/[^/]+\/inventory$/)) return dbPlayerRoute(res, path, duneDb.playerInventoryAll);
-  if (path.match(/^\/api\/players\/[^/]+\/vehicles$/) && req.method === "GET") return dbPlayerRoute(res, path, (database, playerId) => duneDb.listVehicles(database, { playerId, pageSize: 200 }));
+  if (path.match(/^\/api\/players\/[^/]+\/vehicles$/) && req.method === "GET") return dbPlayerRoute(res, path, (database, playerId) => duneDb.listVehicles(database, { playerId, pageSize: 200, access: playerAccessParam(url) }));
   if (path.match(/^\/api\/players\/[^/]+\/bases$/) && req.method === "GET") return dbPlayerRoute(res, path, (database, playerId) => duneDb.listBases(database, {
     playerId,
     q: url.searchParams.get("q") || "",
     page: 0,
     pageSize: 5000,
+    access: playerAccessParam(url),
     sortColumn: url.searchParams.get("sortColumn") || "name",
     sortDirection: url.searchParams.get("sortDirection") || "asc"
   }));

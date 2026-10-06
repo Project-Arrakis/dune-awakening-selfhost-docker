@@ -457,7 +457,9 @@ export type BasesListResponse = {
   reason?: string;
 };
 
-type BasesListParams = { q?: string; page?: number; pageSize?: number; sortColumn?: string; sortDirection?: "asc" | "desc" };
+export type PlayerAccessFilter = "owner" | "coowner" | "all";
+
+type BasesListParams = { q?: string; page?: number; pageSize?: number; sortColumn?: string; sortDirection?: "asc" | "desc"; access?: PlayerAccessFilter };
 
 function basesListQuery(params: BasesListParams) {
   const search = new URLSearchParams();
@@ -466,6 +468,7 @@ function basesListQuery(params: BasesListParams) {
   if (params.pageSize) search.set("pageSize", String(params.pageSize));
   if (params.sortColumn) search.set("sortColumn", params.sortColumn);
   if (params.sortDirection) search.set("sortDirection", params.sortDirection);
+  if (params.access && params.access !== "all") search.set("access", params.access);
   const qs = search.toString();
   return qs ? `?${qs}` : "";
 }

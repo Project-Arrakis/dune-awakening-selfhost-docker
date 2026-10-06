@@ -44,7 +44,7 @@ describe("PlayerVehiclesTab", () => {
 
     expect(await screen.findByText("Owned Bike")).toBeInTheDocument();
     expect(screen.getByText("Hagga Basin · Partition 1")).toBeInTheDocument();
-    expect(vehiclesApi.forPlayer).toHaveBeenCalledWith("42");
+    expect(vehiclesApi.forPlayer).toHaveBeenCalledWith("42", { access: "owner" });
     expect(screen.queryByText("Shared Buggy")).not.toBeInTheDocument();
     expect(screen.queryByText("Co-Owner")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Player vehicle totals")).toHaveTextContent("1 Owned");
@@ -53,6 +53,19 @@ describe("PlayerVehiclesTab", () => {
     expect(screen.getByLabelText("Player vehicle totals")).toHaveTextContent(/^1\s*Owned$/);
     fireEvent.click(screen.getByLabelText("Show components for Owned Bike"));
     expect(screen.getByLabelText("Collapse components for Owned Bike")).toBeInTheDocument();
+  });
+
+  it("lets the access filter widen the list to every level, restoring the Access column", async () => {
+    vi.mocked(vehiclesApi.forPlayer).mockResolvedValue(response());
+    render(<PlayerVehiclesTab playerId="42" playerName="Kovalt" confirmAction={confirmAction} />);
+    await screen.findByText("Owned Bike");
+    expect(screen.queryByText("Shared Buggy")).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Access"), { target: { value: "all" } });
+    await waitFor(() => expect(vehiclesApi.forPlayer).toHaveBeenLastCalledWith("42", { access: "all" }));
+    expect(await screen.findByText("Shared Buggy")).toBeInTheDocument();
+    expect(screen.getByText("Co-Owner")).toBeInTheDocument();
+    expect(screen.getByLabelText("Player vehicle totals")).toHaveTextContent("2 Total");
   });
 
   it("refreshes the filtered list on demand", async () => {
