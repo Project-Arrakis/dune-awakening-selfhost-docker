@@ -135,6 +135,8 @@ export type TerrainLayoutMeta = {
 
 /** A mesh from the library, paired with one layout's instances of it. */
 export type TerrainDrawCall = TerrainMesh & {
+  /** Index into `TerrainLibrary.meshes`. */
+  mesh: number;
   instOff: number;
   instN: number;
   overlay: number;

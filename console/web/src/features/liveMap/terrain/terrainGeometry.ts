@@ -21,6 +21,7 @@ export function buildDrawCalls(library: TerrainLibrary, layout: TerrainLayoutMet
     if (!mesh) throw new Error(`layout ${layout.layout} references mesh ${draw.m}, which the library does not have`);
     return {
       ...mesh,
+      mesh: draw.m,
       instOff: draw.off,
       instN: draw.n,
       overlay: draw.overlay,
@@ -47,7 +48,7 @@ export function withOutside(
   const extra = outside.draws.map((draw) => {
     const mesh = library.meshes[draw.m];
     if (!mesh) throw new Error(`outside rock references mesh ${draw.m}, which the library does not have`);
-    return { ...mesh, instOff: base + draw.off, instN: draw.n, overlay: 0, land: false };
+    return { ...mesh, mesh: draw.m, instOff: base + draw.off, instN: draw.n, overlay: 0, land: false };
   });
   return { calls: [...calls, ...extra], instances: merged };
 }
@@ -364,13 +365,72 @@ export function instanceCircles(calls: TerrainDrawCall[], instances: Float32Arra
   return out;
 }
 
-export type CulledDraw = { off: number; n: number };
+/** `n` instances from `off`; the last `far` of them are small enough on screen for the reduced mesh. */
+export type CulledDraw = { off: number; n: number; far: number };
+
+/** Where a mesh's reduced triangles sit in the buffer `buildLodIndices` returns; `ic` 0 means it has none. */
+export type LodRange = { io: number; ic: number };
+
+/**
+ * A reduced triangle list per mesh, for instances only a few pixels across.
+ *
+ * Vertices are snapped to a `grid`^3 lattice across the mesh's box, each cell
+ * keeps the first of its vertices, and triangles that collapse or repeat are
+ * dropped. The list indexes the mesh's own vertices, so positions, normals and
+ * UVs are shared with the full mesh and nothing new ships. Skirt vertices keep
+ * to cells of their own: the shader lowers them by vertex index. Landscape
+ * tiles are never reduced.
+ */
+export function buildLodIndices(library: TerrainLibrary, geometry: Uint8Array, grid: number): { indices: Uint16Array; ranges: LodRange[] } {
+  const pos = new Uint16Array(geometry.slice(0, library.posBytes).buffer);
+  const idxAt = library.posBytes + library.nrmBytes;
+  const idx = new Uint16Array(geometry.slice(idxAt, idxAt + library.idxBytes).buffer);
+  const out = new Uint16Array(idx.length);
+  let n = 0;
+  const axis = (value: number) => Math.min(grid - 1, Math.floor((value * grid) / 65536));
+  const ranges = library.meshes.map((mesh) => {
+    const start = n;
+    if (mesh.ext[0] > LAND_EXTENT && mesh.ext[1] > LAND_EXTENT) return { io: start, ic: 0 };
+    const keep = new Map<number, number>();
+    const to = new Uint16Array(mesh.vn);
+    const skirt = mesh.skirt ?? mesh.vn;
+    for (let v = 0; v < mesh.vn; v++) {
+      const p = (mesh.vo + v) * 3;
+      const cell = axis(pos[p]) + grid * (axis(pos[p + 1]) + grid * axis(pos[p + 2])) + (v >= skirt ? grid * grid * grid : 0);
+      let chosen = keep.get(cell);
+      if (chosen === undefined) {
+        chosen = v;
+        keep.set(cell, v);
+      }
+      to[v] = chosen;
+    }
+    const seen = new Set<number>();
+    for (let i = mesh.io; i < mesh.io + mesh.ic; i += 3) {
+      const a = to[idx[i]], b = to[idx[i + 1]], c = to[idx[i + 2]];
+      if (a === b || b === c || a === c) continue;
+      // One key per unordered triple: vertex indices are under 2^16.
+      const lo = Math.min(a, b, c), hi = Math.max(a, b, c);
+      const key = (lo * 65536 + (a + b + c - lo - hi)) * 65536 + hi;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out[n++] = a;
+      out[n++] = b;
+      out[n++] = c;
+    }
+    return { io: start, ic: n - start };
+  });
+  return { indices: out.slice(0, n), ranges };
+}
 
 /**
  * Choose which instances to draw this frame and pack them into `out`: those
  * whose bounding circle touches the view and is at least `minRadius`. Per
  * instance, not per call -- a call's instances are scattered across the map.
  * Landscape tiles are always kept.
+ *
+ * With `lodRadius`, a call's survivors are packed in two runs: those at least
+ * that large first, then the smaller ones, counted in `far`, which the renderer
+ * draws with the mesh's reduced triangles.
  */
 export function cullInstances(
   calls: TerrainDrawCall[],
@@ -378,10 +438,12 @@ export function cullInstances(
   circles: Float32Array,
   view: TerrainView,
   minRadius: number | ((x: number, y: number) => number),
-  out: Float32Array
+  out: Float32Array,
+  lodRadius?: number | ((x: number, y: number) => number)
 ): { draws: CulledDraw[]; total: number } {
   // A number is one threshold for the whole view; a function gives it per instance.
   const threshold = typeof minRadius === "number" ? () => minRadius : minRadius;
+  const lod = lodRadius === undefined ? null : typeof lodRadius === "number" ? () => lodRadius : lodRadius;
   const draws: CulledDraw[] = [];
   let total = 0;
   for (const call of calls) {
@@ -394,16 +456,22 @@ export function cullInstances(
       runStart = -1;
     };
     const last = call.instOff + call.instN;
-    for (let i = call.instOff; i < last; i++) {
-      let keep = call.land;
-      if (!keep) {
-        const x = circles[i * 3], y = circles[i * 3 + 1], r = circles[i * 3 + 2];
-        keep = x + r >= view.minX && x - r <= view.maxX && y + r >= view.minY && y - r <= view.maxY && r >= threshold(x, y);
+    // Full-detail instances first, then the ones for the reduced mesh.
+    let near = 0;
+    for (const wantFar of lod && !call.land ? [false, true] : [false]) {
+      for (let i = call.instOff; i < last; i++) {
+        let keep = call.land;
+        if (!keep) {
+          const x = circles[i * 3], y = circles[i * 3 + 1], r = circles[i * 3 + 2];
+          keep = x + r >= view.minX && x - r <= view.maxX && y + r >= view.minY && y - r <= view.maxY && r >= threshold(x, y)
+            && (lod === null || (r < lod(x, y)) === wantFar);
+        }
+        if (keep) { if (runStart < 0) runStart = i; } else flush(i);
       }
-      if (keep) { if (runStart < 0) runStart = i; } else flush(i);
+      flush(last);
+      if (!wantFar) near = total - off;
     }
-    flush(last);
-    draws.push({ off, n: total - off });
+    draws.push({ off, n: total - off, far: total - off - near });
   }
   return { draws, total };
 }

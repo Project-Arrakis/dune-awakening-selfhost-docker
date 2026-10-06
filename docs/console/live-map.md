@@ -326,6 +326,16 @@ lazy-loaded so a Hagga Basin user never downloads it.
   Each frame draws the instances whose bounding circle touches the view and is at
   least half a pixel in radius. Not one pixel: POI hulls are assembled from
   sub-pixel pieces and would vanish from the overview.
+- **Small pieces draw with fewer triangles.** Most of those triangles are POI kit
+  pieces of 500-2,300 triangles each, only a few pixels across at map zoom. An
+  instance under 8 pixels in radius is drawn with a reduced triangle list:
+  the mesh's vertices snapped to an 8^3 lattice, one vertex kept per cell,
+  collapsed and repeated triangles dropped. The lists are built at load from
+  the library itself (about 20 ms, 96,000 triangles against 525,000) and index
+  the same vertices, so nothing extra ships. Measured on an RTX 3070 Ti at
+  1000 x 1000: 15-20% less frame time on the whole map, 10-45% tilted, and under
+  0.1% of pixels change. A coarser lattice is faster but visibly thins the blue
+  POI hulls at map zoom; at 8 they lose about a sixth of their pixels there.
 
 ### Rock
 
@@ -612,6 +622,7 @@ Feature-level changes to the Live Map, newest first.
 
 | Release | Date | Change |
 |---|---|---|
+| Unreleased | 2026-10 | Instances under 8 pixels across draw with a reduced triangle list built at load: 15-45% less frame time on the views that were slowest. |
 | Unreleased | 2026-10 | Sand height fields are stored as one shared base plus each layout's differences: terrain assets drop from 16.0 MB to 11.5 MB, and a Coriolis reset re-fetches about 0.24 MB instead of 0.65 MB. |
 | Unreleased | 2026-10 | **Tilt and rotation** of the Deep Desert terrain, with perspective: Tilt slider, Top-Down reset, right-drag and a compass. Markers are projected through the camera and hidden where rock covers them; the sector grid is drawn on the terrain, over rock and cliffs. Tilted, the view reaches 375,000 uu past the map's edge: the shield walls outside the square, hand-placed pieces included and floating upper tiers closed down to the ground, on the game's own sand for the first 90,000 uu and a level plain beyond. **Elevation Lines** layer. Rock is painted with the game's own textures (its normal map baked into the two big wall shapes), lit with its authored normals and a per-instance tone, sealed at load, lit as a solid and textured from the side when tilted; the camera's eye stays above the rock at high zoom. The map frame fits the window's height. Terrain instances are culled per frame and the depth pass stops before shading; assets are 1.9 MB smaller (delta-coded mesh indices, shared placements shipped once). |
 | v1.4.35 | 2026-09-20 | The Coriolis block is read from the game log by pattern instead of from a tail, so the layout no longer goes missing on long-running servers. |
