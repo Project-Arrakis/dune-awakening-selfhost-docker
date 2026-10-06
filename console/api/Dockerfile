@@ -89,6 +89,10 @@ RUN chmod +x /usr/local/bin/entrypoint.sh \
     && useradd -m -s /bin/bash dune \
     && mkdir -p /repo /app \
     && chmod 755 /app /repo
+# The runtime image only ever runs `node /app/src/server.js`; npm/npx are build-time
+# tools. Their bundled packages (brace-expansion, undici, ...) are scanned by
+# trivy-image-scan and re-flag every time the Node base image lags an advisory.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 ENV HOME=/tmp/dune-console-home
 ENV DOCKER_CONFIG=/tmp/dune-console-home/.docker
 USER dune
