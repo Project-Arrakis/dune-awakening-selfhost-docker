@@ -53,6 +53,7 @@ import { buildAutoInviteAuthorizeUrl, createAutoInvitePendingStateStore, autoInv
 import { fetchWithTimeoutAndRetry } from "./services/httpWithRetry.js";
 import { createHandoff } from "./integrations/discord/handoff.js";
 import { actionForRoute, ROUTE_ACTIONS, NAMESPACES } from "./actions.js";
+import { resolvePlayerScope } from "./playerScope.js";
 import { evaluate, loadPolicies, getAllPolicies, setPolicies, resolveAllowedActions, allKnownActions } from "./policy.js";
 import { discordAdapterEnabled, discordWritesEnabled } from "./integrations/discord/adapter.js";
 // [Layer 3 integration audit fix, LOW, issue #1043] The 5 header constants
@@ -531,14 +532,12 @@ async function filterForPlayerScope(session, db, data, getter) {
 }
 
 async function resolvePlayerScopedIds(session, db) {
-  if (!session || !session.userId) return { scoped: true, ids: new Set() };
-  if (session.tier !== "player") return { scoped: false, ids: new Set() };
-  try {
-    const chars = await duneDb.getAllLinkedPlayers(db, session.userId);
-    return { scoped: true, ids: new Set(chars.map(c => c.player_controller_id)) };
-  } catch {
-    return { scoped: true, ids: new Set() };
-  }
+  return resolvePlayerScope(session, (userId) => duneDb.getAllLinkedPlayers(db, userId));
+}
+
+async function playerScopeIds(session, db) {
+  const scope = await resolvePlayerScopedIds(session, db);
+  return scope.scoped ? Array.from(scope.ids) : undefined;
 }
 
 // requestHandler is shared, unmodified, between the main TCP listener and
@@ -1693,8 +1692,7 @@ async function handleApi(req, res, path) {
     return json(res, 200, result);
   }
   if (path === "/api/players") return dbJson(res, async () => {
-    const session = auth.readSession(req);
-    const scope = await resolvePlayerScopedIds(session, db);
+    const controllerIds = await playerScopeIds(session, db);
     return duneDb.listPlayers(db, {
       q: url.searchParams.get("q") || "",
       page: url.searchParams.get("page") || 0,
@@ -1704,16 +1702,21 @@ async function handleApi(req, res, path) {
       sortDirection: url.searchParams.get("sortDirection") || "asc",
       inactiveWeeks: url.searchParams.get("recentOnly") === "1" ? resolvePlayerInactiveWeeks(config.repoRoot) : null,
       bannedFlsIds: bannedFlsIds(config.repoRoot),
-      controllerIds: scope.scoped ? Array.from(scope.ids) : undefined
+      controllerIds
     });
   });
-  if (path === "/api/players/online") return dbJson(res, () => duneDb.listPlayers(db, {
+  if (path === "/api/players/online") return dbJson(res, async () => duneDb.listPlayers(db, {
     status: "online",
     page: url.searchParams.get("page") || 0,
     pageSize: url.searchParams.get("pageSize") || 200,
-    bannedFlsIds: bannedFlsIds(config.repoRoot)
+    bannedFlsIds: bannedFlsIds(config.repoRoot),
+    controllerIds: await playerScopeIds(session, db)
   }));
-  if (path === "/api/players/search") return dbJson(res, () => duneDb.listPlayers(db, { q: url.searchParams.get("q") || "", bannedFlsIds: bannedFlsIds(config.repoRoot) }));
+  if (path === "/api/players/search") return dbJson(res, async () => duneDb.listPlayers(db, {
+    q: url.searchParams.get("q") || "",
+    bannedFlsIds: bannedFlsIds(config.repoRoot),
+    controllerIds: await playerScopeIds(session, db)
+  }));
   // Must stay above the /api/players/<id>/... routes further down, which would
   // otherwise capture "deleted-characters" as a player id.
   if (path === "/api/players/deleted-characters") return dbJson(res, () => duneDb.listDeletedCharacterAssets(db));

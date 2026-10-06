@@ -11024,3 +11024,40 @@ test("base delete passes the capability gate once permission_actor is present", 
   const db = baseDeleteCapabilityDb();
   await assert.rejects(() => deleteBaseCompletely(db, 1), /was not found/);
 });
+
+test("listPlayers fails closed for an empty controllerIds scope (issue #1116)", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("information_schema.columns")) return { rows: [{ column_name: "online_status" }] };
+      return { rows: [] };
+    }
+  };
+  await listPlayers(db, { controllerIds: [] });
+  const playerQueries = calls.filter((c) => c.text.includes("from dune.actors"));
+  assert.ok(playerQueries.length >= 2, "page query and totals query both run");
+  for (const q of playerQueries) assert.match(q.text, /and false/, "every query must be forced empty");
+});
+
+test("listPlayers scopes totalPlayers to controllerIds and leaves undefined unscoped (issue #1116)", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("information_schema.columns")) return { rows: [{ column_name: "online_status" }] };
+      return { rows: [] };
+    }
+  };
+  await listPlayers(db, { controllerIds: [7, 9] });
+  const totals = calls.find((c) => c.text.includes("count(distinct dedupe_key)"));
+  assert.match(totals.text, /player_controller_id::text = any\(\$1::text\[\]\)/);
+  assert.deepEqual(totals.values, [["7", "9"]]);
+  calls.length = 0;
+  await listPlayers(db, {});
+  const unscoped = calls.find((c) => c.text.includes("count(distinct dedupe_key)"));
+  assert.doesNotMatch(unscoped.text, /and false/);
+  assert.doesNotMatch(unscoped.text, /any\(\$1::text\[\]\)/);
+});
