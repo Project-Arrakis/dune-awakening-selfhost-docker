@@ -83,6 +83,21 @@ services:
       DUNE_DISCORD_ADAPTER_ENABLED: "${DUNE_DISCORD_ADAPTER_ENABLED:-false}"
       DUNE_DISCORD_ADAPTER_TOKEN: "${DUNE_DISCORD_ADAPTER_TOKEN:-}"
       DUNE_DISCORD_ADAPTER_TOKEN_FILE: "${DUNE_DISCORD_ADAPTER_TOKEN_FILE:-}"
+      # Write bridge (issue #215): found missing from this allowlist via live
+      # UAT on dune-dev -- the exact same bug class this file's own
+      # CONSOLE_TOTP_ENABLED/hosted-bot-OAuth comments below already
+      # document repeatedly ("never wired through here... unreachable in any
+      # real docker-compose deployment regardless of .env"). Without these,
+      # DUNE_DISCORD_WRITES_ENABLED=1 and a configured actor secret in .env
+      # have zero effect -- the write bridge stays completely disabled with
+      # no error indicating why, since the values never reach the running
+      # process at all. Confirmed live: applying this same fix directly to
+      # dune-dev's running deployment made a full, real write/preview ->
+      # write/execute round trip succeed against its live Core instance for
+      # the first time.
+      DUNE_DISCORD_WRITES_ENABLED: "${DUNE_DISCORD_WRITES_ENABLED:-}"
+      DUNE_DISCORD_ACTOR_SECRET: "${DUNE_DISCORD_ACTOR_SECRET:-}"
+      DUNE_DISCORD_ACTOR_SECRET_FILE: "${DUNE_DISCORD_ACTOR_SECRET_FILE:-}"
       # Hosted-bot console-initiated OAuth registration (Tasks 2/3/6, #739):
       # found missing from this allowlist during the final-review re-review
       # pass -- the exact same bug class this file's own CONSOLE_TOTP_ENABLED
