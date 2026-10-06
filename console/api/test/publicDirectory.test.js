@@ -11,6 +11,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import {
   buildHeartbeatPayload,
   collectPlayerPortalContext,
@@ -153,6 +155,51 @@ test("player portal map partitions use configured Sietch display names", async (
     assert.deepEqual(result.partitions, [{ map: "HaggaBasin", partitionId: 1, name: "Sietch New" }]);
   } finally {
     files.cleanup();
+  }
+});
+
+test("all supported native Custom Settings are public, bounded by the explicit allowlist", () => {
+  const files = fixture();
+  const path = join(files.generatedDir, "gameplay-profile.ini");
+  const script = fileURLToPath(new URL("../../../runtime/scripts/usersettings.py", import.meta.url));
+  const fields = JSON.parse(execFileSync("python3", ["-c", "import importlib.util,json,sys; s=importlib.util.spec_from_file_location('settings',sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(json.dumps(list(m.SERVER_CUSTOM_FIELDS.values())))", script], { encoding: "utf8" }));
+  try {
+    const header = "[ServerCustomGlobal:/Script/DuneSandbox.UserServerCustomSettings]";
+    writeFileSync(path, [header, ...fields.map(([, key, value]) => `${key}=${value}`)].join("\n"));
+    assert.deepEqual(readPublicModifiers(path), {});
+    const enums = { Limited: "FullPVP", Default: "None", All: "Backpack", DependsOnSecurityZone: "NeverAllowOtherPlayers" };
+    writeFileSync(path, [header, ...fields.map(([, key, value]) => `${key}=${value === "True" ? "False" : value === "False" ? "True" : enums[value] || Number(value) + 1}`), "DifficultyLevel=Custom", "Bgd.ServerLoginPassword=private", "UnknownSecret=private"].join("\n"));
+    const metadata = readPublicModifierMetadata(path);
+    assert.equal(Object.keys(metadata.modifiers).length, fields.length);
+    assert.equal(fields.length, 45);
+    assert.equal(metadata.modifierGroups[0].label, "Global");
+    assert.equal(JSON.stringify(metadata).includes("private"), false);
+  } finally {
+    rmSync(files.repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("native Custom Settings share existing global/map/partition groups and preserve zero values", () => {
+  const files = fixture();
+  const path = join(files.generatedDir, "gameplay-profile.ini");
+  try {
+    writeFileSync(path, [
+      "[ServerCustomGlobal:/Script/DuneSandbox.UserServerCustomSettings]", "CraftingCost=0", "BaseBackupToolTimeRestriction=0.2", "bAllowDynamicBuildingDamage=False",
+      "[ServerCustomMap:Survival_1:/Script/DuneSandbox.UserServerCustomSettings]", "FiefdomLimit=6",
+      "[ServerCustomPartition:Survival_1:31:/Script/DuneSandbox.UserServerCustomSettings]", "BuildingPieceLimitMultiplier=20",
+      "[ServerCustomPartition:DeepDesert_1:8:/Script/DuneSandbox.UserServerCustomSettings]", "BuildingPieceLimitMultiplier=5"
+    ].join("\n"));
+    const metadata = readPublicModifierMetadata(path);
+    assert.equal(metadata.modifiers["Crafting Cost"], "0x");
+    assert.equal(metadata.modifiers["Base Reconstruction Cooldown"], "12 minutes");
+    assert.equal(metadata.modifiers["Environmental Building Damage"], "Disabled");
+    assert.equal(metadata.modifiers["Building Piece Limit"], "Varies: 20x, 5x");
+    assert.deepEqual(metadata.modifierGroups.map(({ scope, map, partitionId }) => ({ scope, map, partitionId })), [
+      { scope: "global", map: "", partitionId: null }, { scope: "map", map: "Survival_1", partitionId: null },
+      { scope: "partition", map: "Survival_1", partitionId: 31 }, { scope: "partition", map: "DeepDesert_1", partitionId: 8 }
+    ]);
+  } finally {
+    rmSync(files.repoRoot, { recursive: true, force: true });
   }
 });
 
@@ -533,12 +580,52 @@ test("directory snapshot uses compact database aggregates and local metadata", a
       publicMetadata: {
         modifiers: {},
         modifierGroups: [],
-        progression: { characters: 0, averageLevel: 0, highestLevel: 0 }
+        progression: { characters: 0, averageLevel: 0, highestLevel: 0 },
+        transfers: {
+          incomingPolicy: 0,
+          outgoingAllowed: true,
+          freeFrom: true,
+          freeTo: true,
+          worldClosed: false,
+          worldClosingSoon: false
+        }
       }
     });
     assert.equal(readGameBuild(files.repoRoot), "2036754");
     assert.equal(readConfiguredCapacity(files.repoRoot), 120);
     assert.equal(readConfiguredCapacity(files.repoRoot, 1), 60);
+  } finally {
+    files.cleanup();
+  }
+});
+
+test("directory snapshot publishes only the public character transfer rules", async () => {
+  const files = fixture();
+  try {
+    writeFileSync(join(files.generatedDir, "director-character-transfer.ini"), [
+      "[Battlegroup]",
+      "AcceptOutgoingCharacterTransfers=false",
+      "IncomingCharacterTransfers=20",
+      "FreeToTransferCharactersFrom=true",
+      "FreeToTransferCharactersTo=false",
+      "ForceIsWorldClosed=false",
+      "ForceIsWorldClosingSoon=true",
+      "ExportCharacterTimeout=1234"
+    ].join("\n"));
+    const snapshot = await collectDirectorySnapshot(
+      { repoRoot: files.repoRoot },
+      fakeDb(),
+      readDirectorySettings(files.repoRoot, {})
+    );
+    assert.deepEqual(snapshot.publicMetadata.transfers, {
+      incomingPolicy: 20,
+      outgoingAllowed: false,
+      freeFrom: true,
+      freeTo: false,
+      worldClosed: false,
+      worldClosingSoon: true
+    });
+    assert.equal(JSON.stringify(snapshot.publicMetadata).includes("1234"), false);
   } finally {
     files.cleanup();
   }

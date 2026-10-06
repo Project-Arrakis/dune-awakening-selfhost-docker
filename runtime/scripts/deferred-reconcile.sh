@@ -3,6 +3,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
+[ -f .env ] && . ./.env
+# shellcheck source=runtime/scripts/lib/postgres.sh
+source runtime/scripts/lib/postgres.sh
+
 timeout_seconds="${DUNE_DEFERRED_RECONCILE_TIMEOUT_SECONDS:-900}"
 poll_seconds="${DUNE_DEFERRED_RECONCILE_POLL_SECONDS:-5}"
 deadline=$(( $(date +%s) + timeout_seconds ))
@@ -18,7 +22,7 @@ db_bool_true() {
 
 partition_ready() {
   local partition_id="$1"
-  docker exec dune-postgres psql -U dune -d dune -Atc "
+  psql_app_value "
     select coalesce(fs.ready::text, 'f')
     from dune.world_partition wp
     left join dune.farm_state fs on fs.server_id = wp.server_id
@@ -49,11 +53,26 @@ wait_for_core_ready || {
   exit 0
 }
 
-runtime/scripts/spicefield-overrides.sh apply || true
-runtime/scripts/sietches.sh reconcile Survival_1 || true
+# Each step is non-fatal -- one failure must not cost the others -- but a
+# bare `|| true` also hid them completely. A reconcile that refuses because
+# Postgres is down looked exactly like one that ran and found nothing to do.
+step() {
+  local label="$1"
+  shift
+  local rc=0
+  "$@" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    echo "Deferred reconcile: $label ok."
+  else
+    echo "Deferred reconcile: $label FAILED with exit $rc." >&2
+  fi
+}
+
+step "spice-field overrides" runtime/scripts/spicefield-overrides.sh apply
+step "Survival_1 dimensions" runtime/scripts/sietches.sh reconcile Survival_1
 if runtime/scripts/map-modes.sh is-always-on DeepDesert_1 >/dev/null 2>&1; then
-  runtime/scripts/sietches.sh reconcile DeepDesert_1 || true
+  step "DeepDesert_1 dimensions" runtime/scripts/sietches.sh reconcile DeepDesert_1
 else
   echo "Deferred reconcile skipped DeepDesert_1 because its map mode is not always-on."
 fi
-runtime/scripts/publish-sietch-overrides.sh once || true
+step "sietch override publish" runtime/scripts/publish-sietch-overrides.sh once

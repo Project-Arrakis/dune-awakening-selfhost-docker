@@ -8,6 +8,7 @@ import re
 import sys
 import tempfile
 from base64 import b64decode
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 
 
@@ -176,6 +177,10 @@ RETIRED_USERGAME_FIELDS = {
     "cutteray_hem_multiplier_per_node_tier_table": ("/Script/DuneSandbox.DuneGameMode", "CutterayHemMultiplierPerNodeTierTable", "1.0"),
     "global_damage_to_npcs_multiplier": ("/Script/DuneSandbox.DuneGameMode", "m_GlobalDamageToNpcsMultiplier", "1.0"),
     "building_restriction_limits_enabled": (BUILDING_SETTINGS_SECTION, "m_bBuildingRestrictionLimitsEnabled", "True"),
+    # Patch 1.5 replaced this seconds-based UserGame control with the
+    # hours-based ServerCustomSettings field below. When both are present the
+    # game displays the new value but enforces this legacy one.
+    "base_backup_tool_time_restriction_seconds": (BUILDING_SETTINGS_SECTION, "m_BaseBackupToolTimeRestrictionInSeconds", "604800"),
     # Patch 1.5 moved this server setting to ServerCustomSettings.ini. Reserve
     # the former key so saved profiles from older releases cannot leak it back
     # into the server's UserGame.ini after migration.
@@ -230,6 +235,69 @@ SERVER_CUSTOM_FIELDS = {
     "landsraad_specialization_xp_multiplier": (SERVER_CUSTOM_SETTINGS_SECTION, "LandsraadSpecializationXpMultiplier", "1.000000"),
     "landsraad_faction_standing_multiplier": (SERVER_CUSTOM_SETTINGS_SECTION, "LandsraadFactionStandingMultiplier", "1.000000"),
     "landsraad_disable_decree_reroll_limit": (SERVER_CUSTOM_SETTINGS_SECTION, "bLandsraadDisableDecreeRerollLimit", "False"),
+}
+
+# Constraints published by Funcom alongside UserServerCustomSettings.ini in the
+# installed server build. Keep these keyed by our stable field ids so the same
+# contract drives CLI/API validation and Console metadata.
+SERVER_CUSTOM_ENUM_VALUES = {
+    "pvp_mode": ("NoPVP", "Limited", "FullPVP"),
+    "drop_equipment_on_death": ("All", "Backpack", "Default", "None"),
+    "sandworm_consequences": ("All", "Backpack", "Default", "None"),
+    "player_death_loot_rule": (
+        "DependsOnSecurityZone",
+        "NeverAllowOtherPlayers",
+        "AlwaysAllowOtherPlayers",
+    ),
+}
+
+SERVER_CUSTOM_NUMERIC_BOUNDS = {
+    **{field_id: (0.1, 10.0) for field_id in (
+        "gathering_amount",
+        "water_extraction_rate",
+        "loot_respawn_speed",
+        "resource_respawn_speed",
+        "inventory_volume_multiplier",
+        "player_damage_to_player",
+        "player_damage_to_npc",
+        "player_damage_to_vehicle",
+        "npc_health",
+        "npc_damage_to_player",
+        "npc_damage_to_npc",
+        "npc_respawn_multiplier",
+        "player_stamina_drain",
+        "player_shield_damage_absorption_multiplier",
+        "npc_shield_damage_absorption_multiplier",
+    )},
+    **{field_id: (0.0, 10.0) for field_id in (
+        "crafting_cost",
+        "building_cost_multiplier",
+        "fuel_burn_time_multiplier",
+        "pvp_damage_structures",
+        "global_xp_multiplier",
+        "combat_xp",
+        "gathering_xp",
+        "mission_xp",
+        "item_durability_drain_multiplier",
+        "intel_points_gain_multiplier",
+        "heat_buildup_rate",
+        "thirst_multiplier",
+        "landsraad_contribution_multiplier",
+        "landsraad_specialization_xp_multiplier",
+        "landsraad_faction_standing_multiplier",
+    )},
+    "crafting_time_multiplier": (0.0, 5.0),
+    "fiefdom_limit": (0, 10),
+    # Field observation: values below 0.2 are clamped to 0.2 by the game.
+    "base_backup_tool_time_restriction": (0.2, None),
+    # Funcom documents 10 as the normal upper range, but the server accepts
+    # larger values and operators use them for large bases. Keep the real
+    # lower bound while exposing the documented range separately as guidance.
+    "building_piece_limit_multiplier": (0.1, None),
+}
+
+SERVER_CUSTOM_RECOMMENDED_NUMERIC_BOUNDS = {
+    "building_piece_limit_multiplier": (0.1, 10.0),
 }
 
 SERVER_CUSTOM_FIELD_CATEGORIES = {
@@ -424,7 +492,7 @@ FIELD_DESCRIPTIONS = {
     "water_consumption_in_storm_multiplier": "Additional water drain during sandstorms.",
     "players_drop_loot_on_defeat": "Whether a player drops loot when downed/defeated (not a full death).",
     "players_drop_loot_on_death": "Whether a player drops their inventory as loot when killed (PvP looting).",
-    "base_backup_tool_time_restriction_seconds": "Cooldown before the Base Backup tool can be used again on the same base, in seconds. Funcom's default is 604800 (7 days).",
+    "base_backup_tool_time_restriction": "Cooldown in hours before the Base Reconstruction Tool can pack the same base again. The game-enforced minimum is 0.2 hours (12 minutes).",
     "deathstill_conversion_time_override": "Overrides how long it takes to process a body in a Deathstill. Value is the length of the cycle in seconds.",
     "double_difficulty_loot_enabled": "Gives double loot when the encounter difficulty is above 0. Field-confirmed with dungeon loot.",
     "regenerate_per_player_loot_enabled": "Whether per-player loot is regenerated each time a player interacts with a loot container. Field-confirmed. Enabling this can make a single container farmable indefinitely.",
@@ -434,6 +502,7 @@ FIELD_DESCRIPTIONS = {
     "building_blueprint_max_extensions": "Maximum number of times a blueprinted building can be extended.",
     "base_backup_max_extensions": "Maximum number of times a Base Backup can be extended.",
     "building_restriction_limits_enabled": "Enforces building restriction limits (e.g. disallowing construction inside dungeons/restricted areas).",
+    "building_piece_limit_multiplier": "Scales building-piece limits, including lights. Values above Funcom's recommended range are supported, but may increase server and client load.",
     "force_pvp_all_partitions": "If enabled, forces PvP on for every map partition regardless of each partition's individual PvP/PvE setting.",
     "security_zones_enabled": "Master toggle for Security Zones. Disable to allow PvP and combat abilities everywhere on the map (no safe zones).",
     "coriolis_auto_spawn_enabled": "Whether Coriolis storms spawn automatically on their normal cycle.",
@@ -443,7 +512,7 @@ FIELD_DESCRIPTIONS = {
     "coriolis_cycle_start_hour": "UTC hour (0-23). Regional master schedules: Europe 05, North America 10, South America 08, Asia 09, and Oceania 19.",
     "coriolis_cycle_start_minute": "UTC minute (0-59) for the Coriolis cycle start.",
     "coriolis_cycle_start_seed_index": "Funcom's seed index for the base Coriolis cycle. Leave at 0 unless intentionally coordinating a different cycle seed.",
-    "spice_spawning_active": "Intended as a master on/off for the spice spawning system, but observed on a live server to NOT reliably stop new spice fields from spawning when set to False -- new fields continued to appear during testing. Treat this field as unreliable until further investigated; do not rely on it to fully halt spawning. See issue #998 for the evidence and follow-up.",
+    "spice_spawning_active": "Intended to enable or disable the spice spawning system. In live testing, setting this to False did not reliably stop new fields from appearing. Do not rely on this setting to halt all spawning.",
     "spice_prime_rate_seconds": "Seconds a spice field spends 'priming' (visible but not yet harvestable) before becoming active. Lower = fields become harvestable sooner after appearing.",
     "spice_manager_tick_rate_seconds": "How often (seconds) the spice manager re-evaluates spawn/despawn state. Lower = more responsive but more frequent server work.",
     "spice_manager_refresh_rate_seconds": "How often (seconds) the spice manager does a full refresh pass. Distinct from the tick rate above -- this is the slower, heavier pass.",
@@ -469,6 +538,7 @@ FIELD_LABELS = {
     "guild_settings_max_guild_members_allowed": "Max Guild Members Allowed",
     "guild_settings_max_pending_invites": "Max Pending Guild Invites",
     "augment_jackpot_roll_percentage": "Augment Jackpot Roll Threshold",
+    "base_backup_tool_time_restriction": "Base Reconstruction Cooldown (Hours)",
 }
 
 # Maps a field id to the client-side ini filename it also must be applied to
@@ -482,6 +552,7 @@ CLIENT_FILE_REQUIRED = {
     # building values to match on every player's client.
     "max_landclaim_segments": "Game.ini",
     "building_restriction_limits_enabled": "Game.ini",
+    "base_backup_tool_time_restriction": "Game.ini",
     "hydration_enabled": "Game.ini",
     "water_consumption_rate": "Game.ini",
     "player_starting_water": "Game.ini",
@@ -491,7 +562,6 @@ CLIENT_FILE_REQUIRED = {
     "water_consumption_in_storm_multiplier": "Game.ini",
     "players_drop_loot_on_defeat": "Game.ini",
     "players_drop_loot_on_death": "Game.ini",
-    "base_backup_tool_time_restriction_seconds": "Game.ini",
     "player_inventory_starting_size": "Game.ini",
     "player_inventory_starting_volume_capacity": "Game.ini",
 }
@@ -560,7 +630,6 @@ MAP_FIELDS = {
     "max_landclaim_segments": (BUILDING_SETTINGS_SECTION, "m_MaxNumLandclaimSegments", "6"),
     "building_blueprint_max_extensions": (BUILDING_SETTINGS_SECTION, "m_BuildingBlueprintMaxExtensions", "4"),
     "base_backup_max_extensions": (BUILDING_SETTINGS_SECTION, "m_BaseBackupMaxExtensions", "8"),
-    "base_backup_tool_time_restriction_seconds": (BUILDING_SETTINGS_SECTION, "m_BaseBackupToolTimeRestrictionInSeconds", "604800"),
     "mitigate_all_sandstorm_damage": (BUILDING_SETTINGS_SECTION, "m_bMitigateAllSandstormDamage", "False"),
     "fallback_default_building_health": (BUILDING_SETTINGS_SECTION, "m_FallbackDefaultBuildingHealth", "5000.000000"),
     "fallback_default_placeable_health": (BUILDING_SETTINGS_SECTION, "m_FallbackDefaultPlaceableHealth", "1000.000000"),
@@ -974,14 +1043,21 @@ def parse_profile_text(text: str) -> dict:
 
 def read_profile() -> dict:
     if not PROFILE_PATH.exists():
-        return seed_profile_from_legacy_config()
-    return parse_profile_text(PROFILE_PATH.read_text(encoding="utf-8", errors="replace"))
+        profile = seed_profile_from_legacy_config()
+    else:
+        profile = parse_profile_text(PROFILE_PATH.read_text(encoding="utf-8", errors="replace"))
+    migrate_legacy_base_backup_cooldown(profile)
+    return profile
 
 
 def read_profile_text() -> str:
     if PROFILE_PATH.exists():
-        return PROFILE_PATH.read_text(encoding="utf-8", errors="replace")
-    return serialize_profile(seed_profile_from_legacy_config())
+        profile = parse_profile_text(PROFILE_PATH.read_text(encoding="utf-8", errors="replace"))
+    else:
+        profile = seed_profile_from_legacy_config()
+    migrate_legacy_base_backup_cooldown(profile)
+    strip_retired_usergame_profile_lines(profile)
+    return serialize_profile(profile)
 
 
 def preflight_persisted_settings() -> int:
@@ -1017,15 +1093,15 @@ def preflight_persisted_settings() -> int:
 
 
 def write_profile(profile: dict) -> None:
+    migrate_legacy_base_backup_cooldown(profile)
     strip_retired_usergame_profile_lines(profile)
+    normalize_profile_blank_lines(profile)
     prune_empty_profile_sections(profile)
     atomic_write_text(PROFILE_PATH, serialize_profile(profile))
 
 
 def write_profile_text(content: str) -> None:
-    PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    parse_profile_text(content)
-    atomic_write_text(PROFILE_PATH, content if content.endswith("\n") else content + "\n")
+    write_profile(parse_profile_text(content))
 
 
 def serialize_profile(profile: dict) -> str:
@@ -1037,6 +1113,38 @@ def serialize_profile(profile: dict) -> str:
         lines.append(f"[{section['header']}]")
         lines.extend(section.get("lines", []))
     return "\n".join(lines).rstrip() + "\n"
+
+
+def normalize_profile_blank_lines(profile: dict) -> None:
+    """Clean up blank-line runs inside profile blocks.
+
+    profile_remove_key() drops a key's line but never the blank line an earlier
+    append had trapped beside it, so before the profile_set_key() fix every
+    add/remove cycle on an array entry (the PvP/PvE partition selectors, the Deep
+    Desert matchmaker override) grew its block by one permanent blank line --
+    profiles written by those releases arrive here with long orphan runs.
+
+    A block's leading and trailing blanks carry no meaning -- serialize_profile()
+    owns the single separator between blocks -- so drop them, and collapse
+    interior runs to one.
+
+    Interior runs, not every interior blank: a single blank inside a block is
+    deliberate spacing an admin is entitled to keep, both between the comment
+    paragraphs the UserEngine Advanced tab renders and between their own custom
+    cvars (test_blank_line_between_custom_cvars_survives_round_trip pins that
+    down). Only a *run* is unambiguously machine-made, and with the
+    profile_set_key() fix above no new orphan can appear to grow one.
+    """
+    for block in profile.get("sections", []):
+        cleaned: list[str] = []
+        for raw in block.get("lines", []):
+            if raw.strip():
+                cleaned.append(raw)
+            elif cleaned and cleaned[-1].strip():
+                cleaned.append("")
+        while cleaned and not cleaned[-1].strip():
+            cleaned.pop()
+        block["lines"] = cleaned
 
 
 def prune_empty_profile_sections(profile: dict) -> None:
@@ -1064,6 +1172,60 @@ def strip_retired_usergame_profile_lines(profile: dict) -> None:
             raw for raw in block.get("lines", [])
             if not ((parsed := split_ini_assignment(raw)) and parsed[1] in keys)
         ]
+
+
+def migrate_legacy_base_backup_cooldown(profile: dict) -> None:
+    """Move explicit seconds-based cooldowns to native hours-based scopes.
+
+    When both keys are present, the game reports the new value in its settings
+    screen while enforcing the old UserGame value. Preserve each old scoped
+    override once, clamp it to the game's confirmed 0.2-hour minimum, then let
+    retired-key cleanup remove the conflicting line. A new value explicitly
+    saved at the same scope always wins.
+    """
+    legacy_section, legacy_key, _legacy_default = RETIRED_USERGAME_FIELDS[
+        "base_backup_tool_time_restriction_seconds"
+    ]
+    new_section, new_key, _new_default = SERVER_CUSTOM_FIELDS[
+        "base_backup_tool_time_restriction"
+    ]
+    scope_map = {
+        "Global": "server_custom_global",
+        "Map": "server_custom_map",
+        "Partition": "server_custom_partition",
+    }
+    migrations: list[tuple[str, str, str, str]] = []
+    for block in list(profile.get("sections", [])):
+        target_scope = scope_map.get(str(block.get("scope", "")))
+        if target_scope is None or str(block.get("ini_section", "")) != legacy_section:
+            continue
+        for raw in block.get("lines", []):
+            parsed = split_ini_assignment(raw)
+            if not parsed or parsed[1] != legacy_key:
+                continue
+            try:
+                seconds = float(parsed[2].strip())
+            except ValueError:
+                continue
+            if not math.isfinite(seconds) or seconds < 0:
+                continue
+            target_map = str(block.get("map", ""))
+            target_partition = str(block.get("partition", ""))
+            if profile_get_key(profile, target_scope, new_section, new_key, target_map, target_partition) is not None:
+                continue
+            hours = max(0.2, seconds / 3600.0)
+            migrations.append((target_scope, target_map, target_partition, f"{hours:.12g}"))
+            break
+    for target_scope, target_map, target_partition, serialized in migrations:
+        profile_set_key(
+            profile,
+            target_scope,
+            new_section,
+            new_key,
+            serialized,
+            target_map,
+            target_partition,
+        )
 
 
 def sorted_profile_sections(sections: list[dict]) -> list[dict]:
@@ -1367,10 +1529,18 @@ def profile_set_key(profile: dict, scope: str, section: str, key: str, value: st
         if current_prefix == prefix:
             target_index = index
     line = f"{target_left}={value}"
-    if target_index is None:
-        block["lines"].append(line)
-    else:
+    if target_index is not None:
         block["lines"][target_index] = line
+        return
+    # parse_profile_text() attributes the blank line that separates this block from
+    # the next one to THIS block, so a plain append lands *after* that blank.
+    # serialize_profile() then writes a fresh separator, and the old one is trapped
+    # inside the block for good -- one more orphan blank line for every key ever
+    # appended here. Insert ahead of any trailing blanks so nothing accumulates.
+    insert_at = len(block["lines"])
+    while insert_at and not block["lines"][insert_at - 1].strip():
+        insert_at -= 1
+    block["lines"].insert(insert_at, line)
 
 
 def profile_remove_key(profile: dict, scope: str, section: str, key: str, map_name: str = "", partition_id: str = "", prefixes: set[str] | None = None, value: str | None = None) -> None:
@@ -1801,6 +1971,55 @@ def validate_profile_port_ranges(profile: dict) -> None:
         )
 
 
+def normalize_server_custom_value(field_id: str, value: str) -> str:
+    """Validate one native ServerCustomSettings value and canonicalize enums.
+
+    Existing materialized files remain readable even if an older build wrote a
+    value outside today's contract. Validation applies when an administrator
+    explicitly saves a field through any supported settings surface.
+    """
+    _section, key, default = SERVER_CUSTOM_FIELDS[field_id]
+    candidate = str(value).strip()
+    choices = SERVER_CUSTOM_ENUM_VALUES.get(field_id)
+    if choices:
+        canonical = next((choice for choice in choices if choice.casefold() == candidate.casefold()), None)
+        if canonical is None:
+            raise SystemExit(f"{key} must be one of: {', '.join(choices)}.")
+        return canonical
+
+    field_type = FIELD_TYPE_OVERRIDES.get(field_id, infer_field_type(default))
+    if field_type == "boolean":
+        if candidate.casefold() == "true":
+            return "True"
+        if candidate.casefold() == "false":
+            return "False"
+        raise SystemExit(f"{key} must be True or False.")
+
+    if field_type == "integer":
+        try:
+            parsed: int | float = int(candidate)
+        except ValueError as exc:
+            raise SystemExit(f"{key} must be a whole number.") from exc
+    elif field_type == "number":
+        try:
+            parsed = float(candidate)
+        except ValueError as exc:
+            raise SystemExit(f"{key} must be a number.") from exc
+        if not math.isfinite(parsed):
+            raise SystemExit(f"{key} must be a finite number.")
+    else:
+        return candidate
+
+    minimum, maximum = SERVER_CUSTOM_NUMERIC_BOUNDS.get(field_id, (None, None))
+    if minimum is not None and maximum is not None and (parsed < minimum or parsed > maximum):
+        raise SystemExit(f"{key} must be between {minimum:g} and {maximum:g}.")
+    if minimum is not None and parsed < minimum:
+        raise SystemExit(f"{key} must be at least {minimum:g}.")
+    if maximum is not None and parsed > maximum:
+        raise SystemExit(f"{key} must be at most {maximum:g}.")
+    return candidate
+
+
 def set_profile_field(profile: dict, scope: str, map_name: str, partition_id: str, field_id: str, value: str) -> None:
     if scope in {"server_custom_global", "server_custom_map", "server_custom_partition"}:
         if field_id not in SERVER_CUSTOM_FIELDS:
@@ -1810,7 +2029,15 @@ def set_profile_field(profile: dict, scope: str, map_name: str, partition_id: st
         if scope == "server_custom_partition" and not target_partition:
             raise SystemExit("Partition Server Custom Settings save requires a partition id.")
         section, key, _default = SERVER_CUSTOM_FIELDS[field_id]
-        profile_set_key(profile, scope, section, key, value, target_map, target_partition)
+        profile_set_key(
+            profile,
+            scope,
+            section,
+            key,
+            normalize_server_custom_value(field_id, value),
+            target_map,
+            target_partition,
+        )
         return
     if field_id in LANDSRAAD_DATA_FIELDS:
         if scope != "global":
@@ -2095,6 +2322,38 @@ def server_custom_profile_value(profile: dict, field_id: str, map_name: str, par
     return value, configured
 
 
+def configured_base_backup_cooldown_seconds(profile: dict, map_name: str = "", partition_id: str = "") -> int | None:
+    """Mirror an explicit native cooldown into the game's legacy seconds gate.
+
+    The native hours setting is still emitted to ServerCustomSettings.ini. The
+    older BuildingSettings property remains present in the shipped game and is
+    also used by clients for the Reconstruction Tool's repeat-pickup gate.
+    Omit both legacy overrides when the operator has not configured this field.
+    """
+    section, key, _default = SERVER_CUSTOM_FIELDS["base_backup_tool_time_restriction"]
+    value = profile_get_key(profile, "server_custom_global", section, key)
+    if map_name:
+        target_map = canonical_map(map_name)
+        map_value = profile_get_key(profile, "server_custom_map", section, key, target_map)
+        if map_value is not None:
+            value = map_value
+        if partition_id:
+            partition_value = profile_get_key(
+                profile, "server_custom_partition", section, key, target_map, str(partition_id)
+            )
+            if partition_value is not None:
+                value = partition_value
+    if value is None:
+        return None
+    try:
+        hours = Decimal(str(value).strip())
+    except InvalidOperation as error:
+        raise ValueError(f"Invalid base reconstruction cooldown: {value}") from error
+    if not hours.is_finite() or hours < Decimal("0.2"):
+        raise ValueError(f"Invalid base reconstruction cooldown: {value}")
+    return int((hours * 3600).to_integral_value(rounding=ROUND_HALF_UP))
+
+
 def legacy_building_restriction_value(profile: dict, map_name: str, partition_id: str = "") -> tuple[str | None, bool]:
     section, key, _default = RETIRED_USERGAME_FIELDS["building_restriction_limits_enabled"]
     value = None
@@ -2210,8 +2469,12 @@ def metadata() -> int:
     def row(scope: str, field_id: str, spec: tuple[str | None, str | None, str | None]) -> dict:
         section, key, default = spec
         minimum, maximum = CORIOLIS_CYCLE_START_BOUNDS.get(field_id, (None, None))
+        recommended_minimum, recommended_maximum = (None, None)
         if field_id == "augment_jackpot_roll_percentage":
             minimum, maximum = AUGMENT_JACKPOT_ROLL_BOUNDS
+        if scope == "serverCustom":
+            minimum, maximum = SERVER_CUSTOM_NUMERIC_BOUNDS.get(field_id, (None, None))
+            recommended_minimum, recommended_maximum = SERVER_CUSTOM_RECOMMENDED_NUMERIC_BOUNDS.get(field_id, (None, None))
         return {
             "scope": scope,
             "id": field_id,
@@ -2225,6 +2488,9 @@ def metadata() -> int:
             "label": FIELD_LABELS.get(field_id, ""),
             "minimum": minimum,
             "maximum": maximum,
+            "recommendedMinimum": recommended_minimum,
+            "recommendedMaximum": recommended_maximum,
+            "options": list(SERVER_CUSTOM_ENUM_VALUES.get(field_id, ())) if scope == "serverCustom" else [],
         }
 
     # A login password has no public default and is managed by the Sietch
@@ -2615,6 +2881,11 @@ def compiled_usergame_ini(profile: dict, map_name: str, partition_id: str | None
                 section_lines.setdefault(section, []).append(f"+m_PvpEnabledPartitions={target_partition}")
             if truthy(values.get("partition_pve_enabled", "False")):
                 section_lines.setdefault(section, []).append(f"+m_PveEnabledPartitions={target_partition}")
+    cooldown_seconds = configured_base_backup_cooldown_seconds(profile, target_map, target_partition)
+    if cooldown_seconds is not None:
+        section_lines.setdefault(BUILDING_SETTINGS_SECTION, []).append(
+            f"m_BaseBackupToolTimeRestrictionInSeconds={cooldown_seconds}"
+        )
     scopes = [("global", "", ""), ("map", target_map, "")]
     if target_partition:
         scopes.append(("partition", target_map, target_partition))
@@ -2672,8 +2943,14 @@ def client_game_ini(profile: dict, map_name: str, partition_id: str | None = Non
             continue
         section_lines.setdefault(section, []).append(f"{key}={value}")
 
-    # The server-side control moved to ServerCustomSettings.ini in Patch 1.5,
-    # while clients still consume the matching legacy Game.ini property.
+    # The native server control uses hours, but the Reconstruction Tool's
+    # repeat-pickup gate still needs the matching legacy seconds value on both
+    # the server and each client. Only export an explicit operator override.
+    cooldown_seconds = configured_base_backup_cooldown_seconds(profile, target_map, target_partition)
+    if cooldown_seconds is not None:
+        section_lines.setdefault(BUILDING_SETTINGS_SECTION, []).append(
+            f"m_BaseBackupToolTimeRestrictionInSeconds={cooldown_seconds}"
+        )
     custom_values = server_custom_values(profile, target_map or "Survival_1", target_partition, include_materialized=bool(target_map))
     restriction_value = custom_values["building_restriction_limits_enabled"]
     restriction_default = SERVER_CUSTOM_FIELDS["building_restriction_limits_enabled"][2]
@@ -3433,15 +3710,14 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
     profile_set_key(reparsed, "global", "/Script/DuneSandbox.DuneGameMode", "m_DefaultReconnectGracePeriodSeconds", "900")
     if "UnknownGlobal=abc" not in serialize_profile(reparsed):
         raise SystemExit("Interactive profile update dropped unknown keys.")
-    profile_set_key(reparsed, "global", "/Script/DuneSandbox.BuildingSettings", "m_BaseBackupToolTimeRestrictionInSeconds", "60")
-    if profile_map_values(reparsed, "Survival_1")["base_backup_tool_time_restriction_seconds"] != "60":
-        raise SystemExit("Base backup tool time restriction did not feed interactive map values.")
-    if "m_BaseBackupToolTimeRestrictionInSeconds=60" not in compiled_usergame_ini(reparsed, "Survival_1", "3"):
-        raise SystemExit("Base backup tool time restriction did not compile from interactive profile update.")
-    if "m_BaseBackupToolTimeRestrictionInSeconds=60" not in client_game_ini(reparsed, "Survival_1", "3"):
-        raise SystemExit("Base backup tool time restriction did not carry into the client Game.ini export.")
-    if CLIENT_FILE_REQUIRED.get("base_backup_tool_time_restriction_seconds") != "Game.ini":
-        raise SystemExit("Base backup tool time restriction is not flagged as requiring a client Game.ini update.")
+    profile_set_key(reparsed, "global", BUILDING_SETTINGS_SECTION, "m_BaseBackupToolTimeRestrictionInSeconds", "7200")
+    migrate_legacy_base_backup_cooldown(reparsed)
+    if server_custom_values(reparsed, "Survival_1", include_materialized=False)["base_backup_tool_time_restriction"] != "2":
+        raise SystemExit("Legacy base backup cooldown did not migrate from seconds to native hours.")
+    if "m_BaseBackupToolTimeRestrictionInSeconds=7200" not in compiled_usergame_ini(reparsed, "Survival_1", "3"):
+        raise SystemExit("Native base backup cooldown was not mirrored into compiled UserGame.ini.")
+    if "m_BaseBackupToolTimeRestrictionInSeconds=7200" not in client_game_ini(reparsed, "Survival_1", "3"):
+        raise SystemExit("Native base backup cooldown was not mirrored into the client Game.ini export.")
     if server_custom_values(reparsed, "Survival_1", include_materialized=False)["building_restriction_limits_enabled"] != "True":
         raise SystemExit("Building restriction limits did not default to enabled when unset.")
     profile_set_key(reparsed, "server_custom_global", SERVER_CUSTOM_SETTINGS_SECTION, "bIsBuildingRestrictionsEnabled", "False")
@@ -3506,7 +3782,6 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
         "free_rotate_max": "90.000000",
         "default_repair_cost_multiplier": "0.25",
         "pickup_total_durability_reduction": "0.0",
-        "base_backup_tool_time_restriction_seconds": "604800",
         "fallback_default_building_health": "5000.000000",
         "fallback_default_placeable_health": "1000.000000",
         "building_destabilization_system_enabled": "False",

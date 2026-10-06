@@ -7,7 +7,12 @@ whatever upstream version is currently checked out, per the versioning
 convention documented in this account's operating docs. Entries are in
 Keep a Changelog style, grouped by upstream base version, newest first.
 
-## Unreleased (on top of upstream v1.4.33)
+## Unreleased (on top of upstream v1.4.47)
+
+### Changed
+
+- **Fork synced with upstream `v1.4.47` (was `v1.4.34`), landed as a real merge (issue #1085).** `main`'s history was severed from upstream's by earlier squash-style syncs, so a plain `git merge upstream/main` three-way-merged against a 2026-06-22 base and produced 309 conflicts. This sync instead used upstream's `v1.4.34` tag -- the content the previous sync (#985) landed -- as the merge base, which leaves 27 genuine conflicts. The result is committed as a normal two-parent merge of `origin/main` and `upstream/main`, so `upstream/main` is now an ancestor and the next sync is an ordinary `git merge upstream/main`. Brings in system backup/restore and the first-run wizard restore path, base backup export/import, restart history, experimental Tanks, server-startup control, the Postgres-over-TCP transport and the Spice Fields tab, among others. Conflicts resolved by keeping both sides where both added something (fork Discord/TOTP/hosted-bot routes and upstream's new routes), and by taking upstream's version where it is the evolved copy of work this fork contributed (Spice Fields #230/#231, autoscaler story-return recovery). Fork-only items preserved: `runtime/secrets/discord-adapter-token.txt` in `local_state_paths()` so a self-update still backs it up, the `PUBLIC_EXACT` enrollment-route list in `rbacParity.test.js`, and the `controllerIds` player scoping alongside upstream's `inactiveWeeks` filter. Follow-ups made necessary by the merge: three new upstream routes documented in `docs/console/API-REFERENCE.md` (`restart-history`, `server-startup`, `experimental-tanks`), `lib/ports.sh` added to the `test-secrets-stage3.sh` fixture, and the duplicate `ApiError` class removed from `console/web/src/api/client.ts`.
+- **Spice Fields settings now live in their own tab, not under Custom Settings.** Upstream's `8eb6715c` (v1.4.37) moved the section this fork's earlier entry below describes; the sync takes upstream's layout. The older entry is kept as history and is no longer accurate about location.
 
 ### Fixed
 
@@ -16,6 +21,8 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 ### Security
 
 - **Player-tier sessions can no longer list every player (#1116).** `GET /api/players`, `/api/players/online` and `/api/players/search` returned the whole player list, and an unscoped `totalPlayers`, to a player-tier session that had no linked characters or whose linked-character lookup failed, because an empty scope was treated as no scope (the online and search routes were never scoped at all). Placeholder controller id `0` is also dropped from a player's scope, and a failed scope lookup is now logged. Only the player tier is scoped: owner, admin and moderator sessions (including password logins, which have no user id), API keys and the write bridge are unscoped. `listPlayers` now treats any `controllerIds` array, including an empty one, as a restriction (empty yields no rows) and scopes `totalPlayers` the same way; only `undefined` means unscoped. No operator action. New tests in `db.test.js` fail on the old code.
+
+- **CI scan gate: accepted CVE-2026-19445 (python3.13, no Debian fix).** `trivy-image-scan` began failing on every PR when this HIGH was published for the Debian `python3.13` packages the console image installs for `dune` scripts. Debian marks it `no-dsa` (minor) with no fixed version; it affects only Python TLS servers using an SNI callback that reassigns the context, which the console never runs. Recorded in `.trivyignore` with the triage reasoning; revisit on the next apt layer rebuild. No operator action.
 
 - **CI scan gate fixed: dev-dependency and bundled-npm advisories.** `console/web`'s lockfile moves `undici` 7.29.0 -> 7.30.0 (and `source-map-js` 1.2.1 -> 1.2.2) via `npm audit fix`, clearing the two HIGH osv-scanner findings; `console/api`'s runtime image no longer ships npm/npx (the container only runs `node /app/src/server.js`), which removes the bundled `brace-expansion`/`undici` packages trivy-image-scan was failing on (HIGH, base-image-lag class). No operator action; the console image rebuilds on the next `dune self-update`.
 

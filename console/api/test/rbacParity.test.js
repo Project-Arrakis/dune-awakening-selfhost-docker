@@ -12,6 +12,7 @@ import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { actionForRoute, ROUTE_ACTIONS, REGEX_ACTIONS, REGEX_ACTIONS_BY_METHOD, REGEX_ACTIONS_BY_METHOD_PATTERN } from "../src/actions.js";
+import { EXTRA_READ_ACTIONS, isReadAction } from "../src/apiKeyScopes.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const serverSrc = readFileSync(join(__dirname, "../src/server.js"), "utf8");
@@ -82,20 +83,20 @@ function methodsToCheck(route) {
   return ALL_METHODS;
 }
 
-function isCovered(route) {
-  // Discord adapter routes are handled separately, outside the IAM model
-  const DISCORD_PREFIX = "/api/integrations/discord/";
-  if (route.path.startsWith(DISCORD_PREFIX)) return true;
+// Discord adapter routes are handled separately, outside the IAM model.
+const DISCORD_PREFIX = "/api/integrations/discord/";
+// Public routes return null from actionForRoute — those are expected
+// Genuinely unauthenticated, or authenticated by a mechanism other than the
+// IAM gate. NOT all equal (#529): the two /2fa/* entries are not public at
+// all -- they require an enrollment-scope session AND membership in
+// server.js's ENROLL_ALLOWED. They sit here only because the central gate
+// does not cover them, and the separate test below pins that distinction so
+// "add it to PUBLIC_EXACT to make the parity test green" -- the remedy
+// actions.js itself suggests -- cannot silently ship an ungated route.
+const PUBLIC_EXACT = ["/api/health", "/api/auth/state", "/api/auth/login", "/api/auth/logout", "/api/auth/me", "/api/auth/characters", "/api/auth/discord/start", "/api/auth/discord/callback", "/api/auth/discord/exchange", "/api/auth/2fa/setup", "/api/auth/2fa/confirm"];
 
-  // Public routes return null from actionForRoute — those are expected
-  // Genuinely unauthenticated, or authenticated by a mechanism other than the
-  // IAM gate. NOT all equal (#529): the two /2fa/* entries are not public at
-  // all -- they require an enrollment-scope session AND membership in
-  // server.js's ENROLL_ALLOWED. They sit here only because the central gate
-  // does not cover them, and the separate test below pins that distinction so
-  // "add it to PUBLIC_EXACT to make the parity test green" -- the remedy
-  // actions.js itself suggests -- cannot silently ship an ungated route.
-  const PUBLIC_EXACT = ["/api/health", "/api/auth/state", "/api/auth/login", "/api/auth/logout", "/api/auth/me", "/api/auth/characters", "/api/auth/discord/start", "/api/auth/discord/callback", "/api/auth/discord/exchange", "/api/auth/2fa/setup", "/api/auth/2fa/confirm"];
+function isCovered(route) {
+  if (route.path.startsWith(DISCORD_PREFIX)) return true;
   if (PUBLIC_EXACT.includes(route.path)) return true;
 
   for (const method of methodsToCheck(route)) {
@@ -252,6 +253,15 @@ test("parity: DELETE vehicle resolves to vehicles:delete, not the read-only fall
   assert.notEqual(actionForRoute("/api/vehicles/2048", "DELETE"), "vehicles:read");
 });
 
+test("parity: DELETE stored vehicle resolves to vehicles:stored-delete, not vehicles:delete or the read-only fallback", () => {
+  // Its own action so a policy granting vehicles:delete (junk vehicles) does
+  // not also grant taking a recoverable vehicle away from a player -- and the
+  // sub-path must not shadow, or be shadowed by, the whole-vehicle delete.
+  assert.equal(actionForRoute("/api/vehicles/2048/stored", "DELETE"), "vehicles:stored-delete");
+  assert.notEqual(actionForRoute("/api/vehicles/2048/stored", "DELETE"), "vehicles:read");
+  assert.equal(actionForRoute("/api/vehicles/2048", "DELETE"), "vehicles:delete");
+});
+
 test("parity: community Blueprint browsing is read-only while installation requires import access", () => {
   assert.equal(actionForRoute("/api/blueprints/community", "GET"), "blueprints:read");
   assert.equal(actionForRoute(`/api/blueprints/community/${"1".repeat(8)}-1111-4111-8111-${"1".repeat(12)}/preview`, "GET"), "blueprints:read");
@@ -291,4 +301,40 @@ test("parity: vehicle cargo deletes resolve to their own actions, not the read-o
 
 test("parity: GET vehicle pending-deletes resolves to vehicles:read", () => {
   assert.equal(actionForRoute("/api/vehicles/pending-deletes", "GET"), "vehicles:read");
+});
+
+// The generalization of the bespoke "not the read-only fallback" guards above.
+// Each of those was written after a mutating route silently landed on a read
+// action -- vehicles:read for an ownership transfer, backups:read for a route
+// that writes .env and runtime/secrets. Asserting a route resolves to a
+// NON-NULL action, which is all the parity test above does, cannot catch that:
+// the wrong action is still an action. This asserts the shape.
+const MUTATING_METHODS = ["POST", "PUT", "PATCH", "DELETE"];
+
+// POST-shaped but genuinely read-only. Keep this tiny and justify every entry.
+//   POST /api/settings/iam/policy/test -- a policy simulator: it calls
+//   evaluate() and returns a boolean. It writes nothing. It is not in
+//   EXTRA_READ_ACTIONS because `settings` is denied to API keys outright, so
+//   it never appears in the key scope catalog that set describes.
+const READ_SHAPED_MUTATIONS = new Set(["POST /api/settings/iam/policy/test"]);
+
+test("parity: no mutating route resolves to a read-shaped action", () => {
+  const routes = extractRoutes(serverSrc).filter((route) => MUTATING_METHODS.includes(route.method));
+  assert.ok(routes.length > 50, `Expected >50 mutating routes, found ${routes.length}`);
+
+  const offenders = [];
+  for (const route of routes) {
+    if (route.path.startsWith(DISCORD_PREFIX)) continue;
+    if (PUBLIC_EXACT.includes(route.path)) continue;
+    if (READ_SHAPED_MUTATIONS.has(`${route.method} ${route.path}`)) continue;
+
+    const action = actionForRoute(route.path, route.method);
+    // A null action is the parity test's business, not this one.
+    if (!action) continue;
+    if (isReadAction(action) && !EXTRA_READ_ACTIONS.has(action)) {
+      offenders.push(`${route.method} ${route.path} -> ${action}`);
+    }
+  }
+
+  assert.deepEqual(offenders, [], `mutating route(s) authorizing under a read action: ${offenders.join(", ")}`);
 });

@@ -6,8 +6,14 @@ cd "$(dirname "$0")/../.."
 test_root="$(mktemp -d)"
 trap 'rm -rf "$test_root"' EXIT
 
-mkdir -p "$test_root/runtime/scripts" "$test_root/runtime/generated" "$test_root/bin"
+mkdir -p "$test_root/runtime/scripts/lib" "$test_root/runtime/generated" "$test_root/bin"
 cp runtime/scripts/despawn-server.sh "$test_root/runtime/scripts/despawn-server.sh"
+cp runtime/scripts/lib/ports.sh runtime/scripts/lib/postgres.sh "$test_root/runtime/scripts/lib/"
+
+# The docker mock below stands in for the Postgres container, so pin the query
+# transport to the exec leg rather than letting it depend on whether the
+# machine running the tests happens to have a psql client installed.
+export DUNE_PSQL_TRANSPORT=exec
 cp runtime/scripts/landsraad-instance-cleanup.sh "$test_root/runtime/scripts/landsraad-instance-cleanup.sh"
 printf '#!/usr/bin/env bash\nexit 1\n' >"$test_root/runtime/scripts/map-modes.sh"
 chmod +x "$test_root/runtime/scripts/despawn-server.sh" "$test_root/runtime/scripts/map-modes.sh"

@@ -118,6 +118,9 @@ SELF_UPDATE_STATUS_STARTED_AT=""
 SELF_UPDATE_STATUS_FINALIZED=0
 SELF_UPDATE_STATUS_STAGE="launching"
 SELF_UPDATE_STATUS_PERCENT=1
+if [[ "$SELF_UPDATE_RUN_ID" =~ ^[0-9a-fA-F-]{36}$ ]]; then
+  echo "Console update run: $SELF_UPDATE_RUN_ID"
+fi
 
 self_update_status_enabled() {
   [[ "$SELF_UPDATE_RUN_ID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$ ]]
@@ -187,7 +190,11 @@ self_update_on_exit() {
   local rc=$?
   trap - EXIT
   if self_update_status_enabled && [ "$SELF_UPDATE_STATUS_FINALIZED" != "1" ] && [ "$rc" -ne 0 ]; then
-    self_update_write_status failed "$SELF_UPDATE_STATUS_STAGE" "$SELF_UPDATE_STATUS_PERCENT" "Console update failed. Review runtime/generated/web-self-update.log for details." "$(date -Is)" || true
+    # api_get runs inside command substitutions. Its shell flags cannot reach
+    # this parent, but its durable, run-specific failure record can.
+    if ! grep -qx 'state=failed' "$SELF_UPDATE_STATUS_DIR/$SELF_UPDATE_RUN_ID.env" 2>/dev/null; then
+      self_update_write_status failed "$SELF_UPDATE_STATUS_STAGE" "$SELF_UPDATE_STATUS_PERCENT" "Console update failed. Review runtime/generated/web-self-update.log for details." "$(date -Is)" || true
+    fi
   fi
   exit "$rc"
 }
@@ -252,6 +259,13 @@ github_curl_headers() {
 }
 
 api_curl_common_args() {
+  if [ "$cmd" = "check" ] || [ "$cmd" = "status" ]; then
+    # Two REST probes plus the existing 20s web fallback stay well inside the
+    # Console's polling window. Downloads/install retries remain unchanged.
+    printf '%s\n' --connect-timeout 10 --max-time 15 --retry 0
+    github_curl_headers
+    return
+  fi
   printf '%s\n' \
     --connect-timeout 15 \
     --max-time 60 \
@@ -283,18 +297,20 @@ download_archive_with_progress() {
   local url="$1"
   local out="$2"
   local label="$3"
-  local timeout_seconds interval_seconds error_file curl_pid curl_rc bytes megabytes ticks=0
+  local timeout_seconds interval_seconds error_file headers_file limit_message curl_pid curl_rc bytes megabytes ticks=0
   local -a curl_args
 
   timeout_seconds="$(self_update_download_timeout_seconds)"
   interval_seconds="$(self_update_progress_interval_seconds)"
   error_file="$(mktemp)"
+  headers_file="$(mktemp)"
   mapfile -t curl_args < <(github_curl_headers)
 
   self_update_running downloading 20 "$label (starting download)."
   set +e
   timeout --signal=TERM --kill-after=10 "${timeout_seconds}s" \
     curl -fsSL \
+      --dump-header "$headers_file" \
       "${curl_args[@]}" \
       --connect-timeout 15 \
       --retry 3 \
@@ -323,7 +339,11 @@ download_archive_with_progress() {
   curl_rc=$?
   set -e
   if [ "$curl_rc" -ne 0 ]; then
-    if [ "$curl_rc" -eq 124 ]; then
+    limit_message="$(python3 runtime/scripts/http-rate-limit.py "$headers_file")"
+    if [ -n "$limit_message" ]; then
+      self_update_finish_failure downloading 20 "$limit_message"
+      echo "$limit_message" >&2
+    elif [ "$curl_rc" -eq 124 ]; then
       self_update_finish_failure downloading 20 "$label timed out after ${timeout_seconds} seconds. Check the server's connection to GitHub, then retry."
       echo "$label timed out after ${timeout_seconds} seconds." >&2
     elif [ -s "$error_file" ]; then
@@ -332,11 +352,11 @@ download_archive_with_progress() {
     else
       self_update_finish_failure downloading 20 "$label failed after retrying. Check the server's connection to GitHub, then retry."
     fi
-    rm -f "$error_file"
+    rm -f "$error_file" "$headers_file"
     return "$curl_rc"
   fi
 
-  rm -f "$error_file"
+  rm -f "$error_file" "$headers_file"
   bytes="$(stat -c '%s' "$out" 2>/dev/null || printf '0')"
   [[ "$bytes" =~ ^[0-9]+$ ]] || bytes=0
   if [ "$bytes" -le 0 ]; then
@@ -350,19 +370,21 @@ download_archive_with_progress() {
 
 api_get() {
   local path="$1"
-  local tmp_body
+  local tmp_body tmp_headers limit_message
   local http_code
   local curl_rc
   local -a curl_args
 
   API_LAST_STATUS=""
   tmp_body="$(mktemp)"
+  tmp_headers="$(mktemp)"
   mapfile -t curl_args < <(api_curl_common_args)
 
   set +e
   http_code="$(
     curl -sSL \
       "${curl_args[@]}" \
+      --dump-header "$tmp_headers" \
       -o "$tmp_body" \
       -w '%{http_code}' \
       "${GITHUB_API_BASE}/repos/${GITHUB_REPO}${path}"
@@ -371,18 +393,23 @@ api_get() {
   set -e
 
   if [ "$curl_rc" -ne 0 ]; then
-    rm -f "$tmp_body"
+    rm -f "$tmp_body" "$tmp_headers"
     return "$curl_rc"
   fi
 
   API_LAST_STATUS="$http_code"
   if [ "${http_code:-000}" -lt 200 ] || [ "${http_code:-000}" -ge 300 ]; then
-    rm -f "$tmp_body"
+    limit_message="$(python3 runtime/scripts/http-rate-limit.py "$tmp_headers" "$tmp_body")"
+    if [ -n "$limit_message" ]; then
+      echo "$limit_message" >&2
+      self_update_finish_failure "$SELF_UPDATE_STATUS_STAGE" "$SELF_UPDATE_STATUS_PERCENT" "$limit_message"
+    fi
+    rm -f "$tmp_body" "$tmp_headers"
     return 22
   fi
 
   cat "$tmp_body"
-  rm -f "$tmp_body"
+  rm -f "$tmp_body" "$tmp_headers"
 }
 
 print_release_fetch_failure() {
@@ -434,7 +461,7 @@ print(value if value is not None else "")' "$field"
 
 latest_release_tag_from_releases_list() {
   local json
-  json="$(releases_json 2>/dev/null)" || return 1
+  json="$(releases_json)" || return 1
   [ -n "$json" ] || return 1
   printf '%s' "$json" | python3 -c 'import json, sys
 try:
@@ -487,7 +514,7 @@ read_cached_latest_release_tag() {
 latest_release_tag() {
   local json tag
 
-  json="$(latest_release_json 2>/dev/null)" || true
+  json="$(latest_release_json)" || true
   if [ -n "$json" ]; then
     tag="$(printf '%s' "$json" | extract_json_field tag_name 2>/dev/null || true)"
     if [ -n "$tag" ]; then
@@ -496,7 +523,7 @@ latest_release_tag() {
     fi
   fi
 
-  tag="$(latest_release_tag_from_releases_list 2>/dev/null || true)"
+  tag="$(latest_release_tag_from_releases_list || true)"
   if [ -n "$tag" ]; then
     printf '%s' "$tag"
     return 0
@@ -507,7 +534,7 @@ latest_release_tag() {
 
 list_release_rows() {
   local json
-  json="$(releases_json 2>/dev/null)" || return 1
+  json="$(releases_json)" || return 1
   [ -n "$json" ] || return 1
   printf '%s' "$json" | python3 -c 'import json, sys
 try:
@@ -531,7 +558,7 @@ for release in data:
 release_tarball_url() {
   local tag="$1"
   local json
-  json="$(api_get "/releases/tags/${tag}" 2>/dev/null)" || return 1
+  json="$(api_get "/releases/tags/${tag}")" || return 1
   [ -n "$json" ] || return 1
   printf '%s' "$json" | extract_json_field tarball_url
 }
@@ -646,8 +673,80 @@ ensure_docker_access_for_console_rebuild() {
   exit 13
 }
 
+local_state_paths() {
+  cat <<'EOF'
+.env
+runtime/generated/battlegroup.env
+runtime/generated/experimental-tanks.json
+runtime/generated/db-backup.env
+runtime/generated/director-character-transfer.ini
+runtime/generated/director-capacity.ini
+runtime/generated/director-deepdesert-dual.ini
+runtime/generated/ip-change-restart.env
+runtime/generated/landsraad-milestones.json
+runtime/generated/map-runtime-modes.json
+runtime/generated/memory-balancer.json
+runtime/generated/message-of-the-day.json
+runtime/generated/message-of-the-day-state.json
+runtime/generated/player-announcements.json
+runtime/generated/player-announcements-state.json
+runtime/generated/scheduled-map-messages.json
+runtime/generated/public-directory-status.json
+runtime/generated/public-probe.env
+runtime/generated/restart-schedule.env
+runtime/generated/shutdown-protection.env
+runtime/generated/sietch-config.json
+runtime/generated/spicefield-overrides.json
+runtime/generated/update-auto.env
+runtime/generated/usersettings.json
+runtime/generated/auto-refill-bases.json
+runtime/generated/pending-generator-refills.json
+runtime/generated/gameplay-profile.ini
+runtime/generated/care-package.json
+runtime/generated/care-package-grants.jsonl
+runtime/generated/care-package-grant-receipts.json
+runtime/generated/care-package-first-online-claims.json
+runtime/generated/care-package-pending-returns.json
+runtime/addons/state.json
+runtime/secrets/funcom-token.txt
+runtime/secrets/public-directory.json
+runtime/secrets/discord-adapter-token.txt
+EOF
+}
+
+print_local_state_not_readable() {
+  local path="$1"
+
+  echo "Self-update cannot continue because a local state file is not readable by the current user."
+  echo "Blocked path:"
+  echo "  $path"
+  if command -v stat >/dev/null 2>&1; then
+    echo "Current ownership and mode:"
+    stat -c '  %U:%G %a %n' -- "$path" 2>/dev/null || true
+  fi
+  echo
+  echo "This usually happens when an earlier install or server command created runtime files as root."
+  echo "Run the supported permission repair, then retry the update:"
+  echo "  bash runtime/scripts/repair-host-runtime-permissions.sh"
+  echo
+  echo "No release files were replaced."
+}
+
+ensure_local_state_readable() {
+  local path
+
+  while IFS= read -r path; do
+    [ -e "$path" ] || continue
+    if [ ! -f "$path" ] || [ ! -r "$path" ]; then
+      print_local_state_not_readable "$path"
+      exit 13
+    fi
+  done < <(local_state_paths)
+}
+
 ensure_self_update_preflight() {
   ensure_self_update_writable
+  ensure_local_state_readable
   ensure_docker_access_for_console_rebuild
 }
 
@@ -705,6 +804,7 @@ backup_current_stack() {
 remove_backed_up_project_files() {
   local backup_dir="$1"
   local manifest path relative target parent unsafe_path blocked_path
+  local -a removal_batch=()
 
   [ -s "$backup_dir/project-files.tgz" ] || return 0
   unsafe_path=""
@@ -726,7 +826,7 @@ remove_backed_up_project_files() {
     esac
     target="$ROOT_DIR/$relative"
     if [ -f "$target" ] || [ -L "$target" ]; then
-      parent="$(dirname "$target")"
+      parent="${target%/*}"
       if [ ! -w "$parent" ] || [ ! -x "$parent" ]; then
         blocked_path="$target"
         break
@@ -755,9 +855,16 @@ remove_backed_up_project_files() {
     [ -n "$relative" ] || continue
     target="$ROOT_DIR/$relative"
     if [ -f "$target" ] || [ -L "$target" ]; then
-      rm -f "$target"
+      removal_batch+=("$target")
+      if [ "${#removal_batch[@]}" -ge 256 ]; then
+        rm -f -- "${removal_batch[@]}"
+        removal_batch=()
+      fi
     fi
   done < "$manifest"
+  if [ "${#removal_batch[@]}" -gt 0 ]; then
+    rm -f -- "${removal_batch[@]}"
+  fi
 
   rm -f "$manifest"
 }
@@ -765,48 +872,13 @@ remove_backed_up_project_files() {
 backup_local_state() {
   local backup_dir="$1"
   local manifest="$backup_dir/local-state-files.txt"
+  local path
 
   : > "$manifest"
-  for path in \
-    .env \
-    runtime/generated/battlegroup.env \
-    runtime/generated/db-backup.env \
-    runtime/generated/director-character-transfer.ini \
-    runtime/generated/director-capacity.ini \
-    runtime/generated/director-deepdesert-dual.ini \
-    runtime/generated/ip-change-restart.env \
-    runtime/generated/landsraad-milestones.json \
-    runtime/generated/map-runtime-modes.json \
-    runtime/generated/memory-balancer.json \
-    runtime/generated/message-of-the-day.json \
-    runtime/generated/message-of-the-day-state.json \
-    runtime/generated/player-announcements.json \
-    runtime/generated/player-announcements-state.json \
-    runtime/generated/scheduled-map-messages.json \
-    runtime/generated/public-directory-status.json \
-    runtime/generated/public-probe.env \
-    runtime/generated/restart-schedule.env \
-    runtime/generated/shutdown-protection.env \
-    runtime/generated/sietch-config.json \
-    runtime/generated/spicefield-overrides.json \
-    runtime/generated/update-auto.env \
-    runtime/generated/usersettings.json \
-    runtime/generated/auto-refill-bases.json \
-    runtime/generated/pending-generator-refills.json \
-    runtime/generated/gameplay-profile.ini \
-    runtime/generated/care-package.json \
-    runtime/generated/care-package-grants.jsonl \
-    runtime/generated/care-package-grant-receipts.json \
-    runtime/generated/care-package-first-online-claims.json \
-    runtime/generated/care-package-pending-returns.json \
-    runtime/addons/state.json \
-    runtime/secrets/funcom-token.txt \
-    runtime/secrets/public-directory.json \
-    runtime/secrets/discord-adapter-token.txt
-  do
+  while IFS= read -r path; do
     [ -e "$path" ] || continue
     printf '%s\n' "$path" >> "$manifest"
-  done
+  done < <(local_state_paths)
 
   if [ -s "$manifest" ]; then
     # Writers stay online. Archive private, bounded copies instead of live files.
@@ -824,7 +896,14 @@ with tempfile.TemporaryDirectory(prefix=".local-state-", dir=backup) as staging:
     for name in paths:
         target = Path(staging) / name
         target.parent.mkdir(parents=True, exist_ok=True)
-        with open(name, "rb") as source, open(target, "xb") as output:
+        try:
+            source = open(name, "rb")
+        except OSError as error:
+            detail = error.strerror or error.__class__.__name__
+            print(f"Self-update cannot preserve local state file {name}: {detail}.", file=sys.stderr)
+            print("Run: bash runtime/scripts/repair-host-runtime-permissions.sh", file=sys.stderr)
+            raise SystemExit(13)
+        with source, open(target, "xb") as output:
             info = os.fstat(source.fileno())
             if not stat.S_ISREG(info.st_mode):
                 raise RuntimeError(f"Local state is not a regular file: {name}")

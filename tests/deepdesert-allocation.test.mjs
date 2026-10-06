@@ -50,8 +50,10 @@ for (const [destination, expected, disabled = false] of [[35, '35'], [8, '8'], [
       container_count_for_map(){ echo 0; }
       origin_server_id_for_origin_id(){ echo test-origin; }
       deepdesert_target_json(){ return 1; }
+      director_heal_due(){ return 0; }
       docker(){ cat director.log; }
       SINCE=10m
+      DEEPDESERT_LOADING_SCAN_SECONDS=15
       handle_demand DeepDesert_1 1 event
       scan_deepdesert_loading_responses
     `);
