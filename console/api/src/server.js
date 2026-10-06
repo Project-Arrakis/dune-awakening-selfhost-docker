@@ -150,6 +150,9 @@ const policyLoad = loadPolicies(config.repoRoot);
 if (policyLoad.invalid) {
   console.warn(`IAM policy file at ${policyLoad.path} is not a valid policy store; using built-in defaults.`);
 }
+if ((policyLoad.playerCappedActions || []).length > 0) {
+  console.warn(`IAM policy notice: the saved player policy grants ${policyLoad.playerCappedActions.length} action(s) the strict player tier can never use (it is capped at players:read and guilds:read): ${policyLoad.playerCappedActions.slice(0, 8).join(", ")}${policyLoad.playerCappedActions.length > 8 ? ", ..." : ""}. Grant them to moderator instead.`);
+}
 for (const { tier, pattern, successors } of policyLoad.deprecatedActions || []) {
   // Still enforced with its original meaning (see REMOVED_ACTION_ALIASES), so
   // this is a migration notice, not a warning that access changed.
@@ -531,12 +534,18 @@ async function enforcePlayerTier(res, path, method, action, session) {
   try {
     const scope = await resolvePlayerScopedIds(session, db);
     if (route.kind === "own-player") {
-      const target = await duneDb.resolvePlayerTarget(db, decodeURIComponent(route.id));
+      // Same decode the handlers use, but only a plain canonical integer is accepted, so
+      // the gate and the handler can never disagree about which id a path names.
+      const rawId = decodeURIComponent(route.id);
+      if (!/^[1-9][0-9]{0,17}$/.test(rawId)) return notFound();
+      const target = await duneDb.resolvePlayerTarget(db, rawId);
       return target.controllerId && scope.ids.has(String(target.controllerId)) ? false : notFound();
     }
     if (route.kind === "own-guild") {
       const guildIds = await duneDb.guildIdsForPlayerControllers(db, Array.from(scope.ids));
-      return guildIds.includes(String(decodeURIComponent(route.id))) ? false : notFound();
+      const rawGuildId = decodeURIComponent(route.id);
+      if (!/^[1-9][0-9]{0,17}$/.test(rawGuildId)) return notFound();
+      return guildIds.includes(rawGuildId) ? false : notFound();
     }
   } catch (error) {
     console.error(`player tier gate lookup failed: ${error && error.message ? error.message : error}`);
@@ -8144,7 +8153,7 @@ async function handleOAuthCallback(req, res) {
   }
   const session = auth.makeSession({ tier: normalizeTier(resolved.tier), userId: identity.userId, username: identity.username, guildId: config.discordHomeGuildId });
   res.setHeader("Set-Cookie", [sessionCookieValue(session, config), clearOAuthStateCookie(config.secureCookies)]);
-  audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: true, tier: resolved.tier });
+  audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: true, tier: normalizeTier(resolved.tier) });
   return html(res, 200, oauthReturnPage());
 }
 

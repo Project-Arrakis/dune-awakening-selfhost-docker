@@ -491,3 +491,10 @@ test("a saved iam-policies.json that still has an observer key loads, drops it, 
     loadPolicies(null);
   }
 });
+
+test("a saved player policy that predates the strict tier reports the grants the cap makes dead", async () => {
+  const { playerCappedActions } = await import("../src/policy.js");
+  const docs = { ...DEFAULT_POLICIES, player: { version: 1, tier: "player", statements: [{ Effect: "Allow", Action: ["players:read", "bases:read", "server:read"] }] } };
+  assert.deepEqual(playerCappedActions(docs).sort(), ["bases:read", "server:read"]);
+  assert.deepEqual(playerCappedActions(DEFAULT_POLICIES), []);
+});

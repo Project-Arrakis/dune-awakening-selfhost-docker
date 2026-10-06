@@ -2228,7 +2228,7 @@ const GUILD_SORT_COLUMNS = {
 // Anything that is not a plain positive integer is dropped rather than cast, so a
 // stray fls/funcom id string can neither throw nor widen a scope.
 function memberBigintIds(ids) {
-  return [...new Set((ids || []).map((id) => String(id ?? "").trim()).filter((id) => /^[1-9][0-9]{0,18}$/.test(id)))];
+  return [...new Set((ids || []).map((id) => String(id ?? "").trim()).filter((id) => /^[1-9][0-9]{0,17}$/.test(id)))];
 }
 
 // Guild ids the given player controllers belong to. Resolves each controller to
@@ -2338,7 +2338,9 @@ export async function listGuilds(db, { q = "", page = 0, pageSize = 50, sortColu
   // Scoped like the page query, so a scoped caller does not learn the server-wide guild count.
   const totalsResult = guildScope === null
     ? await db.query("select count(*)::int as total_guilds from dune.guilds")
-    : { rows: [{ total_guilds: result.rows[0] ? Number(result.rows[0].total_count) : 0 }] };
+    : guildScope.length > 0
+      ? await db.query(`select count(*)::int as total_guilds from dune.guilds g where g.${quoteIdentifier(guildIdColumn)} = any($1::bigint[])`, [guildScope])
+      : { rows: [{ total_guilds: 0 }] };
 
   const rows = result.rows
     .filter((row) => row.guild_id !== null && row.guild_id !== undefined)

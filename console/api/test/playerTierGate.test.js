@@ -98,3 +98,16 @@ test("no session-creation site can store the legacy observer tier", () => {
   assert.doesNotMatch(server, /tier:\s*"observer"/);
   assert.match(server, /tier: normalizeTier\(resolved\.tier\)/);
 });
+
+test("scoped guild totals count only the caller's guilds and an over-long id is dropped", async () => {
+  const db = fakeDb();
+  await listGuilds(db, { guildIds: ["7", "9999999999999999999"] });
+  const totals = db.calls.find((x) => /select count\(\*\)::int as total_guilds from dune\.guilds g where/.test(x.text));
+  assert.ok(totals, "scoped total query runs");
+  assert.deepEqual(totals.values, [["7"]]);
+});
+
+test("the gate accepts only canonical integer ids and the OAuth audit logs the normalized tier", () => {
+  assert.match(server, /\^\[1-9\]\[0-9\]\{0,17\}\$/);
+  assert.match(server, /tier: normalizeTier\(resolved\.tier\) \}\)/);
+});

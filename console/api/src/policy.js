@@ -139,6 +139,20 @@ export function normalizeTier(tier) {
   return tier === "observer" ? "player" : tier;
 }
 
+// Actions a saved `player` document grants that the player tier can never use,
+// because playerTierGate caps the tier at players:read + guilds:read. Reported so an
+// operator whose stored policy predates the strict tier is told why a grant does nothing.
+export function playerCappedActions(docs) {
+  const player = docs && docs.player;
+  if (!player) return [];
+  const capped = [];
+  for (const action of allKnownActions()) {
+    if (action === "players:read" || action === "guilds:read") continue;
+    if (evaluate({ tier: "player" }, action, docs)) capped.push(action);
+  }
+  return capped;
+}
+
 export function resolveSessionTier(session) {
   if (!session) return "";
   const tier = typeof session.tier === "string" ? normalizeTier(session.tier) : "";
@@ -179,7 +193,7 @@ export function loadPolicies(repoRoot = null) {
         // revert the operator's whole policy to defaults, a bigger surprise
         // than the dead pattern. setPolicies refuses these on save, so a stored
         // file can only acquire one by hand-editing. The caller logs this.
-        return { source: "file", path: filePath, unknownActions: unknownActions(parsed), deprecatedActions: deprecatedActions(parsed) };
+        return { source: "file", path: filePath, unknownActions: unknownActions(parsed), deprecatedActions: deprecatedActions(parsed), playerCappedActions: playerCappedActions(parsed) };
       }
       _policies = DEFAULT_POLICIES;
       return { source: "defaults", path: filePath, invalid: true, unknownActions: [], deprecatedActions: [] };
