@@ -70,6 +70,12 @@ updates:
     labels:
       - "dependencies"
       - "security"
+    # Patch bumps only: the pin policy (see console/api/test/publicProbe.test.js) is a patched point release, moved together with go.mod's go directive, only when govulncheck finds a reachable CVE.
+    ignore:
+      - dependency-name: "golang"
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-major"
     commit-message:
       prefix: "chore(deps):"
 
@@ -85,6 +91,11 @@ updates:
     labels:
       - "dependencies"
       - "security"
+    # No major/non-LTS base-image bumps (decision 2026-10-06, e.g. 24.04 -> 25.10).
+    ignore:
+      - dependency-name: "ubuntu"
+        update-types:
+          - "version-update:semver-major"
     commit-message:
       prefix: "chore(deps):"
 
@@ -100,6 +111,11 @@ updates:
     labels:
       - "dependencies"
       - "security"
+    # No major/non-LTS Node bumps for the console runtime image (decision 2026-10-06, e.g. 24 -> 25/26).
+    ignore:
+      - dependency-name: "node"
+        update-types:
+          - "version-update:semver-major"
     commit-message:
       prefix: "chore(deps):"
 
