@@ -19,8 +19,10 @@ for (const [name, path, output] of [
 
     assert.match(script, new RegExp(`catalog_output="runtime/generated/${output.replace(".", "\\.")}"`));
     assert.match(script, /catalog_tmp="\$\(mktemp "\$\{catalog_output\}\.tmp\.XXXXXX"\)"/);
+    assert.match(script, /orchestrator_container="\$\(dune_compose_running_service_container "\$DUNE_COMPOSE_PROJECT_NAME" orchestrator/);
+    assert.match(script, /if \[ -z "\$orchestrator_container" \]; then/);
     assert.match(script, /trap cleanup_catalog_tmp EXIT/);
-    assert.match(script, /docker compose exec -T orchestrator python3 - > "\$catalog_tmp"/);
+    assert.match(script, /docker exec -i "\$orchestrator_container" python3 - > "\$catalog_tmp"/);
     assert.match(script, /json\.dump\([^\n]+, sys\.stdout, indent=2\)/);
     assert.match(script, /file=sys\.stderr/);
     assert.match(script, /mv -f -- "\$catalog_tmp" "\$catalog_output"/);

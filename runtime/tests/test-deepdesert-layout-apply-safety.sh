@@ -5,8 +5,16 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 TEST_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TEST_ROOT"' EXIT
 
-mkdir -p "$TEST_ROOT/runtime/scripts" "$TEST_ROOT/runtime/generated" "$TEST_ROOT/bin"
+mkdir -p "$TEST_ROOT/runtime/scripts/lib" "$TEST_ROOT/runtime/generated" "$TEST_ROOT/bin"
 cp "$REPO_ROOT/runtime/scripts/deepdesert.sh" "$TEST_ROOT/runtime/scripts/deepdesert.sh"
+cp "$REPO_ROOT/runtime/scripts/lib/ports.sh" "$TEST_ROOT/runtime/scripts/lib/"
+cp "$REPO_ROOT/runtime/scripts/lib/postgres.sh" "$TEST_ROOT/runtime/scripts/lib/"
+
+# What the docker mock below stands in for is the Postgres container, so pin
+# the query transport to the exec leg. Left on "auto" the result would depend
+# on whether the machine running the tests happens to have a psql client
+# installed, and the TCP leg would sail straight past the mock to a real port.
+export DUNE_PSQL_TRANSPORT=exec
 
 cat > "$TEST_ROOT/bin/docker" <<'MOCK'
 #!/usr/bin/env bash

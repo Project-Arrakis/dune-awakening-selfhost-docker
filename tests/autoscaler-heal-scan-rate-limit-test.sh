@@ -14,7 +14,8 @@ grep -Fq 'director_heal_due rejected_story_returns "$STORY_RETURN_RECOVERY_SCAN_
 grep -Fq 'PROACTIVE_HAGGA_SCAN_SECONDS="$(validate_scan_seconds DUNE_AUTOSCALER_PROACTIVE_HAGGA_SCAN_SECONDS "${DUNE_AUTOSCALER_PROACTIVE_HAGGA_SCAN_SECONDS:-15}" 15 "$SINCE_SECONDS")"' "$script"
 grep -Fq 'DEEPDESERT_LOADING_SCAN_SECONDS="$(validate_scan_seconds DUNE_AUTOSCALER_DEEPDESERT_LOADING_SCAN_SECONDS "${DUNE_AUTOSCALER_DEEPDESERT_LOADING_SCAN_SECONDS:-15}" 15 "$SINCE_SECONDS")"' "$script"
 grep -Fq 'NAMED_DESTINATION_SCAN_SECONDS="$(validate_scan_seconds DUNE_AUTOSCALER_NAMED_DESTINATION_SCAN_SECONDS "${DUNE_AUTOSCALER_NAMED_DESTINATION_SCAN_SECONDS:-60}" 60 "$NAMED_DESTINATION_SINCE_SECONDS")"' "$script"
-grep -Fq 'STORY_RETURN_RECOVERY_SCAN_SECONDS="$(validate_scan_seconds DUNE_AUTOSCALER_STORY_RETURN_RECOVERY_SCAN_SECONDS "${DUNE_AUTOSCALER_STORY_RETURN_RECOVERY_SCAN_SECONDS:-5}" 5 "$NAMED_DESTINATION_SINCE_SECONDS")"' "$script"
+grep -Fq 'STORY_RETURN_RECOVERY_SCAN_SECONDS="$(validate_scan_seconds DUNE_AUTOSCALER_STORY_RETURN_RECOVERY_SCAN_SECONDS "${DUNE_AUTOSCALER_STORY_RETURN_RECOVERY_SCAN_SECONDS:-2}" 2 "$NAMED_DESTINATION_SINCE_SECONDS")"' "$script"
+grep -Fq 'if [ "$STORY_RETURN_RECOVERY_SCAN_SECONDS" -gt 2 ]; then' "$script"
 
 # validate_scan_seconds must reject a non-numeric override (e.g. a duration
 # string like other vars in this file use) instead of silently defeating the
@@ -32,6 +33,16 @@ assert 'if ! [[ "$value" =~ ^[1-9][0-9]*$ ]]; then' in body
 assert 'value="$default_value"' in body
 assert '[ "$value" -ge "$window_seconds" ]' in body
 assert "value=$((window_seconds - 1))" in body
+
+duration_start = text.index("duration_to_seconds()")
+duration_end = text.index("\n}\n", duration_start)
+duration_body = text[duration_start:duration_end]
+assert '[[ "$value" =~ ^([1-9][0-9]*)([smh]?)$ ]] || return 1' in duration_body
+
+window_start = text.index("validate_log_window()")
+window_end = text.index("\n}\n", window_start)
+window_body = text[window_start:window_end]
+assert 'if ! seconds="$(duration_to_seconds "$value")" || [ "$seconds" -le 1 ]; then' in window_body
 PY
 
 # Static check: the gate must be the first non-"local" statement in each
@@ -112,6 +123,9 @@ sed -n "1,$((tail_line - 1))p" "$script" | sed '/^cd "\$(dirname "\$0")\/\.\.\/\
   export DUNE_AUTOSCALER_HUB_TRAVEL_FILE="$work_dir/hub-travel.tsv"
   export DUNE_AUTOSCALER_DEEPDESERT_TRAVEL_FILE="$work_dir/deepdesert-travel.tsv"
   export DUNE_AUTOSCALER_DIRECTOR_HEAL_FILE="$work_dir/director-heal.tsv"
+  export DUNE_AUTOSCALER_LOG_SINCE=30sm
+  export DUNE_AUTOSCALER_NAMED_DESTINATION_LOG_SINCE=bogusm
+  export DUNE_AUTOSCALER_STORY_RETURN_RECOVERY_SCAN_SECONDS=5
 
   # The script's own top-level preflight requires `docker ps` to list
   # dune-director/dune-postgres or it exits 1. Also counts every `docker
@@ -130,6 +144,10 @@ sed -n "1,$((tail_line - 1))p" "$script" | sed '/^cd "\$(dirname "\$0")\/\.\.\/\
 
   # shellcheck source=/dev/null
   source "$defs_file" >/dev/null
+
+  [ "$SINCE" = 30s ] || { echo "expected malformed log window to fall back to 30s" >&2; exit 1; }
+  [ "$NAMED_DESTINATION_SINCE" = 10m ] || { echo "expected malformed named-destination log window to fall back to 10m" >&2; exit 1; }
+  [ "$STORY_RETURN_RECOVERY_SCAN_SECONDS" = 2 ] || { echo "expected story-return recovery interval to be capped at 2s" >&2; exit 1; }
 
   # scan_named_destination_failures now sources its rows from
   # named_destination_source_rows() (DB-driven, replacing the old
@@ -186,6 +204,25 @@ sed -n "1,$((tail_line - 1))p" "$script" | sed '/^cd "\$(dirname "\$0")\/\.\.\/\
     echo "expected director_heal_due to fire again once the interval elapsed" >&2
     exit 1
   fi
+
+  # The check and update must be atomic across all processes sharing this
+  # state file. Exactly one of these simultaneous calls may claim the scan.
+  director_heal_clear "scan:concurrent_rate_limit_smoke_test"
+  for index in $(seq 1 30); do
+    (
+      if director_heal_due concurrent_rate_limit_smoke_test 100; then
+        printf 'due\n'
+      else
+        printf 'gated\n'
+      fi
+    ) > "$work_dir/concurrent-result-${index}" &
+  done
+  wait
+  concurrent_due_count="$(awk '$0 == "due" { count++ } END { print count + 0 }' "$work_dir"/concurrent-result-*)"
+  [ "$concurrent_due_count" -eq 1 ] || {
+    echo "expected exactly 1 of 30 concurrent director_heal_due calls to be due, got $concurrent_due_count" >&2
+    exit 1
+  }
 
   # Real call-site check: scan_named_destination_failures reads 5 real
   # named-destination sources per invocation (one `docker logs` each). A due

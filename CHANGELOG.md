@@ -7,7 +7,12 @@ whatever upstream version is currently checked out, per the versioning
 convention documented in this account's operating docs. Entries are in
 Keep a Changelog style, grouped by upstream base version, newest first.
 
-## Unreleased (on top of upstream v1.4.33)
+## Unreleased (on top of upstream v1.4.47)
+
+### Changed
+
+- **Fork synced with upstream `v1.4.47` (was `v1.4.34`), landed as a real merge (issue #1085).** `main`'s history was severed from upstream's by earlier squash-style syncs, so a plain `git merge upstream/main` three-way-merged against a 2026-06-22 base and produced 309 conflicts. This sync instead used upstream's `v1.4.34` tag -- the content the previous sync (#985) landed -- as the merge base, which leaves 27 genuine conflicts. The result is committed as a normal two-parent merge of `origin/main` and `upstream/main`, so `upstream/main` is now an ancestor and the next sync is an ordinary `git merge upstream/main`. Brings in system backup/restore and the first-run wizard restore path, base backup export/import, restart history, experimental Tanks, server-startup control, the Postgres-over-TCP transport and the Spice Fields tab, among others. Conflicts resolved by keeping both sides where both added something (fork Discord/TOTP/hosted-bot routes and upstream's new routes), and by taking upstream's version where it is the evolved copy of work this fork contributed (Spice Fields #230/#231, autoscaler story-return recovery). Fork-only items preserved: `runtime/secrets/discord-adapter-token.txt` in `local_state_paths()` so a self-update still backs it up, the `PUBLIC_EXACT` enrollment-route list in `rbacParity.test.js`, and the `controllerIds` player scoping alongside upstream's `inactiveWeeks` filter. Follow-ups made necessary by the merge: three new upstream routes documented in `docs/console/API-REFERENCE.md` (`restart-history`, `server-startup`, `experimental-tanks`), `lib/ports.sh` added to the `test-secrets-stage3.sh` fixture, and the duplicate `ApiError` class removed from `console/web/src/api/client.ts`.
+- **Spice Fields settings now live in their own tab, not under Custom Settings.** Upstream's `8eb6715c` (v1.4.37) moved the section this fork's earlier entry below describes; the sync takes upstream's layout. The older entry is kept as history and is no longer accurate about location.
 
 ### Fixed
 

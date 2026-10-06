@@ -37,6 +37,8 @@ const simpleOperations = {
   updateCheck: ["update", "check"],
   updateApply: ["update", "--yes"],
   updateFixSteamcmd: ["update", "fix-steamcmd"],
+  updateInstallAssets: ["update", "install-assets"],
+  consoleReload: ["console", "reload"],
   updateAutoStatus: ["update", "auto", "status"],
   updateAutoDisable: ["update", "auto", "disable"],
   selfUpdateCheck: ["self-update", "check"],
@@ -45,6 +47,8 @@ const simpleOperations = {
   backupList: ["db", "list"],
   backupDeleteAll: ["db", "delete", "--all"],
   backupAutoStatus: ["db", "auto", "status"],
+  backupSystemCreate: ["db", "backup-system"],
+  backupSystemDeleteAll: ["db", "delete-system", "--all"],
   backupAutoDisable: ["db", "auto", "disable"],
   init: ["init"],
   restartScheduleStatus: ["restart-schedule", "status"],
@@ -64,6 +68,7 @@ const simpleOperations = {
   adminHistory: ["admin", "history"],
   adminItemList: ["admin", "item-list"],
   adminVehicleList: ["admin", "vehicle-list"],
+  experimentalTanksStatus: ["experimental-tanks", "status"],
   adminSkillModules: ["admin", "skill-modules"]
 };
 
@@ -81,6 +86,11 @@ export function buildDuneArgs(operation, payload = {}) {
   if (simpleOperations[operation]) return simpleOperations[operation];
 
   switch (operation) {
+    case "experimentalTanksApply":
+      if (typeof payload.enabled !== "boolean" || payload.confirmRestart !== true) {
+        throw new Error("Confirm the Hagga restart before changing Experimental Tanks.");
+      }
+      return ["experimental-tanks", "apply", String(payload.enabled)];
     case "selfUpdateQaApply":
       return ["self-update", "install-qa", validateCommitSha(payload.sha)];
     case "restartService":
@@ -126,6 +136,21 @@ export function buildDuneArgs(operation, payload = {}) {
       return ["db", "delete", validateBackupName(payload.backup)];
     case "backupDeleteSelected":
       return ["db", "delete", ...validateBackupNames(payload.backups)];
+    case "backupSystemDelete":
+      return ["db", "delete-system", validateBackupName(payload.backup)];
+    case "backupSystemDeleteSelected":
+      return ["db", "delete-system", ...validateBackupNames(payload.backups)];
+    case "backupSystemRestore": {
+      const args = ["db", "restore-system", validateBackupName(payload.backup)];
+      // Dry run unless the caller explicitly applies, so a mis-sent request
+      // previews rather than replaces the host's configuration.
+      if (!payload.apply) args.push("--dry-run");
+      if (payload.identityMode === "adopt-backup") args.push("--adopt-backup-battlegroup");
+      if (payload.identityMode === "keep-current") args.push("--keep-current-battlegroup");
+      if (payload.auditLogMode === "adopt-backup") args.push("--adopt-backup-audit-log");
+      if (payload.auditLogMode === "keep-current") args.push("--keep-current-audit-log");
+      return args;
+    }
     case "backupAutoEnable":
       {
         const args = ["db", "auto", "enable", validateUpdateTime(payload.time || "05:00")];
@@ -489,11 +514,29 @@ export function runDockerLogs(service, options = {}) {
 // logs`: a stopped/started container can retain old stdout while the newly
 // launched game process writes only to Saved/Logs. Keep the lookup script
 // fixed and pass only an allowlisted container plus a numeric tail argument.
-const CURRENT_GAME_LOG_SCRIPT = [
+// Select the lines rather than tail the file. The Coriolis block is written
+// once, during startup, so it sits near the *top* of the current session's log
+// and scrolls out of any tail window within hours: on a live farm the log was
+// 24,539 lines with the block at 383-576, while `tail -n 10000` began at 14,438.
+// Because an active log that opens is treated as authoritative, that silently
+// cost the Deep Desert layout -- and with it the rendered terrain -- on any
+// server up more than a few hours.
+//
+// Grepping is cheaper than tailing here too: it returns a handful of lines
+// through `docker exec` instead of the ~4 MB a 10,000-line tail transfers
+// (measured on that farm: 35 ms per call against 40 ms).
+//
+// Matching the log categories rather than the message text keeps this loose;
+// coriolisSeed.js owns the real parsing. `$1` bounds the output, and grep's
+// "no matches" (1) is kept distinct from a genuine read error (2+): an active
+// log that is merely empty is authoritative, an unreadable one must fall back.
+export const CURRENT_GAME_LOG_SCRIPT = [
   'log_dir=/home/dune/server/DuneSandbox/Saved/Logs',
   'latest="$(find "$log_dir" -maxdepth 1 -type f -name "DuneSandbox_PIDX*.log" ! -name "*-backup-*" -printf "%T@ %p\\n" 2>/dev/null | sort -nr | head -n 1 | cut -d" " -f2-)"',
   '[ -n "$latest" ] || exit 3',
-  'exec tail -n "$1" "$latest"'
+  'matches="$(grep -E "LogCoriolis|LogWorldLayout" "$latest")"; status=$?',
+  '[ "$status" -le 1 ] || exit 4',
+  '[ -z "$matches" ] || echo "$matches" | tail -n "$1"'
 ].join("; ");
 
 export function runDockerCurrentGameLog(service, options = {}) {

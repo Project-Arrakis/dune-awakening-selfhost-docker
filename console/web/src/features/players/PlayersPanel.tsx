@@ -2,8 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { playersApi } from "../../api/players";
 import { DataTable, type SortDirection } from "../../components/common/DataTable";
+import { SegmentedControl } from "../../components/common/SegmentedControl";
+import { DeletedCharacterAssets } from "./DeletedCharacterAssets";
 import { PlayerStatusCell } from "../../components/common/DisplayPrimitives";
-import { formatCell } from "../../lib/display";
+import { formatAbsoluteDateTime, formatCell, formatRelativeAge } from "../../lib/display";
 import { cachedInstanceNames, resolveInstanceNames } from "../maps/instanceNames";
 
 export type CharacterAdminRenderProps = {
@@ -19,21 +21,36 @@ export type CharacterAdminRenderProps = {
 type PlayersPanelProps = {
   onError: (text: string) => void;
   renderCharacterAdmin: (props: CharacterAdminRenderProps) => ReactNode;
+  onOpenBase?: (baseId: string) => void;
+  confirmAction?: (message: string, options?: { title?: string; confirmLabel?: string; warning?: string; danger?: boolean; details?: { label: string; value: string; tone?: "accent" | "success" | "danger" }[] }) => Promise<boolean>;
 };
 
 type PlayerStatusFilter = "all" | "online" | "offline" | "banned";
 
+// A sub-view, not a status filter. Deleted characters have no live pawn, so
+// they cannot be rows in the players table -- selecting one there opens
+// CharacterAdminUI, which assumes an inventory, skills, a position to teleport
+// and so on. The whole body swaps instead.
+type PlayersViewMode = "active" | "deleted";
+
+const PLAYERS_VIEW_MODES = [
+  { value: "active", label: "Active Players" },
+  { value: "deleted", label: "Deleted Characters" }
+] as const satisfies ReadonlyArray<{ value: PlayersViewMode; label: string }>;
+
 const PLAYERS_AUTO_REFRESH_MS = 10_000;
 const PLAYERS_PAGE_SIZES = [25, 50, 100, 200] as const;
 const PLAYERS_DEFAULT_PAGE_SIZE = 50;
+const INACTIVE_PLAYER_WEEK_OPTIONS = [1, 2, 3, 4, 8] as const;
 
 function errorText(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
-type PlayersLoadParams = { q: string; page: number; pageSize: number; status: PlayerStatusFilter; sortColumn: string; sortDirection: SortDirection };
+type PlayersLoadParams = { q: string; page: number; pageSize: number; status: PlayerStatusFilter; sortColumn: string; sortDirection: SortDirection; recentOnly: boolean };
 
-export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProps) {
+export function PlayersPanel({ onError, renderCharacterAdmin, onOpenBase, confirmAction }: PlayersPanelProps) {
+  const [viewMode, setViewMode] = useState<PlayersViewMode>("active");
   const [q, setQ] = useState("");
   const [submittedQ, setSubmittedQ] = useState("");
   const [playerFilter, setPlayerFilter] = useState<PlayerStatusFilter>("all");
@@ -46,6 +63,10 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
   const [totalCount, setTotalCount] = useState(0);
   const [totalPlayers, setTotalPlayers] = useState(0);
   const [statusFilterSupported, setStatusFilterSupported] = useState(true);
+  const [showInactive, setShowInactive] = useState(true);
+  const [inactiveWeeks, setInactiveWeeks] = useState<number | null>(null);
+  const [canConfigureVisibility, setCanConfigureVisibility] = useState(false);
+  const [visibilitySaving, setVisibilitySaving] = useState(false);
   const [selected, setSelected] = useState<Record<string, unknown> | null>(null);
   const [detail, setDetail] = useState<Record<string, unknown> | null>(null);
   const requestIdRef = useRef(0);
@@ -60,7 +81,21 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
       return;
     }
     setPage(0);
-  }, [submittedQ, playerFilter]);
+  }, [submittedQ, playerFilter, showInactive]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void playersApi.listSettings().then((result) => {
+      if (cancelled) return;
+      const weeks = result.settings?.inactiveWeeks === null ? null : Number(result.settings?.inactiveWeeks);
+      setInactiveWeeks(weeks);
+      setShowInactive(weeks === null);
+      setCanConfigureVisibility(result.canConfigure === true);
+    }).catch((error) => {
+      if (!cancelled) onError(errorText(error));
+    });
+    return () => { cancelled = true; };
+  }, [onError]);
 
   function submitSearch() {
     setSubmittedQ(q);
@@ -104,9 +139,13 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
   }, [onError]);
 
   useEffect(() => {
+    // The deleted-characters view has its own fetch and its own Refresh button.
+    // Without this guard the players poll keeps running underneath it, hitting
+    // /api/players every 10s for a list nobody is looking at.
+    if (viewMode !== "active") return;
     let cancelled = false;
     let timeoutId: number | undefined;
-    const params = { q: submittedQ, page, pageSize, status: playerFilter, sortColumn, sortDirection };
+    const params = { q: submittedQ, page, pageSize, status: playerFilter, sortColumn, sortDirection, recentOnly: !showInactive };
 
     const scheduleNext = () => {
       if (cancelled) return;
@@ -131,7 +170,44 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
       window.clearTimeout(timeoutId);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [submittedQ, page, pageSize, playerFilter, sortColumn, sortDirection, load]);
+  }, [viewMode, submittedQ, page, pageSize, playerFilter, sortColumn, sortDirection, showInactive, load]);
+
+  async function changeInactiveFilter(value: string) {
+    const weeks = value === "never" ? null : Number(value);
+    if (weeks === inactiveWeeks) return;
+    if (!canConfigureVisibility) {
+      onError("You do not have permission to change the inactive-player filter.");
+      return;
+    }
+    const previousWeeks = inactiveWeeks;
+    const previousShowInactive = showInactive;
+    setInactiveWeeks(weeks);
+    setShowInactive(weeks === null);
+    setVisibilitySaving(true);
+    onError("");
+    try {
+      const result = await playersApi.saveListSettings(weeks);
+      const savedWeeks = result.settings.inactiveWeeks;
+      setInactiveWeeks(savedWeeks);
+      setShowInactive(savedWeeks === null);
+      setPage(0);
+      await load({
+        q: submittedQ,
+        page: 0,
+        pageSize,
+        status: playerFilter,
+        sortColumn,
+        sortDirection,
+        recentOnly: savedWeeks !== null
+      });
+    } catch (error) {
+      setInactiveWeeks(previousWeeks);
+      setShowInactive(previousShowInactive);
+      onError(errorText(error));
+    } finally {
+      setVisibilitySaving(false);
+    }
+  }
 
   const partitionMapsKey = [...new Set(rows
     .map((row) => String(row.partitionMap || "").trim())
@@ -224,6 +300,18 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
     setPage(0);
   }
 
+  // Leaving the players list closes the open character detail: its refresh
+  // callback reloads the players list, which is exactly what this view mode is
+  // meant to stop doing.
+  function handleViewModeChange(next: PlayersViewMode) {
+    if (next === viewMode) return;
+    selectedPlayerIdRef.current = "";
+    profileRequestIdRef.current += 1;
+    setSelected(null);
+    setDetail(null);
+    setViewMode(next);
+  }
+
   function handleSort(column: string) {
     setPage(0);
     if (column === sortColumn) {
@@ -234,10 +322,37 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
     setSortDirection("asc");
   }
 
+  if (viewMode === "deleted") {
+    return (
+      <section className="panel">
+        <div className="panel-title">
+          <h2>Players</h2>
+          <SegmentedControl
+            name="players-view-mode"
+            ariaLabel="Players view"
+            value={viewMode}
+            options={PLAYERS_VIEW_MODES}
+            onChange={handleViewModeChange}
+            groupClassName="segmented-control players-view-segments"
+          />
+        </div>
+        <DeletedCharacterAssets onOpenBase={onOpenBase} onError={onError} confirmAction={confirmAction} />
+      </section>
+    );
+  }
+
   return (
     <section className="panel">
       <div className="panel-title">
         <h2>Players</h2>
+        <SegmentedControl
+          name="players-view-mode"
+          ariaLabel="Players view"
+          value={viewMode}
+          options={PLAYERS_VIEW_MODES}
+          onChange={handleViewModeChange}
+          groupClassName="segmented-control players-view-segments"
+        />
         <div className="action-row players-filter-row">
           <label className="inline-filter-label players-filter-label">
             Filter
@@ -248,7 +363,23 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
               <option value="banned">Banned</option>
             </select>
           </label>
-          <button onClick={() => void load({ q: submittedQ, page, pageSize, status: playerFilter, sortColumn, sortDirection })}>Refresh</button>
+          <label className="inline-filter-label players-inactive-filter">
+            Hide Inactive Players After
+            <select
+              value={inactiveWeeks === null ? "never" : String(inactiveWeeks)}
+              disabled={visibilitySaving || !canConfigureVisibility || playerFilter === "banned"}
+              onChange={(event) => void changeInactiveFilter(event.target.value)}
+            >
+              <option value="never">Never</option>
+              {inactiveWeeks !== null && !INACTIVE_PLAYER_WEEK_OPTIONS.includes(inactiveWeeks as typeof INACTIVE_PLAYER_WEEK_OPTIONS[number]) && <option value={inactiveWeeks}>{inactiveWeeks} Weeks</option>}
+              <option value="1">1 Week</option>
+              <option value="2">2 Weeks</option>
+              <option value="3">3 Weeks</option>
+              <option value="4">1 Month</option>
+              <option value="8">2 Months</option>
+            </select>
+          </label>
+          <button onClick={() => void load({ q: submittedQ, page, pageSize, status: playerFilter, sortColumn, sortDirection, recentOnly: !showInactive })}>Refresh</button>
         </div>
       </div>
       <p className="action-help-note">Total Players: {totalPlayers.toLocaleString()}</p>
@@ -257,7 +388,7 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
           value={q}
           onChange={(event) => setQ(event.target.value)}
           onKeyDown={(event) => { if (event.key === "Enter") submitSearch(); }}
-          placeholder="Search character, FLS ID, account id, or actor id"
+          placeholder="Search Character, FLS ID, Account ID, or Actor ID"
         />
         <button onClick={submitSearch}>Search</button>
         <button onClick={handleClearSearch} disabled={!q && !submittedQ}>Clear</button>
@@ -265,7 +396,15 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
       <DataTable
         rows={rows}
         columns={["actor_id", "character_name", "last_seen", "total_playtime_seconds", "online_status", "map", "fls_id"]}
-        columnLabels={{ actor_id: "DB Player ID" }}
+        columnLabels={{
+          actor_id: "DB Player ID",
+          character_name: "Character",
+          last_seen: "Last Online",
+          total_playtime_seconds: "Total Playtime",
+          online_status: "Status",
+          map: "Map",
+          fls_id: "FLS ID"
+        }}
         tableClassName="players-table"
         wrapClassName={`players-table-wrap ${selected ? "players-table-wrap-compact" : "players-table-wrap-expanded"}`}
         onRowClick={open}
@@ -310,7 +449,7 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
             onRefresh: () => {
               void Promise.all([
                 open(selected),
-                load({ q: submittedQ, page, pageSize, status: playerFilter, sortColumn, sortDirection }, { silent: true })
+                load({ q: submittedQ, page, pageSize, status: playerFilter, sortColumn, sortDirection, recentOnly: !showInactive }, { silent: true })
               ]);
             },
             onClose: () => {
@@ -339,14 +478,7 @@ function formatLastOnline(row: Record<string, unknown>) {
   if (String(row.actual_online_status || row.online_status || "").toLowerCase() === "online") return "Currently Active";
   const date = parseLastOnline(row.last_seen);
   if (!date) return "Unavailable";
-  const absolute = new Intl.DateTimeFormat(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit"
-  }).format(date);
-  return `${absolute} (${formatAgo(date)} ago)`;
+  return `${formatAbsoluteDateTime(date)} (${formatRelativeAge(date)} ago)`;
 }
 
 export function formatTotalPlaytime(value: unknown) {
@@ -371,18 +503,4 @@ function parseLastOnline(value: unknown) {
     if (Number.isFinite(date.getTime()) && date.getFullYear() >= 2000) return date;
   }
   return null;
-}
-
-function formatAgo(date: Date) {
-  const seconds = Math.max(0, Math.floor((Date.now() - date.getTime()) / 1000));
-  const units = [
-    ["y", 365 * 24 * 60 * 60],
-    ["mo", 30 * 24 * 60 * 60],
-    ["d", 24 * 60 * 60],
-    ["h", 60 * 60],
-    ["m", 60],
-    ["s", 1]
-  ] as const;
-  const [label, size] = units.find(([, unitSeconds]) => seconds >= unitSeconds) || units[units.length - 1];
-  return `${Math.max(1, Math.floor(seconds / size))}${label}`;
 }

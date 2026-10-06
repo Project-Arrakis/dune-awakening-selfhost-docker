@@ -7,6 +7,9 @@ set -a
 [ -f .env ] && . ./.env
 set +a
 
+# shellcheck source=runtime/scripts/lib/postgres.sh
+source runtime/scripts/lib/postgres.sh
+
 STATE_FILE="${DUNE_MAP_MODES_FILE:-runtime/generated/map-runtime-modes.json}"
 STATE_VERSION=3
 GRACE_SECONDS="${DUNE_AUTOSCALER_DESPAWN_GRACE_SECONDS:-${DUNE_AUTOSCALER_IDLE_SECONDS:-300}}"
@@ -112,7 +115,7 @@ canonical_map() {
     printf '%s' "$input"
     return 0
   fi
-  docker exec dune-postgres psql -U postgres -d dune -At -v ON_ERROR_STOP=1 -c "
+  dune_psql -At -v ON_ERROR_STOP=1 -c "
     select map
     from dune.world_partition
     where lower(map) = lower('${input//\'/\'\'}')
@@ -307,7 +310,7 @@ list_maps() {
   local mode memory_status state available requested reserve required swap_free
   require_postgres
   ensure_state_file
-  docker exec dune-postgres psql -U postgres -d dune -At -F '|' -c "
+  dune_psql -At -F '|' -c "
     select
       wp.map,
       count(*) as partitions,
@@ -432,7 +435,7 @@ recent_spawn_blocking() {
 warming_always_on_count() {
   local rows map partition_id server_id container logs warming=0
 
-  rows="$(docker exec dune-postgres psql -U postgres -d dune -At -F '|' -c "
+  rows="$(dune_psql -At -F '|' -c "
     select wp.map, wp.partition_id, wp.server_id
     from dune.world_partition wp
     left join dune.farm_state fs on fs.server_id = wp.server_id
@@ -506,7 +509,7 @@ adopt_live_unassigned_server() {
   local map="$1"
   local partition_id="$2"
 
-  docker exec dune-postgres psql -U postgres -d dune -At -v ON_ERROR_STOP=1 -c "
+  dune_psql -At -v ON_ERROR_STOP=1 -c "
 with candidate as (
   select fs.server_id
   from dune.farm_state fs
@@ -546,7 +549,7 @@ returning wp.server_id;
 assigned_server_for_partition() {
   local partition_id="$1"
 
-  docker exec dune-postgres psql -U postgres -d dune -At -c "
+  dune_psql -At -c "
     select coalesce(server_id, '')
     from dune.world_partition
     where partition_id = $partition_id
@@ -559,7 +562,7 @@ reconcile_map() {
   local rows assigned running container age adopted spawned=0
 
   require_postgres
-  rows="$(docker exec dune-postgres psql -U postgres -d dune -At -F '|' -c "
+  rows="$(dune_psql -At -F '|' -c "
     select partition_id, coalesce(server_id, '')
     from dune.world_partition
     where map = '${map//\'/\'\'}'
@@ -669,7 +672,7 @@ despawn_map() {
   local rows partition_id assigned running
 
   require_postgres
-  rows="$(docker exec dune-postgres psql -U postgres -d dune -At -F '|' -c "
+  rows="$(dune_psql -At -F '|' -c "
     select partition_id, coalesce(server_id, '')
     from dune.world_partition
     where map = '${map//\'/\'\'}'

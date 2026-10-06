@@ -15,6 +15,9 @@ export type UserSettingField = {
   label?: string;
   minimum?: number | null;
   maximum?: number | null;
+  recommendedMinimum?: number | null;
+  recommendedMaximum?: number | null;
+  options?: string[];
 };
 
 export type UserSettingsSchema = {
@@ -125,7 +128,8 @@ export type MapCombatStateResult = {
   reason?: string;
 };
 
-export type ChoamTradeCenter = { key: string; name: string };
+export type ChoamTransform = { x: number; y: number; z: number; qx: number; qy: number; qz: number; qw: number };
+export type ChoamTradeCenter = { key: string; name: string; transform: ChoamTransform; defaultTransform: ChoamTransform; custom: boolean; updatedAt?: string };
 export type ChoamSietch = { partition_id: string; dimension_index: number; label: string };
 export type ChoamTerminalPlacement = {
   trade_center_key: string;
@@ -137,17 +141,56 @@ export type ChoamTerminalPlacement = {
   created_at: string;
   actor_present: boolean;
 };
+export type ChoamPositionLimits = { radiusUu: number; verticalUu: number };
 export type ChoamTerminalOverview = {
   supported: boolean;
   reason?: string;
   tradeCenters: ChoamTradeCenter[];
   sietches: ChoamSietch[];
   placements: ChoamTerminalPlacement[];
+  positionLimits: ChoamPositionLimits;
+};
+export type ChoamCapturedPlacement = { x: number; y: number; z: number; yaw: number; distanceUu: number; verticalUu: number; withinBound: boolean; limits: ChoamPositionLimits };
+export type ChoamCaptureBaseline = { serial: string; x: number; y: number; z: number; yaw: number };
+export type ChoamCaptureResult = { supported: boolean; reason?: string; serial?: string; ready?: boolean; state?: "waiting" | "moving" | "ready" | "unavailable"; movedUu?: number; source?: { x: number; y: number; z: number; yaw?: number; serial?: string }; placement?: ChoamCapturedPlacement };
+export type ChoamPositionSaveResult = { ok: boolean; tradeCenter: ChoamTradeCenter; distanceUu: number; verticalUu: number; withinBound: boolean; limits: ChoamPositionLimits; yaw: number; moved: { removed: number; created: number } | null; restartRequired: boolean; reinstallRequired: boolean };
+export type ChoamPositionClearResult = { ok: boolean; tradeCenter: ChoamTradeCenter; cleared: number; reinstallRequired: boolean };
+
+type CommandResult = { operation?: string; stdout: string; stderr?: string; exitCode: number };
+
+export type MapStatusResponse = {
+  maps: CommandResult;
+  services: CommandResult;
+  readiness: CommandResult;
+  autoscaler: CommandResult;
+  schemaVersion: 1;
+  ok: boolean;
+  data: {
+    maps: Array<{ map: string; mode: string | null; partitions: number | null; assigned: number | null }>;
+    partitions: Array<{
+      partitionId: number | null;
+      map: string;
+      dimension: number | null;
+      label: string;
+      serverId: string | null;
+      gamePort: number | null;
+      igwPort: number | null;
+      ready: boolean | null;
+      alive: boolean | null;
+      status: string;
+    }>;
+    readiness: {
+      status: "ready" | "waiting" | "failed" | "unknown";
+      message: string | null;
+      checks: Array<{ section: string | null; status: string; label: string }>;
+    };
+    autoscaler: { state: string | null; container: string | null; status: string | null };
+  };
 };
 
 export const mapsApi = {
   maps: () => api<{ stdout: string }>("/api/maps"),
-  status: () => api<Record<string, { stdout?: string; stderr?: string; exitCode?: number }>>("/api/map/status"),
+  status: () => api<MapStatusResponse>("/api/map/status"),
   mode: (map = "") => api<{ stdout: string }>(`/api/maps/mode${map ? `?map=${encodeURIComponent(map)}` : ""}`),
   saveMapSettings: (body: { map: string; partitionId?: string; mode?: string; memory?: string; modeChanged: boolean; memoryChanged: boolean; running: boolean; confirmation: string }) => post<{ task: Task }>("/api/maps/settings", body),
   runtimeSettings: () => api<MapRuntimeSettings>("/api/maps/runtime-settings"),
@@ -174,6 +217,24 @@ export const mapsApi = {
     post<{ ok: boolean; created: { dimensionIndex: number; partitionId: string; actorId: string; label: string }[]; unchanged: number; restartRequired: boolean }>("/api/maps/choam-terminals", { tradeCenterKey }),
   removeChoamTerminals: (tradeCenterKey: string) =>
     api<{ ok: boolean; removed: number; restartRequired: boolean }>("/api/maps/choam-terminals", { method: "DELETE", body: JSON.stringify({ tradeCenterKey }) }),
+  // Polled rather than awaited: the caller passes back the baseline from its
+  // first call and keeps calling until `ready`, because waiting for the game's
+  // row heartbeat can take up to ~2 minutes.
+  captureChoamPosition: (tradeCenterKey: string, playerId: string, baseline?: ChoamCaptureBaseline | null) => {
+    const search = new URLSearchParams({ tradeCenterKey, playerId });
+    if (baseline?.serial) {
+      search.set("afterSerial", baseline.serial);
+      search.set("afterX", String(baseline.x));
+      search.set("afterY", String(baseline.y));
+      search.set("afterZ", String(baseline.z));
+      search.set("afterYaw", String(baseline.yaw));
+    }
+    return api<ChoamCaptureResult>(`/api/maps/choam-terminals/capture?${search.toString()}`);
+  },
+  setChoamPosition: (body: { tradeCenterKey: string; x: number; y: number; z: number; yaw: number; sourcePlayerId?: string; applyNow?: boolean }) =>
+    post<ChoamPositionSaveResult>("/api/maps/choam-terminals/position", body),
+  clearChoamPosition: (tradeCenterKey: string) =>
+    api<ChoamPositionClearResult>("/api/maps/choam-terminals/position", { method: "DELETE", body: JSON.stringify({ tradeCenterKey }) }),
   userEngine: () => api<{ stdout: string; stderr?: string; exitCode?: number }>("/api/maps/userengine"),
   userGame: (map: string, partitionId?: string) => api<{ stdout: string; stderr?: string; exitCode?: number }>(`/api/maps/usergame?map=${encodeURIComponent(map)}${partitionId ? `&partitionId=${encodeURIComponent(partitionId)}` : ""}`),
   userSettingsSchema: () => api<UserSettingsSchema>("/api/maps/user-settings/schema"),

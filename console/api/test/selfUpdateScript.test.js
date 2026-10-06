@@ -21,11 +21,31 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
+test("read-only release checks have bounded curl time without changing install retries", () => {
+  const source = readFileSync(join(repoRoot, "runtime/scripts/self-update.sh"), "utf8");
+  const start = source.indexOf("api_curl_common_args() {");
+  const end = source.indexOf("\n}", start) + 2;
+  const fn = source.slice(start, end);
+  const run = cmd => spawnSync("bash", ["-c", `${fn}\ngithub_curl_headers() { :; }\ncmd="$1"\napi_curl_common_args`, "test", cmd], { encoding: "utf8" });
+  for (const cmd of ["check", "status"]) {
+    const result = run(cmd);
+    assert.equal(result.status, 0, result.stderr);
+    const args = result.stdout.trim().split("\n");
+    assert.equal(args[args.indexOf("--max-time") + 1], "15");
+    assert.equal(args[args.indexOf("--retry") + 1], "0");
+  }
+  const install = run("install");
+  assert.equal(install.status, 0, install.stderr);
+  const args = install.stdout.trim().split("\n");
+  assert.equal(args[args.indexOf("--max-time") + 1], "60");
+  assert.equal(args[args.indexOf("--retry") + 1], "2");
+});
+
 test("local-state backup snapshots active audit files and keeps archive failures fatal", () => {
   const root = mkdtempSync(join(tmpdir(), "arrakis-state-snapshot-"));
   try {
     const source = readFileSync(join(repoRoot, "runtime/scripts/self-update.sh"), "utf8");
-    const fn = source.slice(source.indexOf("backup_local_state() {"), source.indexOf("\nrestore_local_state_file_if_needed()"));
+    const fn = source.slice(source.indexOf("local_state_paths() {"), source.indexOf("\nrestore_local_state_file_if_needed()"));
     const generated = join(root, "runtime/generated"), bin = join(root, "bin"), backup = join(root, "backup");
     mkdirSync(generated, { recursive: true }); mkdirSync(bin); mkdirSync(backup);
     const audit = join(generated, "care-package-grants.jsonl");
@@ -61,9 +81,37 @@ sleep .05
     assert.deepEqual(readFileSync(archive), original, "failed archive cannot replace the last good backup");
     assert.equal(readdirSync(backup).some(name=>name.startsWith(".local-state")), false);
     mkdirSync(join(generated, "usersettings.json"));
-    assert.notEqual(run().status, 0, "unreadable state must fail the backup");
+    const unreadable = run();
+    assert.equal(unreadable.status, 13, "unreadable state must fail the backup");
+    assert.match(unreadable.stderr, /cannot preserve local state file runtime\/generated\/usersettings\.json/i);
+    assert.match(unreadable.stderr, /bash runtime\/scripts\/repair-host-runtime-permissions\.sh/);
+    assert.doesNotMatch(unreadable.stderr, /Traceback|PermissionError/);
     assert.deepEqual(readFileSync(archive), original);
     assert.equal(readdirSync(backup).some(name=>name.startsWith(".local-state")), false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("self-update preflight explains how to repair unreadable local state", () => {
+  const root = mkdtempSync(join(tmpdir(), "arrakis-state-permissions-"));
+  try {
+    const source = readFileSync(join(repoRoot, "runtime/scripts/self-update.sh"), "utf8");
+    const functions = source.slice(
+      source.indexOf("local_state_paths() {"),
+      source.indexOf("\nensure_self_update_preflight()")
+    );
+    const blocked = join(root, "runtime/generated/director-capacity.ini");
+    mkdirSync(blocked, { recursive: true });
+    const result = spawnSync("bash", ["-c", `${functions}\nensure_local_state_readable`], {
+      cwd: root,
+      encoding: "utf8"
+    });
+
+    assert.equal(result.status, 13);
+    assert.match(result.stdout, /local state file is not readable by the current user/i);
+    assert.match(result.stdout, /runtime\/generated\/director-capacity\.ini/);
+    assert.match(result.stdout, /bash runtime\/scripts\/repair-host-runtime-permissions\.sh/);
+    assert.match(result.stdout, /No release files were replaced\./);
+    assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /Traceback|PermissionError/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -72,6 +120,7 @@ test("self-update check prefers the official upstream release repo in fork check
   mkdirSync(join(dir, "runtime", "scripts"), { recursive: true });
   copyFileSync(join(repoRoot, "runtime", "scripts", "self-update.sh"), join(dir, "runtime", "scripts", "self-update.sh"));
   copyFileSync(join(repoRoot, "runtime", "scripts", "compose-project.sh"), join(dir, "runtime", "scripts", "compose-project.sh"));
+  copyFileSync(join(repoRoot, "runtime", "scripts", "http-rate-limit.py"), join(dir, "runtime", "scripts", "http-rate-limit.py"));
   chmodSync(join(dir, "runtime", "scripts", "self-update.sh"), 0o700);
   writeFileSync(join(dir, "VERSION"), "v1.3.37\n");
 
@@ -116,6 +165,7 @@ test("self-update check falls back to the public release redirect when the GitHu
   mkdirSync(join(dir, "runtime", "scripts"), { recursive: true });
   copyFileSync(join(repoRoot, "runtime", "scripts", "self-update.sh"), join(dir, "runtime", "scripts", "self-update.sh"));
   copyFileSync(join(repoRoot, "runtime", "scripts", "compose-project.sh"), join(dir, "runtime", "scripts", "compose-project.sh"));
+  copyFileSync(join(repoRoot, "runtime", "scripts", "http-rate-limit.py"), join(dir, "runtime", "scripts", "http-rate-limit.py"));
   chmodSync(join(dir, "runtime", "scripts", "self-update.sh"), 0o700);
   writeFileSync(join(dir, "VERSION"), "v1.3.97\n");
 
@@ -166,6 +216,31 @@ test("self-update check falls back to the public release redirect when the GitHu
   }
 });
 
+test("archive cleanup batches only preflighted files and preserves runtime state", async () => {
+  const root = mkdtempSync(join(tmpdir(), "arrakis-cleanup-batch-"));
+  const install = join(root, "install");
+  const backup = join(root, "backup");
+  mkdirSync(install);
+  mkdirSync(backup);
+  const names = Array.from({ length: 520 }, (_, i) => `project file ${i}.txt`);
+  for (const name of names) writeFileSync(join(install, name), "managed\n");
+  const archived = spawnSync("tar", ["-czf", join(backup, "project-files.tgz"), "-C", install, ...names]);
+  assert.equal(archived.status, 0, archived.stderr?.toString());
+  writeFileSync(join(install, "preserved.txt"), "local state\n");
+  const source = readFileSync(join(repoRoot, "runtime/scripts/self-update.sh"), "utf8");
+  const cleanup = source.slice(source.indexOf("remove_backed_up_project_files() {"), source.indexOf("\nbackup_local_state() {"));
+  const script = `set -euo pipefail\nROOT_DIR="$1"\n${cleanup}\nrm() { printf '%s\\n' "$#" >> "$CALLS"; command rm "$@"; }\nremove_backed_up_project_files "$2"`;
+  // Keep the call log outside the removal set; filenames containing spaces
+  // must stay individual arguments and no directory may be recursively removed.
+  const result = await runProcess("bash", ["-c", script, "cleanup", install, backup], {
+    env: { ...process.env, CALLS: join(root, "calls") }
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert(names.every((name) => !existsSync(join(install, name))));
+  assert.equal(readFileSync(join(install, "preserved.txt"), "utf8"), "local state\n");
+  assert.deepEqual(readFileSync(join(root, "calls"), "utf8").trim().split("\n").map(Number), [258, 258, 10, 2]);
+});
+
 test("archive self-update replaces project files and preserves local state", async () => {
   const root = mkdtempSync(join(tmpdir(), "arrakis-self-update-install-"));
   const stagingDir = join(root, "staging");
@@ -189,6 +264,7 @@ test("archive self-update replaces project files and preserves local state", asy
     join(stagingDir, "candidate", "runtime", "scripts", "compose-project.sh")
   );
   copyFileSync(join(repoRoot, "VERSION"), join(stagingDir, "candidate", "VERSION"));
+  copyFileSync(join(repoRoot, "runtime/scripts/http-rate-limit.py"), join(stagingDir, "candidate/runtime/scripts/http-rate-limit.py"));
   const repackResult = spawnSync("tar", ["-czf", archive, "-C", stagingDir, "candidate"]);
   assert.equal(repackResult.status, 0, repackResult.stderr?.toString());
   cpSync(join(stagingDir, "candidate"), installDir, { recursive: true });
@@ -338,6 +414,40 @@ exit 0
   }
 });
 
+test("self-update preserves a confirmed GitHub limit across the parent exit trap", async () => {
+  const root = mkdtempSync(join(tmpdir(), "arrakis-self-update-http-limit-"));
+  const runId = "123e4567-e89b-42d3-a456-426614174005";
+  mkdirSync(join(root, "runtime/scripts"), { recursive: true });
+  for (const file of ["self-update.sh", "compose-project.sh", "http-rate-limit.py"]) {
+    copyFileSync(join(repoRoot, "runtime/scripts", file), join(root, "runtime/scripts", file));
+  }
+  writeFileSync(join(root, "VERSION"), "v1.4.12\n");
+  const server = createServer((_req, res) => {
+    res.writeHead(403, { "content-type": "application/json", "x-ratelimit-remaining": "0", "x-ratelimit-reset": "4102444800" });
+    res.end(JSON.stringify({ message: "API rate limit exceeded", secret: "never-display-this" }));
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const result = await runProcess("bash", ["runtime/scripts/self-update.sh", "check"], {
+      cwd: root,
+      env: { ...process.env, DUNE_SELF_UPDATE_API_BASE: base, DUNE_SELF_UPDATE_WEB_BASE: base,
+        DUNE_SELF_UPDATE_RUN_ID: runId, NO_PROXY: "127.0.0.1,localhost", no_proxy: "127.0.0.1,localhost" }
+    });
+    assert.equal(result.status, 2, result.stderr || result.stdout);
+    assert.match(result.stderr, /GitHub request limit reached\. Try again after 2100-01-01 00:00:00 UTC\./);
+    const status = readFileSync(join(root, "runtime/generated/self-update-status", `${runId}.env`), "utf8");
+    assert.match(status, /^state=failed$/m);
+    assert.match(status, /^message=GitHub request limit reached\. Try again after 2100-01-01 00:00:00 UTC\.$/m);
+    assert.doesNotMatch(result.stdout + result.stderr + status, /never-display-this/);
+    assert.equal(readFileSync(join(root, "VERSION"), "utf8"), "v1.4.12\n");
+  } finally {
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("archive self-update times out a stalled download before changing installed files", async () => {
   const root = mkdtempSync(join(tmpdir(), "arrakis-self-update-download-timeout-"));
   const fakeBin = join(root, "bin");
@@ -346,6 +456,7 @@ test("archive self-update times out a stalled download before changing installed
   mkdirSync(fakeBin);
   copyFileSync(join(repoRoot, "runtime", "scripts", "self-update.sh"), join(root, "runtime", "scripts", "self-update.sh"));
   copyFileSync(join(repoRoot, "runtime", "scripts", "compose-project.sh"), join(root, "runtime", "scripts", "compose-project.sh"));
+  copyFileSync(join(repoRoot, "runtime", "scripts", "http-rate-limit.py"), join(root, "runtime", "scripts", "http-rate-limit.py"));
   chmodSync(join(root, "runtime", "scripts", "self-update.sh"), 0o700);
   writeFileSync(join(root, "VERSION"), "v1.4.12\n");
   writeFileSync(join(fakeBin, "docker"), "#!/usr/bin/env bash\nexit 0\n", { mode: 0o700 });
@@ -408,6 +519,7 @@ test("self-update refuses a concurrent install and records a durable busy result
   mkdirSync(join(root, "runtime", "generated"), { recursive: true });
   copyFileSync(join(repoRoot, "runtime", "scripts", "self-update.sh"), join(root, "runtime", "scripts", "self-update.sh"));
   copyFileSync(join(repoRoot, "runtime", "scripts", "compose-project.sh"), join(root, "runtime", "scripts", "compose-project.sh"));
+  copyFileSync(join(repoRoot, "runtime", "scripts", "http-rate-limit.py"), join(root, "runtime", "scripts", "http-rate-limit.py"));
   writeFileSync(join(root, "VERSION"), "v0.0.1\n");
 
   const holder = spawn("flock", [join(root, "runtime", "generated", "self-update.lock"), "sleep", "10"], { stdio: "ignore" });
@@ -447,6 +559,7 @@ test("web console rebuild stops at the configured build timeout", async () => {
   copyFileSync(join(repoRoot, "runtime", "scripts", "lib", "console-secrets-env.sh"), join(root, "runtime", "scripts", "lib", "console-secrets-env.sh"));
   copyFileSync(join(repoRoot, "runtime", "scripts", "lib", "secrets.sh"), join(root, "runtime", "scripts", "lib", "secrets.sh"));
   copyFileSync(join(repoRoot, "runtime", "scripts", "lib", "secrets_aead.py"), join(root, "runtime", "scripts", "lib", "secrets_aead.py"));
+  copyFileSync(join(repoRoot, "runtime", "scripts", "http-rate-limit.py"), join(root, "runtime", "scripts", "http-rate-limit.py"));
   writeFileSync(join(root, "VERSION"), "v0.0.1\n");
   writeFileSync(join(root, "docker-compose.web.yml"), "services: {}\n");
   writeFileSync(join(fakeBin, "docker"), "#!/usr/bin/env bash\nexit 0\n", { mode: 0o700 });
