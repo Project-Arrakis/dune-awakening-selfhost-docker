@@ -70,6 +70,12 @@ updates:
     labels:
       - "dependencies"
       - "security"
+    # Patch bumps only: the pin policy (see console/api/test/publicProbe.test.js) is a patched point release, moved together with go.mod's go directive, only when govulncheck finds a reachable CVE.
+    ignore:
+      - dependency-name: "golang"
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-major"
     commit-message:
       prefix: "chore(deps):"
 
@@ -85,6 +91,15 @@ updates:
     labels:
       - "dependencies"
       - "security"
+    # Non-LTS Ubuntu releases only (decision 2026-10-06). Dependabot reads the
+    # two-field tag positionally, so semver-major would miss 24.10 and would hide
+    # the real next LTS (26.04) forever. Block everything strictly between the
+    # pinned 24.04 LTS and 26.04 LTS; 26.04 itself is still proposed, as a
+    # deliberate major upgrade to review. Revisit when moving past 26.04.
+    ignore:
+      - dependency-name: "ubuntu"
+        versions:
+          - ">= 24.10, < 26.04"
     commit-message:
       prefix: "chore(deps):"
 
@@ -100,6 +115,11 @@ updates:
     labels:
       - "dependencies"
       - "security"
+    # No major/non-LTS Node bumps for the console runtime image (decision 2026-10-06, e.g. 24 -> 25/26).
+    ignore:
+      - dependency-name: "node"
+        update-types:
+          - "version-update:semver-major"
     commit-message:
       prefix: "chore(deps):"
 
