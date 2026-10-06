@@ -651,11 +651,11 @@ describe("VehiclesPanel vehicle deletion", () => {
     expect(vi.mocked(props.confirmAction).mock.calls[0][1]?.details).toHaveLength(2);
   });
 
-  it("words a recent stored date by calendar day", async () => {
-    const yesterdayEvening = new Date();
-    yesterdayEvening.setDate(yesterdayEvening.getDate() - 1);
-    yesterdayEvening.setHours(23, 30, 0, 0);
-    for (const [storedAt, wording] of [[new Date().toISOString(), /\(today\)$/], [yesterdayEvening.toISOString(), /\(yesterday\)$/]] as const) {
+  it.each([['today', 6], ['yesterday', 5]] as const)("words a stored date as %s by calendar day", async (wording, day) => {
+    const now = new Date(2026, 9, 6, 12).getTime();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    try {
+      const storedAt = new Date(2026, 9, day, day === 6 ? 11 : 23, 30).toISOString();
       vi.mocked(vehiclesApi.list).mockResolvedValue(deleteListResponse(
         { vehicles: true, vehicleDelete: true, vehicleStoredDelete: true },
         { id: "5123", name: "Fresh Bike", owner: "Chani_K", lifecycle_state: "VehicleRecovery", stored_at: storedAt, stored_reason: "Normal" }
@@ -664,9 +664,11 @@ describe("VehiclesPanel vehicle deletion", () => {
       const { unmount } = render(<VehiclesPanel onError={vi.fn()} confirmAction={confirmAction} formatMutationResult={vi.fn().mockReturnValue("")} />);
       fireEvent.click(await screen.findByRole("button", { name: "Delete stored vehicle Fresh Bike" }));
       await waitFor(() => expect(confirmAction).toHaveBeenCalledTimes(1));
-      expect(confirmAction.mock.calls[0][1]?.details?.[1].value).toMatch(wording);
+      expect(confirmAction.mock.calls[0][1]?.details?.[1].value).toMatch(new RegExp(`\\(${wording}\\)$`));
       expect(vehiclesApi.deleteStoredVehicle).not.toHaveBeenCalled();
       unmount();
+    } finally {
+      clock.mockRestore();
     }
   });
 
