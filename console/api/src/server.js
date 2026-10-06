@@ -165,6 +165,9 @@ const policyLoad = loadPolicies(config.repoRoot);
 if (policyLoad.invalid) {
   console.warn(`IAM policy file at ${policyLoad.path} is not a valid policy store; using built-in defaults.`);
 }
+if ((policyLoad.addedDefaultDenies || []).length > 0) {
+  console.warn(`IAM policy notice: the saved policy predates ${policyLoad.addedDefaultDenies.map((d) => `${d.tier} ${d.action}`).join(", ")}; the shipped Deny for each was added in memory (a saved Allow naming the action exactly would have been kept). Save the policy from Settings to persist it.`);
+}
 if ((policyLoad.playerCappedActions || []).length > 0) {
   console.warn(`IAM policy notice: the saved player policy grants ${policyLoad.playerCappedActions.length} action(s) the strict player tier can never use (it is capped at players:read and guilds:read): ${policyLoad.playerCappedActions.slice(0, 8).join(", ")}${policyLoad.playerCappedActions.length > 8 ? ", ..." : ""}. Grant them to moderator instead.`);
 }

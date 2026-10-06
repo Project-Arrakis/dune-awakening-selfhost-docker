@@ -46,6 +46,8 @@ Session tier and identity stay in the in-memory session store; they are not plac
 
 The default policies preserve full owner access and provide conservative defaults for admin, moderator and player sessions. Password logins and `ADMIN_AUTH_DISABLED=1` create owner sessions, so existing Console installations keep their current behavior.
 
+**Saved policies and newer default Denies.** A saved `iam-policies.json` replaces the defaults wholesale, so a Deny added to the defaults later would not reach an install that had saved its policy. For the three system-backup actions (`backups:download-system`, `backups:import-system`, `backups:restore-system`) the console re-adds the shipped Deny to a saved `admin` tier on every load, unless that tier already denies them or lists one in an Allow by exact name. A startup notice says when it did; save from Settings to persist it.
+
 ### The `player` tier is strict, and `observer` no longer exists
 
 `player` is own-record-scoped and read-only: a player sees their own characters and items, and the guild they belong to, and nothing else. The default `player` policy therefore grants only `players:read` and `guilds:read`; `server`, `maps`, `bases`, `storage`, `vehicles`, `blueprints`, `exchange` and `landsraad` reads are not granted, because none of them is scoped to the caller yet.
