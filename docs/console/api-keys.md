@@ -106,7 +106,7 @@ namespace" rule, so Create stays disabled until something is selected.
 |---|---|---|
 | `players` | `players:read` | `configure-list`, `kick-all`, `moderate`, `teleport` |
 | `bases` | `bases:read` | `add-item`, `bulk-delete-items`, `delete`, `delete-item`, `fill-item`, `give-item`, `delete-backup`, `edit-backup`, `export-backup`, `import-backup`, `mutate`, `write-config` — **the four base-backup actions require explicit grants; see below** |
-| `vehicles` | `vehicles:read` | `bulk-delete-items`, `delete`, `delete-item`, `mutate` |
+| `vehicles` | `vehicles:read` | `bulk-delete-items`, `delete`, `delete-item`, `mutate`, `stored-delete` — **the stored-vehicle delete requires an explicit grant; see below** |
 | `guilds` | `guilds:read` | `disband`, `membership`, `rank`, `unclassified` |
 | `storage` | `storage:read` | `mutate` |
 | `blueprints` | `blueprints:read` | `delete`, `export`, `import`, `unclassified` |
@@ -150,8 +150,8 @@ runs a grant cycle. The verb-shaped name is not the test; what the route does is
 ### Actions no level ever grants
 
 `backups:download-system`, `backups:import-system`, `backups:restore-system`,
-`bases:import-backup`, `bases:edit-backup`, `bases:export-backup` and `bases:delete-backup` are reachable **only** by naming them in a
-key's explicit action list. A key stored as `{"backups": "write"}` or `{"bases": "write"}` does not get them.
+`bases:import-backup`, `bases:edit-backup`, `bases:export-backup`, `bases:delete-backup` and `vehicles:stored-delete` are reachable **only** by naming them in a
+key's explicit action list. A key stored as `{"backups": "write"}`, `{"bases": "write"}` or `{"vehicles": "write"}` does not get them.
 
 Levels otherwise auto-cover actions added later, so a key keeps working as routes are
 added. That is right for a namespace whose blast radius is stable, and wrong for this
@@ -171,6 +171,11 @@ file. Edit can hand an existing picked-up base to another player or move it to a
 Export downloads a whole base, every stored item included, as a file that imports on any
 server. Delete permanently removes that backup and all of its stored contents. A `bases: write` key was minted for per-base
 knobs (refills, permissions), not for that.
+
+`vehicles:stored-delete` is excluded because it deletes a vehicle that is Stored for
+Recovery -- one a player can still get back. A `vehicles: write` key was minted before that
+was possible. The route also requires `vehicles:delete`, so a key needs both: `vehicles:delete`
+(from the write level or named) and `vehicles:stored-delete` named explicitly.
 
 The `admin` tier is denied the three `backups` actions above for the same reason — see
 `policy.js`. It keeps the four `bases` actions through `bases:*`.

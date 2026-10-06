@@ -553,10 +553,10 @@ const deepDesert = {
   image: "/images/maps/deep-desert.png",
   width: 4096,
   height: 4096,
-  minX: -1177656,
-  maxX: 1072344,
-  minY: -1177066,
-  maxY: 1072934,
+  minX: -1268450,
+  maxX: 1158400,
+  minY: -1261434,
+  maxY: 1165416,
   flipY: false,
   defaultPartitionId: 8
 };

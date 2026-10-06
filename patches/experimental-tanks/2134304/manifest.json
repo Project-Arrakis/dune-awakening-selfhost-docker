@@ -1,0 +1,21 @@
+{
+  "version": "r5.8",
+  "worldTag": "2134304-0-shipping",
+  "baseImage": "registry.funcom.com/funcom/self-hosting/seabass-server@sha256:cc1980f626402297fcf5f54fa50cf373dae2e411f53f37f9cab2866bb000933d",
+  "baseConfigId": "sha256:85f8a7c36222d0ce11bd22ee1e8b278075200c9e8f4f03019fa4374cbb0641d0",
+  "cleanSha256": "2b7a1013183345bf991d082fb3191be018d279e2a2e1443bec337356d17708d7",
+  "patchedSha256": "d4202e4bd3d79db8fc17caa01e7c0de4654d1718c80148e6cdee96d1597f6cd7",
+  "assets": {
+    "pakchunk999-ChoamTank-r5_8-RocketMountSixHarko-LinuxServer_P.pak": "9fd38ec6c7fede35688c7f748fece813947e64e47b25cd7e53bf0b70cf5be02f",
+    "pakchunk999-ChoamTank-r5_8-RocketMountSixHarko-LinuxServer_P.utoc": "32308f744a2b193f9ec7c71d0927cc3f8efe0e00798a1573d470512a8dfb3947",
+    "pakchunk999-ChoamTank-r5_8-RocketMountSixHarko-LinuxServer_P.ucas": "d67d329d840d7a226ff02ea722219cc78f37a6890a509e26cb7db8fc8cc0cabd"
+  },
+  "sites": [
+    [234065346, "488d3de792ffffe892e30302", "909090909090909090909090"],
+    [262119408, "4d8b4c24e8", "4531c99090"],
+    [262193648, "0f8512010000", "90e912010000"],
+    [265636177, "0f849d010000", "e99e01000090"],
+    [265637774, "488b8568ffffff", "31c09090909090"],
+    [265660420, "488b4008", "31c09090"]
+  ]
+}

@@ -74,6 +74,18 @@ export type TerrainSandRing = {
   zstep: number;
 };
 
+/**
+ * The sand every layout shares, which each layout's height field is stored as a
+ * difference from: an `n` x `n` grid of whole steps, height `zlo + value * zstep`.
+ */
+export type TerrainSandBase = {
+  n: number;
+  zlo: number;
+  zstep: number;
+  /** How the grid itself is stored; see `decodeSandBase`. */
+  coding: string;
+};
+
 /** One mesh placed by one layout. */
 export type TerrainDraw = {
   /** Index into `TerrainLibrary.meshes`. */
@@ -116,11 +128,15 @@ export type TerrainLayoutMeta = {
   hfStep: number;
   hfX0: number;
   hfY0: number;
+  /** Set while the height field is still stored against the shared base; see `decodeHeightField`. */
+  hfCoding?: string;
   draws: TerrainDraw[];
 };
 
 /** A mesh from the library, paired with one layout's instances of it. */
 export type TerrainDrawCall = TerrainMesh & {
+  /** Index into `TerrainLibrary.meshes`. */
+  mesh: number;
   instOff: number;
   instN: number;
   overlay: number;
@@ -145,5 +161,5 @@ export type TerrainView = {
   flipY: boolean;
 };
 
-/** A square lettered grid on the world plane: min corner, cell size in uu, cells per side. */
-export type SectorGridSpec = { x0: number; y0: number; cell: number; divisions: number };
+/** A lettered grid on the world plane: min corner, cell size in uu per axis, cells per side. */
+export type SectorGridSpec = { x0: number; y0: number; cellX: number; cellY: number; divisions: number };

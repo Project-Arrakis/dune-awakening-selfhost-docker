@@ -146,6 +146,22 @@ beforeEach(() => {
 });
 
 describe("MapsPanel per-target task buttons", () => {
+  it("updates runtime status without waiting for a slow memory sample", async () => {
+    const api = stubMapsApi();
+    renderMapsPanel();
+    await openSietch("31");
+    let finishMemory!: (value: { stdout: string; exitCode: number }) => void;
+    api.memory.mockReturnValue(new Promise((resolve) => { finishMemory = resolve; }));
+    api.status.mockResolvedValue({
+      maps: { stdout: JSON.stringify({ maps: [{ map: "Survival_1", status: "Loading", mode: "Core Map", memory: "12 GB", partitionId: "" }] }) },
+      services: { stdout: "" }, readiness: { stdout: "" }
+    });
+    fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(screen.getAllByText("Loading").length).toBeGreaterThan(0));
+    finishMemory({ stdout: "", exitCode: 0 });
+    api.memory.mockResolvedValue({ stdout: "", exitCode: 0 });
+  });
+
   it("only relabels the Restart button while that Sietch restarts", async () => {
     const api = stubMapsApi();
     const props = renderMapsPanel();

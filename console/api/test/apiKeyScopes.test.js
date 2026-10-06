@@ -515,6 +515,21 @@ test("a stored bases write level does not reach any base-backup transfer or dele
   assert.equal(scopeAllowsAction("bases", "read", "bases:read"), true);
 });
 
+test("a stored vehicles write level does not reach the stored-vehicle delete", () => {
+  // vehicles:delete (junk vehicles) stays covered by the level; taking a
+  // recoverable vehicle away from a player has to be named.
+  assert.equal(scopeAllowsAction("vehicles", "write", "vehicles:stored-delete"), false);
+  assert.equal(scopeAllowsAction("vehicles", "read", "vehicles:stored-delete"), false);
+  assert.equal(scopeAllowsAction("vehicles", ["vehicles:stored-delete"], "vehicles:stored-delete"), true);
+  assert.equal(scopeAllowsAction("vehicles", "write", "vehicles:delete"), true);
+  assert.equal(keyAllows({ scopes: { vehicles: "write" } }, "vehicles:stored-delete"), false);
+  // The route needs both actions, so the explicit list has to carry both.
+  const explicit = { scopes: { vehicles: ["vehicles:delete", "vehicles:stored-delete"] } };
+  assert.equal(keyAllows(explicit, "vehicles:stored-delete"), true);
+  assert.equal(keyAllows(explicit, "vehicles:delete"), true);
+  assert.equal(keyAllows({ scopes: { vehicles: ["vehicles:stored-delete"] } }, "vehicles:delete"), false);
+});
+
 // Tightened during the 2026-09-21 upstream rebase: these three were originally
 // LEVEL_EXCLUDED_ACTIONS-only (unreachable via a level, but grantable by naming
 // them explicitly). Reconciling this list with policy.js's CROWN_JEWEL_DENY_ACTIONS

@@ -8,6 +8,7 @@ import { DiscordSetupWizard } from "../auth/DiscordSetupWizard";
 import { restartConsoleAndReload } from "../../lib/consoleRestart";
 import { firstDefined, formatUiSentence, friendlyColumnName } from "../../lib/display";
 import { ApiKeysSection } from "./ApiKeysSection";
+import { ExperimentalFeatures } from "./ExperimentalFeatures";
 
 // Authenticator apps display codes as "123 456" and the server strips whitespace
 // (auth/totp.js) precisely so a paste of that form validates. Do not add
@@ -896,6 +897,7 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
         </div>}
       </div>
       <RuntimeSettingsSummary settings={settings} />
+      <ExperimentalFeatures confirmAction={confirmAction} />
       <div className={`playerAdmin_toggle settings-web-port-toggle ${webPortOpen ? "open" : ""}`}>
         <button className="playerAdmin_toggleHeader" aria-label={webPortOpen ? "Collapse Web Console Port" : "Expand Web Console Port"} onClick={() => setWebPortOpen(!webPortOpen)}>{webPortOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Web Console Port</span></button>
         {webPortOpen && <div className="playerAdmin_toggleBody">
