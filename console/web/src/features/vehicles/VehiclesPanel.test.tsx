@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mapsApi } from "../../api/maps";
 import { vehiclesApi, type VehiclesListResponse } from "../../api/vehicles";
 import { invalidateInstanceNames } from "../maps/instanceNames";
-import { VehiclesPanel } from "./VehiclesPanel";
+import { VehiclesPanel, _resetVehiclesCacheForTests } from "./VehiclesPanel";
 
 vi.mock("../../api/maps", () => ({ mapsApi: { sietchDimensions: vi.fn() } }));
 
@@ -15,6 +15,7 @@ vi.mock("../../api/vehicles", () => ({
     permissionCandidates: vi.fn(),
     transferToSystemCustodian: vi.fn(),
     deleteVehicle: vi.fn(),
+    deleteStoredVehicle: vi.fn(),
     cancelQueuedDelete: vi.fn(),
     pendingDeletes: vi.fn(),
     storage: vi.fn()
@@ -64,6 +65,9 @@ function listResponse(overrides: Partial<VehiclesListResponse> = {}): VehiclesLi
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // The panel keeps its last view in a module-level cache; without this a
+  // test inherits the previous test's search, page and status filter.
+  _resetVehiclesCacheForTests();
   invalidateInstanceNames();
   vi.mocked(mapsApi.sietchDimensions).mockResolvedValue({ stdout: "", exitCode: 1 } as never);
 });
@@ -132,6 +136,31 @@ describe("VehiclesPanel", () => {
 
     // (0, 0) on the 9x9 grid (letter = Y descending, number = X ascending) is E-5.
     expect(await screen.findByText("Sector E-5")).toBeInTheDocument();
+  });
+
+  it("places Deep Desert sectors on the Live Map's measured grid", async () => {
+    const base = { ...listResponse().rows[0], map: "DeepDesert", partition_id: 8 };
+    vi.mocked(vehiclesApi.list).mockResolvedValue(listResponse({
+      rows: [
+        // Both read D-5 in game. A 250,000 uu grid cannot put them in one row:
+        // centred on the origin it gives E-5 and D-5, on the map centre D-5 and C-5.
+        { ...base, id: "5101", x: -30000, y: 100000 },
+        { ...base, id: "5102", x: -30000, y: 350000 }
+      ]
+    }));
+    renderPanel();
+
+    expect(await screen.findAllByText("Sector D-5")).toHaveLength(2);
+  });
+
+  it("shows no sector for a Deep Desert point outside the grid", async () => {
+    vi.mocked(vehiclesApi.list).mockResolvedValue(listResponse({
+      rows: [{ ...listResponse().rows[0], map: "DeepDesert", partition_id: 8, x: 2000000, y: 0 }]
+    }));
+    renderPanel();
+
+    expect(await screen.findByText("(2000000, 0)")).toBeInTheDocument();
+    expect(screen.queryByText(/^Sector/)).toBeNull();
   });
 
   // A vehicle's cargo hold hangs off the vehicle actor, not a module, so this
@@ -409,6 +438,86 @@ describe("VehiclesPanel", () => {
     // rendered from the list response, not the permissions tab's own state.
     await waitFor(() => expect(vi.mocked(vehiclesApi.list)).toHaveBeenCalledTimes(2));
   });
+
+  it("defaults to owned vehicles and refetches from page 0 when the status filter changes", async () => {
+    vi.mocked(vehiclesApi.list).mockResolvedValue(listResponse({ totalCount: 120, totalVehicles: 120 }));
+    renderPanel();
+
+    await screen.findByText("Sihaya");
+    const group = within(screen.getByRole("radiogroup", { name: "Vehicles shown" }));
+    expect(group.getAllByRole("radio")).toHaveLength(5);
+    expect(group.getByRole("radio", { name: /^Owned/ })).toBeChecked();
+    expect(vi.mocked(vehiclesApi.list)).toHaveBeenCalledWith(expect.objectContaining({ status: "owned" }));
+    // A narrowed list reports its share of the whole; All reports the bare total.
+    vi.mocked(vehiclesApi.list).mockResolvedValue(listResponse({ totalCount: 120, totalVehicles: 300 }));
+    fireEvent.click(screen.getByText("Refresh"));
+    expect(await screen.findByText("Total Vehicles: 120 of 300")).toBeInTheDocument();
+
+    await waitFor(() => expect(screen.getByText("Next")).not.toBeDisabled());
+    fireEvent.click(screen.getByText("Next"));
+    await waitFor(() => expect(vi.mocked(vehiclesApi.list)).toHaveBeenCalledWith(expect.objectContaining({ status: "owned", page: 1 })));
+
+    fireEvent.click(group.getByRole("radio", { name: "Vehicle Backup" }));
+    await waitFor(() => expect(vi.mocked(vehiclesApi.list)).toHaveBeenCalledWith(expect.objectContaining({ status: "backup", page: 0 })));
+    expect(group.getByRole("radio", { name: "Vehicle Backup" })).toBeChecked();
+
+    for (const [name, status] of [["Stored for Recovery", "recovery"], [/^Unowned/, "unowned"], ["All vehicles", "all"]] as const) {
+      fireEvent.click(group.getByRole("radio", { name }));
+      await waitFor(() => expect(vi.mocked(vehiclesApi.list)).toHaveBeenCalledWith(expect.objectContaining({ status })));
+    }
+    expect(await screen.findByText("Total Vehicles: 300")).toBeInTheDocument();
+  });
+
+  // App.tsx never clears its focusRequest, and the panel unmounts whenever
+  // another tab is opened -- so the same request arrives again on return.
+  it("does not re-apply a deep link it already handled when the tab is reopened", async () => {
+    vi.mocked(vehiclesApi.list).mockResolvedValue(listResponse());
+    const focusRequest = { vehicleId: "5001", nonce: 7 };
+    const first = render(<VehiclesPanel onError={vi.fn()} confirmAction={vi.fn()} formatMutationResult={vi.fn()} focusRequest={focusRequest} />);
+    await waitFor(() => expect(vi.mocked(vehiclesApi.list)).toHaveBeenCalledWith(expect.objectContaining({ q: "5001", status: "all" })));
+
+    // The admin moves on: clears the search and picks a filter.
+    fireEvent.click(await screen.findByText("Clear"));
+    fireEvent.click(screen.getByRole("radio", { name: "Vehicle Backup" }));
+    await waitFor(() => expect(vi.mocked(vehiclesApi.list)).toHaveBeenLastCalledWith(expect.objectContaining({ q: "", status: "backup" })));
+    first.unmount();
+
+    vi.mocked(vehiclesApi.list).mockClear();
+    render(<VehiclesPanel onError={vi.fn()} confirmAction={vi.fn()} formatMutationResult={vi.fn()} focusRequest={focusRequest} />);
+    await waitFor(() => expect(vi.mocked(vehiclesApi.list)).toHaveBeenCalled());
+    expect(await screen.findByRole("radio", { name: "Vehicle Backup" })).toBeChecked();
+    for (const [params] of vi.mocked(vehiclesApi.list).mock.calls) {
+      expect(params).toMatchObject({ q: "", status: "backup" });
+    }
+
+    // A NEW request (a new nonce) is still honoured.
+    vi.mocked(vehiclesApi.list).mockClear();
+    render(<VehiclesPanel onError={vi.fn()} confirmAction={vi.fn()} formatMutationResult={vi.fn()} focusRequest={{ vehicleId: "5001", nonce: 8 }} />);
+    await waitFor(() => expect(vi.mocked(vehiclesApi.list)).toHaveBeenCalledWith(expect.objectContaining({ q: "5001", status: "all" })));
+  });
+
+  it("steps back to the last real page when the requested page comes back empty", async () => {
+    // 60 vehicles at 50 per page: page 1 exists. Then the list shrinks to 50.
+    vi.mocked(vehiclesApi.list).mockImplementation((params = {}) => Promise.resolve(
+      params.page ? listResponse({ rows: [], totalCount: 50, totalVehicles: 50 }) : listResponse({ totalCount: 60, totalVehicles: 60 })
+    ));
+    renderPanel();
+    await screen.findByText("Sihaya");
+    await waitFor(() => expect(screen.getByText("Next")).not.toBeDisabled());
+    fireEvent.click(screen.getByText("Next"));
+
+    await waitFor(() => expect(vi.mocked(vehiclesApi.list)).toHaveBeenCalledWith(expect.objectContaining({ page: 1 })));
+    await waitFor(() => expect(vi.mocked(vehiclesApi.list)).toHaveBeenLastCalledWith(expect.objectContaining({ page: 0 })));
+    expect(await screen.findByText("Page 1 of 2")).toBeInTheDocument();
+  });
+
+  it("widens the status filter to All for a deep-linked vehicle", async () => {
+    vi.mocked(vehiclesApi.list).mockResolvedValue(listResponse());
+    renderPanel({ focusRequest: { vehicleId: "5001", nonce: 1 } });
+
+    await waitFor(() => expect(vi.mocked(vehiclesApi.list)).toHaveBeenCalledWith(expect.objectContaining({ q: "5001", status: "all", page: 0 })));
+    expect(await screen.findByRole("radio", { name: "All vehicles" })).toBeChecked();
+  });
 });
 
 describe("VehiclesPanel vehicle deletion", () => {
@@ -468,6 +577,109 @@ describe("VehiclesPanel vehicle deletion", () => {
     await waitFor(() => expect(vehiclesApi.deleteVehicle).toHaveBeenCalledWith("5101"));
     expect(await screen.findByText('"Sandcrawler Delete" was deleted.')).toBeInTheDocument();
     expect(vi.mocked(vehiclesApi.list).mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it("disables Delete on a vehicle the server would refuse, and names the state", async () => {
+    for (const [state, reason] of [
+      ["VehicleRecovery", "Stored for Recovery — cannot be deleted as an ordinary vehicle"],
+      ["VehicleBackup", "In Vehicle Backup — cannot be deleted until its owner takes it back out"],
+      ["Travel", "In Transit — cannot be deleted until it arrives"]
+    ]) {
+      const name = `Blocked ${state}`;
+      vi.mocked(vehiclesApi.list).mockResolvedValue(deleteListResponse(
+        { vehicles: true, vehicleDelete: true, vehicleDeleteQueue: false },
+        { id: "5110", name, lifecycle_state: state }
+      ));
+      const { unmount } = render(<VehiclesPanel onError={vi.fn()} confirmAction={vi.fn().mockResolvedValue(true)} formatMutationResult={vi.fn().mockReturnValue("")} />);
+      const button = await screen.findByRole("button", { name: `Cannot delete ${name}: ${reason}` });
+      // Blocked, but still focusable so the reason is reachable by keyboard.
+      expect(button).toHaveAttribute("aria-disabled", "true");
+      expect(button).not.toBeDisabled();
+      button.focus();
+      expect(button).toHaveFocus();
+      expect(button).toHaveAttribute("title", reason);
+      fireEvent.click(button);
+      expect(vehiclesApi.deleteVehicle).not.toHaveBeenCalled();
+      expect(vehiclesApi.deleteStoredVehicle).not.toHaveBeenCalled();
+      unmount();
+    }
+  });
+
+  it("deletes a stored vehicle through its own route, naming the owner and stored date", async () => {
+    vi.mocked(vehiclesApi.list).mockResolvedValue(deleteListResponse(
+      { vehicles: true, vehicleDelete: true, vehicleDeleteQueue: true, vehicleStoredDelete: true },
+      { id: "5120", name: "Stored Buggy", owner: "Gurney_H", lifecycle_state: "VehicleRecovery", stored_at: "2026-07-02T10:00:00.000Z", stored_reason: "RecoveredFromLostState" }
+    ));
+    vi.mocked(vehiclesApi.deleteStoredVehicle).mockResolvedValue({
+      supported: true, backupCreated: true, result: { ok: true, vehicleId: 5120, storedOwner: "Gurney_H" }
+    });
+
+    const props = renderPanel();
+    await screen.findByText("Stored Buggy");
+    const button = screen.getByRole("button", { name: "Delete stored vehicle Stored Buggy" });
+    expect(button).toBeEnabled();
+    expect(button).toHaveAttribute("title", "Delete Stored Vehicle");
+    fireEvent.click(button);
+
+    await waitFor(() => expect(props.confirmAction).toHaveBeenCalledTimes(1));
+    const [message, options] = vi.mocked(props.confirmAction).mock.calls[0];
+    expect(message).toContain("Gurney_H will no longer be able to recover it");
+    expect(options).toMatchObject({ title: "Delete Stored Vehicle", confirmLabel: "Delete Stored Vehicle", danger: true });
+    expect(options?.warning).toContain("refused while the owner is online");
+    expect(options?.details?.[0]).toEqual({ label: "Owner", value: "Gurney_H", tone: "danger" });
+    expect(options?.details?.[1].label).toBe("Stored");
+    expect(options?.details?.[1].value).toMatch(/2026.*days ago\)$/);
+    expect(options?.details?.[2]).toEqual({ label: "Reason", value: "Recovered from a lost state" });
+
+    await waitFor(() => expect(vehiclesApi.deleteStoredVehicle).toHaveBeenCalledWith("5120"));
+    expect(vehiclesApi.deleteVehicle).not.toHaveBeenCalled();
+    expect(await screen.findByText('Stored vehicle "Stored Buggy" was deleted.')).toBeInTheDocument();
+  });
+
+  it("shows the server's refusal when the stored vehicle's owner is online", async () => {
+    vi.mocked(vehiclesApi.list).mockResolvedValue(deleteListResponse(
+      { vehicles: true, vehicleDelete: true, vehicleStoredDelete: true },
+      { id: "5121", name: "Stored Bike", owner: "Chani_K", lifecycle_state: "VehicleRecovery", stored_at: "2026-05-28T10:00:00.000Z", stored_reason: "Normal" }
+    ));
+    vi.mocked(vehiclesApi.deleteStoredVehicle).mockRejectedValue(new Error("Chani_K is online. A stored vehicle can only be deleted while its owner is offline."));
+
+    const props = renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Delete stored vehicle Stored Bike" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Chani_K is online.");
+    // A Normal recovery needs no Reason line.
+    expect(vi.mocked(props.confirmAction).mock.calls[0][1]?.details).toHaveLength(2);
+  });
+
+  it("words a recent stored date by calendar day", async () => {
+    const yesterdayEvening = new Date();
+    yesterdayEvening.setDate(yesterdayEvening.getDate() - 1);
+    yesterdayEvening.setHours(23, 30, 0, 0);
+    for (const [storedAt, wording] of [[new Date().toISOString(), /\(today\)$/], [yesterdayEvening.toISOString(), /\(yesterday\)$/]] as const) {
+      vi.mocked(vehiclesApi.list).mockResolvedValue(deleteListResponse(
+        { vehicles: true, vehicleDelete: true, vehicleStoredDelete: true },
+        { id: "5123", name: "Fresh Bike", owner: "Chani_K", lifecycle_state: "VehicleRecovery", stored_at: storedAt, stored_reason: "Normal" }
+      ));
+      const confirmAction = vi.fn().mockResolvedValue(false);
+      const { unmount } = render(<VehiclesPanel onError={vi.fn()} confirmAction={confirmAction} formatMutationResult={vi.fn().mockReturnValue("")} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Delete stored vehicle Fresh Bike" }));
+      await waitFor(() => expect(confirmAction).toHaveBeenCalledTimes(1));
+      expect(confirmAction.mock.calls[0][1]?.details?.[1].value).toMatch(wording);
+      expect(vehiclesApi.deleteStoredVehicle).not.toHaveBeenCalled();
+      unmount();
+    }
+  });
+
+  it("keeps Vehicle Backup and In Transit blocked even when stored deletes are supported", async () => {
+    for (const state of ["VehicleBackup", "Travel"]) {
+      vi.mocked(vehiclesApi.list).mockResolvedValue(deleteListResponse(
+        { vehicles: true, vehicleDelete: true, vehicleStoredDelete: true },
+        { id: "5122", name: `Still Blocked ${state}`, lifecycle_state: state }
+      ));
+      const { unmount } = render(<VehiclesPanel onError={vi.fn()} confirmAction={vi.fn().mockResolvedValue(true)} formatMutationResult={vi.fn().mockReturnValue("")} />);
+      expect(await screen.findByRole("button", { name: new RegExp(`^Cannot delete Still Blocked ${state}`) })).toHaveAttribute("aria-disabled", "true");
+      unmount();
+    }
   });
 
   it("does not delete when the confirm dialog is declined", async () => {

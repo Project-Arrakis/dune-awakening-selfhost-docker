@@ -476,6 +476,21 @@ test("a stored bases write level does not reach any base-backup transfer or dele
   assert.equal(scopeAllowsAction("bases", "read", "bases:read"), true);
 });
 
+test("a stored vehicles write level does not reach the stored-vehicle delete", () => {
+  // vehicles:delete (junk vehicles) stays covered by the level; taking a
+  // recoverable vehicle away from a player has to be named.
+  assert.equal(scopeAllowsAction("vehicles", "write", "vehicles:stored-delete"), false);
+  assert.equal(scopeAllowsAction("vehicles", "read", "vehicles:stored-delete"), false);
+  assert.equal(scopeAllowsAction("vehicles", ["vehicles:stored-delete"], "vehicles:stored-delete"), true);
+  assert.equal(scopeAllowsAction("vehicles", "write", "vehicles:delete"), true);
+  assert.equal(keyAllows({ scopes: { vehicles: "write" } }, "vehicles:stored-delete"), false);
+  // The route needs both actions, so the explicit list has to carry both.
+  const explicit = { scopes: { vehicles: ["vehicles:delete", "vehicles:stored-delete"] } };
+  assert.equal(keyAllows(explicit, "vehicles:stored-delete"), true);
+  assert.equal(keyAllows(explicit, "vehicles:delete"), true);
+  assert.equal(keyAllows({ scopes: { vehicles: ["vehicles:stored-delete"] } }, "vehicles:delete"), false);
+});
+
 test("the excluded actions can still be granted by naming them", () => {
   // The point is that the operator has to choose them, not that they are
   // unreachable -- an explicit action list is a deliberate act.

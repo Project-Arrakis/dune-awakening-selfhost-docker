@@ -625,6 +625,11 @@ export const REGEX_ACTIONS_BY_METHOD_PATTERN = [
   // reversible; this is not, so it gets its own action rather than folding
   // into vehicles:mutate.
   { method: "DELETE", pattern: /^\/api\/vehicles\/[^/]+$/, action: "vehicles:delete" },
+  // DELETE /api/vehicles/{vehicleId}/stored — deleting a vehicle a player can
+  // still recover. Its own action so vehicles:delete does not grant it; named
+  // "stored-delete" so no vehicles:delete... wildcard reaches it (issue #351).
+  // The route also requires vehicles:delete, and no API-key level covers it.
+  { method: "DELETE", pattern: /^\/api\/vehicles\/[^/]+\/stored$/, action: "vehicles:stored-delete" },
   // DELETE /api/vehicles/{vehicleId}/queued-delete — cancelling a queued
   // delete, which is reversible, so it stays in vehicles:mutate like every
   // other vehicle mutation. Needs its own explicit pattern for the same

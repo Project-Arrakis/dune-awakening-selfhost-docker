@@ -7,6 +7,10 @@ import tempfile
 import contextlib
 import io
 import unittest
+import fcntl
+import os
+import subprocess
+import time
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,6 +23,87 @@ IMAGE = 'sha256:' + '1' * 64
 
 
 class TankTests(unittest.TestCase):
+    def test_interrupted_launch_recovers_saved_policy_without_restarting(self):
+        for enabled in (False, True):
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                state = {'enabled': enabled, 'build': TAG, 'imageId': IMAGE, 'applying': True}
+                with patch.object(tanks, 'ROOT', root), patch.object(tanks, 'STATE', root / 'state'), patch.dict(os.environ, {'DUNE_TANK_APPLY': '', 'DUNE_BATTLEGROUP_LIFECYCLE_LOCK_HELD': '', 'DUNE_BATTLEGROUP_LIFECYCLE_LOCK_FILE': ''}), patch.object(tanks, 'run') as docker:
+                    tanks.save(state)
+                    self.assertFalse(tanks.status('new-build')['applying'])
+                    self.assertTrue(tanks.read_state()['applying'])  # Status is read-only.
+                    with patch.object(sys, 'argv', ['tanks', 'launch-guard', 'Survival_1']):
+                        tanks.main()
+                    recovered = tanks.read_state()
+                    self.assertFalse(recovered['applying'])
+                    self.assertEqual(recovered['enabled'], enabled)
+                    self.assertEqual(recovered['imageId'], IMAGE)
+                    self.assertEqual(recovered['error'], tanks.INTERRUPTED_APPLY)
+                    docker.assert_not_called()
+
+    def test_launch_preserves_live_apply_and_respects_parent_lifecycle_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lock_path = root / 'custom-lifecycle.lock'
+            state = {'enabled': True, 'build': TAG, 'imageId': IMAGE, 'applying': True}
+            with patch.object(tanks, 'ROOT', root), patch.object(tanks, 'STATE', root / 'state'), patch.dict(os.environ, {'DUNE_TANK_APPLY': '', 'DUNE_BATTLEGROUP_LIFECYCLE_LOCK_HELD': '', 'DUNE_BATTLEGROUP_LIFECYCLE_LOCK_FILE': str(lock_path)}):
+                tanks.save(state)
+                with lock_path.open('a') as lock:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    self.assertTrue(tanks.status('new-build')['applying'])
+                    with patch.object(sys, 'argv', ['tanks', 'launch-guard', 'Survival_1']):
+                        with self.assertRaises(ValueError):
+                            tanks.main()
+                    self.assertEqual(tanks.read_state(), state)
+                    with patch.dict(os.environ, {'DUNE_BATTLEGROUP_LIFECYCLE_LOCK_HELD': '1', 'DUNE_TANK_APPLY': '1'}):
+                        self.assertEqual(tanks.apply_state(recover=True), state)
+                    with patch.dict(os.environ, {'DUNE_BATTLEGROUP_LIFECYCLE_LOCK_HELD': '1'}):
+                        self.assertFalse(tanks.apply_state(recover=True)['applying'])
+
+    def test_sigkill_during_real_apply_does_not_block_next_launch(self):
+        # Only Docker, database and game operations are stubbed. The real apply
+        # writes its state and holds a real process lock before being killed.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            child = f'''
+import sys, json, time
+from pathlib import Path
+from unittest.mock import patch
+sys.path.insert(0, {str(ROOT / 'runtime/scripts')!r})
+import experimental_tanks as tanks
+root = Path({directory!r})
+tanks.ROOT = root
+tanks.STATE = root / 'state'
+def run(*args, **kwargs):
+    if args[:2] == ('docker', 'ps'):
+        return json.dumps({{'Names': 'dune-server-survival-1'}})
+    return ''
+def sietch(*args, **kwargs):
+    (root / 'switch-reached').touch()
+    time.sleep(60)
+with patch.object(tanks, 'build', return_value={IMAGE!r}), patch.object(tanks, 'run', side_effect=run), patch.object(tanks, 'query_tsv', return_value='1\\t0'), patch.object(tanks.subprocess, 'run', side_effect=sietch):
+    tanks.apply({TAG!r}, True)
+'''
+            env = {**os.environ, 'DUNE_TANK_APPLY': '', 'DUNE_BATTLEGROUP_LIFECYCLE_LOCK_HELD': '', 'DUNE_BATTLEGROUP_LIFECYCLE_LOCK_FILE': ''}
+            process = subprocess.Popen([sys.executable, '-c', child], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            try:
+                deadline = time.monotonic() + 5
+                while not (root / 'switch-reached').exists() and time.monotonic() < deadline and process.poll() is None:
+                    time.sleep(0.02)
+                self.assertTrue((root / 'switch-reached').exists())
+                process.kill()
+                process.wait(timeout=5)
+                with patch.object(tanks, 'ROOT', root), patch.object(tanks, 'STATE', root / 'state'), patch.dict(os.environ, env):
+                    self.assertTrue(tanks.read_state()['applying'])
+                    with patch.object(sys, 'argv', ['tanks', 'launch-guard', 'Survival_1']):
+                        tanks.main()
+                    self.assertFalse(tanks.read_state()['applying'])
+                    self.assertEqual(tanks.read_state()['imageId'], IMAGE)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                process.communicate(timeout=5)
+
     def test_manifest_assets_and_six_guards(self):
         data = tanks.manifest(TAG)
         self.assertEqual(len(data['sites']), 6)
@@ -47,6 +132,32 @@ class TankTests(unittest.TestCase):
             state['imageId'] = 'sha256:bad'
             with self.assertRaises(ValueError):
                 tanks.image_for_map(TAG, 'Survival_1')
+
+    def test_pruned_image_rebuild_preserves_policy_and_never_restarts_maps(self):
+        for held in ('', '1'):
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                state = {'enabled': True, 'build': TAG, 'imageId': IMAGE, 'error': tanks.INTERRUPTED_APPLY}
+                restored = 'sha256:' + '2' * 64
+                with patch.object(tanks, 'ROOT', root), patch.object(tanks, 'STATE', root / 'state'), patch.object(tanks, 'manifest', return_value={'supported': True}), patch.dict(os.environ, {'DUNE_BATTLEGROUP_LIFECYCLE_LOCK_HELD': held, 'DUNE_BATTLEGROUP_LIFECYCLE_LOCK_FILE': '', 'DUNE_GAME_SERVER_IMAGE': ''}), patch.object(tanks, 'run', side_effect=subprocess.CalledProcessError(1, ['docker', 'image', 'inspect'])), patch.object(tanks, 'build', return_value=restored) as build:
+                    tanks.save(state)
+                    self.assertEqual(tanks.image_for_map(TAG, 'Survival_1'), restored)
+                    build.assert_called_once_with(TAG)
+                    self.assertEqual(tanks.read_state(), {**state, 'imageId': restored})
+
+    def test_failed_rebuild_preserves_settings_and_unsupported_build_never_rebuilds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = {'enabled': True, 'build': TAG, 'imageId': IMAGE}
+            with patch.object(tanks, 'ROOT', root), patch.object(tanks, 'STATE', root / 'state'), patch.object(tanks, 'manifest', side_effect=lambda tag: {'supported': True} if tag == TAG else None), patch.dict(os.environ, {'DUNE_BATTLEGROUP_LIFECYCLE_LOCK_HELD': '', 'DUNE_BATTLEGROUP_LIFECYCLE_LOCK_FILE': '', 'DUNE_GAME_SERVER_IMAGE': ''}), patch.object(tanks, 'run', side_effect=subprocess.CalledProcessError(1, ['docker', 'image', 'inspect'])), patch.object(tanks, 'build', side_effect=ValueError('Base mismatch')) as build:
+                tanks.save(state)
+                with self.assertRaisesRegex(ValueError, 'Base mismatch'):
+                    tanks.image_for_map(TAG, 'Survival_1')
+                self.assertEqual(tanks.read_state(), state)
+                build.reset_mock()
+                with self.assertRaises(ValueError):
+                    tanks.image_for_map('new-build', 'Survival_1')
+                build.assert_not_called()
 
     def test_binary_rejects_mismatch_and_bad_offsets(self):
         source = b'abcdef'

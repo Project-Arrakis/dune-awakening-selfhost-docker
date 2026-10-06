@@ -54,7 +54,7 @@ const CULL_MIN_RADIUS_PX = 0.5;
 // coarser one is faster but thins the POI hulls out at map zoom.
 const LOD_RADIUS_PX = 8;
 const LOD_GRID = 8;
-// How far past the mapped square the tilted view draws, world uu. The outside
+// How far past the layout square the terrain draws, world uu. The outside
 // rock that ships is limited to the same distance, so none is sliced by the clip.
 const EDGE_APRON = 375000;
 // CSS pixels per texel of the depth copy markers are tested against.
@@ -181,7 +181,7 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     con: u(terrain, "uCon"), conStep: u(terrain, "uConStep"), conStepS: u(terrain, "uConStepS"),
     rock: u(terrain, "uRock"), texOn: u(terrain, "uTexOn"), texLayer: u(terrain, "uTexLayer"), pick: u(terrain, "uPick"),
     texGain: u(terrain, "uTexGain"), apron: u(terrain, "uApron"),
-    sideLit: u(terrain, "uSideLit"), grid: u(terrain, "uGrid"), gridPx: u(terrain, "uGridPx")
+    sideLit: u(terrain, "uSideLit"), grid: u(terrain, "uGrid"), gridN: u(terrain, "uGridN"), gridPx: u(terrain, "uGridPx")
   };
   const r = { tex: u(resolve, "uT"), texel: u(resolve, "uTexel"), ss: u(resolve, "uSS") };
   const b = { vp: u(backdrop, "uVP"), c: u(backdrop, "uC"), half: u(backdrop, "uHalf"), z: u(backdrop, "uZ") };
@@ -788,8 +788,9 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     gl.uniform1f(t.footZ, meta.zmin);
     gl.uniform1f(t.zhi, meta.zmin + (meta.zmax - meta.zmin) * 0.35);
     gl.uniform2f(t.c, meta.cx, meta.cy);
-    // Tilted, the clip moves out to take in the rock that stands past the edge.
-    const apron = camera ? EDGE_APRON : 0;
+    // The clip takes in the sand and rock past the square: the map rect and the
+    // tilted view both reach beyond it.
+    const apron = EDGE_APRON;
     gl.uniform1f(t.half, meta.half + apron);
     gl.uniform1f(t.apron, apron);
     gl.activeTexture(gl.TEXTURE1);
@@ -818,8 +819,10 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     gl.uniform1f(t.conStep, rockStep);
     gl.uniform1f(t.conStepS, sandStep);
     // Flat, the panel draws the grid itself.
-    if (camera && sectorGrid) gl.uniform4f(t.grid, sectorGrid.x0, sectorGrid.y0, sectorGrid.cell, sectorGrid.divisions);
-    else gl.uniform4f(t.grid, 0, 0, 1, 0);
+    const grid = camera ? sectorGrid : null;
+    if (grid) gl.uniform4f(t.grid, grid.x0, grid.y0, grid.cellX, grid.cellY);
+    else gl.uniform4f(t.grid, 0, 0, 1, 1);
+    gl.uniform1f(t.gridN, grid ? grid.divisions : 0);
     gl.uniform1f(t.gridPx, fw / Math.max(cssWidth, 1));
     gl.activeTexture(gl.TEXTURE6);
     gl.bindTexture(gl.TEXTURE_2D, texHf);

@@ -216,6 +216,15 @@ test("parity: DELETE vehicle resolves to vehicles:delete, not the read-only fall
   assert.notEqual(actionForRoute("/api/vehicles/2048", "DELETE"), "vehicles:read");
 });
 
+test("parity: DELETE stored vehicle resolves to vehicles:stored-delete, not vehicles:delete or the read-only fallback", () => {
+  // Its own action so a policy granting vehicles:delete (junk vehicles) does
+  // not also grant taking a recoverable vehicle away from a player -- and the
+  // sub-path must not shadow, or be shadowed by, the whole-vehicle delete.
+  assert.equal(actionForRoute("/api/vehicles/2048/stored", "DELETE"), "vehicles:stored-delete");
+  assert.notEqual(actionForRoute("/api/vehicles/2048/stored", "DELETE"), "vehicles:read");
+  assert.equal(actionForRoute("/api/vehicles/2048", "DELETE"), "vehicles:delete");
+});
+
 test("parity: community Blueprint browsing is read-only while installation requires import access", () => {
   assert.equal(actionForRoute("/api/blueprints/community", "GET"), "blueprints:read");
   assert.equal(actionForRoute(`/api/blueprints/community/${"1".repeat(8)}-1111-4111-8111-${"1".repeat(12)}/preview`, "GET"), "blueprints:read");
