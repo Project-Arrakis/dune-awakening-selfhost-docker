@@ -169,6 +169,31 @@ describe("BasesPanel player scope", () => {
     release(empty);
     expect(await screen.findByText("Chani has no co-owned bases. Try another Permission level.")).toBeInTheDocument();
     expect(screen.getByLabelText("Permission")).toBeEnabled();
+    // The loading branch unmounted the select the user used; focus must come back to the live one.
+    await waitFor(() => expect(screen.getByLabelText("Permission")).toHaveFocus());
+
+    // "All levels" is the one level with no hint: the player has no bases at all.
+    vi.mocked(basesApi.forPlayer).mockResolvedValueOnce(empty);
+    fireEvent.change(screen.getByLabelText("Permission"), { target: { value: "all" } });
+    expect(await screen.findByText("Chani has no bases.")).toBeInTheDocument();
+  });
+
+  it("does not bring back the previous level's rows when the new level fails to load", async () => {
+    const owned = {
+      capabilities: { bases: true }, totalCount: 1, totalBases: 1, totalOwned: 1, totalShared: 0, totalPieces: 10, totalPlaceables: 4,
+      rows: [{ ...commonRow, base_id: "4101", name: "Owned Home", relationship: "Owner", generatorDataAvailable: false, generatorCount: 0 }]
+    };
+    vi.mocked(basesApi.forPlayer).mockResolvedValueOnce(owned);
+    const props = renderPanel({ playerId: "42", playerName: "Chani", embedded: true });
+    expect(await screen.findByText("Owned Home")).toBeInTheDocument();
+
+    vi.mocked(basesApi.forPlayer).mockRejectedValueOnce(new Error("database unavailable"));
+    fireEvent.change(screen.getByLabelText("Permission"), { target: { value: "coowner" } });
+
+    await waitFor(() => expect(props.onError).toHaveBeenCalledWith(expect.stringContaining("database unavailable")));
+    // Loading has ended, so the old level's rows are not what keeps the table empty: they were dropped.
+    await waitFor(() => expect(screen.getByLabelText("Permission")).toBeEnabled());
+    expect(screen.queryByText("Owned Home")).not.toBeInTheDocument();
   });
 });
 

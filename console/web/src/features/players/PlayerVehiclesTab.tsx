@@ -85,7 +85,7 @@ export function PlayerVehiclesTab({ playerId, playerName, confirmAction }: Playe
                   context="player"
                   showAccessColumns={access === "all"}
                   showOwnerColumn={access === "coowner"}
-                  emptyMessage={`${playerName} has no ${accessEmptyAdjective(access)}vehicles.${access === "all" ? "" : " Try another Permission level."}`}
+                  emptyMessage={`${playerName || "This player"} has no ${accessEmptyAdjective(access)}vehicles.${access === "all" ? "" : " Try another Permission level."}`}
                   canEditPermissions={canEditPermissions}
                   storageSupported={storageSupported}
                   confirmAction={confirmAction}

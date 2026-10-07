@@ -376,7 +376,12 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
   const [access, setAccess] = useState<PlayerAccessFilter>(PLAYER_ACCESS_DEFAULT);
   const scope = playerId ? `player:${playerId}:${access}` : "all";
   // Drop the previous level's rows at once so they cannot be acted on under the new level's header.
+  // The loading branch swaps in a separate header, so the select the user just used is unmounted;
+  // hand focus back to the live one once loading ends so keyboard users are not dropped on <body>.
+  const accessSelectRef = useRef<HTMLSelectElement>(null);
+  const refocusAccessSelect = useRef(false);
   function changeAccess(next: PlayerAccessFilter) {
+    refocusAccessSelect.current = true;
     setRows([]);
     setLoading(true);
     setAccess(next);
@@ -404,6 +409,12 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
   const [totalPieces, setTotalPieces] = useState(() => initialCache?.totalPieces ?? 0);
   const [totalPlaceables, setTotalPlaceables] = useState(() => initialCache?.totalPlaceables ?? 0);
   const [loading, setLoading] = useState(() => initialCache === null);
+  useEffect(() => {
+    if (!loading && refocusAccessSelect.current) {
+      refocusAccessSelect.current = false;
+      accessSelectRef.current?.focus();
+    }
+  }, [loading]);
   const [downloadTarget, setDownloadTarget] = useState<DownloadBaseTarget | null>(null);
   const [refillingId, setRefillingId] = useState("");
   const [refillResult, setRefillResult] = useState(() => readCachedRefillStatus().text);
@@ -1207,7 +1218,10 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
   if (loading) {
     return <section className={panelClassName}>
       <div className="panel-title">
-        <PanelHeading>Bases</PanelHeading>
+        <div>
+          <PanelHeading>Bases</PanelHeading>
+          {playerId && <p className="playerAdmin_note">{describePlayerAccess("Bases", playerName, access)} Expand a row to use the same tools available on the main Bases page.</p>}
+        </div>
         {viewSwitch}
         {playerId && <div className="action-row players-filter-row"><PlayerAccessSelect value={access} onChange={changeAccess} disabled /></div>}
       </div>
@@ -1391,7 +1405,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
               onClick={() => setAutoRefillSettingsOpen(true)}
             ><Settings size={16} /></button>
           )}
-          {playerId && <PlayerAccessSelect value={access} onChange={changeAccess} />}
+          {playerId && <PlayerAccessSelect value={access} onChange={changeAccess} selectRef={accessSelectRef} />}
           <button onClick={() => void load({ q: submittedQ, page, pageSize, sortColumn, sortDirection })}>Refresh</button>
         </div>
       </div>

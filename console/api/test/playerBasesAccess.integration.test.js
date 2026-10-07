@@ -21,6 +21,8 @@ const SCHEMA = `
     rank smallint not null,
     unique (permission_actor_id, player_id)
   );
+  -- Production exposes player_state as a view over encrypted_player_state (Active characters only);
+  -- a plain table is enough here because these tests only need the pawn/controller/account mapping.
   create table dune.player_state (
     id bigint, account_id bigint, player_controller_id bigint, player_pawn_id bigint,
     character_name text, online_status text default 'Offline'
@@ -78,7 +80,7 @@ async function withDatabase(t, run) {
 
 async function bases(db, player, access) {
   const result = await listBases(db, { playerId: String(player.pawn), pageSize: 5000, ...(access ? { access } : {}) });
-  assert.equal(result.capabilities?.bases ?? true, true, result.reason);
+  assert.equal(result.capabilities?.bases, true, result.reason);
   return result;
 }
 const ids = (result) => result.rows.map((row) => Number(row.base_id ?? row.baseId ?? row.id)).sort((a, b) => a - b);
@@ -95,7 +97,11 @@ test("real PostgreSQL: the access filter partitions a player's bases by roster r
     assert.ok(owner.rows.every((r) => r.relationship === "Owner"));
     const co = await bases(db, DUNCAN, "coowner");
     assert.ok(co.rows.every((r) => r.relationship === "Co-Owner"));
-    assert.equal(co.totalCount, 1, "the totals follow the filter");
+    // The aggregate totals describe exactly the listed scope, not the unfiltered one.
+    const totals = (r) => [r.totalCount, r.totalBases, r.totalOwned, r.totalShared, r.totalPieces];
+    assert.deepEqual(totals(await bases(db, DUNCAN, "all")), [3, 3, 1, 2, 3], "all: 3 bases, 1 owned, 2 shared");
+    assert.deepEqual(totals(owner), [1, 1, 1, 0, 1], "owner: only the owned base");
+    assert.deepEqual(totals(co), [1, 1, 0, 1, 1], "co-owner: only the co-owned base");
 
     // Per player: Gurney owns 1002..1004 and is never shown Duncan-only data.
     assert.deepEqual(ids(await bases(db, GURNEY, "owner")), [1002, 1003, 1004]);
