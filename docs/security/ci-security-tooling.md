@@ -25,7 +25,7 @@ Three different secret scanners (gitleaks, ggshield, trivy-secret) is intentiona
 `tests/security-pr-checks.sh` (the `security-checks` job) has two modes, chosen by `SCAN_MODE`:
 
 - **`changed`** (pull requests): gitleaks and trivy scan only the files the branch changed relative to `origin/main`.
-- **`full`** (every other trigger: pushes to `main`, `integration/**` and `release/**`, manual dispatch): they scan every tracked file. On a push to `main` the changed set is empty by construction (HEAD is the base), so without this mode the job reported success after scanning nothing; the hourly monitor flagged it as "a scanner may have silently skipped". A full scan of the whole tree takes a few seconds. It refuses to report a clean result if it staged no files.
+- **`full`** (every other trigger: pushes to `main`, `integration/**` and `release/**`, manual dispatch): they scan every tracked file. On a push to `main` the changed set is empty by construction (HEAD is the base), so without this mode the job reported success after scanning nothing; the hourly monitor flagged it as "a scanner may have silently skipped". A full scan of the whole tree takes a few seconds. It refuses to report a clean result if it staged no files. The `git diff --check` whitespace/conflict-marker check runs in both modes (on a push to `main` the diff is empty, so it passes trivially; on `integration/**` and `release/**` pushes it checks the branch against `origin/main`).
 
 Known, accepted trivy misconfigurations for the full scan are listed in `.trivyignore-fs.yaml`: path-scoped, justified, and expiring, so they are re-triaged rather than forgotten. Never add a bare rule ID there.
 
