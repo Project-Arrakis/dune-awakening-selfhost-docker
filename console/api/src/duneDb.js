@@ -5779,6 +5779,8 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
   // is ownership; every other assigned rank is shared access. Filtering here
   // keeps the paged rows and aggregate totals on exactly the same scope and
   // avoids trusting a character name, which is neither stable nor unique.
+  // The co-owner NOT EXISTS is defensive: permission_actor_rank is unique on (actor, player), so a
+  // player cannot hold rank 1 and 2 on one actor today; it keeps co-owner exclusive of owner if that changes.
   const playerScope = player
     ? `and exists (select 1 from dune.permission_actor_rank viewer_par where viewer_par.permission_actor_id = a.id and viewer_par.player_id = $1${access === "owner" ? " and viewer_par.rank = 1" : access === "coowner" ? " and viewer_par.rank = 2" : ""})${access === "coowner" ? " and not exists (select 1 from dune.permission_actor_rank owner_par where owner_par.permission_actor_id = a.id and owner_par.player_id = $1 and owner_par.rank = 1)" : ""}`
     : "";

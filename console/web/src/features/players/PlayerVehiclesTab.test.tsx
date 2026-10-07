@@ -90,7 +90,7 @@ describe("PlayerVehiclesTab", () => {
   it("refreshes the filtered list on demand", async () => {
     vi.mocked(vehiclesApi.forPlayer).mockResolvedValue(response({ rows: [], totalCount: 0 }));
     render(<PlayerVehiclesTab playerId="42" playerName="Kovalt" confirmAction={confirmAction} />);
-    expect(await screen.findByText("Kovalt has no owned vehicles.")).toBeInTheDocument();
+    expect(await screen.findByText("Kovalt has no owned vehicles. Try another Permission level.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     await waitFor(() => expect(vehiclesApi.forPlayer).toHaveBeenCalledTimes(2));
   });

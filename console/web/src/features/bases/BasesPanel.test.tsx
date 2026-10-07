@@ -147,6 +147,29 @@ describe("BasesPanel player scope", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("dialog", { name: "Download Base" })).not.toBeInTheDocument();
   });
+
+  it("switches Permission levels: asks the server, drops stale rows while loading, and words the empty state", async () => {
+    const empty = { capabilities: { bases: true }, totalCount: 0, totalBases: 0, totalOwned: 0, totalShared: 0, totalPieces: 0, totalPlaceables: 0, rows: [] };
+    vi.mocked(basesApi.forPlayer).mockResolvedValueOnce({
+      ...empty, totalCount: 1, totalBases: 1, totalOwned: 1, totalPieces: 10, totalPlaceables: 4,
+      rows: [{ ...commonRow, base_id: "4101", name: "Owned Home", relationship: "Owner", generatorDataAvailable: false, generatorCount: 0 }]
+    });
+    renderPanel({ playerId: "42", playerName: "Chani", embedded: true });
+    expect(await screen.findByText("Owned Home")).toBeInTheDocument();
+
+    let release!: (value: typeof empty) => void;
+    vi.mocked(basesApi.forPlayer).mockReturnValueOnce(new Promise<typeof empty>((resolve) => { release = resolve; }) as never);
+    fireEvent.change(screen.getByLabelText("Permission"), { target: { value: "coowner" } });
+
+    await waitFor(() => expect(basesApi.forPlayer).toHaveBeenLastCalledWith("42", expect.objectContaining({ access: "coowner" })));
+    // In flight: the previous level's rows are gone, and the dropdown stays visible but locked.
+    expect(screen.queryByText("Owned Home")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Permission")).toBeDisabled();
+
+    release(empty);
+    expect(await screen.findByText("Chani has no co-owned bases. Try another Permission level.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Permission")).toBeEnabled();
+  });
 });
 
 describe("BasesPanel focused navigation", () => {

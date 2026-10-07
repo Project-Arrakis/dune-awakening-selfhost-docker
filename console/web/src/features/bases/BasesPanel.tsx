@@ -8,7 +8,7 @@ import { BaseWaterTab } from "./BaseWaterTab";
 import { AutoRefillSettingsOverlay } from "./AutoRefillSettingsOverlay";
 import { DownloadBaseDialog, type DownloadBaseTarget } from "./DownloadBaseDialog";
 import { PlayerAccessSelect } from "../../components/common/PlayerAccessSelect";
-import { PLAYER_ACCESS_DEFAULT, accessCountLabel, describePlayerAccess, filterRowsByAccess, type PlayerAccessFilter } from "../../lib/playerAccess";
+import { PLAYER_ACCESS_DEFAULT, accessCountLabel, accessEmptyAdjective, describePlayerAccess, filterRowsByAccess, type PlayerAccessFilter } from "../../lib/playerAccess";
 import { basesApi, type AutoRefillBase, type AutoRefillWaterBase, type RefillDeviceResult, type RefillWaterDeviceResult } from "../../api/bases";
 import { friendlyMapName } from "../maps/mapNames";
 import { mapsApi } from "../../api/maps";
@@ -1206,7 +1206,11 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
 
   if (loading) {
     return <section className={panelClassName}>
-      <div className="panel-title"><PanelHeading>Bases</PanelHeading>{viewSwitch}</div>
+      <div className="panel-title">
+        <PanelHeading>Bases</PanelHeading>
+        {viewSwitch}
+        {playerId && <div className="action-row players-filter-row"><PlayerAccessSelect value={access} onChange={changeAccess} disabled /></div>}
+      </div>
       <div className="loading-panel">
         <span className="spinner" aria-hidden="true" />
         <strong className="loading-dots">Loading Bases</strong>
@@ -1900,7 +1904,9 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
             </div>
           );
         }}
-        emptyMessage="No bases have been found yet."
+        emptyMessage={playerId
+          ? `${playerName || "This player"} has no ${accessEmptyAdjective(access)}bases.${access === "all" ? "" : " Try another Permission level."}`
+          : "No bases have been found yet."}
       />
       {!playerId && <div className="panel-title bases-pagination-footer">
         <p className="action-help-note">

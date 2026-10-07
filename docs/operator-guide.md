@@ -53,7 +53,7 @@ issue if you get stuck on one of those.
 |---|---|---|
 | Home | Dashboard/overview | — |
 | Server Control | Start/stop/restart the server and individual services | [`docs/console/restart-queue.md`](console/restart-queue.md) |
-| Players | Player management, kick/ban, inventory actions | [`docs/console/API-REFERENCE.md`](console/API-REFERENCE.md) (Players section) |
+| Players | Player management, kick/ban, inventory actions. A player's Bases and Vehicles tabs list owned items by default; the Permission dropdown (Owner / Co-owner / All levels) widens or narrows them | [`docs/console/API-REFERENCE.md`](console/API-REFERENCE.md) (Players section) |
 | Care Package | Scheduled/manual player reward grants | — |
 | Admin Tools | GM/admin toolbox: item grants, XP/skill grants, teleport, broadcasts, scheduled restarts | [`docs/console/restart-queue.md`](console/restart-queue.md) |
 | Live Map | Real-time map/player activity view | — |
