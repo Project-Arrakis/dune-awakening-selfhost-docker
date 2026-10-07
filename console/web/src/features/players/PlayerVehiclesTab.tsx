@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { RefreshCw } from "lucide-react";
 import { vehiclesApi, type VehicleRow } from "../../api/vehicles";
 import { PlayerAccessSelect } from "../../components/common/PlayerAccessSelect";
 import { PLAYER_ACCESS_DEFAULT, accessCountLabel, accessEmptyAdjective, describePlayerAccess, filterRowsByAccess, type PlayerAccessFilter } from "../../lib/playerAccess";
@@ -66,9 +67,9 @@ export function PlayerVehiclesTab({ playerId, playerName, confirmAction }: Playe
             <h4>Vehicles</h4>
             <p className="playerAdmin_note">{describePlayerAccess("Vehicles", playerName, access)} Select a row to inspect its fitted components.</p>
           </div>
-          <div className="action-row">
+          <div className="player-access-toolbar">
             <PlayerAccessSelect value={access} onChange={setAccess} />
-            <button type="button" disabled={loading || !playerId} onClick={() => void load()}>Refresh</button>
+            <button type="button" className="player-refresh-button" title="Refresh" aria-label="Refresh" disabled={loading || !playerId} onClick={() => void load()}><RefreshCw size={16} /></button>
           </div>
         </div>
         {loading

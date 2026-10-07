@@ -1,5 +1,5 @@
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import { Boxes, ChevronDown, ChevronUp, Download, Droplet, Fuel, Grid3X3, KeyRound, Lock, Settings, Trash2, Users, X, Zap } from "lucide-react";
+import { Boxes, ChevronDown, ChevronUp, Download, Droplet, Fuel, Grid3X3, KeyRound, Lock, RefreshCw, Settings, Trash2, Users, X, Zap } from "lucide-react";
 import { BaseInventoryTab } from "./BaseInventoryTab";
 import { BaseChildPermissionsTab } from "./BaseChildPermissionsTab";
 import { BaseLandClaimTab } from "./BaseLandClaimTab";
@@ -1388,7 +1388,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
             ><Settings size={16} /></button>
           )}
           {playerId && <PlayerAccessSelect value={access} onChange={changeAccess} />}
-          <button onClick={() => void load({ q: submittedQ, page, pageSize, sortColumn, sortDirection })}>Refresh</button>
+          <button type="button" className={playerId ? "player-refresh-button" : undefined} title="Refresh" aria-label="Refresh" onClick={() => void load({ q: submittedQ, page, pageSize, sortColumn, sortDirection })}>{playerId ? <RefreshCw size={16} /> : "Refresh"}</button>
         </div>
       </div>
       {playerId
