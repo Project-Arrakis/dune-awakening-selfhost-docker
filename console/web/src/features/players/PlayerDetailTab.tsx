@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Circle, Info, X } from "lucide-react";
+import { Info, Pencil, X } from "lucide-react";
 import { playersApi } from "../../api/players";
 import { adminApi } from "../../api/admin";
 import { DataTable, useSortableRows } from "../../components/common/DataTable";
@@ -369,7 +369,7 @@ export function PlayerDetailTab({
 
   return <div className="player-inventory-detail">
     {data?.reason ? <p className="danger-note">{formatUiSentence(data.reason)}</p> : null}
-    {message && <div className={`result-panel transient-result ${messageTone === "success" ? "success-result" : ""}`}><strong>{messageTone === "success" ? "Applied Successfully" : "Mutation Result."}</strong><p>{formatUiSentence(message)}</p>{messageDetails && <TechnicalDetails text={messageDetails} />}</div>}
+    {message && <div className={`result-panel transient-result ${messageTone === "success" ? "success-result" : ""}`}><strong>{messageTone === "success" ? "Applied Successfully" : "Result"}</strong><p>{formatUiSentence(message)}</p>{messageDetails && <TechnicalDetails text={messageDetails} />}</div>}
     <DataTable
       rows={inventorySort.sortedRows}
       columns={inventoryColumns}
@@ -380,7 +380,7 @@ export function PlayerDetailTab({
       action={(row) => {
         const canUseAugments = !isSchematics && inventoryItemCanUseAugments(row);
         return <span className="icon-toggle-group">
-          <button className="icon-toggle-button success" title="Edit item" aria-label="Edit item" onClick={(event) => { event.stopPropagation(); startEditItem(row); }}><Circle size={16} /></button>
+          <button className="icon-toggle-button success" title="Edit item" aria-label="Edit item" onClick={(event) => { event.stopPropagation(); startEditItem(row); }}><Pencil size={16} /></button>
           {canUseAugments && <button className="icon-toggle-button accent" title={playerIsOnline ? "Player must be offline to apply augments" : "Apply Augments"} aria-label="Apply Augments" disabled={playerIsOnline} onClick={(event) => { event.stopPropagation(); startApplyAugments(row); }}>+A</button>}
           <button className="icon-toggle-button danger" title="Delete item" aria-label="Delete item" onClick={(event) => { event.stopPropagation(); void deleteItem(row); }}><X size={16} /></button>
         </span>;
