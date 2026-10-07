@@ -663,8 +663,11 @@ export function App() {
     };
   }, [auth]);
 
+  // The strict player tier only sees its own characters, so a server-wide online
+  // count is neither available nor meaningful to it; do not poll for it.
+  const isPlayerTier = me?.tier === "player" || me?.tier === "observer";
   useEffect(() => {
-    if (!auth) return;
+    if (!auth || isPlayerTier) return;
     let cancelled = false;
     async function refreshOnlinePlayers() {
       try {
@@ -680,7 +683,7 @@ export function App() {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [auth]);
+  }, [auth, isPlayerTier]);
 
   useEffect(() => {
     openConfirmDialog = (request) => setConfirmRequest(request);

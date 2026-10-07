@@ -173,8 +173,8 @@ Authorization is a four-step pipeline invoked per request inside
    dedicated test (`test/rbacParity.test.js`) prevents merging a new route
    with no mapping.
 
-Five tiers are defined: `owner`, `admin`, `moderator`, `player`,
-`observer` (`policy.js`). Password login and `ADMIN_AUTH_DISABLED=1` both
+Four console tiers are defined: `owner`, `admin`, `moderator`, `player`
+(`policy.js`; the former `observer` is an alias for `player`). Password login and `ADMIN_AUTH_DISABLED=1` both
 always produce an `owner`-tier session. Policy documents persist to
 `runtime/generated/iam-policies.json` (mode `0600`) via an atomic write; a
 policy update that would strip the `owner` tier's `settings:write` action

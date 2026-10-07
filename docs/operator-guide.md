@@ -362,7 +362,7 @@ are two different decisions that happen to use the same tier names
 (Player/Moderator/Admin/Owner) — they are not automatically synchronized.
 
 Concretely: this console's adapter (#3) checks a Discord user's role IDs
-against **this console's own** `DISCORD_OBSERVER_ROLE_IDS`/
+against **this console's own** `DISCORD_OBSERVER_ROLE_IDS` (legacy name of the player role list)/
 `_MODERATOR_ROLE_IDS`/`_ADMIN_ROLE_IDS`/`_OWNER_ROLE_IDS` — not the bot's
 role configuration. **If you never set these, every privileged action the
 bot asks for is denied for everyone except the real Discord server owner**

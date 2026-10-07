@@ -32,3 +32,9 @@ test("a missing session fails closed", async () => {
   assert.equal(scope.scoped, true);
   assert.equal(scope.ids.size, 0);
 });
+
+test("a legacy observer-tier session is scoped exactly like a player", async () => {
+  const scope = await resolvePlayerScope({ tier: "observer", userId: "u1" }, linked);
+  assert.equal(scope.scoped, true);
+  assert.deepEqual([...scope.ids].sort(), ["5", "9"]);
+});
