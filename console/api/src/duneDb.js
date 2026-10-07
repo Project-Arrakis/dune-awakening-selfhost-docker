@@ -5722,6 +5722,10 @@ export async function deleteVehicleCompletely(db, vehicleId, { allowBlockedState
   if (storedRecoveryOnly) {
     await requireCapability(await supportsStoredVehicleDelete(db, { vehicleDelete: true }), STORED_VEHICLE_DELETE_REQUIREMENT);
   }
+  // The owner-online rule needs recovered_vehicles and player_state. Without them the
+  // check cannot run and a queued delete behaves as it did before #1134.
+  const checkOwnerOnline = allowBlockedState && !storedRecoveryOnly
+    && await supportsStoredVehicleDelete(db, { vehicleDelete: true });
   const target = intParam(vehicleId, "vehicle id", 1);
   return db.transaction(async (tx) => {
     await tx.query("set local search_path to dune, public");
@@ -5743,7 +5747,7 @@ export async function deleteVehicleCompletely(db, vehicleId, { allowBlockedState
       // Recovery after it was queued. The running game server keeps an online
       // owner's recovery list and is not told about the delete, so the same
       // owner-offline rule as the stored override applies (#1134).
-      if (blockedState === "VehicleRecovery") {
+      if (checkOwnerOnline && blockedState === "VehicleRecovery") {
         await assertStoredVehicleDeletable(tx, actor.actorId, { lock: true });
       }
     }
@@ -12951,7 +12955,11 @@ export async function flushVehicleDeletes(db, repoRoot, { now = Date.now, onBefo
       outcomes.set(entry.vehicleId, { queuedAt: entry.queuedAt, keep: false });
       flushed.push({ vehicleId: entry.vehicleId, map: entry.map, partitionId: entry.partitionId, ok: true, ...result });
     } catch (error) {
-      const message = String(error?.message || "Unexpected error.").slice(0, 300);
+      // The owner's name is players:read information; the queue file, the audit entry and
+      // the vehicles:read pending-deletes route must not carry it.
+      const message = error?.code === STORED_VEHICLE_OWNER_ONLINE
+        ? "The vehicle's owner is online. The delete retries once they are offline."
+        : String(error?.message || "Unexpected error.").slice(0, 300);
       if (vehicleDeleteAlreadyGone(message)) {
         outcomes.set(entry.vehicleId, { queuedAt: entry.queuedAt, keep: false });
         flushed.push({ vehicleId: entry.vehicleId, map: entry.map, partitionId: entry.partitionId, ok: true, alreadyGone: true });

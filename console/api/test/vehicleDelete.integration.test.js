@@ -734,6 +734,8 @@ test("real PostgreSQL: map-down flush keeps a queued delete whose vehicle was st
       assert.equal(result.flushed[0].ok, false);
       assert.equal(result.flushed[0].dropped, false);
       assert.equal(result.flushed[0].attempts, 0, "an online owner is temporary and must not burn attempts");
+      assert.doesNotMatch(result.flushed[0].error, /Gurney/, "the owner's name is players:read data");
+      assert.equal(listQueuedVehicleDeletes(repoRoot)[0].lastError.includes("Gurney"), false);
       assert.equal(result.pending, 1);
       assert.equal(await actorCount(pool, [VEHICLE_ID]), 1, "the vehicle must survive");
     });
