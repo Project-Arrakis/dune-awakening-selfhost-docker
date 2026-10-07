@@ -1,0 +1,28 @@
+# Accepted findings for the FULL-TREE `trivy fs --scanners secret,misconfig` scan in tests/security-pr-checks.sh
+# (SCAN_MODE=full: pushes to main, integration/** and release/**).
+#
+# Policy (same spirit as .trivyignore): every entry is scoped to specific PATHS, carries a written reason, and
+# EXPIRES so it is re-triaged instead of living forever. Do NOT add a rule ID without `paths:`: a global
+# DS-0002 ignore would silence the check for every future Dockerfile. When an entry expires the scan fails
+# loudly on purpose; re-triage, then either fix the finding or renew the date with a fresh justification.
+#
+# Triaged 2026-10-07, when the scan was first run over the whole tree (it had only ever seen PR diffs).
+# Result over 2,758 tracked files: gitleaks 0 findings; trivy 3 findings, all DS-0002 (no USER instruction).
+misconfigurations:
+  - id: DS-0002
+    paths:
+      - "orchestrator/Dockerfile"
+    statement: >-
+      The orchestrator drives the host's Docker socket (docker compose / docker ps) and therefore runs as root by
+      design; this is the accepted architectural trust boundary tracked as issue #121 (Docker socket + host
+      networking). See docs/security/generated-command-auth-token.md (non-root container users). Not a regression.
+    expired_at: 2027-01-07
+  - id: DS-0002
+    paths:
+      - "patches/experimental-tanks/2134304/Dockerfile"
+      - "patches/experimental-tanks/2141883/Dockerfile"
+    statement: >-
+      Thin overlay images (`FROM ${BASE_IMAGE}` plus COPY --chown=dune:nogroup and one chmod) built on top of the
+      vendor game-server base image. They set no USER of their own, so the runtime user is whatever that base
+      image defines, which this repository cannot change. Re-check if the base image gains or drops a USER.
+    expired_at: 2027-01-07

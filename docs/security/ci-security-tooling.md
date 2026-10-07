@@ -20,6 +20,15 @@ Every security scanner this repo runs, what it catches, where it runs (local pre
 
 Three different secret scanners (gitleaks, ggshield, trivy-secret) is intentional redundancy, not an oversight -- each has a different detection signature set and false-negative profile; running all three costs little and catches more than any one alone.
 
+## Scan scope: pull requests versus main
+
+`tests/security-pr-checks.sh` (the `security-checks` job) has two modes, chosen by `SCAN_MODE`:
+
+- **`changed`** (pull requests): gitleaks and trivy scan only the files the branch changed relative to `origin/main`.
+- **`full`** (every other trigger: pushes to `main`, `integration/**` and `release/**`, manual dispatch): they scan every tracked file. On a push to `main` the changed set is empty by construction (HEAD is the base), so without this mode the job reported success after scanning nothing; the hourly monitor flagged it as "a scanner may have silently skipped". A full scan of the whole tree takes a few seconds. It refuses to report a clean result if it staged no files.
+
+Known, accepted trivy misconfigurations for the full scan are listed in `.trivyignore-fs.yaml`: path-scoped, justified, and expiring, so they are re-triaged rather than forgotten. Never add a bare rule ID there.
+
 ## Why Each New Gate, Specifically
 
 **`govulncheck`** exists because `runtime/public-probe` (the only Go component in this repo) had **zero** Go-specific security tooling before this. `npm audit` only covers npm; `semgrep`'s `p/default`/CI rulesets are JS/TS/Python-focused and do not meaningfully cover Go. Nothing in CI would have ever caught a Go stdlib or dependency CVE.
