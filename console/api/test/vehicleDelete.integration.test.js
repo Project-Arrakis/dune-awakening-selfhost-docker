@@ -697,6 +697,49 @@ for (const [state, message] of [
   });
 }
 
+// Issue #1134: the queued/map-down path (allowBlockedState) used to skip the
+// owner-online check, so a vehicle that became Stored for Recovery after it was
+// queued was destroyed while its owner was logged in.
+for (const [label, opts] of [["owner", { online: "Online" }], ["another character on the owning account", { altOnline: "Online" }]]) {
+  test(`real PostgreSQL: a map-down delete refuses a recovered vehicle while the ${label} is online`, async (t) => {
+    await withDatabase(t, async (pool) => {
+      await storeForRecovery(pool, opts);
+      const db = pgTransactionalDb(pool);
+      await assert.rejects(() => deleteVehicleCompletely(db, VEHICLE_ID, { allowBlockedState: true }), /is online\./);
+      assert.equal(await actorCount(pool, [VEHICLE_ID]), 1, "the vehicle must survive");
+    });
+  });
+}
+
+test("real PostgreSQL: a map-down delete still deletes a recovered vehicle whose owner is offline", async (t) => {
+  await withDatabase(t, async (pool) => {
+    await storeForRecovery(pool);
+    const db = pgTransactionalDb(pool);
+    const result = await deleteVehicleCompletely(db, VEHICLE_ID, { allowBlockedState: true });
+    assert.equal(result.ok, true);
+    assert.equal(await actorCount(pool, [VEHICLE_ID]), 0);
+  });
+});
+
+test("real PostgreSQL: map-down flush keeps a queued delete whose vehicle was stored while its owner is online", async (t) => {
+  await withDatabase(t, async (pool) => {
+    await withTempRepoRoot(async (repoRoot) => {
+      _resetRefillPartitionDwellForTests();
+      await pool.query("insert into dune.world_partition (partition_id, map, server_id) values (3, 'Survival_1', null)");
+      queueVehicleDelete(repoRoot, { vehicleId: VEHICLE_ID, map: "HaggaBasin", partitionId: 3 });
+      await storeForRecovery(pool, { online: "Online" });
+
+      const db = pgTransactionalDb(pool);
+      const result = await flushVehicleDeletes(db, repoRoot, { allowBlockedStates: true, ignoreRetryBackoff: true });
+      assert.equal(result.flushed[0].ok, false);
+      assert.equal(result.flushed[0].dropped, false);
+      assert.equal(result.flushed[0].attempts, 0, "an online owner is temporary and must not burn attempts");
+      assert.equal(result.pending, 1);
+      assert.equal(await actorCount(pool, [VEHICLE_ID]), 1, "the vehicle must survive");
+    });
+  });
+});
+
 test("real PostgreSQL: the ordinary delete still refuses a recovered vehicle with an offline owner", async (t) => {
   await withDatabase(t, async (pool) => {
     await storeForRecovery(pool);
