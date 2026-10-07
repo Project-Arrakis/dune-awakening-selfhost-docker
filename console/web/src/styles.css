@@ -1643,12 +1643,13 @@ body.debug .technical-details { display: block; }
 .drawer { border: 1px solid #302b25; border-radius: 8px; padding: 12px; color: #d9c8aa; background: rgba(13, 15, 17, .48); }
 .inline-filter-label { display: inline-flex; align-items: center; gap: 8px; color: var(--muted-warm); font-weight: 400; }
 .inline-filter-label select { color: #fff7e6; font-weight: 400; min-width: 150px; }
-/* Players tab filter: label, dropdown and an icon-only refresh on one line. */
-.player-access-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; }
-.player-access-select { display: inline-flex; flex-direction: row; align-items: center; gap: 8px; white-space: nowrap; }
-.player-access-select select { width: 140px; min-width: 0; padding-top: 8px; padding-bottom: 8px; }
-button.player-refresh-button { flex: 0 0 auto; width: 36px; height: 36px; padding: 0; }
 .players-filter-row { align-items: center; }
+/* The per-player Vehicles/Bases headers turn every div under .panel-title into a grid
+   (for the title column); keep the filter row a flex row so Refresh stays button-sized. */
+.player-vehicles-panel .panel-title > .players-filter-row,
+.player-bases-panel .panel-title > .players-filter-row { display: flex; margin: 0; }
+.player-vehicles-panel .panel-title > .players-filter-row > button,
+.player-bases-panel .panel-title > .players-filter-row > button { flex: 0 0 auto; }
 .players-filter-label .players-filter-select {
   width: 150px;
   min-width: 150px;
