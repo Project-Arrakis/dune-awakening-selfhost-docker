@@ -6,9 +6,9 @@ export type PlayerAccessFilter = "owner" | "coowner" | "all";
 export const PLAYER_ACCESS_DEFAULT: PlayerAccessFilter = "owner";
 
 export const PLAYER_ACCESS_OPTIONS: { value: PlayerAccessFilter; label: string }[] = [
-  { value: "owner", label: "Owned" },
+  { value: "owner", label: "Owner" },
   { value: "coowner", label: "Co-owner" },
-  { value: "all", label: "All (owner, co-owner, associate)" }
+  { value: "all", label: "All levels" }
 ];
 
 // The relationship label the API puts on a row for each narrowed level; "all"

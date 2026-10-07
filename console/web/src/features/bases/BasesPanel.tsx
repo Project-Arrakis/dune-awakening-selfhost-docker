@@ -1375,7 +1375,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
           {playerId && <p className="playerAdmin_note">{describePlayerAccess("Bases", playerName, access)} Expand a row to use the same tools available on the main Bases page.</p>}
         </div>
         {viewSwitch}
-        <div className="action-row">
+        <div className={playerId ? "action-row players-filter-row" : "action-row"}>
           {/* Hidden in the per-player embed -- that view is one player's lens
               and these settings are global -- and hidden without a refill
               queue, matching the per-base toggles. */}
