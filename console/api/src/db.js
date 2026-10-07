@@ -90,7 +90,7 @@ export function createDb(config) {
       return result;
     } catch (error) {
       try { await client.query("rollback"); } catch {}
-      throw new Error(redactDbError(error));
+      throw transactionError(error);
     } finally {
       client.release();
     }
@@ -200,4 +200,13 @@ export function rowsResult(result) {
     rowCount: normalized?.rowCount ?? rows.length,
     command: normalized?.command || ""
   };
+}
+
+// What a failed transaction rethrows: the redacted message, plus the `code` of an
+// application error (e.g. stored_owner_online) so callers can still branch on it.
+// A Postgres error is recognised by its `severity` and keeps no code, as before.
+export function transactionError(error) {
+  const wrapped = new Error(redactDbError(error));
+  if (typeof error?.code === "string" && error.severity === undefined) wrapped.code = error.code;
+  return wrapped;
 }

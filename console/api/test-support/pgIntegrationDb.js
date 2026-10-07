@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import pg from "pg";
+import { transactionError } from "../src/db.js";
 
 const { Pool, Client } = pg;
 
@@ -45,7 +46,7 @@ export function pgTransactionalDb(pool) {
         return result;
       } catch (error) {
         await client.query("rollback").catch(() => {});
-        throw error;
+        throw transactionError(error);
       } finally {
         client.release();
       }

@@ -11150,3 +11150,11 @@ test("listBases access=coowner excludes a player who also holds rank 1 on the ba
     assert.doesNotMatch(sql, /owner_par/);
   }
 });
+
+test("transactionError keeps an application error's code but never a Postgres SQLSTATE", async () => {
+  const { transactionError } = await import("../src/db.js");
+  const app = Object.assign(new Error("Gurney is online."), { code: "stored_owner_online" });
+  assert.equal(transactionError(app).code, "stored_owner_online");
+  const pg = Object.assign(new Error("duplicate key"), { code: "23505", severity: "ERROR" });
+  assert.equal(transactionError(pg).code, undefined);
+});
