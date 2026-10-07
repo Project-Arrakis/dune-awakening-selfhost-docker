@@ -12,6 +12,8 @@ const GLOBAL_COLUMNS = ["name", "type", "owner", "shared_with", "condition_perce
 const PLAYER_COLUMNS = ["name", "type", "condition_percent", "fuel_percent", "location"];
 // Shown when a player's list mixes access levels; hidden when every row is the same level.
 const PLAYER_ACCESS_COLUMNS = ["name", "type", "relationship", "owner", "condition_percent", "fuel_percent", "location"];
+// Co-owner view: every row has the same access level but the owner differs, so keep Owner only.
+const PLAYER_OWNER_COLUMNS = ["name", "type", "owner", "condition_percent", "fuel_percent", "location"];
 const COLUMN_LABELS: Record<string, string> = {
   name: "Vehicle",
   type: "Type",
@@ -27,6 +29,7 @@ type VehicleTableProps = {
   rows: VehicleRow[];
   context?: "global" | "player";
   showAccessColumns?: boolean;
+  showOwnerColumn?: boolean;
   emptyMessage?: string;
   sortColumn?: string;
   sortDirection?: SortDirection;
@@ -205,7 +208,7 @@ function renderComponent(module: VehicleModule, index: number) {
 }
 
 export function VehicleTable({
-  rows, context = "global", showAccessColumns = false, emptyMessage = "No vehicles have been found yet.", sortColumn, sortDirection, onSort,
+  rows, context = "global", showAccessColumns = false, showOwnerColumn = false, emptyMessage = "No vehicles have been found yet.", sortColumn, sortDirection, onSort,
   canEditPermissions = false, onPermissionsSaved, focusVehicleId, focusNonce, confirmAction,
   canDeleteVehicle = false, canDeleteStoredVehicle = false, storageSupported = false, onError, queuedDeleteVehicleIds, deletingId, cancelingDeleteId, onDeleteVehicle, onCancelQueuedDelete
 }: VehicleTableProps) {
@@ -218,7 +221,7 @@ export function VehicleTable({
   const [instanceNames, setInstanceNames] = useState<Map<string, string>>(new Map());
   const expandedContentRef = useRef<HTMLDivElement>(null);
   const satisfiedFocusNonceRef = useRef<number | undefined>(undefined);
-  const columns = context === "player" ? (showAccessColumns ? PLAYER_ACCESS_COLUMNS : PLAYER_COLUMNS) : GLOBAL_COLUMNS;
+  const columns = context === "player" ? (showAccessColumns ? PLAYER_ACCESS_COLUMNS : showOwnerColumn ? PLAYER_OWNER_COLUMNS : PLAYER_COLUMNS) : GLOBAL_COLUMNS;
   const partitionMapsKey = [...new Set(rows.map((row) => vehiclePartitionMap(row.map)).filter(Boolean))].sort().join(",");
 
   useEffect(() => {

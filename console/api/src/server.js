@@ -21,6 +21,7 @@ import { buildDuneArgs, isDynamicServerService, parseVehicleList, runDockerLogs,
 // space so it cannot fuse tokens or hide a leading `delete`. Sharing one
 // classifier with duneDb.runSql also keeps the authorization decision and the
 // execution decision from diverging.
+import { playerAccessParam } from "./playerAccessParam.js";
 import { createDb, hasExecutableStatement, isReadOnlySql, quoteIdentifier } from "./db.js";
 import * as duneDb from "./duneDb.js";
 import { audit, recordAdminHistory } from "./audit.js";
@@ -202,13 +203,6 @@ const ENROLL_ALLOWED = new Set([
   "/api/auth/logout",
   "/api/auth/me",
 ]);
-
-// Access filter for a player's Bases/Vehicles lists. Anything unrecognised
-// (including a missing parameter, i.e. every older client) means "all".
-function playerAccessParam(url) {
-  const value = url.searchParams.get("access");
-  return value === "owner" || value === "coowner" ? value : "all";
-}
 
 // Fail-closed responder for a second-factor store error on the login path.
 // Distinguishes a NEWER-version file (deploy rollback: the state is GOOD -- the

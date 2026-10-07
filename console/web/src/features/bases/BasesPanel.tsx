@@ -375,6 +375,12 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
   // is part of the cache scope so each choice keeps its own cached view.
   const [access, setAccess] = useState<PlayerAccessFilter>(PLAYER_ACCESS_DEFAULT);
   const scope = playerId ? `player:${playerId}:${access}` : "all";
+  // Drop the previous level's rows at once so they cannot be acted on under the new level's header.
+  function changeAccess(next: PlayerAccessFilter) {
+    setRows([]);
+    setLoading(true);
+    setAccess(next);
+  }
   const initialCache = basesCache?.scope === scope ? basesCache : null;
   const [q, setQ] = useState(() => initialCache?.q ?? "");
   const [submittedQ, setSubmittedQ] = useState(() => initialCache?.q ?? "");
@@ -493,11 +499,13 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
       if (requestIdRef.current !== requestId) return;
       // The server applies the access filter. Re-checking it here also covers an
       // older API that ignores the parameter; the endpoint is unpaginated for a
-      // player, so for a narrowed view the totals can be derived from the rows.
+      // player, so a client-side narrowing can derive the totals from the rows.
       const allRows = (result.rows || []).map(withCoordinates);
       const narrowed = Boolean(playerId) && access !== "all";
       const nextRows = playerId ? filterRowsByAccess(allRows, access) : allRows;
-      const ownedOnlyTotals = narrowed ? {
+      // Only derive totals from the rows when the client had to drop some (an
+      // older API that ignored `access`); otherwise the server's totals stand.
+      const ownedOnlyTotals = narrowed && nextRows.length !== allRows.length ? {
         count: nextRows.length,
         pieces: nextRows.reduce((sum, row) => sum + (Number(row.piece_count) || 0), 0),
         placeables: nextRows.reduce((sum, row) => sum + (Number(row.placeable_count) || 0), 0)
@@ -1379,7 +1387,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
               onClick={() => setAutoRefillSettingsOpen(true)}
             ><Settings size={16} /></button>
           )}
-          {playerId && <PlayerAccessSelect value={access} onChange={setAccess} />}
+          {playerId && <PlayerAccessSelect value={access} onChange={changeAccess} />}
           <button onClick={() => void load({ q: submittedQ, page, pageSize, sortColumn, sortDirection })}>Refresh</button>
         </div>
       </div>

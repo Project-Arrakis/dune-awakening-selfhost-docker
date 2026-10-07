@@ -35,6 +35,7 @@ export function PlayerVehiclesTab({ playerId, playerName, confirmAction }: Playe
       // The server applies the access filter; re-checking here also covers an
       // older API that ignores the parameter.
       setRows(filterRowsByAccess(result.rows || [], access));
+      setTruncated(Number(result.totalCount || 0) > (result.rows || []).length);
       setSupported(result.capabilities?.vehicles !== false);
       setCanEditPermissions(result.capabilities?.vehiclePermissions === true);
       setStorageSupported(result.capabilities?.vehicleStorage === true);
@@ -42,6 +43,7 @@ export function PlayerVehiclesTab({ playerId, playerName, confirmAction }: Playe
     } catch (error) {
       if (requestIdRef.current !== requestId) return;
       setRows([]);
+      setTruncated(false);
       setSupported(true);
       setCanEditPermissions(false);
       setStorageSupported(false);
@@ -82,6 +84,7 @@ export function PlayerVehiclesTab({ playerId, playerName, confirmAction }: Playe
                   rows={rows}
                   context="player"
                   showAccessColumns={access === "all"}
+                  showOwnerColumn={access === "coowner"}
                   emptyMessage={`${playerName} has no ${accessEmptyAdjective(access)}vehicles.`}
                   canEditPermissions={canEditPermissions}
                   storageSupported={storageSupported}

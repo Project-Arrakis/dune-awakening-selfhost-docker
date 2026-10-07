@@ -1,5 +1,5 @@
 import { api, post } from "./client";
-import type { PlayerAccessFilter } from "../lib/playerAccess";
+import { accessQuery, type PlayerAccessFilter } from "../lib/playerAccess";
 
 export type RefillDeviceResult = {
   placeableId: string;
@@ -467,8 +467,7 @@ function basesListQuery(params: BasesListParams) {
   if (params.pageSize) search.set("pageSize", String(params.pageSize));
   if (params.sortColumn) search.set("sortColumn", params.sortColumn);
   if (params.sortDirection) search.set("sortDirection", params.sortDirection);
-  if (params.access && params.access !== "all") search.set("access", params.access);
-  const qs = search.toString();
+  const qs = [search.toString(), accessQuery(params.access)].filter(Boolean).join("&");
   return qs ? `?${qs}` : "";
 }
 

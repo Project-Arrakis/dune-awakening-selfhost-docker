@@ -68,6 +68,25 @@ describe("PlayerVehiclesTab", () => {
     expect(screen.getByLabelText("Player vehicle totals")).toHaveTextContent("2 Total");
   });
 
+  it("warns when the server holds more vehicles than the 200-row page returned", async () => {
+    vi.mocked(vehiclesApi.forPlayer).mockResolvedValue(response({ totalCount: 250 }));
+    render(<PlayerVehiclesTab playerId="42" playerName="Kovalt" confirmAction={confirmAction} />);
+    expect(await screen.findByText(/more vehicles than can be listed here/)).toBeInTheDocument();
+  });
+
+  it("keeps the Owner column, but not the Access column, on the co-owner filter", async () => {
+    vi.mocked(vehiclesApi.forPlayer).mockResolvedValue(response());
+    render(<PlayerVehiclesTab playerId="42" playerName="Kovalt" confirmAction={confirmAction} />);
+    await screen.findByText("Owned Bike");
+    expect(screen.queryByRole("columnheader", { name: "Owner" })).not.toBeInTheDocument();
+
+    vi.mocked(vehiclesApi.forPlayer).mockResolvedValue(response({ rows: [response().rows[1]], totalCount: 1 }));
+    fireEvent.change(screen.getByLabelText("Access"), { target: { value: "coowner" } });
+    expect(await screen.findByText("Shared Buggy")).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Owner" })).toBeInTheDocument();
+    expect(screen.queryByRole("columnheader", { name: "Access" })).not.toBeInTheDocument();
+  });
+
   it("refreshes the filtered list on demand", async () => {
     vi.mocked(vehiclesApi.forPlayer).mockResolvedValue(response({ rows: [], totalCount: 0 }));
     render(<PlayerVehiclesTab playerId="42" playerName="Kovalt" confirmAction={confirmAction} />);

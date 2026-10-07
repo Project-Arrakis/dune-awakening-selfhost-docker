@@ -240,8 +240,10 @@ export const vehiclesApi = {
     const qs = search.toString();
     return api<VehiclesListResponse>(`/api/vehicles${qs ? `?${qs}` : ""}`);
   },
-  forPlayer: (playerId: string, params: { access?: PlayerAccessFilter } = {}) =>
-    api<VehiclesListResponse>(`/api/players/${encodeURIComponent(playerId)}/vehicles${accessQuery(params.access) ? `?${accessQuery(params.access)}` : ""}`),
+  forPlayer: (playerId: string, params: { access?: PlayerAccessFilter } = {}) => {
+    const query = accessQuery(params.access);
+    return api<VehiclesListResponse>(`/api/players/${encodeURIComponent(playerId)}/vehicles${query ? `?${query}` : ""}`);
+  },
   permissions: (vehicleId: string) =>
     api<VehiclePermissions>(`/api/vehicles/${encodeURIComponent(vehicleId)}/permissions`),
   // Fetched when the contents overlay opens rather than folded into the list

@@ -240,6 +240,7 @@ Player rows include `total_playtime_seconds`. The console samples `player_state.
 | GET | `/api/players/{playerId}` | Get player profile summary | `playerId` |
 | GET | `/api/players/{playerId}/inventory` | Get player inventory items — backpack, character gear, loadout, and unique-gear schematics (emote containers excluded), each row tagged with `inventory_type` | `playerId` |
 | GET | `/api/players/{playerId}/vehicles` | Get vehicles owned by or shared with the player, including the player's access relationship. Optional `?access=owner\|coowner` narrows to rank 1 / rank 2 (default and any other value: all roster ranks; guild/public piece access is not per-player and is never listed) | `playerId` |
+| GET | `/api/players/{playerId}/bases` | List the bases the player holds a roster rank on (unpaginated), with the player's access relationship. Optional `?access=owner\|coowner` narrows to rank 1 / rank 2 (default and any other value: all roster ranks; guild/public access is per-piece, so it is not listed here), and the totals follow the filter. Also accepts `q`, `sortColumn`, `sortDirection` | `playerId` |
 | GET | `/api/players/{playerId}/currency` | Get player currency totals | `playerId` |
 | GET | `/api/players/{playerId}/solaris-coin` | Get Solaris Coin total | `playerId` |
 | GET | `/api/players/{playerId}/factions` | Get faction reputation | `playerId` |
