@@ -8,14 +8,21 @@
 [extend]
   useDefault = true
 
-# [allowlist] (singular) is deprecated as of gitleaks v8.25.0+ and cannot
-# coexist with [[allowlists]] in the same config (confirmed directly:
-# gitleaks refuses to load a config with both, "[allowlist] is deprecated,
-# it cannot be used alongside [[allowlists]]") -- migrated to [[allowlists]].
-[[allowlists]]
-  description = "Known command-auth fallback shared by game server"
+# The allowlist must be the singular [allowlist] table for the gitleaks release this project pins in CI
+# (v8.24.3). That release has no top-level [[allowlists]] (plural) field: it silently drops the key, so a
+# plural block here has zero effect (verified: with it, the intentionally hardcoded fallback below is still
+# flagged). Newer gitleaks releases still accept the singular table (with a deprecation notice), so this is
+# valid on both. If the pin moves past v8.25, re-check whether [[allowlists]] works before switching back.
+# The regexes are matched against the extracted SECRET and are ANCHORED (^...$), so only a value that IS the
+# placeholder is allowed. An unanchored literal would also hide any real token that merely contains it
+# (verified: a token prefixed with the literal passed the scan until anchoring was added).
+[allowlist]
+  description = "Known command-auth fallback shared by game server, and a documentation placeholder"
   regexes = [
-    "Nu6VmPWUMvdPMeB7qErr",
+    "^Nu6VmPWUMvdPMeB7qErr$",
+    # docs/integrations/discord-control-bot/admin-guide.md's curl example
+    # ("Authorization: Bearer local-dev-bot-api"): a documentation placeholder, not a credential.
+    "^local-dev-bot-api$",
   ]
 
 # NOTE: tests/db-system-backup-test.sh's synthetic secret fixtures
