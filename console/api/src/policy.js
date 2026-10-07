@@ -324,7 +324,9 @@ export function setPolicies(inputDocs, repoRoot = null) {
   _policies = docs;
   _allowedActions = {};
   if (repoRoot) writeJsonAtomic(resolve(repoRoot, "runtime/generated/iam-policies.json"), docs, 0o600);
-  return { ok: true, policies: getAllPolicies() };
+  // A grant beyond players:read/guilds:read on `player` is accepted but inert (playerTierGate
+  // caps it); say so, as loadPolicies does at startup, so the save does not look effective.
+  return { ok: true, policies: getAllPolicies(), playerCappedActions: playerCappedActions(docs) };
 }
 
 function validPolicyStore(value) {

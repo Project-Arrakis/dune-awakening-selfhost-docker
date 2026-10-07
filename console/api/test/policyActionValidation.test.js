@@ -139,6 +139,13 @@ test("a valid policy still saves, and the structural checks still run first", ()
   restoreDefaults();
 });
 
+test("a save reports player-tier grants the strict player gate caps away", () => {
+  const player = (Action) => ({ owner: ownerAllowAll, player: { version: 1, tier: "player", statements: [{ Effect: "Allow", Action }] } });
+  assert.deepEqual(setPolicies(player(["players:read", "guilds:read"])).playerCappedActions, []);
+  assert.deepEqual(setPolicies(player(["bases:read"])).playerCappedActions, ["bases:read"]);
+  restoreDefaults();
+});
+
 test("a refused save does not change the active policy", () => {
   restoreDefaults();
   // Probes a live catalog action, not players:mutate: that name is now a
