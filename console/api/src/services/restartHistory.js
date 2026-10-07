@@ -44,7 +44,8 @@ export function appendRestartHistory(file, row) {
   appendFileSync(file, `${JSON.stringify(normalizeRow(row))}\n`, { mode: 0o600 });
   try { chmodSync(file, 0o600); } catch {}
   if (statSync(file).size <= MAX_FILE_BYTES) return;
-  const rows = readRows(file).slice(-MAX_ROWS);
+  // strict: a failed read must abort the rewrite, never replace the history with nothing.
+  const rows = readRows(file, { strict: true }).slice(-MAX_ROWS);
   const temp = `${file}.tmp-${process.pid}`;
   writeFileSync(temp, rows.map((entry) => JSON.stringify(entry)).join("\n") + (rows.length ? "\n" : ""), { mode: 0o600 });
   renameSync(temp, file);
@@ -59,12 +60,13 @@ export function readRestartHistory(config, { limit = 100 } = {}) {
   };
 }
 
-function readRows(file) {
+function readRows(file, { strict = false } = {}) {
   if (!existsSync(file)) return [];
   let text;
   try {
     text = readFileSync(file, "utf8");
-  } catch {
+  } catch (error) {
+    if (strict) throw error;
     // An unreadable history file (for example left root-owned by a root-run console)
     // must not turn every GET /api/server/restart-history into a 500.
     return [];
