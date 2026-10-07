@@ -26,11 +26,10 @@ printf 'Changed-file staging directory: %s\n\n' "$PR_FILES_DIR"
 mkdir -p "$REPORT_DIR"
 
 printf '== Git whitespace/conflict check ==\n'
-if [ "$SCAN_MODE" = "full" ]; then
-  printf 'Skipped in full mode (it compares a branch against its base).\n'
-else
-  git diff --check "$BASE_REF"...HEAD
-fi
+# Runs in BOTH modes. On a push to main HEAD is BASE_REF, so the diff is empty and this passes trivially; on a
+# push to integration/** or release/** (also SCAN_MODE=full) HEAD differs from origin/main and leftover conflict
+# markers or whitespace errors from a bad merge are real, and neither gitleaks nor trivy would catch them.
+git diff --check "$BASE_REF"...HEAD
 
 if [ "$SCAN_MODE" = "full" ]; then
   printf '\n== Files to scan (full mode: every tracked file) ==\n'
