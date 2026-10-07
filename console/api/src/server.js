@@ -548,9 +548,13 @@ async function enforcePlayerTier(res, path, method, action, session) {
     return true;
   }
   const route = classifyPlayerTierRequest(path, method);
-  if (route.kind === "open" || route.kind === "scoped-list") return false;
+  if (route.kind === "scoped-list" || route.kind === "global-read") return false;
   const notFound = () => { json(res, 404, { error: "Not found." }); return true; };
   if (route.kind === "deny") return notFound();
+  // A route outside /api/players and /api/guilds that still carries a player action (the
+  // choam-terminals capture reads any character's position) has no ownership rule here,
+  // so it is closed to the player tier rather than left to take a raw playerId.
+  if (route.kind === "open") return action ? notFound() : false;
   try {
     const scope = await resolvePlayerScopedIds(session, db);
     if (route.kind === "own-player") {

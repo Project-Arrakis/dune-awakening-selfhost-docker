@@ -61,7 +61,7 @@ describe("PlayerVehiclesTab", () => {
     await screen.findByText("Owned Bike");
     expect(screen.queryByText("Shared Buggy")).not.toBeInTheDocument();
 
-    fireEvent.change(screen.getByLabelText("Access"), { target: { value: "all" } });
+    fireEvent.change(screen.getByLabelText("Permission"), { target: { value: "all" } });
     await waitFor(() => expect(vehiclesApi.forPlayer).toHaveBeenLastCalledWith("42", { access: "all" }));
     expect(await screen.findByText("Shared Buggy")).toBeInTheDocument();
     expect(screen.getByText("Co-Owner")).toBeInTheDocument();
@@ -81,7 +81,7 @@ describe("PlayerVehiclesTab", () => {
     expect(screen.queryByRole("columnheader", { name: "Owner" })).not.toBeInTheDocument();
 
     vi.mocked(vehiclesApi.forPlayer).mockResolvedValue(response({ rows: [response().rows[1]], totalCount: 1 }));
-    fireEvent.change(screen.getByLabelText("Access"), { target: { value: "coowner" } });
+    fireEvent.change(screen.getByLabelText("Permission"), { target: { value: "coowner" } });
     expect(await screen.findByText("Shared Buggy")).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "Owner" })).toBeInTheDocument();
     expect(screen.queryByRole("columnheader", { name: "Access" })).not.toBeInTheDocument();

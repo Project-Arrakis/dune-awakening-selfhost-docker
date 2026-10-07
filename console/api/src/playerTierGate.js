@@ -22,9 +22,13 @@ const OWN_PLAYER_RE = new RegExp(`^/api/players/([^/]+)(?:/(${PLAYER_OWN_SUBRESO
 const OWN_GUILD_MEMBERS_RE = /^\/api\/guilds\/([^/]+)\/members$/;
 const CANONICAL_ID_RE = /^[1-9][0-9]{0,17}$/;
 const LIST_PATHS = new Set(["/api/players", "/api/players/online", "/api/players/search", "/api/guilds"]);
+// Server-wide settings the Players tab loads on mount. Not per-player data, so a
+// player may read them; denying them put an error banner on the tab for every player.
+const GLOBAL_READ_PATHS = new Set(["/api/players/list-settings"]);
 
 // -> { kind: "open" }                      not a players/guilds route, this gate has no opinion
 //    { kind: "scoped-list" }               list route, scoped in the query
+//    { kind: "global-read" }               server-wide config, no per-player data
 //    { kind: "own-player", id }            must resolve to one of the caller's characters
 //    { kind: "own-guild", id }             must be a guild the caller belongs to
 //    { kind: "deny" }                      refuse (reported as 404)
@@ -34,6 +38,7 @@ export function classifyPlayerTierRequest(path, method) {
   if (!guarded) return { kind: "open" };
   if (method !== "GET") return { kind: "deny" };
   if (LIST_PATHS.has(path)) return { kind: "scoped-list" };
+  if (GLOBAL_READ_PATHS.has(path)) return { kind: "global-read" };
   const guild = OWN_GUILD_MEMBERS_RE.exec(path);
   if (guild) return CANONICAL_ID_RE.test(guild[1]) ? { kind: "own-guild", id: guild[1] } : { kind: "deny" };
   const player = OWN_PLAYER_RE.exec(path);

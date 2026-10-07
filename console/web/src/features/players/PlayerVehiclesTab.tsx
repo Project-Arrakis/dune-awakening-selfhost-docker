@@ -66,7 +66,7 @@ export function PlayerVehiclesTab({ playerId, playerName, confirmAction }: Playe
             <h4>Vehicles</h4>
             <p className="playerAdmin_note">{describePlayerAccess("Vehicles", playerName, access)} Select a row to inspect its fitted components.</p>
           </div>
-          <div className="action-row">
+          <div className="action-row players-filter-row">
             <PlayerAccessSelect value={access} onChange={setAccess} />
             <button type="button" disabled={loading || !playerId} onClick={() => void load()}>Refresh</button>
           </div>
