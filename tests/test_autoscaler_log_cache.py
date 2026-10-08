@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import selectors
 import subprocess
 import tempfile
 import time
@@ -20,6 +21,49 @@ def line(stamp, message):
 
 
 class CacheTests(unittest.TestCase):
+    def test_stream_waits_for_startup_and_reconnect_without_old_evidence(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'cache.sqlite'
+            process = subprocess.Popen(['python3', str(ROOT / 'runtime/scripts/director-log-cache.py'),
+                                        'stream', str(path), '--parent', str(os.getpid())],
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            selector = selectors.DefaultSelector()
+            selector.register(process.stdout, selectors.EVENT_READ)
+            try:
+                time.sleep(0.4)
+                self.assertIsNone(process.poll())
+                db = CACHE.connect(path)
+                try:
+                    db.execute("insert into state values (1,?,'first',1)", (time.time(),))
+                    CACHE.append(db, [line(time.time(), 'historical')])
+                    db.commit()
+                    time.sleep(0.5)
+                    CACHE.append(db, [line(time.time(), 'live')])
+                    db.commit()
+                    self.assertTrue(selector.select(timeout=3))
+                    self.assertEqual(process.stdout.readline().strip(), 'live')
+                    db.execute('update state set connected=0')
+                    db.commit()
+                    time.sleep(0.5)
+                    self.assertIsNone(process.poll())
+                    db.execute('delete from logs')
+                    db.execute("update state set connected=1,generation='second',heartbeat=?", (time.time(),))
+                    CACHE.append(db, [line(time.time(), 'new historical')])
+                    db.commit()
+                    time.sleep(0.5)
+                    CACHE.append(db, [line(time.time(), 'new live')])
+                    db.commit()
+                    self.assertTrue(selector.select(timeout=3))
+                    self.assertEqual(process.stdout.readline().strip(), 'new live')
+                finally:
+                    db.close()
+            finally:
+                process.terminate()
+                process.wait(timeout=5)
+                process.stdout.close()
+                process.stderr.close()
+                selector.close()
+
     def test_unavailable_evidence_cannot_trigger_browser_restart(self):
         source = (ROOT / 'runtime/scripts/autoscaler.sh').read_text()
         function = source.split('scan_director_browser_state() {', 1)[1].split('\n}\n', 1)[0]

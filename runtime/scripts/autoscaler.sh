@@ -1089,7 +1089,7 @@ PY
 
 follow_director_hagga_handoffs() {
   while true; do
-    python3 runtime/scripts/director-log-cache.py stream "$DIRECTOR_LOG_CACHE_FILE" 2>/dev/null | TARGET_JSON="$(survival_partition_target_json 2>/dev/null || true)" python3 -u /dev/fd/3 3<<'PY' | while IFS='|' read -r flow_id origin_id payload_json; do
+    python3 runtime/scripts/director-log-cache.py stream "$DIRECTOR_LOG_CACHE_FILE" --parent "$$" 2>/dev/null | TARGET_JSON="$(survival_partition_target_json 2>/dev/null || true)" python3 -u /dev/fd/3 3<<'PY' | while IFS='|' read -r flow_id origin_id payload_json; do
 import json
 import os
 import re

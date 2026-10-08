@@ -150,6 +150,39 @@ def follow(path, retention, parent):
         selector.close()
 
 
+def stream(path, parent):
+    db = None
+    generation = None
+    cursor = 0
+    try:
+        while True:
+            try:
+                os.kill(parent, 0)
+            except ProcessLookupError:
+                return
+            try:
+                if db is None:
+                    db = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
+                snapshot(db, 1)
+                current = db.execute("select generation from state where id=1").fetchone()[0]
+                if current != generation:
+                    generation = current
+                    cursor = db.execute("select coalesce(max(id),0) from logs").fetchone()[0]
+                for row_id, log_line in db.execute("select id,line from logs where id > ? order by id", (cursor,)):
+                    print(log_line.partition(" ")[2], flush=True)
+                    cursor = row_id
+            except (sqlite3.Error, RuntimeError):
+                # Startup and reconnects are normal, not a reason to terminate
+                # the consumer. Do not emit stale cached evidence while down.
+                if db is not None:
+                    db.close()
+                db = None
+            time.sleep(0.25)
+    finally:
+        if db is not None:
+            db.close()
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("mode", choices=("follow", "read", "stream"))
@@ -161,26 +194,14 @@ def main():
     args = parser.parse_args()
     if args.mode == "follow":
         follow(args.path, args.retention, args.parent)
+    elif args.mode == "stream":
+        stream(args.path, args.parent)
     else:
         # Readers never create or repair a missing cache.
         db = sqlite3.connect(Path(args.path).resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
         try:
-            if args.mode == "stream":
-                generation = None
-                cursor = 0
-                while True:
-                    snapshot(db, 1)  # Verify follower liveness before reading.
-                    current = db.execute("select generation from state where id=1").fetchone()[0]
-                    if current != generation:
-                        generation = current
-                        cursor = db.execute("select coalesce(max(id),0) from logs").fetchone()[0]
-                    for row_id, line in db.execute("select id,line from logs where id > ? order by id", (cursor,)):
-                        print(line.partition(" ")[2], flush=True)
-                        cursor = row_id
-                    time.sleep(0.25)
-            else:
-                for line in snapshot(db, seconds(args.since), args.timestamps):
-                    print(line)
+            for line in snapshot(db, seconds(args.since), args.timestamps):
+                print(line)
         finally:
             db.close()
 
