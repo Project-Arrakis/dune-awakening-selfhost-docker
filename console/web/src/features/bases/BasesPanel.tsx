@@ -8,7 +8,7 @@ import { BaseWaterTab } from "./BaseWaterTab";
 import { AutoRefillSettingsOverlay } from "./AutoRefillSettingsOverlay";
 import { DownloadBaseDialog, type DownloadBaseTarget } from "./DownloadBaseDialog";
 import { PlayerAccessSelect } from "../../components/common/PlayerAccessSelect";
-import { PLAYER_ACCESS_DEFAULT, accessCountLabel, describePlayerAccess, filterRowsByAccess, type PlayerAccessFilter } from "../../lib/playerAccess";
+import { PLAYER_ACCESS_DEFAULT, accessCountLabel, accessEmptyAdjective, describePlayerAccess, filterRowsByAccess, type PlayerAccessFilter } from "../../lib/playerAccess";
 import { basesApi, type AutoRefillBase, type AutoRefillWaterBase, type RefillDeviceResult, type RefillWaterDeviceResult } from "../../api/bases";
 import { friendlyMapName } from "../maps/mapNames";
 import { mapsApi } from "../../api/maps";
@@ -376,8 +376,19 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
   const [access, setAccess] = useState<PlayerAccessFilter>(PLAYER_ACCESS_DEFAULT);
   const scope = playerId ? `player:${playerId}:${access}` : "all";
   // Drop the previous level's rows at once so they cannot be acted on under the new level's header.
+  // The loading branch swaps in a separate header, so the select the user just used is unmounted;
+  // hand focus back to the live one once loading ends so keyboard users are not dropped on <body>.
+  const accessSelectRef = useRef<HTMLSelectElement>(null);
+  const refocusAccessSelect = useRef(false);
   function changeAccess(next: PlayerAccessFilter) {
+    refocusAccessSelect.current = true;
     setRows([]);
+    setTotalCount(0);
+    setTotalBases(0);
+    setTotalOwned(0);
+    setTotalShared(0);
+    setTotalPieces(0);
+    setTotalPlaceables(0);
     setLoading(true);
     setAccess(next);
   }
@@ -404,6 +415,12 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
   const [totalPieces, setTotalPieces] = useState(() => initialCache?.totalPieces ?? 0);
   const [totalPlaceables, setTotalPlaceables] = useState(() => initialCache?.totalPlaceables ?? 0);
   const [loading, setLoading] = useState(() => initialCache === null);
+  useEffect(() => {
+    if (!loading && refocusAccessSelect.current) {
+      refocusAccessSelect.current = false;
+      accessSelectRef.current?.focus();
+    }
+  }, [loading]);
   const [downloadTarget, setDownloadTarget] = useState<DownloadBaseTarget | null>(null);
   const [refillingId, setRefillingId] = useState("");
   const [refillResult, setRefillResult] = useState(() => readCachedRefillStatus().text);
@@ -1206,7 +1223,14 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
 
   if (loading) {
     return <section className={panelClassName}>
-      <div className="panel-title"><PanelHeading>Bases</PanelHeading>{viewSwitch}</div>
+      <div className="panel-title">
+        <div>
+          <PanelHeading>Bases</PanelHeading>
+          {playerId && <p className="playerAdmin_note">{describePlayerAccess("Bases", playerName, access)} Expand a row to use the same tools available on the main Bases page.</p>}
+        </div>
+        {viewSwitch}
+        {playerId && <div className="action-row players-filter-row"><PlayerAccessSelect value={access} onChange={changeAccess} disabled /></div>}
+      </div>
       <div className="loading-panel">
         <span className="spinner" aria-hidden="true" />
         <strong className="loading-dots">Loading Bases</strong>
@@ -1387,7 +1411,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
               onClick={() => setAutoRefillSettingsOpen(true)}
             ><Settings size={16} /></button>
           )}
-          {playerId && <PlayerAccessSelect value={access} onChange={changeAccess} />}
+          {playerId && <PlayerAccessSelect value={access} onChange={changeAccess} selectRef={accessSelectRef} />}
           <button onClick={() => void load({ q: submittedQ, page, pageSize, sortColumn, sortDirection })}>Refresh</button>
         </div>
       </div>
@@ -1404,6 +1428,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
             <span><strong>{totalPlaceables.toLocaleString()}</strong> Placeables</span>
           </div>
         : <p className="action-help-note">Total Bases: {totalBases.toLocaleString()} · Total Building Pieces: {totalPieces.toLocaleString()} · Total Placeables: {totalPlaceables.toLocaleString()}</p>}
+      {playerId && totalCount > rows.length && <p className="playerAdmin_note danger">This player has more bases than can be listed here; some bases may be missing.</p>}
       {!playerId && stalledCombinedCount > 0 && <div className="bases-stalled-banner" role="alert">
         <p className="bases-stalled-banner-title">
           {stalledCombinedCount.toLocaleString()} base{stalledCombinedCount === 1 ? " has" : "s have"} stalled auto-refill
@@ -1900,7 +1925,9 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
             </div>
           );
         }}
-        emptyMessage="No bases have been found yet."
+        emptyMessage={playerId
+          ? `${playerName || "This player"} has no ${accessEmptyAdjective(access)}bases.${access === "all" ? "" : " Try another Permission level."}`
+          : "No bases have been found yet."}
       />
       {!playerId && <div className="panel-title bases-pagination-footer">
         <p className="action-help-note">
