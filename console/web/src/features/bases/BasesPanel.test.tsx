@@ -194,6 +194,21 @@ describe("BasesPanel player scope", () => {
     // Loading has ended, so the old level's rows are not what keeps the table empty: they were dropped.
     await waitFor(() => expect(screen.getByLabelText("Permission")).toBeEnabled());
     expect(screen.queryByText("Owned Home")).not.toBeInTheDocument();
+    const summary = screen.getByLabelText("Player base totals");
+    expect(summary).toHaveTextContent("0 Co-owned");
+    expect(summary).toHaveTextContent("0 Building Pieces");
+    expect(summary).toHaveTextContent("0 Placeables");
+  });
+
+  it("warns when a player's base list is capped instead of silently implying every base is shown", async () => {
+    vi.mocked(basesApi.forPlayer).mockResolvedValue({
+      capabilities: { bases: true }, totalCount: 5001, totalBases: 5001, totalOwned: 5001,
+      totalShared: 0, totalPieces: 50010, totalPlaceables: 20004,
+      rows: [{ ...commonRow, base_id: "4101", name: "Owned Home", relationship: "Owner", generatorDataAvailable: false, generatorCount: 0 }]
+    });
+    renderPanel({ playerId: "42", playerName: "Chani", embedded: true });
+    expect(await screen.findByText(/more bases than can be listed here/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Player base totals")).toHaveTextContent("5,001 Owned");
   });
 });
 

@@ -383,6 +383,12 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
   function changeAccess(next: PlayerAccessFilter) {
     refocusAccessSelect.current = true;
     setRows([]);
+    setTotalCount(0);
+    setTotalBases(0);
+    setTotalOwned(0);
+    setTotalShared(0);
+    setTotalPieces(0);
+    setTotalPlaceables(0);
     setLoading(true);
     setAccess(next);
   }
@@ -1422,6 +1428,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
             <span><strong>{totalPlaceables.toLocaleString()}</strong> Placeables</span>
           </div>
         : <p className="action-help-note">Total Bases: {totalBases.toLocaleString()} · Total Building Pieces: {totalPieces.toLocaleString()} · Total Placeables: {totalPlaceables.toLocaleString()}</p>}
+      {playerId && totalCount > rows.length && <p className="playerAdmin_note danger">This player has more bases than can be listed here; some bases may be missing.</p>}
       {!playerId && stalledCombinedCount > 0 && <div className="bases-stalled-banner" role="alert">
         <p className="bases-stalled-banner-title">
           {stalledCombinedCount.toLocaleString()} base{stalledCombinedCount === 1 ? " has" : "s have"} stalled auto-refill
