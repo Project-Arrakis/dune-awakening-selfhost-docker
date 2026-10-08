@@ -38,7 +38,9 @@ if [ "$SCAN_MODE" = "full" ]; then
   git ls-files -z > "$REPORT_DIR/changed-files.z"
 else
   printf '\n== Changed files ==\n'
-  git diff -z --name-only "$BASE_REF"...HEAD --diff-filter=ACM > "$REPORT_DIR/changed-files.z"
+  # Renames can contain edits too; scan their destination and type-changed
+  # regular files rather than silently treating either as an empty diff.
+  git diff -z --name-only "$BASE_REF"...HEAD --diff-filter=ACMRT > "$REPORT_DIR/changed-files.z"
 fi
 tr '\0' '\n' < "$REPORT_DIR/changed-files.z" > "$REPORT_DIR/changed-files.txt"
 if [ "$SCAN_MODE" = "full" ]; then

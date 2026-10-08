@@ -18,12 +18,17 @@ On a push to `main` HEAD is the base, so the changed set is empty by constructio
 would scan nothing. A full scan of the tracked tree takes a few seconds. It refuses to report a clean result if it
 staged no files.
 
+Changed-file scans include renamed destinations and type-changed regular files, since a rename can also introduce
+new contents. Deleted files and symlinks are not copied into the scan directory.
+
 ## Fail-closed behaviour
 
 - gitleaks and trivy are installed in CI (pinned versions, sha256-verified). With `CI=true`, a missing scanner is
   an **error**, never a skip. Outside CI a missing scanner still prints `SKIP:` for local convenience.
 - trivy exits non-zero on any HIGH or CRITICAL finding, using its embedded checks (`--skip-check-update`) so a
   commit scans the same way every time.
+- After installation, CI tests both real scanners against clean files, synthetic secret fixtures (including a renamed
+  file), and a Dockerfile with no `USER`, so regressions cannot silently turn the checks into a false success.
 
 ## Accepting a finding
 

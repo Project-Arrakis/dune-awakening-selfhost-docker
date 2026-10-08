@@ -131,6 +131,21 @@ staged_count="$(find "$stage/.security-reports/pr-files" -type f -print0 | tr -c
 if [ "$staged_count" -eq "$tracked_regular" ]; then pass "a file name containing a newline is staged and scanned"; else fail "staged $staged_count files, expected $tracked_regular"; fi
 if [ ! -e "$stage/.security-reports/pr-files/link-to-outside" ]; then pass "a tracked symlink is not followed into the staging directory"; else fail "a symlink was staged"; fi
 
+# A high-similarity rename is status R, not M. Its new contents still need
+# scanning, including when a secret was added during the rename.
+renamed="$(new_repo renamed)"
+for i in {1..100}; do printf 'ordinary setting %s\n' "$i"; done > "$renamed/config.txt"
+git -C "$renamed" add config.txt
+git -C "$renamed" -c user.email=t@t -c user.name=t commit -q -m config
+git -C "$renamed" update-ref refs/remotes/upstream/main HEAD
+git -C "$renamed" mv config.txt renamed-config.txt
+printf 'api_key = "%s%s"\n' 'a9F3kLm7Qp2Wx8Vz4Nc6' 'Rt1Yu5Hs0De9Bj7Gi3Ko' >> "$renamed/renamed-config.txt"
+git -C "$renamed" add -A
+git -C "$renamed" -c user.email=t@t -c user.name=t commit -q -m rename
+run_script "$renamed" "$STUBS:$TOOLS" SCAN_MODE=changed
+expect_rc "a rename with edited contents is staged in changed mode" 0
+if [ -f "$renamed/.security-reports/pr-files/renamed-config.txt" ]; then pass "the renamed file's new contents are scanned"; else fail "the renamed file escaped the scan"; fi
+
 # ---------------------------------------------------------------- real scanners, end to end (skipped when absent)
 real_gitleaks="$(command -v gitleaks 2>/dev/null || true)"
 real_trivy="$(command -v trivy 2>/dev/null || true)"
@@ -162,6 +177,10 @@ if [ -n "$real_gitleaks" ] && [ -n "$real_trivy" ]; then
   run_script "$root" "$REAL:$TOOLS" SCAN_MODE=full CI=true
   expect_rc "real scanners: a Dockerfile with no USER fails the job (trivy exits non-zero on findings)" 1
   expect_out "...and names the rule" "DS-0002"
+
+  run_script "$renamed" "$REAL:$TOOLS" SCAN_MODE=changed CI=true
+  expect_rc "real scanners: a secret added to a renamed file fails the job" 1
+  expect_out "...the renamed file was checked rather than treated as an empty diff" "renamed-config.txt"
 else
   printf 'skip real-scanner cases (gitleaks and trivy are not both installed here; the security-checks CI job covers them)\n'
 fi
