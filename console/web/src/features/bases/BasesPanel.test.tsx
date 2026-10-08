@@ -121,14 +121,15 @@ describe("BasesPanel player scope", () => {
     await waitFor(() => expect(basesApi.forPlayer).toHaveBeenCalledWith("42", expect.objectContaining({ page: 0, pageSize: 5000 })));
     expect(basesApi.list).not.toHaveBeenCalled();
     expect(await screen.findByText("Owned Home")).toBeInTheDocument();
-    expect(screen.getByText("Shared Workshop")).toBeInTheDocument();
+    // Bases merely shared with the player are not listed, and the totals
+    // describe only the owned set (10 pieces / 4 placeables of the one base).
+    expect(screen.queryByText("Shared Workshop")).not.toBeInTheDocument();
     const summary = screen.getByLabelText("Player base totals");
-    expect(summary).toHaveTextContent("2 Total");
     expect(summary).toHaveTextContent("1 Owned");
-    expect(summary).toHaveTextContent("1 Shared");
-    expect(summary).toHaveTextContent("20 Building Pieces");
-    expect(summary).toHaveTextContent("8 Placeables");
-    expect(screen.getByText(/Bases owned by or shared with Chani/)).toBeInTheDocument();
+    expect(summary).not.toHaveTextContent("Shared");
+    expect(summary).toHaveTextContent("10 Building Pieces");
+    expect(summary).toHaveTextContent("4 Placeables");
+    expect(screen.getByText(/Bases owned by Chani/)).toBeInTheDocument();
     expect(screen.queryByRole("combobox", { name: "Rows" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "First" })).not.toBeInTheDocument();
     expect(screen.queryByText(/Page 1 of/)).not.toBeInTheDocument();
@@ -145,6 +146,69 @@ describe("BasesPanel player scope", () => {
     expect(within(dialog).getByRole("button", { name: /Download Base Backup/ })).toBeEnabled();
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("dialog", { name: "Download Base" })).not.toBeInTheDocument();
+  });
+
+  it("switches Permission levels: asks the server, drops stale rows while loading, and words the empty state", async () => {
+    const empty = { capabilities: { bases: true }, totalCount: 0, totalBases: 0, totalOwned: 0, totalShared: 0, totalPieces: 0, totalPlaceables: 0, rows: [] };
+    vi.mocked(basesApi.forPlayer).mockResolvedValueOnce({
+      ...empty, totalCount: 1, totalBases: 1, totalOwned: 1, totalPieces: 10, totalPlaceables: 4,
+      rows: [{ ...commonRow, base_id: "4101", name: "Owned Home", relationship: "Owner", generatorDataAvailable: false, generatorCount: 0 }]
+    });
+    renderPanel({ playerId: "42", playerName: "Chani", embedded: true });
+    expect(await screen.findByText("Owned Home")).toBeInTheDocument();
+
+    let release!: (value: typeof empty) => void;
+    vi.mocked(basesApi.forPlayer).mockReturnValueOnce(new Promise<typeof empty>((resolve) => { release = resolve; }) as never);
+    fireEvent.change(screen.getByLabelText("Permission"), { target: { value: "coowner" } });
+
+    await waitFor(() => expect(basesApi.forPlayer).toHaveBeenLastCalledWith("42", expect.objectContaining({ access: "coowner" })));
+    // In flight: the previous level's rows are gone, and the dropdown stays visible but locked.
+    expect(screen.queryByText("Owned Home")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Permission")).toBeDisabled();
+
+    release(empty);
+    expect(await screen.findByText("Chani has no co-owned bases. Try another Permission level.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Permission")).toBeEnabled();
+    // The loading branch unmounted the select the user used; focus must come back to the live one.
+    await waitFor(() => expect(screen.getByLabelText("Permission")).toHaveFocus());
+
+    // "All levels" is the one level with no hint: the player has no bases at all.
+    vi.mocked(basesApi.forPlayer).mockResolvedValueOnce(empty);
+    fireEvent.change(screen.getByLabelText("Permission"), { target: { value: "all" } });
+    expect(await screen.findByText("Chani has no bases.")).toBeInTheDocument();
+  });
+
+  it("does not bring back the previous level's rows when the new level fails to load", async () => {
+    const owned = {
+      capabilities: { bases: true }, totalCount: 1, totalBases: 1, totalOwned: 1, totalShared: 0, totalPieces: 10, totalPlaceables: 4,
+      rows: [{ ...commonRow, base_id: "4101", name: "Owned Home", relationship: "Owner", generatorDataAvailable: false, generatorCount: 0 }]
+    };
+    vi.mocked(basesApi.forPlayer).mockResolvedValueOnce(owned);
+    const props = renderPanel({ playerId: "42", playerName: "Chani", embedded: true });
+    expect(await screen.findByText("Owned Home")).toBeInTheDocument();
+
+    vi.mocked(basesApi.forPlayer).mockRejectedValueOnce(new Error("database unavailable"));
+    fireEvent.change(screen.getByLabelText("Permission"), { target: { value: "coowner" } });
+
+    await waitFor(() => expect(props.onError).toHaveBeenCalledWith(expect.stringContaining("database unavailable")));
+    // Loading has ended, so the old level's rows are not what keeps the table empty: they were dropped.
+    await waitFor(() => expect(screen.getByLabelText("Permission")).toBeEnabled());
+    expect(screen.queryByText("Owned Home")).not.toBeInTheDocument();
+    const summary = screen.getByLabelText("Player base totals");
+    expect(summary).toHaveTextContent("0 Co-owned");
+    expect(summary).toHaveTextContent("0 Building Pieces");
+    expect(summary).toHaveTextContent("0 Placeables");
+  });
+
+  it("warns when a player's base list is capped instead of silently implying every base is shown", async () => {
+    vi.mocked(basesApi.forPlayer).mockResolvedValue({
+      capabilities: { bases: true }, totalCount: 5001, totalBases: 5001, totalOwned: 5001,
+      totalShared: 0, totalPieces: 50010, totalPlaceables: 20004,
+      rows: [{ ...commonRow, base_id: "4101", name: "Owned Home", relationship: "Owner", generatorDataAvailable: false, generatorCount: 0 }]
+    });
+    renderPanel({ playerId: "42", playerName: "Chani", embedded: true });
+    expect(await screen.findByText(/more bases than can be listed here/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Player base totals")).toHaveTextContent("5,001 Owned");
   });
 });
 

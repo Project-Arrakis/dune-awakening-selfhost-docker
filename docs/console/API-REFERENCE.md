@@ -223,7 +223,8 @@ Player rows include `total_playtime_seconds`. The console samples `player_state.
 |--------|-------|-------------|------------|
 | GET | `/api/players/{playerId}` | Get player profile summary | `playerId` |
 | GET | `/api/players/{playerId}/inventory` | Get player inventory items — backpack, character gear, loadout, and unique-gear schematics (emote containers excluded), each row tagged with `inventory_type` | `playerId` |
-| GET | `/api/players/{playerId}/vehicles` | Get vehicles owned by or shared with the player, including the player's access relationship | `playerId` |
+| GET | `/api/players/{playerId}/vehicles` | Get vehicles owned by or shared with the player, including the player's access relationship. Returns at most 200 rows. Optional `?access=owner\|coowner` narrows the list: `owner` is a vehicle the player's account owns or where they hold roster rank 1; `coowner` is roster rank 2 on a vehicle their account does not own (default and any other value: all roster ranks; guild/public piece access is not per-player and is never listed). The filter narrows what is returned; it is not an authorization control, and `players:read` still gates the route | `playerId` |
+| GET | `/api/players/{playerId}/bases` | List the bases the player holds a roster rank on (one request, capped at 5,000 rows), with the player's access relationship. Optional `?access=owner\|coowner` narrows to rank 1 / rank 2 (default and any other value: all roster ranks; guild/public access is per-piece, so it is not listed here), and the totals follow the filter. Also accepts `q`, `sortColumn`, `sortDirection` | `playerId` |
 | GET | `/api/players/{playerId}/currency` | Get player currency totals | `playerId` |
 | GET | `/api/players/{playerId}/solaris-coin` | Get Solaris Coin total | `playerId` |
 | GET | `/api/players/{playerId}/factions` | Get faction reputation | `playerId` |
@@ -473,7 +474,7 @@ tab can offer a retry only where retrying could actually help.
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|
 | GET | `/api/vehicles` | List all player vehicles (paginated), each with owner, shared-with roster, lowest-component condition %, fuel %, map/partition, coordinates, and per-component durability. `status` narrows the list: `owned` (has an owner or is in `Travel`, not put away), `recovery` (Stored for Recovery), `backup` (Vehicle Backup), `unowned` (no owner, not put away or in `Travel`), or `all` (default) | `q?`, `page?`, `pageSize?`, `sortColumn?`, `sortDirection?`, `status?` |
-| GET | `/api/players/{playerId}/vehicles` | List the selected player's owned and shared vehicles using the same vehicle details | `playerId` |
+| GET | `/api/players/{playerId}/vehicles` | List the selected player's owned and shared vehicles using the same vehicle details. Accepts the same optional `?access=owner\|coowner` filter and 200-row cap | `playerId` |
 | GET | `/api/vehicles/{vehicleId}/permissions` | Get a vehicle's permission roster (Owner, Co-Owners, Associates) plus the detected system custodian | `vehicleId` |
 | PUT | `/api/vehicles/{vehicleId}/permissions` | Replace a vehicle's permission roster | `vehicleId`, `entries[]` (`playerId`, `rank`) |
 | POST | `/api/vehicles/{vehicleId}/system-custodian` | Transfer ownership to the Server or detected GM system custodian while preserving the roster; provisions Server when no custodian exists | `vehicleId` |

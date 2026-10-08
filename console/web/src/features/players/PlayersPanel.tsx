@@ -230,10 +230,17 @@ export function PlayersPanel({ onError, renderCharacterAdmin, onOpenBase, confir
   async function open(row: Record<string, unknown>) {
     const id = String(row.actor_id || row.player_pawn_id || row.id || "");
     const requestId = ++profileRequestIdRef.current;
+    // Never show the previously selected player's profile under a new selection.
+    if (selectedPlayerIdRef.current !== id) setDetail(null);
     selectedPlayerIdRef.current = id;
     setSelected(row);
-    const nextDetail = await playersApi.profile(id);
-    if (profileRequestIdRef.current === requestId && selectedPlayerIdRef.current === id) setDetail(nextDetail);
+    try {
+      const nextDetail = await playersApi.profile(id);
+      if (profileRequestIdRef.current === requestId && selectedPlayerIdRef.current === id) setDetail(nextDetail);
+    } catch (error) {
+      if (profileRequestIdRef.current === requestId) setDetail(null);
+      if (profileRequestIdRef.current === requestId) onError(`Could not load this player's profile: ${errorText(error)}`);
+    }
   }
 
   const dbPlayerId = selected ? String(selected.actor_id || selected.player_pawn_id || selected.id || "") : "";
@@ -356,7 +363,7 @@ export function PlayersPanel({ onError, renderCharacterAdmin, onOpenBase, confir
         <div className="action-row players-filter-row">
           <label className="inline-filter-label players-filter-label">
             Filter
-            <select className="players-filter-select" value={playerFilter} disabled={!statusFilterSupported} onChange={(event) => setPlayerFilter(event.target.value as PlayerStatusFilter)}>
+            <select className="players-filter-select" value={playerFilter} disabled={!statusFilterSupported} title={statusFilterSupported ? undefined : "Status filtering isn't available on this database version"} onChange={(event) => setPlayerFilter(event.target.value as PlayerStatusFilter)}>
               <option value="all">All Players</option>
               <option value="online">Online</option>
               <option value="offline">Offline</option>
@@ -382,7 +389,12 @@ export function PlayersPanel({ onError, renderCharacterAdmin, onOpenBase, confir
           <button onClick={() => void load({ q: submittedQ, page, pageSize, status: playerFilter, sortColumn, sortDirection, recentOnly: !showInactive })}>Refresh</button>
         </div>
       </div>
-      <p className="action-help-note">Total Players: {totalPlayers.toLocaleString()}</p>
+      <p className="action-help-note">
+        {playerFilter !== "all" || submittedQ || !showInactive
+          ? `${totalCount.toLocaleString()} of ${totalPlayers.toLocaleString()} players shown`
+          : `${totalPlayers.toLocaleString()} players`}
+        {!statusFilterSupported && " · Status filtering isn't available on this database version."}
+      </p>
       <div className="action-row players-search-row">
         <input
           value={q}
@@ -395,7 +407,7 @@ export function PlayersPanel({ onError, renderCharacterAdmin, onOpenBase, confir
       </div>
       <DataTable
         rows={rows}
-        columns={["actor_id", "character_name", "last_seen", "total_playtime_seconds", "online_status", "map", "fls_id"]}
+        columns={["character_name", "online_status", "last_seen", "total_playtime_seconds", "map", "actor_id", "fls_id"]}
         columnLabels={{
           actor_id: "DB Player ID",
           character_name: "Character",
@@ -423,7 +435,7 @@ export function PlayersPanel({ onError, renderCharacterAdmin, onOpenBase, confir
         }}
       />
       <div className="panel-title players-pagination-footer">
-        <p className="action-help-note">Showing {rangeStart}-{rangeEnd} of {totalCount} rows.</p>
+        <p className="action-help-note">Showing {rangeStart}-{rangeEnd} of {totalCount.toLocaleString()}</p>
         <div className="database-pagination-controls">
           <label className="compact-select">
             Rows

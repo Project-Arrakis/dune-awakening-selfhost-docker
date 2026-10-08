@@ -10448,3 +10448,92 @@ test("base delete passes the capability gate once permission_actor is present", 
   const db = baseDeleteCapabilityDb();
   await assert.rejects(() => deleteBaseCompletely(db, 1), /was not found/);
 });
+
+test("listVehicles access=owner restricts a player's vehicles to ones they own", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("coalesce(ps.player_controller_id")) return { rows: [{ actor_id: 42, account_id: 77, controller_id: 88, player_state_id: 99, online_status: "Offline" }] };
+      return { rows: [] };
+    }
+  };
+  await listVehicles(db, { playerId: "42", pageSize: 200, access: "owner" });
+  const mainQuery = calls.find((call) => call.text.includes("module_durability"));
+  assert.match(mainQuery.text, /vc\.owner_account_id=\$1 or viewer\.rank=1\)/);
+  assert.doesNotMatch(mainQuery.text, /viewer\.rank is not null\)/);
+});
+
+test("listBases access=owner restricts a player's bases to rank 1 in both the page and totals queries", async () => {
+  const calls = [];
+  const scopedTables = new Set([...BASE_REQUIRED_TABLES, "dune.permission_actor", "dune.permission_actor_rank", "dune.player_state"]);
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: scopedTables.has(String(values[0] || "")) }] };
+      if (text.includes("ps.player_controller_id") && text.includes("a.class ilike '%PlayerCharacter%'")) {
+        return { rows: [{ actor_id: 42, account_id: 600, controller_id: 777, player_state_id: 800, online_status: "Offline" }] };
+      }
+      if (text.includes("to_regprocedure")) return { rows: [{ exists: false }] };
+      return { rows: [] };
+    }
+  };
+  await listBases(db, { playerId: "42", pageSize: 5000, includeGenerators: false, access: "owner" });
+  const paged = calls.find((call) => call.text.includes("from paged p"));
+  const totals = calls.find((call) => call.text.includes("total_bases"));
+  assert.match(paged.text, /viewer_par\.player_id = \$1 and viewer_par\.rank = 1\)/);
+  assert.match(totals.text, /viewer_par\.player_id = \$1 and viewer_par\.rank = 1\)/);
+});
+
+test("listVehicles and listBases access=coowner select only rank 2 rows", async () => {
+  const vehicleCalls = [];
+  await listVehicles({
+    query: async (text, values = []) => {
+      vehicleCalls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("coalesce(ps.player_controller_id")) return { rows: [{ actor_id: 42, account_id: 77, controller_id: 88, player_state_id: 99, online_status: "Offline" }] };
+      return { rows: [] };
+    }
+  }, { playerId: "42", pageSize: 200, access: "coowner" });
+  assert.match(vehicleCalls.find((call) => call.text.includes("module_durability")).text, /vc\.owner_account_id is distinct from \$1 and viewer\.rank=2/);
+
+  const baseCalls = [];
+  const scopedTables = new Set([...BASE_REQUIRED_TABLES, "dune.permission_actor", "dune.permission_actor_rank", "dune.player_state"]);
+  await listBases({
+    query: async (text, values = []) => {
+      baseCalls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: scopedTables.has(String(values[0] || "")) }] };
+      if (text.includes("ps.player_controller_id") && text.includes("a.class ilike '%PlayerCharacter%'")) {
+        return { rows: [{ actor_id: 42, account_id: 600, controller_id: 777, player_state_id: 800, online_status: "Offline" }] };
+      }
+      if (text.includes("to_regprocedure")) return { rows: [{ exists: false }] };
+      return { rows: [] };
+    }
+  }, { playerId: "42", pageSize: 5000, includeGenerators: false, access: "coowner" });
+  assert.match(baseCalls.find((call) => call.text.includes("from paged p")).text, /viewer_par\.rank = 2\)/);
+});
+
+test("listBases access=coowner excludes a player who also holds rank 1 on the base, and access=all adds no rank clause", async () => {
+  const run = async (access) => {
+    const calls = [];
+    const scopedTables = new Set([...BASE_REQUIRED_TABLES, "dune.permission_actor", "dune.permission_actor_rank", "dune.player_state"]);
+    await listBases({
+      query: async (text, values = []) => {
+        calls.push({ text, values });
+        if (text.includes("to_regclass")) return { rows: [{ exists: scopedTables.has(String(values[0] || "")) }] };
+        if (text.includes("ps.player_controller_id") && text.includes("a.class ilike '%PlayerCharacter%'")) {
+          return { rows: [{ actor_id: 42, account_id: 600, controller_id: 777, player_state_id: 800, online_status: "Offline" }] };
+        }
+        if (text.includes("to_regprocedure")) return { rows: [{ exists: false }] };
+        return { rows: [] };
+      }
+    }, { playerId: "42", pageSize: 5000, includeGenerators: false, ...(access ? { access } : {}) });
+    return calls.find((call) => call.text.includes("from paged p")).text;
+  };
+  assert.match(await run("coowner"), /not exists \(select 1 from dune\.permission_actor_rank owner_par where owner_par\.permission_actor_id = a\.id and owner_par\.player_id = \$1 and owner_par\.rank = 1\)/);
+  for (const sql of [await run("all"), await run(undefined)]) {
+    assert.doesNotMatch(sql, /viewer_par\.rank = [12]/);
+    assert.doesNotMatch(sql, /owner_par/);
+  }
+});

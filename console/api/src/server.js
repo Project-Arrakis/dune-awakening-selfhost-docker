@@ -13,6 +13,7 @@ import { scopeCatalog } from "./apiKeyScopes.js";
 import { createBridgeRateLimiter } from "./bridgeRateLimit.js";
 import { buildSelfUpdateHelperDockerArgs, detectDockerSocketGid, mapWriteFlushTimeoutMs, TaskManager, publicTask } from "./tasks.js";
 import { preflight } from "./preflight.js";
+import { playerAccessParam } from "./playerAccessParam.js";
 import { buildDuneArgs, isDynamicServerService, parseVehicleList, runDockerLogs, runDune, validateServiceName } from "./runner.js";
 // isReadOnlySql comes from db.js, NOT runner.js. runner's copy tests the raw
 // string, so a read-only SELECT behind a leading `-- note` or `/* */` header
@@ -1194,12 +1195,13 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/players\/[^/]+\/customizations$/) && req.method === "GET") return customizationGrantsRoute(res, path);
   if (path.match(/^\/api\/players\/[^/]+\/journey$/)) return dbPlayerRoute(res, path, (database, playerId) => duneDb.playerJourney(database, playerId, journeyTagsData));
   if (path.match(/^\/api\/players\/[^/]+\/inventory$/)) return dbPlayerRoute(res, path, duneDb.playerInventoryAll);
-  if (path.match(/^\/api\/players\/[^/]+\/vehicles$/) && req.method === "GET") return dbPlayerRoute(res, path, (database, playerId) => duneDb.listVehicles(database, { playerId, pageSize: 200 }));
+  if (path.match(/^\/api\/players\/[^/]+\/vehicles$/) && req.method === "GET") return dbPlayerRoute(res, path, (database, playerId) => duneDb.listVehicles(database, { playerId, pageSize: 200, access: playerAccessParam(url) }));
   if (path.match(/^\/api\/players\/[^/]+\/bases$/) && req.method === "GET") return dbPlayerRoute(res, path, (database, playerId) => duneDb.listBases(database, {
     playerId,
     q: url.searchParams.get("q") || "",
     page: 0,
     pageSize: 5000,
+    access: playerAccessParam(url),
     sortColumn: url.searchParams.get("sortColumn") || "name",
     sortDirection: url.searchParams.get("sortDirection") || "asc"
   }));
