@@ -120,6 +120,8 @@ jobs:
           python3 tests/test_admin_spawn_freshness.py
       - name: Test database updater role restoration
         run: bash tests/update-db-role-privilege-test.sh
+      - name: Test the security-checks script's fail-closed behaviour
+        run: bash tests/security-pr-checks-test.sh
       - name: Test installer shell portability
         run: |
           dash -n install.sh
@@ -215,7 +217,32 @@ jobs:
         run: git remote add upstream https://github.com/Red-Blink/dune-awakening-selfhost-docker.git
       - name: Fetch upstream
         run: git fetch upstream main
+      # gitleaks and trivy are installed explicitly because tests/security-pr-checks.sh
+      # used to print "SKIP: <tool> is not installed" and still exit 0 when either was
+      # missing, and neither ships on a fresh ubuntu-latest runner, so this job reported
+      # success while its secret scan never ran. Both are version-pinned and checksum-verified.
+      - name: Install gitleaks
+        run: |
+          curl -fsSL --retry 3 --retry-all-errors --connect-timeout 10 --max-time 120 --proto '=https' https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz -o /tmp/gitleaks.tar.gz
+          echo "9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c  /tmp/gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          sudo install -m 0755 /tmp/gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+      - name: Install trivy
+        run: |
+          curl -fsSL --retry 3 --retry-all-errors --connect-timeout 10 --max-time 120 --proto '=https' https://github.com/aquasecurity/trivy/releases/download/v0.73.0/trivy_0.73.0_Linux-64bit.tar.gz -o /tmp/trivy.tar.gz
+          echo "2edd39da482bb4e9831962487b68f68e3928ec3137794757f54d00383d79547b  /tmp/trivy.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/trivy.tar.gz -C /tmp trivy
+          sudo install -m 0755 /tmp/trivy /usr/local/bin/trivy
+          trivy --version
+      - name: Verify scanner detection and fail-closed behaviour
+        run: bash tests/security-pr-checks-test.sh
+      # SCAN_MODE: pull requests scan only their diff; every other trigger (a push to main,
+      # manual dispatch) scans the whole tracked tree. On a push to main the changed-file set
+      # is empty (HEAD is the base), so the job used to report success after scanning nothing.
       - name: Run security PR checks
+        env:
+          SCAN_MODE: ${{ github.event_name == 'pull_request' && 'changed' || 'full' }}
         run: bash tests/security-pr-checks.sh
 
   api-dependency-audit:
