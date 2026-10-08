@@ -41,10 +41,15 @@ notification_bind_failed=0
 rmq_timeout_seconds="${CHAT_REPAIR_RMQ_TIMEOUT_SECONDS:-10}"
 exchange_list_file=""
 queue_list_file=""
+binding_list_file=""
+binding_plan_file=""
+declare -A existing_bindings=()
 
 cleanup() {
   [ -n "$exchange_list_file" ] && rm -f "$exchange_list_file"
   [ -n "$queue_list_file" ] && rm -f "$queue_list_file"
+  [ -n "$binding_list_file" ] && rm -f "$binding_list_file"
+  [ -n "$binding_plan_file" ] && rm -f "$binding_plan_file"
 }
 
 trap cleanup EXIT
@@ -60,8 +65,16 @@ rmq_eval() {
 load_rmq_metadata() {
   exchange_list_file="$(mktemp)"
   queue_list_file="$(mktemp)"
+  binding_list_file="$(mktemp)"
+  binding_plan_file="$(mktemp)"
   rmq_ctl list_exchanges name type durable >"$exchange_list_file" 2>/dev/null || return 1
   rmq_ctl list_queues name >"$queue_list_file" 2>/dev/null || return 1
+  rmq_ctl list_bindings source_name destination_name destination_kind routing_key >"$binding_list_file" 2>/dev/null || return 1
+  local source destination kind key
+  while IFS=$'\t' read -r source destination kind key; do
+    [ "$kind" = queue ] || continue
+    existing_bindings["$source|$key|$destination"]=1
+  done <"$binding_list_file"
 }
 
 exchange_exists() {
@@ -102,13 +115,19 @@ declare_exchange() {
 X = {resource, <<\"/\">>, exchange, <<\"${exchange}\">>},
 rabbit_exchange:delete(X, false, <<\"repair-chat-exchanges\">>).
 " >/dev/null 2>&1 || return 1
+    local binding
+    for binding in "${!existing_bindings[@]}"; do
+      [[ "$binding" = "$exchange|"* ]] && unset 'existing_bindings[$binding]'
+    done
+    awk -F '\t' -v name="$exchange" '$1 != name' "$exchange_list_file" >"${exchange_list_file}.new"
+    mv "${exchange_list_file}.new" "$exchange_list_file"
   fi
 
   if rmq_eval "
 X = {resource, <<\"/\">>, exchange, <<\"${exchange}\">>},
 rabbit_exchange:declare(X, ${kind}, ${durable}, false, false, [], <<\"repair-chat-exchanges\">>).
 " >/dev/null 2>&1; then
-    printf '%s\t%s\n' "$exchange" "$kind" >>"$exchange_list_file"
+    printf '%s\t%s\t%s\n' "$exchange" "$kind" "$durable" >>"$exchange_list_file"
     return 0
   fi
 
@@ -121,14 +140,23 @@ bind_queue() {
   local queue="$3"
 
   queue_exists "$queue" || return 0
-  rmq_eval "
-B = {binding,
-  {resource, <<\"/\">>, exchange, <<\"${exchange}\">>},
-  <<\"${routing_key}\">>,
-  {resource, <<\"/\">>, queue, <<\"${queue}\">>},
-  []},
-rabbit_binding:add(B, <<\"repair-chat-exchanges\">>).
-" >/dev/null 2>&1
+  [ -z "${existing_bindings["$exchange|$routing_key|$queue"]:-}" ] || return 0
+  printf '%s\t%s\t%s\n' "$exchange" "$routing_key" "$queue" >>"$binding_plan_file"
+  existing_bindings["$exchange|$routing_key|$queue"]=1
+}
+
+apply_binding_plan() {
+  [ -s "$binding_plan_file" ] || return 0
+  local expression result expressions batch_failed=0
+  expressions="$(python3 runtime/scripts/chat-binding-plan.py "$binding_plan_file")" || return 1
+  while IFS= read -r expression; do
+    result="$(rmq_eval "$expression" 2>&1)" || batch_failed=1
+    printf '%s\n' "$result" | grep -qx 'chat-bindings-ok' || batch_failed=1
+  done <<< "$expressions"
+  if [ "$batch_failed" -ne 0 ]; then
+    echo "WARN some chat queue bindings could not be repaired; they will be retried on the next repair pass." >&2
+    return 1
+  fi
 }
 
 if ! load_rmq_metadata; then
@@ -360,6 +388,10 @@ while IFS=$'\t' read -r routing_key queue_name; do
     echo "WARN failed to bind notification queue: notifications $routing_key -> $queue_name" >&2
   fi
 done <<< "$notification_bindings"
+
+# Repair only missing bindings, in one RabbitMQ operation rather than starting
+# an Erlang CLI VM per player/binding. Each result is checked independently.
+apply_binding_plan || exit 1
 
 if [ "$declared" -gt 0 ]; then
   echo "Ensured chat exchanges: $declared"
