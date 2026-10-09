@@ -51,7 +51,7 @@ class TankTests(unittest.TestCase):
                 context = Path(args[-1])
                 self.assertEqual(set(p.name for p in (context / 'assets').iterdir()), set(spec['assets']))
                 self.assertIn('2141883-0-shipping', (context / 'Dockerfile').read_text())
-                self.assertIn('redblink-dune-tanks:2141883-r6.0-candidate', args)
+                self.assertIn('redblink-dune-tanks:2141883-r6.4-tank-only-ids-candidate', args)
             if args[:3] == ('docker', 'image', 'inspect'):
                 return IMAGE
             if args[:2] == ('docker', 'run'):

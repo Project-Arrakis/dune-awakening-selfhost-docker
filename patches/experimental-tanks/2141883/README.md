@@ -1,9 +1,17 @@
 # Regis Tanks: 2141883 Experimental Build
 
-Local gameplay tests confirmed both backup tools and Tank spawning and interaction.
-Full gameplay compatibility is not verified; do not present this as a complete fix.
+The r6.4 candidate limits module-ID compatibility to Tank-prefixed module names.
+Ordinary vehicle modules execute the original native ID instructions. Tank
+initialization branches and all four cooked packages remain as in v1.4.47.
+The same Scout failed storage on that release's blanket zero-ID patch but passed
+with native IDs restored. Restoring native IDs for Tanks caused a driving crash;
+removing initialization compatibility produced incomplete Tanks. Neither failed
+candidate is used here. Local gameplay testing confirmed Scout backup and
+restoration both work with this patch enabled, and driving the tested Tank did
+not crash the client. This verifies the reported local regression, not every
+preset or full gameplay compatibility on other servers or future builds.
 The runtime verifies the official base image, complete original executable,
-six replacement byte ranges, complete patched executable and all cooked assets.
+seven replacement byte ranges, complete patched executable and all cooked assets.
 Unknown game builds remain unsupported; the official image is never modified.
 
 The overlay contains only DT_Tank_Modules, DT_VehicleTemplates,
@@ -25,7 +33,15 @@ roundtrip matched all four final JSON packages before integration.
 `source/candidate-asset-report.json` records the package and module changes.
 `source/binary-site-candidates.json` records unique old/new instruction contexts.
 The manifest holds every exact executable byte guard and final hash. Structural
-matching does not prove that the six binary changes are safe in gameplay.
+matching does not prove gameplay compatibility. The reproducible binary builder
+uses `source/scoped_module_ids.py` and GNU binutils to assemble three guarded
+detours and a shared predicate in reviewed executable padding after a return.
+The native FName pool decoder layout is also byte-guarded against this build.
+No game function is called by the predicate; scratch registers and input flags
+are preserved before executing the Tank or native instruction sequence.
+`tests/test_tank_scoped_module_ids.py` executes all three generated paths against
+a synthetic name pool, verifies ID values, registers, flags and the displaced
+serialization store, and checks the manifest matches the compiled instructions.
 
 Required local acceptance: login, both backup tools including relog, six Tank
 presets, driving and weapon effects/audio, module management and saved persistence.
