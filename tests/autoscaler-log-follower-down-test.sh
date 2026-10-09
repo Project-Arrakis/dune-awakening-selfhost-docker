@@ -62,11 +62,13 @@ scans=(
   "scan_unscoped_stale_server_state:unscoped_stale_server_state"
   "scan_proactive_hagga_handoffs:proactive_hagga"
   "scan_deepdesert_loading_responses:deepdesert_loading"
-  "scan_rejected_story_returns:rejected_story_returns"
 )
+# These two do not hand the interval back. travel demand has none; the rejected-story-returns scan has a
+# database-only half that must keep running without the follower, so it skips only its log read (#1190).
+special=("scan_travel_demand:" "scan_rejected_story_returns:=db")
 
 # Static: each scan must carry the availability gate, so an edit that drops it is visible.
-for entry in "${scans[@]}" scan_travel_demand:; do
+for entry in "${scans[@]}" "${special[@]}"; do
   fn="${entry%%:*}"
   key="${entry#*:}"
   python3 - "$work/functions.sh" "$fn" "$key" <<'PY' || fail "$fn lost its follower guard"
@@ -79,7 +81,11 @@ line_end = text.index("\n", start) + 1
 nxt = re.search(r"^[A-Za-z_][A-Za-z0-9_]*\(\)\s*\{", text[line_end:], re.M)
 body = text[start : line_end + (nxt.start() if nxt else len(text))]
 key = sys.argv[3]
-if key:
+if key == "=db":  # only the log read is skipped; the database half still runs
+    assert "director_logs_available || logs_available=0" in body, "log-read guard"
+    assert 'if [ "$logs_available" = 1 ]; then' in body, "conditional log read"
+    assert "director_logs_or_defer" not in body, "must not return before the database half"
+elif key:
     assert f"director_logs_or_defer {key} || return 0" in body, "interval-giving guard"
 else:  # scan_travel_demand has no interval of its own
     assert "director_logs_available || return 0" in body, "plain guard"
@@ -98,7 +104,7 @@ director_heal_get() { return 0; }
 director_heal_clear() { echo "\$1" >>"$work/heal-cleared"; }
 survival_partition_target_json() { echo '{"partition_id":1,"dimension":0,"port":7777,"ip":"10.0.0.1"}'; }
 origin_server_id_for_origin_id() { :; }
-psql_value() { :; }
+psql_value() { echo called >>"$work/psql-calls"; }
 psql_app_value() { :; }
 dune_psql() { :; }
 rmq_eval() { :; }
@@ -143,12 +149,16 @@ EOF
   fi
 }
 
-for entry in "${scans[@]}" scan_travel_demand:; do
+for entry in "${scans[@]}" "${special[@]}"; do
   scan="${entry%%:*}"
   key="${entry#*:}"
   : >"$work/heal-cleared"
+  : >"$work/psql-calls"
   run_mode gate "$scan"
-  if [ -n "$key" ]; then
+  if [ "$key" = "=db" ]; then
+    # The database-only recovery ran although the follower is down.
+    grep -q called "$work/psql-calls" || fail "$scan skipped its database-only recovery during the outage (gate)"
+  elif [ -n "$key" ]; then
     # Deferring must give the interval back, so the next pass retries at once instead of after a
     # full interval of events that were never looked at.
     grep -qx "scan:$key" "$work/heal-cleared" || fail "$scan consumed its interval during the outage (gate)"

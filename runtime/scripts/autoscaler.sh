@@ -2391,10 +2391,16 @@ scan_rejected_story_returns() {
   local director_log_file rejected_rows completed_rows
 
   director_heal_due rejected_story_returns "$STORY_RETURN_RECOVERY_SCAN_SECONDS" || return 0
-  director_logs_or_defer rejected_story_returns || return 0
+  # Only the login-request half of this scan reads the Director log. The completed-credits recovery
+  # further down is database-only and must keep running while the follower is down (#1190), so
+  # skip just the read instead of returning early.
+  local logs_available=1
+  director_logs_available || logs_available=0
 
   director_log_file="$(mktemp)"
-  director_logs --timestamps --since "$NAMED_DESTINATION_SINCE" > "$director_log_file" 2>/dev/null || true
+  if [ "$logs_available" = 1 ]; then
+    director_logs --timestamps --since "$NAMED_DESTINATION_SINCE" > "$director_log_file" 2>/dev/null || true
+  fi
   rejected_rows="$(LOG_FILE="$director_log_file" python3 - <<'PY'
 import os
 import re

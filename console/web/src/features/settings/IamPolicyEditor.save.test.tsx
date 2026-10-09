@@ -125,3 +125,36 @@ test("the note about what the last save added goes away when another policy is s
   fireEvent.click(screen.getByRole("button", { name: "Moderator" }));
   expect(screen.queryByText(/Saved\. The shipped Deny was also added for/)).not.toBeInTheDocument();
 });
+
+test("a save that finishes after the operator switched tier does not rewrite the tier now on screen", async () => {
+  // The PUT is held open while the operator clicks another tier.
+  let release: (value: unknown) => void = () => {};
+  const held = new Promise((resolve) => { release = resolve; });
+  const enforced = store();
+  enforced.admin = { version: 1, tier: "admin", statements: [
+    { Effect: "Allow", Action: ["backups:*"] },
+    { Effect: "Deny", Action: SYSTEM },
+  ] } as typeof enforced.admin;
+  vi.mocked(api).mockImplementation((async (_path: string, init?: RequestInit) => {
+    if (init?.method === "PUT") return held;
+    return catalog();
+  }) as typeof api);
+  render(<IamPolicyEditor />);
+  fireEvent.click(await screen.findByRole("button", { name: "Save admin policy" }));
+  fireEvent.click(screen.getByRole("button", { name: "Moderator" }));
+
+  release({
+    ok: true,
+    policies: enforced,
+    addedDefaultDenies: SYSTEM.map((action) => ({ tier: "admin", action })),
+    notices: { addedDefaultDenies: [], keptExactAllows: [] },
+  });
+  await waitFor(() => expect(screen.getByRole("button", { name: "Save moderator policy" })).toBeEnabled());
+
+  // The admin tier's note and statements must not appear under the moderator tier.
+  expect(screen.queryByText(/Saved\. The shipped Deny was also added for/)).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "JSON" }));
+  const shown = (screen.getByRole("textbox") as HTMLTextAreaElement).value;
+  expect(shown).not.toContain("\"Deny\"");
+  expect(shown).toContain("backups:*");
+});

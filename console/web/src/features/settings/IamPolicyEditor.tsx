@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { resolvedAllowedActions, nsFromAction } from "./iamPolicy";
 import { api, post } from "../../api/client";
 
@@ -87,6 +87,8 @@ export function IamPolicyEditor() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [savedNote, setSavedNote] = useState("");
+  // The tier on screen right now, readable from an async handler that started earlier (#1190).
+  const selectedTierRef = useRef<string>("admin");
   const [editorTab, setEditorTab] = useState<"builder" | "json" | "test">("builder");
   const [testResults, setTestResults] = useState<Record<string, boolean> | null>(null);
   const [search, setSearch] = useState("");
@@ -106,6 +108,7 @@ export function IamPolicyEditor() {
   const markEdited = () => { setSaved(false); setSavedNote(""); };
 
   const selectTier = (tier: string) => {
+    selectedTierRef.current = tier;
     setSelectedTier(tier);
     markEdited();
     setTestResults(null);
@@ -232,15 +235,23 @@ export function IamPolicyEditor() {
       // Adopt what the server now enforces: it may have added a shipped Deny to what was sent.
       const policies = result?.policies ?? next;
       setCatalog({ ...catalog, policies, notices: result?.notices ?? catalog.notices });
-      const enforced = policies[selectedTier];
-      if (enforced) setJsonText(JSON.stringify(enforced.statements, null, 2));
-      const added = result?.addedDefaultDenies ?? [];
-      if (added.length > 0) setSavedNote(`Saved. The shipped Deny was also added for ${listNotice(added)}.`);
-      setJsonError("");
-      setSaved(true);
-      setTimeout(() => setSaved(false), 3000);
+      // The admin may have switched tier while this save was in flight. The catalog is updated either
+      // way, but the text area, the note and the Saved state belong to the tier that was saved: writing
+      // them under another tier would show its statements there, and a second Save would then write them
+      // to that other tier (review of PR #1189).
+      if (selectedTierRef.current === selectedTier) {
+        const enforced = policies[selectedTier];
+        if (enforced) setJsonText(JSON.stringify(enforced.statements, null, 2));
+        const added = result?.addedDefaultDenies ?? [];
+        if (added.length > 0) setSavedNote(`Saved. The shipped Deny was also added for ${listNotice(added)}.`);
+        setJsonError("");
+        setSaved(true);
+        setTimeout(() => setSaved(false), 3000);
+      }
     } catch (error) {
-      setJsonError(error instanceof Error && error.message ? error.message : "Failed to save policy");
+      if (selectedTierRef.current === selectedTier) {
+        setJsonError(error instanceof Error && error.message ? error.message : "Failed to save policy");
+      }
     }
     setSaving(false);
   };
