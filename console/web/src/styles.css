@@ -1620,6 +1620,12 @@ body.debug .technical-details { display: block; }
 .inline-filter-label { display: inline-flex; align-items: center; gap: 8px; color: var(--muted-warm); font-weight: 400; }
 .inline-filter-label select { color: #fff7e6; font-weight: 400; min-width: 150px; }
 .players-filter-row { align-items: center; }
+/* The per-player Vehicles/Bases headers turn every div under .panel-title into a grid
+   (for the title column); keep the filter row a flex row so Refresh stays button-sized. */
+.player-vehicles-panel .panel-title > .players-filter-row,
+.player-bases-panel .panel-title > .players-filter-row { display: flex; margin: 0; }
+.player-vehicles-panel .panel-title > .players-filter-row > button,
+.player-bases-panel .panel-title > .players-filter-row > button { flex: 0 0 auto; }
 .players-filter-label .players-filter-select {
   width: 150px;
   min-width: 150px;
@@ -2989,7 +2995,7 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .settings-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 4px; }
 .settings-tabs-row .settings-tabs { margin-bottom: 0; }
 .settings-tabs button { width: auto; min-width: 120px; }
-.settings-download-buttons { display: flex; gap: 8px; margin-left: auto; }
+.settings-download-buttons { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 .settings-download-button { width: auto; min-width: 120px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
 .care-package-grant-header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 4px; }
 .care-package-grant-header .settings-tabs { margin-bottom: 0; }

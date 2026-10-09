@@ -7,6 +7,8 @@ import { BasePermissionsTab } from "./BasePermissionsTab";
 import { BaseWaterTab } from "./BaseWaterTab";
 import { AutoRefillSettingsOverlay } from "./AutoRefillSettingsOverlay";
 import { DownloadBaseDialog, type DownloadBaseTarget } from "./DownloadBaseDialog";
+import { PlayerAccessSelect } from "../../components/common/PlayerAccessSelect";
+import { PLAYER_ACCESS_DEFAULT, accessCountLabel, accessEmptyAdjective, describePlayerAccess, filterRowsByAccess, type PlayerAccessFilter } from "../../lib/playerAccess";
 import { basesApi, type AutoRefillBase, type AutoRefillWaterBase, type RefillDeviceResult, type RefillWaterDeviceResult } from "../../api/bases";
 import { friendlyMapName } from "../maps/mapNames";
 import { mapsApi } from "../../api/maps";
@@ -369,7 +371,27 @@ function renderBaseCell(row: Record<string, unknown>, column: string, instanceNa
 }
 
 export function BasesPanel({ onError, confirmAction, restartGate, formatMutationResult, focusRequest, playerId = "", playerName = "", embedded = false, viewSwitch }: BasesPanelProps) {
-  const scope = playerId ? `player:${playerId}` : "all";
+  // Per-player view only: which of the player's bases to list. The access level
+  // is part of the cache scope so each choice keeps its own cached view.
+  const [access, setAccess] = useState<PlayerAccessFilter>(PLAYER_ACCESS_DEFAULT);
+  const scope = playerId ? `player:${playerId}:${access}` : "all";
+  // Drop the previous level's rows at once so they cannot be acted on under the new level's header.
+  // The loading branch swaps in a separate header, so the select the user just used is unmounted;
+  // hand focus back to the live one once loading ends so keyboard users are not dropped on <body>.
+  const accessSelectRef = useRef<HTMLSelectElement>(null);
+  const refocusAccessSelect = useRef(false);
+  function changeAccess(next: PlayerAccessFilter) {
+    refocusAccessSelect.current = true;
+    setRows([]);
+    setTotalCount(0);
+    setTotalBases(0);
+    setTotalOwned(0);
+    setTotalShared(0);
+    setTotalPieces(0);
+    setTotalPlaceables(0);
+    setLoading(true);
+    setAccess(next);
+  }
   const initialCache = basesCache?.scope === scope ? basesCache : null;
   const [q, setQ] = useState(() => initialCache?.q ?? "");
   const [submittedQ, setSubmittedQ] = useState(() => initialCache?.q ?? "");
@@ -393,6 +415,12 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
   const [totalPieces, setTotalPieces] = useState(() => initialCache?.totalPieces ?? 0);
   const [totalPlaceables, setTotalPlaceables] = useState(() => initialCache?.totalPlaceables ?? 0);
   const [loading, setLoading] = useState(() => initialCache === null);
+  useEffect(() => {
+    if (!loading && refocusAccessSelect.current) {
+      refocusAccessSelect.current = false;
+      accessSelectRef.current?.focus();
+    }
+  }, [loading]);
   const [downloadTarget, setDownloadTarget] = useState<DownloadBaseTarget | null>(null);
   const [refillingId, setRefillingId] = useState("");
   const [refillResult, setRefillResult] = useState(() => readCachedRefillStatus().text);
@@ -484,9 +512,21 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
     const requestId = ++requestIdRef.current;
     if (!options.silent) onError("");
     try {
-      const result = playerId ? await basesApi.forPlayer(playerId, params) : await basesApi.list(params);
+      const result = playerId ? await basesApi.forPlayer(playerId, { ...params, access }) : await basesApi.list(params);
       if (requestIdRef.current !== requestId) return;
-      const nextRows = (result.rows || []).map(withCoordinates);
+      // The server applies the access filter. Re-checking it here also covers an
+      // older API that ignores the parameter; the endpoint is unpaginated for a
+      // player, so a client-side narrowing can derive the totals from the rows.
+      const allRows = (result.rows || []).map(withCoordinates);
+      const narrowed = Boolean(playerId) && access !== "all";
+      const nextRows = playerId ? filterRowsByAccess(allRows, access) : allRows;
+      // Only derive totals from the rows when the client had to drop some (an
+      // older API that ignored `access`); otherwise the server's totals stand.
+      const ownedOnlyTotals = narrowed && nextRows.length !== allRows.length ? {
+        count: nextRows.length,
+        pieces: nextRows.reduce((sum, row) => sum + (Number(row.piece_count) || 0), 0),
+        placeables: nextRows.reduce((sum, row) => sum + (Number(row.placeable_count) || 0), 0)
+      } : null;
       setRows(nextRows);
       setCanRefill(Boolean(result.capabilities?.generatorRefill));
       setCanQueue(Boolean(result.capabilities?.generatorRefillQueue));
@@ -497,12 +537,18 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
       setCanQueueWater(Boolean(result.capabilities?.waterRefillQueue));
       setCanDeleteBase(Boolean(result.capabilities?.baseDelete));
       setCanQueueDelete(Boolean(result.capabilities?.baseDeleteQueue));
-      setTotalCount(result.totalCount || 0);
-      setTotalBases(result.totalBases || 0);
-      setTotalOwned(result.totalOwned || 0);
-      setTotalShared(result.totalShared || 0);
-      setTotalPieces(result.totalPieces || 0);
-      setTotalPlaceables(result.totalPlaceables || 0);
+      const nextTotalCount = ownedOnlyTotals ? ownedOnlyTotals.count : result.totalCount || 0;
+      const nextTotalBases = ownedOnlyTotals ? ownedOnlyTotals.count : result.totalBases || 0;
+      const nextTotalOwned = ownedOnlyTotals ? (access === "owner" ? ownedOnlyTotals.count : 0) : result.totalOwned || 0;
+      const nextTotalShared = ownedOnlyTotals ? (access === "coowner" ? ownedOnlyTotals.count : 0) : result.totalShared || 0;
+      const nextTotalPieces = ownedOnlyTotals ? ownedOnlyTotals.pieces : result.totalPieces || 0;
+      const nextTotalPlaceables = ownedOnlyTotals ? ownedOnlyTotals.placeables : result.totalPlaceables || 0;
+      setTotalCount(nextTotalCount);
+      setTotalBases(nextTotalBases);
+      setTotalOwned(nextTotalOwned);
+      setTotalShared(nextTotalShared);
+      setTotalPieces(nextTotalPieces);
+      setTotalPlaceables(nextTotalPlaceables);
       basesCache = {
         scope,
         q: params.q,
@@ -511,12 +557,12 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
         sortColumn: params.sortColumn,
         sortDirection: params.sortDirection,
         rows: nextRows,
-        totalCount: result.totalCount || 0,
-        totalBases: result.totalBases || 0,
-        totalOwned: result.totalOwned || 0,
-        totalShared: result.totalShared || 0,
-        totalPieces: result.totalPieces || 0,
-        totalPlaceables: result.totalPlaceables || 0,
+        totalCount: nextTotalCount,
+        totalBases: nextTotalBases,
+        totalOwned: nextTotalOwned,
+        totalShared: nextTotalShared,
+        totalPieces: nextTotalPieces,
+        totalPlaceables: nextTotalPlaceables,
         lastFetchedAt: Date.now()
       };
       // Re-run the instance-name effect on the same cycle. Its own dependency
@@ -529,7 +575,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
     } finally {
       if (requestIdRef.current === requestId) setLoading(false);
     }
-  }, [onError, playerId, scope]);
+  }, [onError, playerId, scope, access]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1177,7 +1223,14 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
 
   if (loading) {
     return <section className={panelClassName}>
-      <div className="panel-title"><PanelHeading>Bases</PanelHeading>{viewSwitch}</div>
+      <div className="panel-title">
+        <div>
+          <PanelHeading>Bases</PanelHeading>
+          {playerId && <p className="playerAdmin_note">{describePlayerAccess("Bases", playerName, access)} Expand a row to use the same tools available on the main Bases page.</p>}
+        </div>
+        {viewSwitch}
+        {playerId && <div className="action-row players-filter-row"><PlayerAccessSelect value={access} onChange={changeAccess} disabled /></div>}
+      </div>
       <div className="loading-panel">
         <span className="spinner" aria-hidden="true" />
         <strong className="loading-dots">Loading Bases</strong>
@@ -1343,10 +1396,10 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
       <div className="panel-title">
         <div>
           <PanelHeading>Bases</PanelHeading>
-          {playerId && <p className="playerAdmin_note">Bases owned by or shared with {playerName}. Expand a row to use the same tools available on the main Bases page.</p>}
+          {playerId && <p className="playerAdmin_note">{describePlayerAccess("Bases", playerName, access)} Expand a row to use the same tools available on the main Bases page.</p>}
         </div>
         {viewSwitch}
-        <div className="action-row">
+        <div className={playerId ? "action-row players-filter-row" : "action-row"}>
           {/* Hidden in the per-player embed -- that view is one player's lens
               and these settings are global -- and hidden without a refill
               queue, matching the per-base toggles. */}
@@ -1358,18 +1411,24 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
               onClick={() => setAutoRefillSettingsOpen(true)}
             ><Settings size={16} /></button>
           )}
+          {playerId && <PlayerAccessSelect value={access} onChange={changeAccess} selectRef={accessSelectRef} />}
           <button onClick={() => void load({ q: submittedQ, page, pageSize, sortColumn, sortDirection })}>Refresh</button>
         </div>
       </div>
       {playerId
         ? <div className="player-vehicles-summary player-bases-summary" aria-label="Player base totals">
-            <span><strong>{totalBases.toLocaleString()}</strong> Total</span>
-            <span><strong>{totalOwned.toLocaleString()}</strong> Owned</span>
-            <span><strong>{totalShared.toLocaleString()}</strong> Shared</span>
+            {access === "all"
+              ? <>
+                  <span><strong>{totalBases.toLocaleString()}</strong> Total</span>
+                  <span><strong>{totalOwned.toLocaleString()}</strong> Owned</span>
+                  <span><strong>{totalShared.toLocaleString()}</strong> Shared</span>
+                </>
+              : <span><strong>{totalBases.toLocaleString()}</strong> {accessCountLabel(access)}</span>}
             <span><strong>{totalPieces.toLocaleString()}</strong> Building Pieces</span>
             <span><strong>{totalPlaceables.toLocaleString()}</strong> Placeables</span>
           </div>
         : <p className="action-help-note">Total Bases: {totalBases.toLocaleString()} · Total Building Pieces: {totalPieces.toLocaleString()} · Total Placeables: {totalPlaceables.toLocaleString()}</p>}
+      {playerId && totalCount > rows.length && <p className="playerAdmin_note danger">This player has more bases than can be listed here; some bases may be missing.</p>}
       {!playerId && stalledCombinedCount > 0 && <div className="bases-stalled-banner" role="alert">
         <p className="bases-stalled-banner-title">
           {stalledCombinedCount.toLocaleString()} base{stalledCombinedCount === 1 ? " has" : "s have"} stalled auto-refill
@@ -1866,7 +1925,9 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
             </div>
           );
         }}
-        emptyMessage="No bases have been found yet."
+        emptyMessage={playerId
+          ? `${playerName || "This player"} has no ${accessEmptyAdjective(access)}bases.${access === "all" ? "" : " Try another Permission level."}`
+          : "No bases have been found yet."}
       />
       {!playerId && <div className="panel-title bases-pagination-footer">
         <p className="action-help-note">
