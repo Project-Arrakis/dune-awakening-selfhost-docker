@@ -171,8 +171,20 @@ reload_console() {
   #    and a warning says so (a silent fallback would revive a rotated secret).
   # shellcheck disable=SC1091
   . runtime/scripts/lib/console-secrets-env.sh
-  local resolver_failed=0 forwarded_oauth_secret
-  export_discord_hosted_bot_oauth_client_secret || resolver_failed=1
+  local resolver_failed=0 resolved resolver_status=0 forwarded_oauth_secret
+  if [ -z "${DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET:-}" ]; then
+    # Call the resolver itself, NOT export_discord_hosted_bot_oauth_client_secret: bash ignores
+    # `set -e` for the whole body of a function that is the left side of `||`, so that wrapper
+    # swallows a failed resolver and returns 0 (its last statement is an `if`). The one case
+    # these warnings exist for would then never be reported (review of PR #1168).
+    resolved="$(resolve_discord_hosted_bot_oauth_client_secret)" || resolver_status=$?
+    if [ "$resolver_status" != 0 ]; then
+      resolver_failed=1
+    elif [ -n "$resolved" ]; then
+      export DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET="$resolved"
+    fi
+    unset resolved
+  fi
   if [ -z "${DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET:-}" ]; then
     # Read BEFORE the `docker rm -f` below: afterwards the container is gone and
     # so is the only copy of the secret this helper can reach.
