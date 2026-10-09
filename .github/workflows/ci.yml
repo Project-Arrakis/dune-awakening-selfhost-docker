@@ -181,6 +181,7 @@ jobs:
           tests/autoscaler-story-return-test.sh
           tests/autoscaler-dedicated-occupancy-test.sh
           tests/autoscaler-env-forwarding-test.sh
+          tests/autoscaler-orphan-cache-sweep-test.sh
           python3 tests/test_autoscaler_log_cache.py
           python3 tests/test_chat_binding_batch.py
           tests/psql-transport-test.sh

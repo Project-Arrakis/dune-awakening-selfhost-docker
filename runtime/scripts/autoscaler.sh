@@ -129,7 +129,25 @@ director_logs_available() {
   [ -z "${DIRECTOR_LOG_CACHE_FILE:-}" ] || director_logs --since 1s >/dev/null 2>&1
 }
 
+# The EXIT trap removes this process's cache directory, but a SIGKILL, an OOM kill
+# or a crash loop skips it and leaves up to ~10 minutes of Director log lines on
+# disk (0700/0600, still log data) with nothing to remove them (#1164). A live
+# follower writes its heartbeat about once a second, so a directory with no file
+# touched for 30 minutes belongs to a process that is gone.
+sweep_orphan_director_log_caches() {
+  local dir minutes=30
+  for dir in runtime/generated/director-log-cache.*; do
+    [ -d "$dir" ] && [ ! -L "$dir" ] || continue
+    [ "$dir" != "${DIRECTOR_LOG_CACHE_DIR:-}" ] || continue
+    if [ -z "$(find "$dir" -mmin "-$minutes" -print -quit 2>/dev/null)" ]; then
+      echo "Removing orphaned Director log cache $dir (untouched for ${minutes}m)"
+      rm -rf -- "$dir"
+    fi
+  done
+}
+
 start_director_log_cache() {
+  sweep_orphan_director_log_caches
   DIRECTOR_LOG_CACHE_DIR="$(mktemp -d runtime/generated/director-log-cache.XXXXXX)"
   DIRECTOR_LOG_CACHE_FILE="$DIRECTOR_LOG_CACHE_DIR/recent.sqlite"
   ensure_director_log_cache
