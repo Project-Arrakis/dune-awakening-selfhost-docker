@@ -1719,8 +1719,17 @@ async function handleApi(req, res, path) {
   }
   if (path === "/api/settings/iam/policy" && req.method === "PUT") {
     const body = await readJson(req);
-    const ifMatch = String(req.headers["if-match"] || "").replace(/^W\//, "").replace(/^"|"$/g, "");
-    const result = setPolicies(body, config.repoRoot, ifMatch ? { baseRevision: ifMatch } : {});
+    // If-Match carries the revision from GET /api/settings/iam/policies. Absent: unconditional (older clients).
+    // Present but empty is refused rather than treated as absent, so a client whose revision variable was empty
+    // does not silently overwrite. "*" means any existing store, i.e. unconditional. A list of tags is not
+    // supported and never matches.
+    const rawIfMatch = req.headers["if-match"];
+    let ifMatch;
+    if (rawIfMatch !== undefined) {
+      ifMatch = String(rawIfMatch).trim().replace(/^W\//, "").replace(/^"|"$/g, "");
+      if (!ifMatch) return json(res, 400, { error: "If-Match must carry the revision from GET /api/settings/iam/policies." });
+    }
+    const result = setPolicies(body, config.repoRoot, ifMatch && ifMatch !== "*" ? { baseRevision: ifMatch } : {});
     if (result.conflict) {
       audit(config, req, "iam.policy-conflict", { baseRevision: ifMatch });
       return json(res, 409, result);

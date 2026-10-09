@@ -13,12 +13,12 @@ interface PolicyCatalog {
   actionMap: Record<string, string>;
   namespaces: Record<string, string>;
   /** Why a tier's effective policy differs from the saved file (issue #1160). */
-  /** Identifies the store this page loaded; sent back as If-Match so a concurrent change is refused (#1193). */
-  revision?: string;
   notices?: {
     addedDefaultDenies: { tier: string; action: string }[];
     keptExactAllows: { tier: string; action: string }[];
   };
+  /** Identifies the store as last read; sent back as If-Match so a concurrent change is refused (#1193). */
+  revision?: string;
 }
 
 const TIERS = ["owner", "admin", "moderator", "player"] as const;
@@ -197,6 +197,14 @@ export function IamPolicyEditor() {
     markEdited();
   };
 
+  // After a conflict the text area still holds this admin's edit; this swaps in what the server enforces now.
+  const showCurrentPolicy = () => {
+    const current = catalog?.policies[selectedTier];
+    if (current) setJsonText(JSON.stringify(current.statements, null, 2));
+    setJsonError("");
+    setConflictNote("");
+  };
+
   const validateJson = (text: string): PolicyStatement[] | null => {
     try {
       const parsed = JSON.parse(text);
@@ -227,14 +235,22 @@ export function IamPolicyEditor() {
       // The server takes the COMPLETE policy store (PUT /api/settings/iam/policy), not one tier.
       // (This used to POST { tier, statements } to a route that does not exist, so nothing
       // was ever saved: issue #1179.)
-      // Start from the store as it is NOW, not as it was when this page opened, and send its revision
-      // as If-Match: the server replaces the whole store, so it refuses the save (409) if another admin
-      // changed anything after this read (#1184, #1193).
+      // The server replaces the whole store, so it refuses a save (409) if the store changed after the
+      // revision sent as If-Match (#1193). Re-read first so a change to ANOTHER tier does not stop this save:
+      // take the latest store and its revision, but only if THIS tier is still what the page last showed.
+      // If someone changed this tier, do not send a save at all: the fresh revision would make the server
+      // accept it and overwrite their change.
       let base = catalog.policies;
       let revision = catalog.revision;
       try {
         const latest = await api<PolicyCatalog>("/api/settings/iam/policies");
         if (latest?.policies) {
+          if (JSON.stringify(latest.policies[selectedTier]) !== JSON.stringify(catalog.policies[selectedTier])) {
+            setCatalog({ ...catalog, policies: latest.policies, notices: latest.notices ?? catalog.notices, revision: latest.revision });
+            setConflictNote(`Another admin changed the ${selectedTier} policy since this page showed it.`);
+            setSaving(false);
+            return;
+          }
           base = latest.policies;
           revision = latest.revision;
         }
@@ -249,7 +265,7 @@ export function IamPolicyEditor() {
       });
       // Adopt what the server now enforces: it may have added a shipped Deny to what was sent.
       const policies = result?.policies ?? next;
-      setCatalog({ ...catalog, policies, notices: result?.notices ?? catalog.notices, revision: result?.revision ?? revision });
+      setCatalog({ ...catalog, policies, notices: result?.notices ?? catalog.notices, revision: result?.revision });
       // The admin may have switched tier while this save was in flight. The catalog is updated either
       // way, but the text area, the note and the Saved state belong to the tier that was saved: writing
       // them under another tier would show its statements there, and a second Save would then write them
@@ -417,7 +433,12 @@ export function IamPolicyEditor() {
 
       <div className="iam-editor-footer">
         {jsonError && <p className="iam-json-error" style={{ marginBottom: "8px" }}>{jsonError}</p>}
-        {conflictNote && <p className="iam-notice iam-notice-warning" role="alert">{conflictNote} Your edits are kept; save again to apply them on top of the current policies.</p>}
+        {conflictNote && (
+          <p className="iam-notice iam-notice-warning" role="alert">
+            {conflictNote} Your edits are kept. Show the current {selectedTier} policy to review it, or save again to replace it with your edits.{" "}
+            <button type="button" className="stable-action-button" onClick={showCurrentPolicy}>Show current policy</button>
+          </p>
+        )}
         <button className="stable-action-button" onClick={savePolicy} disabled={saving || (editorTab === "json" && !!jsonError)}>
           {saving ? "Saving..." : saved ? "Saved" : `Save ${selectedTier} policy`}
         </button>

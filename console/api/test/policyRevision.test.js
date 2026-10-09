@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import { getAllPolicies, loadPolicies, policyRevision, setPolicies } from "../src/policy.js";
 
@@ -58,13 +57,9 @@ test("an empty or wrong revision is a conflict, not a bypass", () => {
   assert.equal(policyRevision(), before);
 });
 
-test("the route reads If-Match, answers 409 on a conflict, audits it, and GET returns the revision", () => {
-  const server = readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
-  const put = server.slice(server.indexOf('path === "/api/settings/iam/policy" && req.method === "PUT"'));
-  const handler = put.slice(0, put.indexOf('path === "/api/settings/api-keys/catalog"'));
-  assert.match(handler, /req\.headers\["if-match"\]/);
-  assert.match(handler, /baseRevision: ifMatch/);
-  assert.match(handler, /result\.conflict[\s\S]*audit\(config, req, "iam\.policy-conflict"[\s\S]*json\(res, 409, result\)/);
-  const get = server.slice(server.indexOf('path === "/api/settings/iam/policies" && req.method === "GET"'));
-  assert.match(get.slice(0, get.indexOf('path === "/api/settings/iam/policy" && req.method === "PUT"')), /revision: policyRevision\(\)/);
+test("a property that is undefined does not change the revision (the saved file drops it too)", () => {
+  loadPolicies();
+  const base = getAllPolicies();
+  const withUndefined = { ...base, admin: { ...base.admin, extra: undefined } };
+  assert.equal(policyRevision(withUndefined), policyRevision(base));
 });

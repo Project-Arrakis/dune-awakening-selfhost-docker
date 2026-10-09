@@ -306,9 +306,11 @@ export function getAllPolicies(policies = null) {
 function canonicalJson(value) {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   if (value && typeof value === "object") {
-    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+    // JSON.stringify drops undefined properties; the hash must too, or it would differ from the saved file.
+    const keys = Object.keys(value).filter((key) => value[key] !== undefined).sort();
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
   }
-  return JSON.stringify(value);
+  return JSON.stringify(value) ?? "null";
 }
 
 // Identifies the policy store the console is enforcing right now (issue #1193). The Settings page
@@ -351,14 +353,15 @@ export function unknownActions(docs) {
 // scripts and clients that predate revisions.
 export function setPolicies(inputDocs, repoRoot = null, options = {}) {
   const baseRevision = options?.baseRevision;
-  if (baseRevision != null && baseRevision !== policyRevision()) {
+  const currentRevision = policyRevision();
+  if (baseRevision != null && baseRevision !== currentRevision) {
     return {
       ok: false,
       conflict: true,
       error: "The policies changed since you loaded them. Review the current policies and save again.",
       policies: getAllPolicies(),
       notices: getPolicyNotices(),
-      revision: policyRevision()
+      revision: currentRevision
     };
   }
   const docs = sanitizePolicyStore(inputDocs);
