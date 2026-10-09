@@ -80,6 +80,23 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+describe("PlayersPanel profile loading", () => {
+  it("reports a failed profile load and never shows the previous player's profile", async () => {
+    const onError = vi.fn();
+    const other = { ...bannedPlayer, actor_id: "90", character_name: "Other" };
+    vi.mocked(playersApi.list).mockResolvedValue({ rows: [bannedPlayer, other], totalCount: 2, totalPlayers: 2, capabilities: { statusFilterApplied: true } });
+    vi.mocked(playersApi.profile).mockResolvedValueOnce({ player: bannedPlayer }).mockRejectedValueOnce(new Error("db down"));
+    const seen: Array<{ id: string; detail: unknown }> = [];
+    render(<PlayersPanel onError={onError} renderCharacterAdmin={(props) => { seen.push({ id: props.dbPlayerId, detail: props.detail }); return null; }} />);
+
+    fireEvent.click(await screen.findByText("Vixen"));
+    await waitFor(() => expect(seen.some((entry) => entry.id === "82" && entry.detail)).toBe(true));
+    fireEvent.click(await screen.findByText("Other"));
+    await waitFor(() => expect(onError).toHaveBeenCalledWith(expect.stringContaining("db down")));
+    expect(seen.filter((entry) => entry.id === "90").every((entry) => entry.detail === null)).toBe(true);
+  });
+});
+
 describe("PlayersPanel persistent bans", () => {
   it("shows inactive players by default", async () => {
     render(<PlayersPanel onError={vi.fn()} renderCharacterAdmin={() => null} />);

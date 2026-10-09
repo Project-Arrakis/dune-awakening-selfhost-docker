@@ -131,11 +131,45 @@ export function evaluate(session, action, policies = null) {
   return allowed;
 }
 
+// `observer` was the pre-rename name of the (now stricter) `player` tier. It is
+// aliased, never honoured as a tier of its own: a stale session, a signed handoff
+// from an older bot, or a saved policy that still says "observer" must land on
+// the strict tier, not on a broader one or on nothing.
+export function normalizeTier(tier) {
+  return tier === "observer" ? "player" : tier;
+}
+
+// Actions a saved `player` document grants that the player tier can never use,
+// because playerTierGate caps the tier at players:read + guilds:read. Reported so an
+// operator whose stored policy predates the strict tier is told why a grant does nothing.
+export function playerCappedActions(docs) {
+  const player = docs && docs.player;
+  if (!player) return [];
+  const capped = [];
+  for (const action of allKnownActions()) {
+    if (action === "players:read" || action === "guilds:read") continue;
+    if (evaluate({ tier: "player" }, action, docs)) capped.push(action);
+  }
+  return capped;
+}
+
 export function resolveSessionTier(session) {
   if (!session) return "";
-  const tier = typeof session.tier === "string" ? session.tier : "";
-  const VALID_TIERS = new Set(["owner", "admin", "moderator", "player", "observer"]);
+  const tier = typeof session.tier === "string" ? normalizeTier(session.tier) : "";
+  const VALID_TIERS = new Set(["owner", "admin", "moderator", "player"]);
   return VALID_TIERS.has(tier) ? tier : "";
+}
+
+// A saved iam-policies.json written before the rename may carry an `observer`
+// document. validPolicyStore rejects unknown tiers wholesale, which would drop
+// the operator's owner/admin/moderator customisation back to defaults, so the
+// legacy key is removed first and a missing `player` is filled from the
+// defaults (the strict ones; an operator's explicit `player` document is kept).
+function sanitizePolicyStore(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  if (!Object.hasOwn(value, "observer")) return value;
+  const { observer: _legacy, ...rest } = value;
+  return Object.hasOwn(rest, "player") ? rest : { ...rest, player: DEFAULT_POLICIES.player };
 }
 
 // ---- Policy store ----
@@ -152,14 +186,14 @@ export function loadPolicies(repoRoot = null) {
   if (existsSync(filePath)) {
     try {
       const raw = readFileSync(filePath, "utf8");
-      const parsed = JSON.parse(raw);
+      const parsed = sanitizePolicyStore(JSON.parse(raw));
       if (validPolicyStore(parsed)) {
         _policies = parsed;
         // Reported, not rejected: discarding the document would silently
         // revert the operator's whole policy to defaults, a bigger surprise
         // than the dead pattern. setPolicies refuses these on save, so a stored
         // file can only acquire one by hand-editing. The caller logs this.
-        return { source: "file", path: filePath, unknownActions: unknownActions(parsed), deprecatedActions: deprecatedActions(parsed) };
+        return { source: "file", path: filePath, unknownActions: unknownActions(parsed), deprecatedActions: deprecatedActions(parsed), playerCappedActions: playerCappedActions(parsed) };
       }
       _policies = DEFAULT_POLICIES;
       return { source: "defaults", path: filePath, invalid: true, unknownActions: [], deprecatedActions: [] };
@@ -249,7 +283,8 @@ export function unknownActions(docs) {
   return dead;
 }
 
-export function setPolicies(docs, repoRoot = null) {
+export function setPolicies(inputDocs, repoRoot = null) {
+  const docs = sanitizePolicyStore(inputDocs);
   if (!validPolicyStore(docs)) {
     return { ok: false, error: "Policies must contain valid tier documents and Allow/Deny statements." };
   }
@@ -289,13 +324,15 @@ export function setPolicies(docs, repoRoot = null) {
   _policies = docs;
   _allowedActions = {};
   if (repoRoot) writeJsonAtomic(resolve(repoRoot, "runtime/generated/iam-policies.json"), docs, 0o600);
-  return { ok: true, policies: getAllPolicies() };
+  // A grant beyond players:read/guilds:read on `player` is accepted but inert (playerTierGate
+  // caps it); say so, as loadPolicies does at startup, so the save does not look effective.
+  return { ok: true, policies: getAllPolicies(), playerCappedActions: playerCappedActions(docs) };
 }
 
 function validPolicyStore(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const tiers = Object.keys(value);
-  if (!tiers.length || tiers.some((tier) => !["owner", "admin", "moderator", "player", "observer"].includes(tier))) return false;
+  if (!tiers.length || tiers.some((tier) => !["owner", "admin", "moderator", "player"].includes(tier))) return false;
   return tiers.every((tier) => {
     const document = value[tier];
     if (!document || document.tier !== tier || !Array.isArray(document.statements)) return false;
@@ -426,43 +463,19 @@ export const DEFAULT_POLICIES = {
       ]},
     ]
   },
+  // Strict, own-record-scoped read tier (replaces the former `observer`, which
+  // held the same server-wide read grants). Everything a player may read is
+  // narrowed to their own characters/items and guild by playerTierGate.js and
+  // listPlayers/listGuilds scoping; only actions that have such scoping are
+  // granted. Further reads (bases, storage, vehicles, ...) stay off until each
+  // has its own ownership scoping.
   player: {
     version: 1,
     tier: "player",
     statements: [
       { Effect: "Allow", Action: [
-        "server:read",
-        "maps:read",
-        "sietches:read",
-        "deepdesert:read",
         "players:read",
         "guilds:read",
-        "bases:read",
-        "storage:read",
-        "blueprints:read",
-        "vehicles:read",
-        "exchange:read",
-        "landsraad:read",
-      ]},
-    ]
-  },
-  observer: {
-    version: 1,
-    tier: "observer",
-    statements: [
-      { Effect: "Allow", Action: [
-        "server:read",
-        "maps:read",
-        "sietches:read",
-        "deepdesert:read",
-        "players:read",
-        "guilds:read",
-        "bases:read",
-        "storage:read",
-        "blueprints:read",
-        "vehicles:read",
-        "exchange:read",
-        "landsraad:read",
       ]},
     ]
   },

@@ -255,14 +255,14 @@ test("a tier denied vehicles:delete cannot pass the stored route's two-action re
 
 test("a vehicles:read-only policy denies vehicles:mutate", () => {
   const policies = {
-    observer: {
+    player: {
       version: 1,
-      tier: "observer",
+      tier: "player",
       statements: [{ Effect: "Allow", Action: ["vehicles:read"] }]
     }
   };
-  assert.equal(evaluate({ tier: "observer" }, "vehicles:read", policies), true);
-  assert.equal(evaluate({ tier: "observer" }, "vehicles:mutate", policies), false);
+  assert.equal(evaluate({ tier: "player" }, "vehicles:read", policies), true);
+  assert.equal(evaluate({ tier: "player" }, "vehicles:mutate", policies), false);
 });
 
 test("persisting a refreshed buyback log requires market write permission", () => {
@@ -485,6 +485,56 @@ test("an uncompilable pattern is inert, and cannot be persisted", () => {
   });
   assert.equal(setPolicies(store("players:*")).ok, true, "a sane pattern still saves");
   loadPolicies();
+});
+
+// ---- Strict player tier; `observer` removed (issue #1125) ----
+import { normalizeTier, resolveSessionTier, getPolicy } from "../src/policy.js";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join as joinPath } from "node:path";
+
+test("DEFAULT_POLICIES has no observer tier and the player tier is only players:read + guilds:read", () => {
+  assert.equal(Object.hasOwn(DEFAULT_POLICIES, "observer"), false);
+  const actions = DEFAULT_POLICIES.player.statements.flatMap((s) => s.Action);
+  assert.deepEqual([...actions].sort(), ["guilds:read", "players:read"]);
+  for (const action of ["server:read", "maps:read", "bases:read", "storage:read", "vehicles:read", "blueprints:read", "exchange:read", "landsraad:read"]) {
+    assert.equal(evaluate({ tier: "player" }, action, DEFAULT_POLICIES), false, `player must not hold ${action}`);
+  }
+  assert.equal(evaluate({ tier: "player" }, "players:read", DEFAULT_POLICIES), true);
+});
+
+test("a legacy observer session resolves to the player tier and never to something broader", () => {
+  assert.equal(normalizeTier("observer"), "player");
+  assert.equal(resolveSessionTier({ tier: "observer" }), "player");
+  assert.equal(evaluate({ tier: "observer" }, "bases:read", DEFAULT_POLICIES), false);
+  assert.equal(evaluate({ tier: "observer" }, "players:read", DEFAULT_POLICIES), true);
+});
+
+test("a saved iam-policies.json that still has an observer key loads, drops it, and keeps other tiers", () => {
+  const root = mkdtempSync(joinPath(tmpdir(), "iam-observer-"));
+  mkdirSync(joinPath(root, "runtime/generated"), { recursive: true });
+  const custom = { version: 1, tier: "moderator", statements: [{ Effect: "Allow", Action: ["players:read", "logs:*"] }] };
+  writeFileSync(joinPath(root, "runtime/generated/iam-policies.json"), JSON.stringify({
+    owner: DEFAULT_POLICIES.owner,
+    moderator: custom,
+    observer: { version: 1, tier: "observer", statements: [{ Effect: "Allow", Action: ["bases:read"] }] }
+  }));
+  try {
+    const result = loadPolicies(root);
+    assert.equal(result.source, "file", "must not fall back to defaults because of the legacy key");
+    assert.deepEqual(getPolicy("moderator").statements, custom.statements, "operator customisation survives");
+    assert.equal(getPolicy("observer"), null);
+    assert.deepEqual(getPolicy("player").statements, DEFAULT_POLICIES.player.statements, "missing player is filled from the strict defaults");
+  } finally {
+    loadPolicies(null);
+  }
+});
+
+test("a saved player policy that predates the strict tier reports the grants the cap makes dead", async () => {
+  const { playerCappedActions } = await import("../src/policy.js");
+  const docs = { ...DEFAULT_POLICIES, player: { version: 1, tier: "player", statements: [{ Effect: "Allow", Action: ["players:read", "bases:read", "server:read"] }] } };
+  assert.deepEqual(playerCappedActions(docs).sort(), ["bases:read", "server:read"]);
+  assert.deepEqual(playerCappedActions(DEFAULT_POLICIES), []);
 });
 
 // A system backup is not a bigger database backup: the archive carries

@@ -350,9 +350,13 @@ test("base backup routes resolve to their own actions, and import is admin-only 
   assert.equal(actionForRoute("/api/base-backups/7/items", "DELETE"), null);
   assert.equal(actionForRoute("/api/base-backups/7/export", "POST"), null);
   for (const tier of ["owner", "admin"]) assert.equal(evaluate({ tier }, "bases:import-backup"), true);
-  for (const tier of ["moderator", "player", "observer"]) {
+  assert.equal(evaluate({ tier: "moderator" }, "bases:import-backup"), false);
+  assert.equal(evaluate({ tier: "moderator" }, "bases:read"), true);
+  // The player tier is strict (own characters and guild only) and holds no base reads;
+  // the legacy "observer" name is an alias for it.
+  for (const tier of ["player", "observer"]) {
     assert.equal(evaluate({ tier }, "bases:import-backup"), false);
-    assert.equal(evaluate({ tier }, "bases:read"), true);
+    assert.equal(evaluate({ tier }, "bases:read"), false);
   }
   // A hand-authored policy granting bases:mutate must not gain import.
   const policies = { moderator: { version: 1, tier: "moderator", statements: [{ Effect: "Allow", Action: ["bases:read", "bases:mutate"] }] } };

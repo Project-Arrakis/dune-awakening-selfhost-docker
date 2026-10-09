@@ -121,14 +121,15 @@ describe("BasesPanel player scope", () => {
     await waitFor(() => expect(basesApi.forPlayer).toHaveBeenCalledWith("42", expect.objectContaining({ page: 0, pageSize: 5000 })));
     expect(basesApi.list).not.toHaveBeenCalled();
     expect(await screen.findByText("Owned Home")).toBeInTheDocument();
-    expect(screen.getByText("Shared Workshop")).toBeInTheDocument();
+    // Bases merely shared with the player are not listed, and the totals
+    // describe only the owned set (10 pieces / 4 placeables of the one base).
+    expect(screen.queryByText("Shared Workshop")).not.toBeInTheDocument();
     const summary = screen.getByLabelText("Player base totals");
-    expect(summary).toHaveTextContent("2 Total");
     expect(summary).toHaveTextContent("1 Owned");
-    expect(summary).toHaveTextContent("1 Shared");
-    expect(summary).toHaveTextContent("20 Building Pieces");
-    expect(summary).toHaveTextContent("8 Placeables");
-    expect(screen.getByText(/Bases owned by or shared with Chani/)).toBeInTheDocument();
+    expect(summary).not.toHaveTextContent("Shared");
+    expect(summary).toHaveTextContent("10 Building Pieces");
+    expect(summary).toHaveTextContent("4 Placeables");
+    expect(screen.getByText(/Bases owned by Chani/)).toBeInTheDocument();
     expect(screen.queryByRole("combobox", { name: "Rows" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "First" })).not.toBeInTheDocument();
     expect(screen.queryByText(/Page 1 of/)).not.toBeInTheDocument();

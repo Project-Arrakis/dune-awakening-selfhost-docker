@@ -435,6 +435,7 @@ function repairRootOwnedHostState(repoRoot) {
     resolve(repoRoot, "runtime/generated/public-directory-status.json"),
     resolve(repoRoot, "runtime/generated/restart-queue.json"),
     resolve(repoRoot, "runtime/generated/restart-queue-state.json"),
+    resolve(repoRoot, "runtime/generated/restart-history.jsonl"),
     resolve(repoRoot, "runtime/generated/restart-schedule.env"),
     resolve(repoRoot, "runtime/generated/shutdown-protection.env"),
     resolve(repoRoot, "runtime/generated/sietch-config.json"),
