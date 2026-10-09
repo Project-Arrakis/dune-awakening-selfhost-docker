@@ -2894,6 +2894,11 @@ scan_igwo_unavailable_maps() {
   local rows now map event_id last_seen assigned running
 
   director_heal_due igwo_unavailable "$IGWO_UNAVAILABLE_SCAN_SECONDS" || return 0
+  # Missing log evidence is not evidence of a problem. A down, reconnecting or
+  # stale follower must defer this scan, never end the autoscaler: this file
+  # runs under `set -euo pipefail`, so an unguarded failing reader inside a
+  # command substitution would exit the whole process (#1156).
+  director_logs_available || return 0
   now="$(date +%s)"
 
   rows="$(
@@ -2917,7 +2922,7 @@ for line in sys.stdin:
     seen.add(key)
     print(f"{event_id}|{map_name}")
 '
-  )"
+  )" || true
 
   while IFS='|' read -r event_id map; do
     [ -n "${map:-}" ] || continue
@@ -3000,6 +3005,11 @@ scan_stale_server_state() {
   local rows now event_id partition_id map last_seen
 
   director_heal_due stale_server_state "$STALE_SERVER_STATE_SCAN_SECONDS" || return 0
+  # Missing log evidence is not evidence of a problem. A down, reconnecting or
+  # stale follower must defer this scan, never end the autoscaler: this file
+  # runs under `set -euo pipefail`, so an unguarded failing reader inside a
+  # command substitution would exit the whole process (#1156).
+  director_logs_available || return 0
   now="$(date +%s)"
 
   rows="$(
@@ -3026,7 +3036,7 @@ for line in sys.stdin:
             print(f"{event_id}|{pending_partition}")
         pending_partition = None
 '
-  )"
+  )" || true
 
   while IFS='|' read -r event_id partition_id; do
     [ -n "${partition_id:-}" ] || continue
@@ -3051,6 +3061,11 @@ scan_unscoped_stale_server_state() {
   local count now last_seen map
 
   director_heal_due unscoped_stale_server_state "$STALE_SERVER_STATE_SCAN_SECONDS" || return 0
+  # Missing log evidence is not evidence of a problem. A down, reconnecting or
+  # stale follower must defer this scan, never end the autoscaler: this file
+  # runs under `set -euo pipefail`, so an unguarded failing reader inside a
+  # command substitution would exit the whole process (#1156).
+  director_logs_available || return 0
   now="$(date +%s)"
 
   count="$(
@@ -3061,7 +3076,7 @@ import sys
 stale_pattern = re.compile(r"The last server state.s reportTimestamp is older than 60 seconds!")
 print(sum(1 for line in sys.stdin if stale_pattern.search(line)))
 '
-  )"
+  )" || true
 
   [ "${count:-0}" -gt 0 ] || return 0
 
