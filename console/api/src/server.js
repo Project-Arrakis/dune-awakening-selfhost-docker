@@ -164,7 +164,7 @@ try {
 }
 const policyLoad = loadPolicies(config.repoRoot);
 if (policyLoad.invalid) {
-  console.warn(`IAM policy file at ${policyLoad.path} is not a valid policy store; using built-in defaults.`);
+  console.warn(`IAM policy file at ${policyLoad.path} is not a valid policy store${policyLoad.reason ? ` (${policyLoad.reason})` : ""}; using built-in defaults.`);
 }
 if ((policyLoad.addedDefaultDenies || []).length > 0) {
   console.warn(`IAM policy notice: the saved policy predates ${policyLoad.addedDefaultDenies.map((d) => `${d.tier} ${d.action}`).join(", ")}; the shipped Deny for each was added in memory (a saved Allow naming the action exactly would have been kept). Save the policy from Settings to persist it.`);
@@ -1725,15 +1725,20 @@ async function handleApi(req, res, path) {
     // supported and never matches.
     const rawIfMatch = req.headers["if-match"];
     let ifMatch;
+    let wildcard = false;
     if (rawIfMatch !== undefined) {
-      ifMatch = String(rawIfMatch).trim().replace(/^W\//, "").replace(/^"|"$/g, "");
+      const bare = String(rawIfMatch).trim();
+      // Only the bare * is the wildcard (RFC 9110); a quoted "*" is an ordinary tag and never matches.
+      wildcard = bare === "*";
+      ifMatch = wildcard ? bare : bare.replace(/^W\//, "").replace(/^"|"$/g, "");
       if (!ifMatch) return json(res, 400, { error: "If-Match must carry the revision from GET /api/settings/iam/policies." });
     }
-    const result = setPolicies(body, config.repoRoot, ifMatch && ifMatch !== "*" ? { baseRevision: ifMatch } : {});
+    const result = setPolicies(body, config.repoRoot, ifMatch && !wildcard ? { baseRevision: ifMatch } : {});
     if (result.conflict) {
-      audit(config, req, "iam.policy-conflict", { baseRevision: ifMatch });
+      audit(config, req, "iam.policy-conflict", { baseRevision: String(ifMatch).slice(0, 64) });
       return json(res, 409, result);
     }
+    if (result.persistFailed) return json(res, 500, result);
     if (!result.ok) return json(res, 400, result);
     audit(config, req, "iam.policy-set", { tiers: Object.keys(body) });
     return json(res, 200, result);

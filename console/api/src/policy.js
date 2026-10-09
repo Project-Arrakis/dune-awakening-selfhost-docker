@@ -233,6 +233,13 @@ export function loadPolicies(repoRoot = null) {
       const parsed = sanitizePolicyStore(JSON.parse(raw));
       if (validPolicyStore(parsed)) {
         const reconciled = reconcileShippedDenies(parsed);
+        // The same invariant setPolicies enforces on save. A hand-edited file whose owner cannot write
+        // settings would leave nobody able to open the policy editor to fix it; the defaults are the
+        // recoverable state, and the startup warning names the file so the operator can correct it.
+        if (!evaluate({ tier: "owner" }, "settings:write", reconciled.store)) {
+          _policies = DEFAULT_POLICIES;
+          return { source: "defaults", path: filePath, invalid: true, reason: "the owner policy does not allow settings:write", unknownActions: [], deprecatedActions: [] };
+        }
         _policies = reconciled.store;
         _notices = { addedDefaultDenies: reconciled.added, keptExactAllows: reconciled.kept };
         // Reported, not rejected: discarding the document would silently
@@ -406,11 +413,19 @@ export function setPolicies(inputDocs, repoRoot = null, options = {}) {
   // away (which the Settings page tells the operator to do) left the Deny out until a restart,
   // while the warning disappeared (review of PR #1174).
   const reconciled = reconcileShippedDenies(docs);
+  // Write before enforcing: if the disk write fails, the policy in force must stay the one that is
+  // saved, not a loosened one that silently reverts at the next restart (review #1197).
+  if (repoRoot) {
+    try {
+      writeJsonAtomic(resolve(repoRoot, "runtime/generated/iam-policies.json"), reconciled.store, 0o600);
+    } catch {
+      return { ok: false, persistFailed: true, error: "The policy could not be written to disk, so nothing was changed." };
+    }
+  }
   _policies = reconciled.store;
   _allowedActions = {};
   // What is saved now carries the Denies, so "added" is empty; a kept exact-name Allow stays visible.
   _notices = { addedDefaultDenies: [], keptExactAllows: reconciled.kept };
-  if (repoRoot) writeJsonAtomic(resolve(repoRoot, "runtime/generated/iam-policies.json"), reconciled.store, 0o600);
   // A grant beyond players:read/guilds:read on `player` is accepted but inert (playerTierGate
   // caps it); say so, as loadPolicies does at startup, so the save does not look effective.
   // addedDefaultDenies is what THIS save added, so the caller can tell the operator.

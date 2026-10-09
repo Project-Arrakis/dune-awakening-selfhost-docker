@@ -200,7 +200,9 @@ ensure_director_log_cache() {
 refresh_survival_target_file() {
   local json tmp status=0 age
   [ -n "${SURVIVAL_TARGET_FILE:-}" ] || return 0
-  json="$(survival_partition_target_json 2>/dev/null)" || status=$?
+  # Bounded: without a timeout a hung query would block this loop before the age check below ever ran,
+  # leaving the last target on disk indefinitely (review #1197). A timeout is status 1, a failed query.
+  json="$(DUNE_PSQL_TIMEOUT_SECONDS="${SURVIVAL_TARGET_QUERY_TIMEOUT_SECONDS:-10}" survival_partition_target_json 2>/dev/null)" || status=$?
   if [ "$status" = 0 ] && [ -n "$json" ]; then
     tmp="$SURVIVAL_TARGET_FILE.tmp"
     if ! { printf '%s\n' "$json" >"$tmp" && mv -f "$tmp" "$SURVIVAL_TARGET_FILE"; } 2>/dev/null; then
@@ -267,6 +269,11 @@ if [ "$STORY_RETURN_RECOVERY_SCAN_SECONDS" -gt 2 ]; then
   echo "DUNE_AUTOSCALER_STORY_RETURN_RECOVERY_SCAN_SECONDS=${STORY_RETURN_RECOVERY_SCAN_SECONDS} exceeds the safe credits-return window; clamping to 2s." >&2
   STORY_RETURN_RECOVERY_SCAN_SECONDS=2
 fi
+# The Survival_1 target refresher (#1163). A zero or non-numeric value would make its loop spin on the
+# database or never expire a stale target, so these are validated like the scan intervals (review #1197).
+SURVIVAL_TARGET_REFRESH_SECONDS="$(validate_scan_seconds SURVIVAL_TARGET_REFRESH_SECONDS "${SURVIVAL_TARGET_REFRESH_SECONDS:-5}" 5 0)"
+SURVIVAL_TARGET_MAX_STALE_SECONDS="$(validate_scan_seconds SURVIVAL_TARGET_MAX_STALE_SECONDS "${SURVIVAL_TARGET_MAX_STALE_SECONDS:-60}" 60 0)"
+SURVIVAL_TARGET_QUERY_TIMEOUT_SECONDS="$(validate_scan_seconds SURVIVAL_TARGET_QUERY_TIMEOUT_SECONDS "${SURVIVAL_TARGET_QUERY_TIMEOUT_SECONDS:-10}" 10 0)"
 AUTOSCALER_STARTED_AT="$(date +%s)"
 
 mkdir -p "$(dirname "$STATE_FILE")"
@@ -1187,11 +1194,12 @@ PY
 
 follow_director_hagga_handoffs() {
   while true; do
-    python3 runtime/scripts/director-log-cache.py stream "$DIRECTOR_LOG_CACHE_FILE" --parent "$$" 2>/dev/null | TARGET_FILE="${SURVIVAL_TARGET_FILE:-}" python3 -u /dev/fd/3 3<<'PY' | while IFS='|' read -r flow_id origin_id payload_json; do
+    python3 runtime/scripts/director-log-cache.py stream "$DIRECTOR_LOG_CACHE_FILE" --parent "$$" 2>/dev/null | TARGET_FILE="${SURVIVAL_TARGET_FILE:-}" TARGET_MAX_STALE_SECONDS="${SURVIVAL_TARGET_MAX_STALE_SECONDS:-60}" python3 -u /dev/fd/3 3<<'PY' | while IFS='|' read -r flow_id origin_id payload_json; do
 import json
 import os
 import re
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 
 target_json = os.environ.get("TARGET_JSON", "")
@@ -1208,6 +1216,11 @@ def current_target():
     # event rather than hand a player a stale endpoint.
     if target_file:
         try:
+            # The refresher rewrites this every few seconds. An older file means the refresher is not
+            # running or is stuck, so the endpoint may be gone: skip rather than hand it to a player.
+            max_stale = int(os.environ.get("TARGET_MAX_STALE_SECONDS", "60") or 60)
+            if time.time() - os.stat(target_file).st_mtime > max_stale:
+                return None
             with open(target_file, encoding="utf-8") as handle:
                 return json.loads(handle.read())
         except (OSError, ValueError):

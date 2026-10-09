@@ -89,6 +89,10 @@ export function IamPolicyEditor() {
   const [jsonError, setJsonError] = useState("");
   // A refused save because another admin saved first. Not a validation error: it must not block the next Save.
   const [conflictNote, setConflictNote] = useState("");
+  // A refused or failed save (#1197). Names the tier it was for, is shown whichever tier is on screen
+  // when the answer arrives, and does not block the next Save the way a JSON validation error does.
+  const [saveError, setSaveError] = useState("");
+  const saveButtonRef = useRef<HTMLButtonElement>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [savedNote, setSavedNote] = useState("");
@@ -117,6 +121,8 @@ export function IamPolicyEditor() {
     setSelectedTier(tier);
     markEdited();
     setConflictNote("");
+    setSaveError("");
+    setJsonError("");
     setTestResults(null);
     setSearch("");
     if (catalog) {
@@ -203,6 +209,8 @@ export function IamPolicyEditor() {
     if (current) setJsonText(JSON.stringify(current.statements, null, 2));
     setJsonError("");
     setConflictNote("");
+    // The note held the focused button; keep keyboard and screen-reader users in the footer.
+    saveButtonRef.current?.focus();
   };
 
   const validateJson = (text: string): PolicyStatement[] | null => {
@@ -225,12 +233,13 @@ export function IamPolicyEditor() {
     const valid = validateJson(jsonText);
     if (!valid || !catalog) return;
     if (selectedTier === "owner" && Array.isArray(valid) && valid.length === 0) {
-      setJsonError("Cannot save an empty policy for the owner tier. At least one own er-level permission is required to prevent permanent lock-out.");
+      setJsonError("Cannot save an empty policy for the owner tier. At least one owner-level permission is required to prevent permanent lock-out.");
       return;
     }
     setSaving(true);
     setSavedNote("");
     setConflictNote("");
+    setSaveError("");
     try {
       // The server takes the COMPLETE policy store (PUT /api/settings/iam/policy), not one tier.
       // (This used to POST { tier, statements } to a route that does not exist, so nothing
@@ -247,7 +256,9 @@ export function IamPolicyEditor() {
         if (latest?.policies) {
           if (JSON.stringify(latest.policies[selectedTier]) !== JSON.stringify(catalog.policies[selectedTier])) {
             setCatalog({ ...catalog, policies: latest.policies, notices: latest.notices ?? catalog.notices, revision: latest.revision });
-            setConflictNote(`Another admin changed the ${selectedTier} policy since this page showed it.`);
+            if (selectedTierRef.current === selectedTier) {
+              setConflictNote(`Another admin changed the ${selectedTier} policy since this page showed it.`);
+            }
             setSaving(false);
             return;
           }
@@ -296,8 +307,8 @@ export function IamPolicyEditor() {
           revision: conflict.revision ?? current.revision
         });
       }
-      if (!conflict?.policies && selectedTierRef.current === selectedTier) {
-        setJsonError(error instanceof Error && error.message ? error.message : "Failed to save policy");
+      if (!conflict?.policies) {
+        setSaveError(`Could not save the ${selectedTier} policy: ${error instanceof Error && error.message ? error.message : "Failed to save policy"}`);
       }
     }
     setSaving(false);
@@ -433,13 +444,14 @@ export function IamPolicyEditor() {
 
       <div className="iam-editor-footer">
         {jsonError && <p className="iam-json-error" style={{ marginBottom: "8px" }}>{jsonError}</p>}
+        {saveError && <p className="iam-json-error" role="alert" style={{ marginBottom: "8px" }}>{saveError}</p>}
         {conflictNote && (
           <p className="iam-notice iam-notice-warning" role="alert">
             {conflictNote} Your edits are kept. Show the current {selectedTier} policy to review it, or save again to replace it with your edits.{" "}
             <button type="button" className="stable-action-button" onClick={showCurrentPolicy}>Show current policy</button>
           </p>
         )}
-        <button className="stable-action-button" onClick={savePolicy} disabled={saving || (editorTab === "json" && !!jsonError)}>
+        <button ref={saveButtonRef} className="stable-action-button" onClick={savePolicy} disabled={saving || (editorTab === "json" && !!jsonError)}>
           {saving ? "Saving..." : saved ? "Saved" : `Save ${selectedTier} policy`}
         </button>
         {savedNote && <p className="iam-notice" role="status">{savedNote}</p>}
