@@ -222,6 +222,7 @@ docker() { cat \"\$REJECTED_LOG\"; }
 hub_travel_seen() { grep -qx \"\$1\" \"\$REJECTED_SEEN\"; }
 remember_hub_travel() { printf '%s\\n' \"\$1\" >> \"\$REJECTED_SEEN\"; }
 director_heal_due() { return 0; }
+director_logs_available() { return 0; }
 psql_value() {
   printf '%s\\n' \"\$1\" >> \"\$REJECTED_SQL\"
   case \"\$1\" in
@@ -287,6 +288,7 @@ LOG
 demand_output="$(DEMAND_LOG="$demand_log" bash -c "$director_log_function
 $demand_function
 docker() { cat \"\$DEMAND_LOG\"; }
+director_logs_available() { return 0; }
 handle_demand() { printf 'HANDLE|%s|%s|%s|%s\\n' \"\$1\" \"\$2\" \"\$4\" \"\$5\"; }
 SINCE=10m
 scan_travel_demand")"

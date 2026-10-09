@@ -52,6 +52,7 @@ for (const [destination, expected, disabled = false] of [[35, '35'], [8, '8'], [
       origin_server_id_for_origin_id(){ echo test-origin; }
       deepdesert_target_json(){ return 1; }
       director_heal_due(){ return 0; }
+      director_logs_or_defer(){ return 0; }
       docker(){ cat director.log; }
       SINCE=10m
       DEEPDESERT_LOADING_SCAN_SECONDS=15

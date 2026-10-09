@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { resolvedAllowedActions, nsFromAction } from "./iamPolicy";
 import { api, post } from "../../api/client";
 
@@ -87,6 +87,8 @@ export function IamPolicyEditor() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [savedNote, setSavedNote] = useState("");
+  // The tier on screen right now, readable from an async handler that started earlier (#1190).
+  const selectedTierRef = useRef<string>("admin");
   const [editorTab, setEditorTab] = useState<"builder" | "json" | "test">("builder");
   const [testResults, setTestResults] = useState<Record<string, boolean> | null>(null);
   const [search, setSearch] = useState("");
@@ -101,9 +103,14 @@ export function IamPolicyEditor() {
 
   if (!catalog && loadError) return <section className="iam-editor-error"><h3>Failed to load IAM policies</h3><button onClick={() => { setLoadError(false); window.location.reload(); }}>Retry</button></section>;
 
+  // Anything that changes the policy on screen also retires the note about the last save
+  // (#1185): "Saved. The shipped Deny was also added for ..." described a different policy.
+  const markEdited = () => { setSaved(false); setSavedNote(""); };
+
   const selectTier = (tier: string) => {
+    selectedTierRef.current = tier;
     setSelectedTier(tier);
-    setSaved(false);
+    markEdited();
     setTestResults(null);
     setSearch("");
     if (catalog) {
@@ -181,7 +188,7 @@ export function IamPolicyEditor() {
       }
     }
     setJsonText(JSON.stringify(updated, null, 2));
-    setSaved(false);
+    markEdited();
   };
 
   const validateJson = (text: string): PolicyStatement[] | null => {
@@ -213,20 +220,38 @@ export function IamPolicyEditor() {
       // The server takes the COMPLETE policy store (PUT /api/settings/iam/policy), not one tier.
       // (This used to POST { tier, statements } to a route that does not exist, so nothing
       // was ever saved: issue #1179.)
-      const next = { ...catalog.policies, [selectedTier]: { version: 1, tier: selectedTier, statements: valid } };
+      // Start from the store as it is NOW, not as it was when this page opened: the server replaces the
+      // whole store, so a stale copy would silently overwrite another admin's change to another tier
+      // (#1184). This narrows the race to one request round-trip; the API is whole-store by design.
+      let base = catalog.policies;
+      try {
+        const latest = await api<PolicyCatalog>("/api/settings/iam/policies");
+        if (latest?.policies) base = latest.policies;
+      } catch {
+        // Fall back to what is on screen; the PUT below still reports its own failure.
+      }
+      const next = { ...base, [selectedTier]: { version: 1, tier: selectedTier, statements: valid } };
       const result = await api<SavePolicyResult>("/api/settings/iam/policy", { method: "PUT", body: JSON.stringify(next) });
       // Adopt what the server now enforces: it may have added a shipped Deny to what was sent.
       const policies = result?.policies ?? next;
       setCatalog({ ...catalog, policies, notices: result?.notices ?? catalog.notices });
-      const enforced = policies[selectedTier];
-      if (enforced) setJsonText(JSON.stringify(enforced.statements, null, 2));
-      const added = result?.addedDefaultDenies ?? [];
-      if (added.length > 0) setSavedNote(`Saved. The shipped Deny was also added for ${listNotice(added)}.`);
-      setJsonError("");
-      setSaved(true);
-      setTimeout(() => setSaved(false), 3000);
+      // The admin may have switched tier while this save was in flight. The catalog is updated either
+      // way, but the text area, the note and the Saved state belong to the tier that was saved: writing
+      // them under another tier would show its statements there, and a second Save would then write them
+      // to that other tier (review of PR #1189).
+      if (selectedTierRef.current === selectedTier) {
+        const enforced = policies[selectedTier];
+        if (enforced) setJsonText(JSON.stringify(enforced.statements, null, 2));
+        const added = result?.addedDefaultDenies ?? [];
+        if (added.length > 0) setSavedNote(`Saved. The shipped Deny was also added for ${listNotice(added)}.`);
+        setJsonError("");
+        setSaved(true);
+        setTimeout(() => setSaved(false), 3000);
+      }
     } catch (error) {
-      setJsonError(error instanceof Error && error.message ? error.message : "Failed to save policy");
+      if (selectedTierRef.current === selectedTier) {
+        setJsonError(error instanceof Error && error.message ? error.message : "Failed to save policy");
+      }
     }
     setSaving(false);
   };
@@ -325,7 +350,7 @@ export function IamPolicyEditor() {
             <textarea
               className={`iam-json-textarea ${jsonError ? "has-error" : ""}`}
               value={jsonText}
-              onChange={(e) => { setJsonText(e.target.value); setSaved(false); setJsonError(""); }}
+              onChange={(e) => { setJsonText(e.target.value); markEdited(); setJsonError(""); }}
               rows={16}
               spellCheck={false}
             />

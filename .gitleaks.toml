@@ -28,11 +28,12 @@
     "^143064109775060993$",
   ]
 
-# Allowlist change record (2026-10-08, upstream sync #1150): the placeholder values
-# `abcdefghijklmnopqrstuvwxyzABCDEFG123456` and the `dak_`-style `xK2p9vRm...` example were dropped from this list
-# when upstream's anchored form was adopted. Neither literal exists in any tracked file any more
-# (`git grep` is empty), so nothing depends on them; a future fixture that reintroduces one must be allowlisted
-# narrowly and anchored here, with a reason, not by widening a regex.
+# Allowlist change record (2026-10-08, upstream sync #1150): two placeholder entries were dropped from this
+# list when upstream's anchored form was adopted: the 38-character alphabet-style example key, and the
+# `dak_`-style example token. Their values are deliberately not written here (a comment that contains
+# them would put them back into a tracked file, which is what this note says is not the case). No tracked
+# file other than this one has contained either since the sync, so nothing depends on them; a future fixture
+# that reintroduces one must be allowlisted narrowly and anchored here, with a reason, not by widening a regex.
 #
 # NOTE: tests/db-system-backup-test.sh's synthetic secret fixtures
 # (admin-pw-8f2a-real, etc.) do NOT need an allowlist entry here --
