@@ -12,6 +12,7 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 ### Added
 
 - **API key scope "Realtime Data" (`realtime:read`): live sandworms, enemies, civilians, vehicles and sandstorms (#1148, upstream PR #242 by dev-prophet-code).** Read-only; passes on what the optional MapViewer3D position agent reads from the game server processes, through `GET /api/realtime/healthz`, `/objects` and `/stream` (server-sent events). Player positions need Players > Read as well, `maps:read` does not include the scope so no existing key gains access, and an open stream ends within 10 seconds when the key is revoked or loses the scope. Installations without the agent are unaffected (the routes answer 503). Documented in `docs/console/realtime.md` and the API reference.
+  Review fixes on top of the upstream diff: a comment line in front of an agent event no longer lets the event skip the player filter; a bad `DUNE_REALTIME_AGENT_URL` no longer stops the console from starting (only Realtime Data answers with the reason); the browser session id is no longer written to the audit log; CRLF line endings from the agent are framed correctly; the variable is passed through `docker-compose.web.yml` and listed in `.env.example`.
 
 ### Fixed
 

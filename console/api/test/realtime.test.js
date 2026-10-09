@@ -205,3 +205,67 @@ test("the stream re-checks the key while it is open", () => {
   assert.match(route, /stillAllowed: \(\) => may\("realtime:read"\)/);
   assert.match(route, /allowPlayers: \(\) => may\("players:read"\)/);
 });
+
+// Agent stand-in that writes exactly these raw chunks on /stream and then stays open.
+async function scriptedAgent(chunks) {
+  const server = http.createServer((req, res) => {
+    if (req.url === "/stream") {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      for (const chunk of chunks) res.write(chunk);
+      return undefined;
+    }
+    res.statusCode = 404;
+    return res.end();
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return { server, url: `http://127.0.0.1:${server.address().port}` };
+}
+
+test("a comment line in front of an event cannot skip the player filter", async () => {
+  const agent = await scriptedAgent([
+    `event: snap\ndata: ${JSON.stringify(SNAP)}\n\n`,
+    `: hb\nevent: pos\ndata: ${JSON.stringify(POS)}\n\n`
+  ]);
+  const realtime = createRealtime({ agentUrl: agent.url });
+  const { front, events } = await openStream(realtime, { principal: "apikey:comment", allowPlayers: () => false, stillAllowed: () => true });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    assert.ok(events.some((e) => e.name === "snap"));
+    for (const event of events) {
+      assert.ok(!JSON.stringify(event.data).includes("70,80,90"), "a player position leaked");
+      assert.ok(!(event.data.d || []).some((d) => d[0] === 3), "a player id leaked");
+    }
+    assert.ok(events.some((e) => e.name === "pos" && e.data.d.some((d) => d[0] === 1)), "the visible object is still forwarded");
+  } finally {
+    front.closeAllConnections(); front.close(); agent.server.close();
+  }
+});
+
+test("CRLF line endings from the agent are framed like LF", async () => {
+  const agent = await scriptedAgent([`event: snap\r\ndata: ${JSON.stringify(SNAP)}\r\n\r\n`]);
+  const realtime = createRealtime({ agentUrl: agent.url });
+  const { front, events } = await openStream(realtime, { principal: "apikey:crlf", allowPlayers: () => false, stillAllowed: () => true });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const snap = events.find((e) => e.name === "snap");
+    assert.ok(snap, "no snap event arrived");
+    assert.equal(snap.data.objects.length, 2);
+  } finally {
+    front.closeAllConnections(); front.close(); agent.server.close();
+  }
+});
+
+test("a bad DUNE_REALTIME_AGENT_URL does not stop the console; only Realtime Data answers with the reason", async () => {
+  let realtime;
+  assert.doesNotThrow(() => { realtime = createRealtime({ agentUrl: "https://example.com:8796" }); });
+  await assert.rejects(() => realtime.health(), (error) => error instanceof RealtimeError && /DUNE_REALTIME_AGENT_URL/.test(error.message));
+  await assert.rejects(() => realtime.objects({ allowPlayers: false }), RealtimeError);
+  const front = http.createServer((req, res) => realtime.stream(req, res, { principal: "apikey:bad", allowPlayers: () => false, stillAllowed: () => true }));
+  await new Promise((resolve) => front.listen(0, "127.0.0.1", resolve));
+  try {
+    const status = await new Promise((resolve) => http.get(`http://127.0.0.1:${front.address().port}/`, (res) => { res.resume(); resolve(res.statusCode); }));
+    assert.equal(status, 503);
+  } finally {
+    front.closeAllConnections(); front.close();
+  }
+});

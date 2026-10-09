@@ -33,6 +33,9 @@ export class RealtimeError extends Error {
 
 // Only plain HTTP on loopback: the agent has no login, so it must never be
 // reached over a network.
+// SSE allows LF, CRLF and CR line endings; an event block ends at an empty line in any of them.
+const SSE_BLOCK_END = /\r\n\r\n|\n\n|\r\r/;
+
 export function parseAgentUrl(value) {
   let url;
   try {
@@ -69,7 +72,14 @@ export function createRealtime({
   maxStreamsPerPrincipal = 4,
   recheckMs = RECHECK_MS
 } = {}) {
-  const base = parseAgentUrl(agentUrl);
+  // A bad address must not stop the whole console from starting: only Realtime Data reports it, per request.
+  let base = null;
+  let configError = null;
+  try {
+    base = parseAgentUrl(agentUrl);
+  } catch (error) {
+    configError = error;
+  }
   const open = new Map(); // principal -> number of open streams
   let total = 0;
 
@@ -100,6 +110,7 @@ export function createRealtime({
   return {
     // GET /api/realtime/healthz. 503 when the agent is not installed or down.
     async health() {
+      if (configError) throw configError;
       let answer;
       try {
         answer = await get("/healthz");
@@ -111,6 +122,7 @@ export function createRealtime({
 
     // GET /api/realtime/objects
     async objects({ allowPlayers }) {
+      if (configError) throw configError;
       const kinds = allowPlayers ? [...REALTIME_KINDS, "player"] : REALTIME_KINDS;
       let snapshot;
       try {
@@ -125,6 +137,11 @@ export function createRealtime({
     // allowPlayers and stillAllowed are re-evaluated every recheckMs, so a
     // disabled, expired or revoked key (or a removed scope) ends the stream.
     stream(req, res, { principal, allowPlayers, stillAllowed }) {
+      if (configError) {
+        res.writeHead(503, withSecurityHeaders({ "content-type": "application/json; charset=utf-8" }));
+        res.end(JSON.stringify({ error: configError.message }));
+        return;
+      }
       const mine = open.get(principal) || 0;
       if (total >= maxStreams || mine >= maxStreamsPerPrincipal) {
         res.writeHead(429, withSecurityHeaders({ "content-type": "application/json; charset=utf-8", "retry-after": "30" }));
@@ -169,10 +186,14 @@ export function createRealtime({
       }
 
       function handle(block) {
-        if (block.startsWith(":")) return send(`${block}\n\n`); // keep-alive comment
+        const lines = block.split("\n");
+        const fields = lines.filter((line) => !line.startsWith(":"));
+        // A block made only of comment lines is a keep-alive and is passed on. A comment line inside an event block is
+        // dropped and the rest is filtered like any other event, so nothing can skip the player and visibility filters.
+        if (!fields.length) return send(`${lines.join("\n")}\n\n`);
         let name = "";
         let data = "";
-        for (const line of block.split("\n")) {
+        for (const line of fields) {
           if (line.startsWith("event:")) name = line.slice(6).trim();
           else if (line.startsWith("data:")) data += line.slice(5).trim();
         }
@@ -213,10 +234,10 @@ export function createRealtime({
         response.on("data", (chunk) => {
           pending += chunk;
           if (pending.length > MAX_BODY_BYTES) return finish();
-          let index;
-          while ((index = pending.indexOf("\n\n")) >= 0) {
-            const block = pending.slice(0, index).replace(/\r/g, "");
-            pending = pending.slice(index + 2);
+          let match;
+          while ((match = SSE_BLOCK_END.exec(pending))) {
+            const block = pending.slice(0, match.index).replace(/\r\n?/g, "\n");
+            pending = pending.slice(match.index + match[0].length);
             if (block) handle(block);
           }
         });

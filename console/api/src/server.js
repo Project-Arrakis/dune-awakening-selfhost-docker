@@ -4535,7 +4535,8 @@ function realtimeStreamRoute(req, res) {
     if (!now || !evaluate(now.session, action)) return false;
     return !now.key || apiKeys.allows(now.key, action);
   };
-  audit(config, req, "realtime.stream-open", { principal });
+  // The browser session id is half of the login cookie and must never reach the audit log; only an API key id (its public half) may.
+  audit(config, req, "realtime.stream-open", req.authApiKey ? { apiKey: req.authApiKey.id } : {});
   realtime.stream(req, res, {
     principal,
     allowPlayers: () => may("players:read"),

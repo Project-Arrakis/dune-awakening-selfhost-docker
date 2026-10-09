@@ -23,7 +23,7 @@ docker compose -f docker-compose.mapviewer-live.yml up -d --build
 ```
 
 `DUNE_REALTIME_AGENT_URL` (default `http://127.0.0.1:8796`) points the Console
-at the agent; only plain HTTP on loopback is accepted.
+at the agent; only plain HTTP on loopback is accepted. An invalid value does not stop the Console: only the Realtime Data routes answer with the reason.
 
 ## Permission: API key scope "Realtime Data"
 
