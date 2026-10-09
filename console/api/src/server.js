@@ -13,6 +13,7 @@ import { scopeCatalog } from "./apiKeyScopes.js";
 import { createBridgeRateLimiter } from "./bridgeRateLimit.js";
 import { buildSelfUpdateHelperDockerArgs, detectDockerSocketGid, mapWriteFlushTimeoutMs, TaskManager, publicTask } from "./tasks.js";
 import { preflight } from "./preflight.js";
+import { playerAccessParam } from "./playerAccessParam.js";
 import { buildDuneArgs, isDynamicServerService, parseVehicleList, runDockerLogs, runDune, validateServiceName } from "./runner.js";
 // isReadOnlySql comes from db.js, NOT runner.js. runner's copy tests the raw
 // string, so a read-only SELECT behind a leading `-- note` or `/* */` header
@@ -21,7 +22,6 @@ import { buildDuneArgs, isDynamicServerService, parseVehicleList, runDockerLogs,
 // space so it cannot fuse tokens or hide a leading `delete`. Sharing one
 // classifier with duneDb.runSql also keeps the authorization decision and the
 // execution decision from diverging.
-import { playerAccessParam } from "./playerAccessParam.js";
 import { createDb, hasExecutableStatement, isReadOnlySql, quoteIdentifier } from "./db.js";
 import * as duneDb from "./duneDb.js";
 import { audit, recordAdminHistory } from "./audit.js";
