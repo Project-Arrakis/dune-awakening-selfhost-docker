@@ -116,7 +116,7 @@ CVE-2026-76957  # libexpat1 -- memory corruption allows RCE or DoS; no fix in De
 # Debian publishes a fixed libexpat1. Unlike the older entries above, this one carries trivy's own expiry
 # (`exp:`, verified with the pinned trivy 0.73: a future date hides the finding, a past date reports it again),
 # so the acceptance cannot outlive its triage: on 2027-01-07 trivy-image-scan fails until it is re-triaged
-# (same date as every .trivyignore-fs.yaml entry). Tracked in #1159.
+# (same date as every .trivyignore-fs.yaml entry). Tracked in #1180, which stays open until it is re-triaged.
 CVE-2026-77214 exp:2027-01-07  # libexpat1 -- XML_ParseBuffer heap over-read; no fix in Debian
 
 # Debian 13.6 (trixie) python3.13, added 2026-08-25 alongside issue #489's fix

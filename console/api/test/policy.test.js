@@ -565,7 +565,7 @@ test("the owner tier still holds every system backup action", () => {
 });
 
 // ---- Saved policies predating the system-backup actions (issue #1117) ----
-import { mkdtempSync as mkd, mkdirSync as mkdirp, writeFileSync as writeF } from "node:fs";
+import { mkdtempSync as mkd, mkdirSync as mkdirp, readFileSync as readF, writeFileSync as writeF } from "node:fs";
 import { tmpdir as tmp } from "node:os";
 import { join as j } from "node:path";
 
@@ -655,3 +655,47 @@ test("getPolicyNotices hands out copies, so a caller cannot rewrite what the nex
 });
 
 import { getAllPolicies as getAllPoliciesForTest } from "../src/policy.js";
+
+test("removing the exact Allow that kept a shipped Deny away restores the Deny at once, not at the next restart", () => {
+  // The Settings page tells the operator "Remove the Allow to restore the Deny". The save must do that.
+  const root = mkd(j(tmp(), "iam-save-reconcile-"));
+  try {
+    mkdirp(j(root, "runtime/generated"), { recursive: true });
+    const loaded = loadSaved([{ Effect: "Allow", Action: ["backups:*", "backups:download-system"] }]);
+    assert.deepEqual(loaded.keptExactAllows, [{ tier: "admin", action: "backups:download-system" }]);
+    assert.equal(evaluate({ tier: "admin" }, "backups:download-system"), true, "kept as the operator's explicit choice");
+
+    const result = setPolicies({
+      ...getAllPoliciesForTest(),
+      admin: { version: 1, tier: "admin", statements: [{ Effect: "Allow", Action: ["backups:*"] }] }
+    }, root);
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.addedDefaultDenies.map((d) => d.action).sort(), SYSTEM_BACKUP);
+    for (const action of SYSTEM_BACKUP) assert.equal(evaluate({ tier: "admin" }, action), false, `${action} must be denied right after the save`);
+    assert.equal(evaluate({ tier: "admin" }, "backups:create"), true, "ordinary backup work is not withdrawn");
+    assert.deepEqual(getPolicyNotices(), { addedDefaultDenies: [], keptExactAllows: [] }, "no stale warning");
+    assert.deepEqual(result.notices, getPolicyNotices());
+
+    // What is on disk is what is enforced: a restart must not differ from the save.
+    const onDisk = JSON.parse(readF(j(root, "runtime/generated/iam-policies.json"), "utf8"));
+    assert.ok(onDisk.admin.statements.some((st) => st.Effect === "Deny" && SYSTEM_BACKUP.every((a) => st.Action.includes(a))));
+    const reloaded = loadPolicies(root);
+    assert.deepEqual(reloaded.addedDefaultDenies, [], "nothing left to add on the next start");
+    for (const action of SYSTEM_BACKUP) assert.equal(evaluate({ tier: "admin" }, action), false);
+  } finally { loadPolicies(null); }
+});
+
+test("a save that removes the shipped Deny without naming the action has it put back and says so", () => {
+  const root = mkd(j(tmp(), "iam-save-deny-"));
+  try {
+    mkdirp(j(root, "runtime/generated"), { recursive: true });
+    const result = setPolicies({
+      ...getAllPoliciesForTest(),
+      admin: { version: 1, tier: "admin", statements: [{ Effect: "Allow", Action: ["backups:*", "players:*"] }] }
+    }, root);
+    assert.equal(result.ok, true);
+    assert.equal(result.addedDefaultDenies.length, 3);
+    assert.equal(evaluate({ tier: "admin" }, "backups:restore-system"), false);
+    assert.equal(evaluate({ tier: "admin" }, "players:read"), true);
+  } finally { loadPolicies(null); }
+});

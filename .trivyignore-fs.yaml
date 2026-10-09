@@ -33,5 +33,5 @@ misconfigurations:
     statement: >-
       `apt-get install` without `--no-install-recommends` in the orchestrator image. Accepted here rather than
       changed in a CI PR because adding the flag changes the image's installed package set and needs its own
-      build-and-run check. Owner: fork maintainers, tracked in #1159. Re-triage and fix at expiry.
+      build-and-run check. Owner: fork maintainers, tracked in #1180. Re-triage and fix at expiry.
     expired_at: 2027-01-07

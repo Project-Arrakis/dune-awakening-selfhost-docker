@@ -366,15 +366,26 @@ export function setPolicies(inputDocs, repoRoot = null) {
       unknownActions: dead
     };
   }
-  _policies = docs;
+  // The same reconcile as a load, so a save cannot leave the tier less restricted than the next
+  // restart would make it. Without this, removing the exact-name Allow that kept a shipped Deny
+  // away (which the Settings page tells the operator to do) left the Deny out until a restart,
+  // while the warning disappeared (review of PR #1174).
+  const reconciled = reconcileShippedDenies(docs);
+  _policies = reconciled.store;
   _allowedActions = {};
-  // What was saved is what is enforced now; it carries the Denies it was given (or the
-  // operator removed). Only a kept exact-name Allow is still worth saying out loud.
-  _notices = { addedDefaultDenies: [], keptExactAllows: reconcileShippedDenies(docs).kept };
-  if (repoRoot) writeJsonAtomic(resolve(repoRoot, "runtime/generated/iam-policies.json"), docs, 0o600);
+  // What is saved now carries the Denies, so "added" is empty; a kept exact-name Allow stays visible.
+  _notices = { addedDefaultDenies: [], keptExactAllows: reconciled.kept };
+  if (repoRoot) writeJsonAtomic(resolve(repoRoot, "runtime/generated/iam-policies.json"), reconciled.store, 0o600);
   // A grant beyond players:read/guilds:read on `player` is accepted but inert (playerTierGate
   // caps it); say so, as loadPolicies does at startup, so the save does not look effective.
-  return { ok: true, policies: getAllPolicies(), playerCappedActions: playerCappedActions(docs) };
+  // addedDefaultDenies is what THIS save added, so the caller can tell the operator.
+  return {
+    ok: true,
+    policies: getAllPolicies(),
+    playerCappedActions: playerCappedActions(reconciled.store),
+    addedDefaultDenies: reconciled.added,
+    notices: getPolicyNotices()
+  };
 }
 
 function validPolicyStore(value) {

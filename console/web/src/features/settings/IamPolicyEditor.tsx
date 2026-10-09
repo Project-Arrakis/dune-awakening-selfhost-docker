@@ -21,6 +21,15 @@ interface PolicyCatalog {
 
 const TIERS = ["owner", "admin", "moderator", "player"] as const;
 
+interface SavePolicyResult {
+  policies?: PolicyCatalog["policies"];
+  notices?: PolicyCatalog["notices"];
+  addedDefaultDenies?: { tier: string; action: string }[];
+}
+
+const listNotice = (items: { tier: string; action: string }[]) =>
+  items.map((item) => `${item.tier.charAt(0).toUpperCase()}${item.tier.slice(1)}: ${item.action}`).join(", ");
+
 function parseStatements(text: string): PolicyStatement[] | null {
   try {
     const parsed = JSON.parse(text);
@@ -77,6 +86,7 @@ export function IamPolicyEditor() {
   const [jsonError, setJsonError] = useState("");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [savedNote, setSavedNote] = useState("");
   const [editorTab, setEditorTab] = useState<"builder" | "json" | "test">("builder");
   const [testResults, setTestResults] = useState<Record<string, boolean> | null>(null);
   const [search, setSearch] = useState("");
@@ -198,14 +208,25 @@ export function IamPolicyEditor() {
       return;
     }
     setSaving(true);
+    setSavedNote("");
     try {
-      await post("/api/settings/iam/policy", { tier: selectedTier, statements: valid });
-      const policies = { ...catalog.policies, [selectedTier]: { version: 1, tier: selectedTier, statements: valid } };
-      setCatalog({ ...catalog, policies });
+      // The server takes the COMPLETE policy store (PUT /api/settings/iam/policy), not one tier.
+      // (This used to POST { tier, statements } to a route that does not exist, so nothing
+      // was ever saved: issue #1179.)
+      const next = { ...catalog.policies, [selectedTier]: { version: 1, tier: selectedTier, statements: valid } };
+      const result = await api<SavePolicyResult>("/api/settings/iam/policy", { method: "PUT", body: JSON.stringify(next) });
+      // Adopt what the server now enforces: it may have added a shipped Deny to what was sent.
+      const policies = result?.policies ?? next;
+      setCatalog({ ...catalog, policies, notices: result?.notices ?? catalog.notices });
+      const enforced = policies[selectedTier];
+      if (enforced) setJsonText(JSON.stringify(enforced.statements, null, 2));
+      const added = result?.addedDefaultDenies ?? [];
+      if (added.length > 0) setSavedNote(`Saved. The shipped Deny was also added for ${listNotice(added)}.`);
+      setJsonError("");
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
-    } catch {
-      setJsonError("Failed to save policy");
+    } catch (error) {
+      setJsonError(error instanceof Error && error.message ? error.message : "Failed to save policy");
     }
     setSaving(false);
   };
@@ -223,7 +244,7 @@ export function IamPolicyEditor() {
 
   const addedDenies = catalog?.notices?.addedDefaultDenies ?? [];
   const keptAllows = catalog?.notices?.keptExactAllows ?? [];
-  const listActions = (items: { tier: string; action: string }[]) => items.map((item) => `${capitalize(item.tier)}: ${item.action}`).join(", ");
+  const listActions = listNotice;
 
   return (
     <section className="iam-policy-editor">
@@ -343,6 +364,7 @@ export function IamPolicyEditor() {
         <button className="stable-action-button" onClick={savePolicy} disabled={saving || (editorTab === "json" && !!jsonError)}>
           {saving ? "Saving..." : saved ? "Saved" : `Save ${selectedTier} policy`}
         </button>
+        {savedNote && <p className="iam-notice" role="status">{savedNote}</p>}
       </div>
     </section>
   );
