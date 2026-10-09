@@ -23,29 +23,12 @@
     # docs/integrations/discord-control-bot/admin-guide.md's curl example
     # ("Authorization: Bearer local-dev-bot-api"): a documentation placeholder, not a credential.
     "^local-dev-bot-api$",
-  ]
-
-# Real finding, upstream PR #202 maintainer review: gitleaks' discord-client-id
-# rule matches the synthetic Discord snowflake ("123456789012345678" -- an
-# obviously-fake, sequential-digit placeholder, not a real credential) used
-# across several test fixtures (console/api/test/envFile.test.js,
-# console/api/test/discordOAuthDisable.integration.test.js,
-# console/web/src/features/auth/DiscordSetupWizard.test.tsx). Confirmed via
-# `gitleaks detect --source . --no-git`, then confirming these test files
-# use it purely as fixture data, never a real client ID.
-[[allowlists]]
-  description = "Synthetic Discord client ID used as test fixture data"
-  regexes = [
-    "123456789012345678",
-  ]
-
-# Pre-existing documentation example, not a real credential -- the literal
-# string "local-dev-bot-api" in a curl example showing the Authorization
-# header's shape for a local dev deployment.
-[[allowlists]]
-  description = "Documentation example bearer token, not a real credential"
-  regexes = [
-    "local-dev-bot-api",
+    # Synthetic Discord client ID used by test fixtures (console/api/test/envFile.test.js,
+    # console/api/test/discordOAuthDisable.integration.test.js, console/web/src/features/auth/DiscordSetupWizard.test.tsx):
+    # an obviously fake sequential-digit placeholder, never a real client ID. Anchored, so only a value that IS the
+    # placeholder is allowed. (gitleaks' discord-client-id rule matches it; the earlier [[allowlists]] block for it
+    # had no effect on the pinned v8.24.3 and could not coexist with this table on newer releases.)
+    "^123456789012345678$",
   ]
 
 # NOTE: tests/db-system-backup-test.sh's synthetic secret fixtures
