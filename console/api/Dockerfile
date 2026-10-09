@@ -94,16 +94,19 @@ RUN apt-get update \
         *) echo "Unsupported architecture for Docker CLI: $arch" >&2; exit 1 ;; \
        esac \
     && curl -fsSL --proto '=https' --proto-redir '=https' "https://download.docker.com/linux/static/stable/${docker_arch}/docker-29.9.0.tgz" -o /tmp/docker.tgz \
-    && echo "${docker_sha}  /tmp/docker.tgz" | sha256sum -c - \
+    && printf '%s  %s\n' "${docker_sha}" /tmp/docker.tgz >/tmp/docker.sha256 \
+    && sha256sum -c /tmp/docker.sha256 \
     && tar -xzf /tmp/docker.tgz -C /tmp \
     && mv /tmp/docker/docker /usr/local/bin/docker \
     && chmod +x /usr/local/bin/docker \
-    && rm -rf /tmp/docker /tmp/docker.tgz \
+    && rm -rf /tmp/docker /tmp/docker.tgz /tmp/docker.sha256 \
     && mkdir -p /usr/local/lib/docker/cli-plugins \
     && curl -fsSL --proto '=https' --proto-redir '=https' "https://github.com/docker/compose/releases/download/v5.5.1/docker-compose-linux-${compose_arch}" \
         -o /usr/local/lib/docker/cli-plugins/docker-compose \
-    && echo "${compose_sha}  /usr/local/lib/docker/cli-plugins/docker-compose" | sha256sum -c - \
+    && printf '%s  %s\n' "${compose_sha}" /usr/local/lib/docker/cli-plugins/docker-compose >/tmp/compose.sha256 \
+    && sha256sum -c /tmp/compose.sha256 \
     && chmod +x /usr/local/lib/docker/cli-plugins/docker-compose \
+    && rm -f /tmp/compose.sha256 \
     && docker --version \
     && docker compose version
 
