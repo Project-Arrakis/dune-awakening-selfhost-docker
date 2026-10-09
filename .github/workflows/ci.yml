@@ -184,6 +184,7 @@ jobs:
           python3 tests/test_autoscaler_log_cache.py
           python3 tests/test_chat_binding_batch.py
           tests/psql-transport-test.sh
+          tests/ci-download-hardening-test.sh
           tests/rmq-transport-test.sh
           tests/postgres-shutdown-test.sh
           tests/postgres-bootstrap-test.sh
@@ -241,14 +242,14 @@ jobs:
       # success while its secret scan never ran. Both are version-pinned and checksum-verified.
       - name: Install gitleaks
         run: |
-          curl -fsSL --retry 3 --retry-all-errors --connect-timeout 10 --max-time 120 --proto '=https' https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz -o /tmp/gitleaks.tar.gz
+          curl -fsSL --retry 3 --retry-all-errors --connect-timeout 10 --max-time 120 --proto '=https' --proto-redir '=https' https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz -o /tmp/gitleaks.tar.gz
           echo "9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c  /tmp/gitleaks.tar.gz" | sha256sum -c -
           tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
           sudo install -m 0755 /tmp/gitleaks /usr/local/bin/gitleaks
           gitleaks version
       - name: Install trivy
         run: |
-          curl -fsSL --retry 3 --retry-all-errors --connect-timeout 10 --max-time 120 --proto '=https' https://github.com/aquasecurity/trivy/releases/download/v0.73.0/trivy_0.73.0_Linux-64bit.tar.gz -o /tmp/trivy.tar.gz
+          curl -fsSL --retry 3 --retry-all-errors --connect-timeout 10 --max-time 120 --proto '=https' --proto-redir '=https' https://github.com/aquasecurity/trivy/releases/download/v0.73.0/trivy_0.73.0_Linux-64bit.tar.gz -o /tmp/trivy.tar.gz
           echo "2edd39da482bb4e9831962487b68f68e3928ec3137794757f54d00383d79547b  /tmp/trivy.tar.gz" | sha256sum -c -
           tar -xzf /tmp/trivy.tar.gz -C /tmp trivy
           sudo install -m 0755 /tmp/trivy /usr/local/bin/trivy
@@ -309,7 +310,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Install hadolint
         run: |
-          curl -sL https://github.com/hadolint/hadolint/releases/download/v2.15.1/hadolint-linux-x86_64 -o /usr/local/bin/hadolint
+          curl -fsSL --retry 3 --retry-all-errors --connect-timeout 10 --max-time 120 --proto '=https' --proto-redir '=https' https://github.com/hadolint/hadolint/releases/download/v2.15.1/hadolint-linux-x86_64 -o /usr/local/bin/hadolint
           echo "c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507  /usr/local/bin/hadolint" | sha256sum -c -
           chmod +x /usr/local/bin/hadolint
       - name: Lint Dockerfiles
@@ -350,7 +351,12 @@ jobs:
       - name: Build console image
         run: docker build -f console/api/Dockerfile -t redblink-dune-docker-console:ci .
       - name: Install trivy
-        run: curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.73.0
+        run: |
+          curl -fsSL --retry 3 --retry-all-errors --connect-timeout 10 --max-time 120 --proto '=https' --proto-redir '=https' https://github.com/aquasecurity/trivy/releases/download/v0.73.0/trivy_0.73.0_Linux-64bit.tar.gz -o /tmp/trivy.tar.gz
+          echo "2edd39da482bb4e9831962487b68f68e3928ec3137794757f54d00383d79547b  /tmp/trivy.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/trivy.tar.gz -C /tmp trivy
+          sudo install -m 0755 /tmp/trivy /usr/local/bin/trivy
+          trivy --version
       - name: Scan console image
         run: trivy image --scanners vuln,secret --severity HIGH,CRITICAL --ignorefile .trivyignore --exit-code 1 redblink-dune-docker-console:ci
 
