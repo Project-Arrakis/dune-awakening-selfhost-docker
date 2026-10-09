@@ -32,10 +32,13 @@ done
 
 secret_with_equals='s3cr3t=value==with-equals'
 
-# run_reload <resolver-mode> <running-console-secret-or-empty>
+# run_reload <resolver-mode> <running-console-secret-or-empty> [caller-exported-secret] [container-gone]
 # resolver-mode: fail (helper container: fails closed), value:<v> (host: resolves <v>), none (never configured)
+# caller-exported-secret: a value already in DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET when reload_console starts
+# container-gone: 1 = `docker inspect` fails (no such container), as when docker cannot see the Console
 run_reload() {
-  local mode="$1" running="$2"
+  local mode="$1" running="$2" preset="${3:-}" gone="${4:-0}" preset_line=""
+  if [ -n "$preset" ]; then preset_line="export DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET=$(printf '%q' "$preset")"; fi
   local work="$test_root/work-$RANDOM"
   mkdir -p "$work/bin" "$work/runtime/scripts/lib"
   : >"$work/compose-secret-seen"
@@ -71,6 +74,7 @@ dune_secrets_has_migration_artifacts() { return 1; }'
 case "\$1" in
   inspect)
     [ -e "$work/rm-called" ] && exit 1
+    [ "$gone" = 1 ] && exit 1
     echo "PATH=/usr/bin"
     if [ -n "$running" ]; then echo "DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET=$running"; fi
     echo "OTHER=x"
@@ -95,6 +99,7 @@ set -euo pipefail
 cd "$work"
 export PATH="$work/bin:\$PATH"
 unset DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET
+$preset_line
 WEB_SERVICE="redblink-dune-docker-console"
 WEB_COMPOSE="docker-compose.web.yml"
 PROJECT_NAME="p"
@@ -156,5 +161,23 @@ seen="$(cat "$last_dir/compose-secret-seen")"
 [ "$seen" = "<unset>" ] || fail "Test 5: a removed secret was revived from the running Console (got '$seen')"
 if grep -q "^Warning:" "$last_dir/out"; then fail "Test 5: warned although the store answered normally"; fi
 echo "PASS: Test 5 (a secret removed from the store is not resurrected from the running Console)"
+
+# --- Test 6: a secret the caller already exported is the operator's explicit choice: neither the
+# resolver nor the running Console may replace it, and no warning is due (review #1197).
+run_reload "value:resolved-on-host" "stale-running-value" "caller-chosen-value"
+seen="$(cat "$last_dir/compose-secret-seen")"
+[ "$seen" = "caller-chosen-value" ] || fail "Test 6: a caller-exported secret was overwritten (got '$seen')"
+run_reload fail "stale-running-value" "caller-chosen-value"
+seen="$(cat "$last_dir/compose-secret-seen")"
+[ "$seen" = "caller-chosen-value" ] || fail "Test 6: with a failing resolver the caller's secret was replaced by the running one (got '$seen')"
+if grep -q "^Warning:" "$last_dir/out"; then fail "Test 6: warned although the caller supplied the secret"; fi
+echo "PASS: Test 6 (a caller-exported secret is kept, resolver and running Console are not consulted)"
+
+# --- Test 7: docker cannot inspect the Console (not running, or no docker): reading the running value
+# must not abort the reload under set -e; the loss is announced and the Console is still recreated.
+run_reload fail "" "" 1
+[ -s "$last_dir/compose-called" ] || fail "Test 7: a failing docker inspect aborted the reload before the Console was recreated"
+grep -q "the recreated Console will start without it" "$last_dir/out" || fail "Test 7: nothing to forward was silent"
+echo "PASS: Test 7 (a failing inspect never aborts the reload)"
 
 echo "All console reload OAuth-secret tests passed."

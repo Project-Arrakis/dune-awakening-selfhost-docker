@@ -162,3 +162,17 @@ test("PUT accepts a weak-prefixed or unquoted tag, treats * and no header as unc
     assert.equal((await put(withAdmin(current.policies, "backups:create"), "a-list,of-tags")).status, 409);
   });
 });
+
+// Review #1197 (B3, B4): only a bare * is the wildcard; a very long If-Match is clamped in the audit row.
+test("a quoted * is an ordinary tag (409), and the audited If-Match is clamped", async () => {
+  await withConsole(async ({ get, put, tempDir }) => {
+    const current = await get();
+    assert.equal((await put(withAdmin(current.policies, "backups:create"), '"*"')).status, 409);
+    assert.equal((await put(withAdmin(current.policies, "backups:create"), "*")).status, 200, "the bare * stays unconditional");
+    const long = "x".repeat(4000);
+    assert.equal((await put(withAdmin((await get()).policies, "backups:delete"), long)).status, 409);
+    const rows = auditRows(tempDir).split("\n").filter((line) => line.includes("iam.policy-conflict"));
+    assert.ok(rows.length >= 2);
+    for (const row of rows) assert.ok(row.length < 1500, "the audit row stays small");
+  });
+});

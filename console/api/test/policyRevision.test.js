@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { getAllPolicies, loadPolicies, policyRevision, setPolicies } from "../src/policy.js";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { evaluate, getAllPolicies, loadPolicies, policyRevision, setPolicies } from "../src/policy.js";
 
 // Issue #1193: PUT /api/settings/iam/policy replaces the whole store, so two admins saving close
 // together lost one change silently. A save may carry the revision it loaded; a stale one is refused.
@@ -62,4 +65,41 @@ test("a property that is undefined does not change the revision (the saved file 
   const base = getAllPolicies();
   const withUndefined = { ...base, admin: { ...base.admin, extra: undefined } };
   assert.equal(policyRevision(withUndefined), policyRevision(base));
+});
+
+// Review #1197 (B1): the policy in force must stay the saved one when the disk write fails.
+test("a failed disk write leaves the enforced policy and revision untouched and reports it", () => {
+  loadPolicies();
+  const before = policyRevision();
+  const root = mkdtempSync(join(tmpdir(), "iam-persist-fail-"));
+  mkdirSync(join(root, "runtime"));
+  writeFileSync(join(root, "runtime", "generated"), "a file where the directory should be");
+  const loosened = { ...getAllPolicies(), admin: { version: 1, tier: "admin", statements: [{ Effect: "Allow", Action: ["*"] }] } };
+  const result = setPolicies(loosened, root);
+  assert.equal(result.ok, false);
+  assert.equal(result.persistFailed, true);
+  assert.equal(policyRevision(), before, "the store did not change");
+  assert.equal(evaluate({ tier: "admin" }, "settings:write"), false, "the loosened policy is not live");
+});
+
+// Review #1197 (B2): a hand-edited file whose owner cannot write settings must not load.
+test("a saved file whose owner cannot write settings falls back to the defaults, with a reason", () => {
+  const root = mkdtempSync(join(tmpdir(), "iam-owner-lockout-"));
+  mkdirSync(join(root, "runtime", "generated"), { recursive: true });
+  const store = { ...getAllPolicies(), owner: { version: 1, tier: "owner", statements: [{ Effect: "Allow", Action: ["players:read"] }] } };
+  writeFileSync(join(root, "runtime", "generated", "iam-policies.json"), JSON.stringify(store));
+  const result = loadPolicies(root);
+  assert.equal(result.source, "defaults");
+  assert.equal(result.invalid, true);
+  assert.match(result.reason, /settings:write/);
+  assert.equal(evaluate({ tier: "owner" }, "settings:write"), true, "the owner can open the editor again");
+  loadPolicies();
+});
+
+test("a saved file with a working owner still loads", () => {
+  const root = mkdtempSync(join(tmpdir(), "iam-owner-ok-"));
+  mkdirSync(join(root, "runtime", "generated"), { recursive: true });
+  writeFileSync(join(root, "runtime", "generated", "iam-policies.json"), JSON.stringify(getAllPolicies()));
+  assert.equal(loadPolicies(root).source, "file");
+  loadPolicies();
 });

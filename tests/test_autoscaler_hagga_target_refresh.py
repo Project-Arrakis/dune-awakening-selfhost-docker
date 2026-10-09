@@ -168,6 +168,51 @@ echo SURVIVED
         self.assertEqual(stale.returncode, 0, stale.stderr)
         self.assertFalse(self.target_file.exists(), "dropped once older than the staleness limit")
 
+    def test_refresh_bounds_the_lookup_with_a_timeout(self):
+        # Without a timeout a hung query blocks the refresher before its age check ever runs (review #1197).
+        seen = Path(self.dir.name) / "timeout-seen"
+        body = f"echo \"${{DUNE_PSQL_TIMEOUT_SECONDS:-unset}}\" >{seen}; echo '{json.dumps(target(8))}'"
+        self.assertEqual(self.refresh(body).returncode, 0)
+        self.assertEqual(seen.read_text().strip(), "10", "default bound")
+        self.assertEqual(self.refresh(body, extra="SURVIVAL_TARGET_QUERY_TIMEOUT_SECONDS=3").returncode, 0)
+        self.assertEqual(seen.read_text().strip(), "3", "configurable bound")
+
+    def test_a_target_file_older_than_the_limit_is_not_granted(self):
+        # If the refresher is stuck or dead the file just ages; the consumer must notice (review #1197).
+        self.write_target(target(8))
+        old = time.time() - 600
+        os.utime(self.target_file, (old, old))
+        consumer = Consumer({"TARGET_FILE": str(self.target_file), "TARGET_MAX_STALE_SECONDS": "60"})
+        consumer.send(event("flow-stale"))
+        consumer.settle()
+        self.write_target(target(9))  # the refresher is alive again
+        consumer.send(event("flow-fresh"))
+        flow, grant = consumer.grant()
+        self.assertEqual((flow, grant["PartitionId"]), ("flow-fresh", 9))
+        stdout, stderr, code = consumer.finish()
+        self.assertEqual((stdout, code), ("", 0), stderr)
+
+    def test_the_consumer_is_started_with_the_configured_staleness_limit(self):
+        # The consumer's own default is 60 s, so only this wiring makes SURVIVAL_TARGET_MAX_STALE_SECONDS apply to it.
+        launch = SOURCE.split("follow_director_hagga_handoffs() {", 1)[1].split("3<<'PY'", 1)[0]
+        self.assertIn('TARGET_MAX_STALE_SECONDS="${SURVIVAL_TARGET_MAX_STALE_SECONDS:-60}"', launch)
+
+    def test_survival_target_settings_are_validated(self):
+        helper = SOURCE.split("validate_scan_seconds() {", 1)[1].split("\n}\n", 1)[0]
+        lines = [l for l in SOURCE.splitlines() if l.startswith("SURVIVAL_TARGET_") and "validate_scan_seconds" in l]
+        self.assertEqual(len(lines), 3, lines)
+        script = "validate_scan_seconds() {" + helper + "\n}\n" + "\n".join(lines) + \
+            '\necho "$SURVIVAL_TARGET_REFRESH_SECONDS $SURVIVAL_TARGET_MAX_STALE_SECONDS $SURVIVAL_TARGET_QUERY_TIMEOUT_SECONDS"\n'
+        def run(**env):
+            result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env={**os.environ, **env})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return result.stdout.strip()
+        self.assertEqual(run(), "5 60 10")
+        self.assertEqual(run(SURVIVAL_TARGET_REFRESH_SECONDS="0", SURVIVAL_TARGET_MAX_STALE_SECONDS="abc",
+                             SURVIVAL_TARGET_QUERY_TIMEOUT_SECONDS="-4"), "5 60 10")
+        self.assertEqual(run(SURVIVAL_TARGET_REFRESH_SECONDS="2", SURVIVAL_TARGET_MAX_STALE_SECONDS="30",
+                             SURVIVAL_TARGET_QUERY_TIMEOUT_SECONDS="7"), "2 30 7")
+
     def test_a_failed_write_is_reported_and_never_ends_the_autoscaler(self):
         self.write_target(target(8))
         result = self.refresh(f"echo '{json.dumps(target(9))}'", extra="mv() { return 1; }")

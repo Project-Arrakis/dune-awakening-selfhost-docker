@@ -16,6 +16,11 @@ ENV NODE_ENV=production
 # Runtime tools required by RedBlink dune scripts when the web admin runs in a container.
 # We install small OS tools through apt, then install Docker CLI + Compose plugin
 # as standalone binaries to avoid pulling the heavy docker.io Debian package.
+# Both are checked against a pinned sha256 per architecture, and fetched https-only (review #1197).
+# Compose's hashes are the ones in its release's checksums.txt. Docker publishes no checksums for its
+# static CLI, so those two were computed from download.docker.com over TLS when the version was bumped:
+# they stop a later change at the source, not a compromise at the time of the bump. Update the hashes
+# with the version.
 # The psql client is what decides how the console's publisher loops reach the
 # database. runtime/scripts/lib/postgres.sh and runtime/scripts/dune_psql.py
 # prefer a TCP connection to the port start-postgres.sh publishes on loopback
@@ -80,19 +85,28 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && arch="$(dpkg --print-architecture)" \
     && case "$arch" in \
-        amd64) docker_arch="x86_64"; compose_arch="x86_64" ;; \
-        arm64) docker_arch="aarch64"; compose_arch="aarch64" ;; \
+        amd64) docker_arch="x86_64"; compose_arch="x86_64"; \
+               docker_sha="33e1ab8b63d14bca449f7a3d30d7f6aa669daa544e60a86b17fec87f61afe2b4"; \
+               compose_sha="db1889184726840f75c4f9c001048430d4f25b3be3cb084d3ddd762bc0aed576" ;; \
+        arm64) docker_arch="aarch64"; compose_arch="aarch64"; \
+               docker_sha="811f6eee271678fc98dbe5c4d896c00fc5fe2daa4f7a37069c17abc036eab85b"; \
+               compose_sha="732e3a84c1a0f67256ce80bc2598a24546b10ca05f9faa97efceb1171ece2ef7" ;; \
         *) echo "Unsupported architecture for Docker CLI: $arch" >&2; exit 1 ;; \
        esac \
-    && curl -fsSL "https://download.docker.com/linux/static/stable/${docker_arch}/docker-29.9.0.tgz" -o /tmp/docker.tgz \
+    && curl -fsSL --proto '=https' --proto-redir '=https' "https://download.docker.com/linux/static/stable/${docker_arch}/docker-29.9.0.tgz" -o /tmp/docker.tgz \
+    && printf '%s  %s\n' "${docker_sha}" /tmp/docker.tgz >/tmp/docker.sha256 \
+    && sha256sum -c /tmp/docker.sha256 \
     && tar -xzf /tmp/docker.tgz -C /tmp \
     && mv /tmp/docker/docker /usr/local/bin/docker \
     && chmod +x /usr/local/bin/docker \
-    && rm -rf /tmp/docker /tmp/docker.tgz \
+    && rm -rf /tmp/docker /tmp/docker.tgz /tmp/docker.sha256 \
     && mkdir -p /usr/local/lib/docker/cli-plugins \
-    && curl -fsSL "https://github.com/docker/compose/releases/download/v5.5.1/docker-compose-linux-${compose_arch}" \
+    && curl -fsSL --proto '=https' --proto-redir '=https' "https://github.com/docker/compose/releases/download/v5.5.1/docker-compose-linux-${compose_arch}" \
         -o /usr/local/lib/docker/cli-plugins/docker-compose \
+    && printf '%s  %s\n' "${compose_sha}" /usr/local/lib/docker/cli-plugins/docker-compose >/tmp/compose.sha256 \
+    && sha256sum -c /tmp/compose.sha256 \
     && chmod +x /usr/local/lib/docker/cli-plugins/docker-compose \
+    && rm -f /tmp/compose.sha256 \
     && docker --version \
     && docker compose version
 

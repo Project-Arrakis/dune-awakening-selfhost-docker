@@ -19,6 +19,7 @@ const catalog = (extra: Record<string, unknown> = {}) => ({
   ...extra,
 });
 
+type PolicyCatalogLike = ReturnType<typeof catalog>;
 const SYSTEM = ["backups:download-system", "backups:import-system", "backups:restore-system"];
 
 function serve(putResult: unknown, get = catalog()) {
@@ -86,7 +87,7 @@ test("shows the server's reason when a save is rejected instead of a generic fai
   serve(new Error("The owner policy must retain settings:write access."));
   render(<IamPolicyEditor />);
   fireEvent.click(await screen.findByRole("button", { name: "Save admin policy" }));
-  expect(await screen.findByText("The owner policy must retain settings:write access.")).toBeInTheDocument();
+  expect(await screen.findByText("Could not save the admin policy: The owner policy must retain settings:write access.")).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Saved" })).not.toBeInTheDocument();
 });
 
@@ -276,4 +277,87 @@ test("a save response without a revision does not leave the consumed one to be s
   await waitFor(() => expect(puts).toHaveLength(2));
   expect(puts[0]).toEqual({ "If-Match": "rev-1" });
   expect(puts[1]).toBeUndefined();
+});
+
+
+// Review #1197 (C1, C2, C4).
+
+test("a failed save does not disable Save, so it can be retried without touching the text", async () => {
+  let puts = 0;
+  vi.mocked(api).mockImplementation((async (_path: string, init?: RequestInit) => {
+    if (init?.method === "PUT") {
+      puts += 1;
+      if (puts === 1) throw new Error("Postgres is not running");
+      return { ok: true };
+    }
+    return catalog({ revision: "rev-1" });
+  }) as typeof api);
+  render(<IamPolicyEditor />);
+  fireEvent.click(await screen.findByRole("button", { name: "Save admin policy" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Could not save the admin policy: Postgres is not running");
+  fireEvent.click(screen.getByRole("button", { name: "JSON" }));
+  const retry = screen.getByRole("button", { name: "Save admin policy" });
+  expect(retry).toBeEnabled();
+  fireEvent.click(retry);
+  expect(await screen.findByRole("button", { name: "Saved" })).toBeInTheDocument();
+});
+
+test("switching tier clears an error left by another tier, and Save is usable there", async () => {
+  serve(new Error("boom"));
+  render(<IamPolicyEditor />);
+  fireEvent.click(await screen.findByRole("button", { name: "Save admin policy" }));
+  expect(await screen.findByRole("alert")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Moderator" }));
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "JSON" }));
+  expect(screen.getByRole("button", { name: "Save moderator policy" })).toBeEnabled();
+});
+
+test("a failure that arrives after switching tier is still shown, and names the tier it was for", async () => {
+  let rejectPut: (e: Error) => void = () => {};
+  vi.mocked(api).mockImplementation((async (_path: string, init?: RequestInit) => {
+    if (init?.method === "PUT") return new Promise((_resolve, reject) => { rejectPut = reject; });
+    return catalog({ revision: "rev-1" });
+  }) as typeof api);
+  render(<IamPolicyEditor />);
+  fireEvent.click(await screen.findByRole("button", { name: "Save admin policy" }));
+  await waitFor(() => expect(rejectPut).not.toBe(undefined));
+  await waitFor(() => expect(vi.mocked(api).mock.calls.some(([, init]) => init?.method === "PUT")).toBe(true));
+  fireEvent.click(screen.getByRole("button", { name: "Moderator" }));
+  rejectPut(new Error("Postgres is not running"));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Could not save the admin policy: Postgres is not running");
+});
+
+test("a pre-save conflict found after switching tier is not shown under the other tier", async () => {
+  const theirs = store();
+  theirs.admin = doc("admin", "backups:delete");
+  let releaseGet: (value: PolicyCatalogLike) => void = () => {};
+  let gets = 0;
+  vi.mocked(api).mockImplementation((async (_path: string, init?: RequestInit) => {
+    if (init?.method === "PUT") return { ok: true };
+    gets += 1;
+    if (gets === 1) return catalog({ revision: "rev-1" });
+    return new Promise<PolicyCatalogLike>((resolve) => { releaseGet = resolve; });
+  }) as typeof api);
+  render(<IamPolicyEditor />);
+  fireEvent.click(await screen.findByRole("button", { name: "Save admin policy" }));
+  await waitFor(() => expect(gets).toBe(2));
+  fireEvent.click(screen.getByRole("button", { name: "Moderator" }));
+  releaseGet(catalog({ revision: "rev-2", policies: theirs }));
+  await waitFor(() => expect(screen.getByRole("button", { name: /Save moderator policy/ })).toBeEnabled());
+  expect(screen.queryByText(/Another admin changed the admin policy/)).not.toBeInTheDocument();
+});
+
+test("Show current policy keeps focus in the footer instead of dropping it to the page", async () => {
+  const theirs = store();
+  theirs.admin = doc("admin", "backups:delete");
+  let gets = 0;
+  vi.mocked(api).mockImplementation((async () => {
+    gets += 1;
+    return gets === 1 ? catalog({ revision: "rev-1" }) : catalog({ revision: "rev-2", policies: theirs });
+  }) as typeof api);
+  render(<IamPolicyEditor />);
+  fireEvent.click(await screen.findByRole("button", { name: "Save admin policy" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Show current policy" }));
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: /Save admin policy/ }));
 });

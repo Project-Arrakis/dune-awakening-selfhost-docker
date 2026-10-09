@@ -57,3 +57,7 @@ The scanner reads `.gitleaks.toml`, `.trivyignore-fs.yaml` and the script itself
 checkout, so a PR can change the rules that judge it. A `CODEOWNERS` entry for those files and
 `.github/workflows/` with required code-owner review closes that gap; it needs the maintainers' handles and a
 branch-protection setting, so it is left to them.
+
+## Downloads in CI and Dockerfiles
+
+`tests/ci-download-hardening-test.sh` fails for any `curl` or `wget` in a workflow or a Dockerfile (including one written with a path, such as `/usr/bin/curl`) that pipes into a shell, lacks `--proto '=https' --proto-redir '=https'`, turns certificate checking off, writes no file, or is not followed by a `sha256sum -c` naming that file that cannot fail (`|| true` is refused). It also runs its own good and bad fixtures, so a weakened rule fails the test instead of letting a download through. The Docker CLI and Compose binaries in `console/api/Dockerfile` are pinned by sha256 per architecture; Compose's hashes come from its release `checksums.txt`, Docker publishes none for its static CLI, so those were computed from download.docker.com over TLS when the version was bumped.
