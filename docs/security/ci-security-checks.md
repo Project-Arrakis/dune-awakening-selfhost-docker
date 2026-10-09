@@ -5,6 +5,10 @@
 The `security-checks` CI job runs `tests/security-pr-checks.sh`: a whitespace and merge-conflict check, ShellCheck,
 gitleaks (secrets) and trivy (secrets and Dockerfile/IaC misconfiguration).
 
+This page covers the `security-checks` job, its two scan modes and how to accept a finding. For every scanner the
+repository runs (govulncheck, hadolint, osv-scanner, CodeQL, semgrep, the image scan) see
+[CI security tooling](ci-security-tooling.md).
+
 ## What gets scanned
 
 `SCAN_MODE` selects the scope (the workflow sets it from the trigger):

@@ -129,10 +129,36 @@ director_logs_available() {
   [ -z "${DIRECTOR_LOG_CACHE_FILE:-}" ] || director_logs --since 1s >/dev/null 2>&1
 }
 
+# The EXIT trap removes this process's cache directory, but a SIGKILL, an OOM kill
+# or a crash loop skips it and leaves up to ~10 minutes of Director log lines on
+# disk (0700/0600, still log data) with nothing to remove them (#1164). A live
+# follower writes its heartbeat about once a second, so a directory with no file
+# touched for 30 minutes belongs to a process that is gone.
+sweep_orphan_director_log_caches() {
+  local dir recent find_status minutes=30
+  for dir in runtime/generated/director-log-cache.*; do
+    [ -d "$dir" ] && [ ! -L "$dir" ] || continue
+    [ "$dir" != "${DIRECTOR_LOG_CACHE_DIR:-}" ] || continue
+    # Best effort, never fatal: this runs at startup under `set -e`, and a leftover this user
+    # cannot read or delete (for example a root-owned one from a manual run) must not turn into
+    # an autoscaler that exits and restart-loops. A directory that cannot be inspected is left
+    # alone rather than assumed stale.
+    find_status=0
+    recent="$(find "$dir" -mmin "-$minutes" -print -quit 2>/dev/null)" || find_status=$?
+    [ "$find_status" = 0 ] || continue
+    [ -z "$recent" ] || continue
+    echo "Removing orphaned Director log cache $dir (untouched for ${minutes}m)"
+    rm -rf -- "$dir" 2>/dev/null || echo "WARN could not remove $dir; leaving it in place" >&2
+  done
+}
+
 start_director_log_cache() {
+  sweep_orphan_director_log_caches
   DIRECTOR_LOG_CACHE_DIR="$(mktemp -d runtime/generated/director-log-cache.XXXXXX)"
   DIRECTOR_LOG_CACHE_FILE="$DIRECTOR_LOG_CACHE_DIR/recent.sqlite"
+  SURVIVAL_TARGET_FILE="$DIRECTOR_LOG_CACHE_DIR/survival-target.json"
   ensure_director_log_cache
+  refresh_survival_target_file
   trap 'stop_director_log_cache' EXIT
   trap 'exit 143' TERM
   trap 'exit 130' INT
@@ -148,10 +174,56 @@ ensure_director_log_cache() {
   DIRECTOR_LOG_CACHE_PID=$!
 }
 
+# Keeps the Survival_1 target (partition, port, IP of the first ready server) that
+# follow_director_hagga_handoffs hands to players current. Written by follow_survival_target
+# on its own cadence (SURVIVAL_TARGET_REFRESH_SECONDS), not once per pass of the serial main
+# loop, so how stale a grant can be is bounded no matter how long a pass takes.
+#   - the query ran and found a ready Survival_1: write it (atomically);
+#   - the query ran and found none (status 2): remove the file, so the consumer skips events
+#     instead of answering with an endpoint that is gone;
+#   - the query itself failed (database blip): keep the last good file for up to
+#     SURVIVAL_TARGET_MAX_STALE_SECONDS (60) so a short outage does not drop every handoff, then
+#     remove it;
+#   - a failed write is reported, never fatal: this file is read by one consumer, it is not
+#     worth ending the autoscaler (`set -e`) for.
+refresh_survival_target_file() {
+  local json tmp status=0 age
+  [ -n "${SURVIVAL_TARGET_FILE:-}" ] || return 0
+  json="$(survival_partition_target_json 2>/dev/null)" || status=$?
+  if [ "$status" = 0 ] && [ -n "$json" ]; then
+    tmp="$SURVIVAL_TARGET_FILE.tmp"
+    if ! { printf '%s\n' "$json" >"$tmp" && mv -f "$tmp" "$SURVIVAL_TARGET_FILE"; } 2>/dev/null; then
+      rm -f "$tmp" 2>/dev/null || true
+      echo "WARN could not write $SURVIVAL_TARGET_FILE; keeping the previous Survival_1 target" >&2
+    fi
+    return 0
+  fi
+  if [ "$status" = 2 ]; then
+    rm -f "$SURVIVAL_TARGET_FILE" 2>/dev/null || true
+    return 0
+  fi
+  if [ -e "$SURVIVAL_TARGET_FILE" ]; then
+    age=$(( $(date +%s) - $(stat -c %Y "$SURVIVAL_TARGET_FILE" 2>/dev/null || echo 0) ))
+    if [ "$age" -gt "${SURVIVAL_TARGET_MAX_STALE_SECONDS:-60}" ]; then
+      rm -f "$SURVIVAL_TARGET_FILE" 2>/dev/null || true
+    fi
+  fi
+  return 0
+}
+
+follow_survival_target() {
+  while kill -0 "$$" 2>/dev/null; do
+    refresh_survival_target_file || echo "WARN Survival_1 target refresh failed; retrying"
+    sleep "${SURVIVAL_TARGET_REFRESH_SECONDS:-5}"
+  done
+}
+
 stop_director_log_cache() {
   kill "$DIRECTOR_LOG_CACHE_PID" 2>/dev/null || true
   wait "$DIRECTOR_LOG_CACHE_PID" 2>/dev/null || true
-  rm -f "$DIRECTOR_LOG_CACHE_FILE" "$DIRECTOR_LOG_CACHE_FILE-wal" "$DIRECTOR_LOG_CACHE_FILE-shm"
+  rm -f "$DIRECTOR_LOG_CACHE_FILE" "$DIRECTOR_LOG_CACHE_FILE-wal" "$DIRECTOR_LOG_CACHE_FILE-shm" \
+    "${SURVIVAL_TARGET_FILE:-$DIRECTOR_LOG_CACHE_DIR/survival-target.json}" \
+    "${SURVIVAL_TARGET_FILE:-$DIRECTOR_LOG_CACHE_DIR/survival-target.json}.tmp"
   rmdir "$DIRECTOR_LOG_CACHE_DIR" 2>/dev/null || true
 }
 PROACTIVE_HAGGA_SCAN_SECONDS="$(validate_scan_seconds DUNE_AUTOSCALER_PROACTIVE_HAGGA_SCAN_SECONDS "${DUNE_AUTOSCALER_PROACTIVE_HAGGA_SCAN_SECONDS:-15}" 15 "$SINCE_SECONDS")"
@@ -971,7 +1043,8 @@ where wp.map = 'Survival_1'
 order by wp.partition_id
 limit 1;
 ")" || return 1
-  [ -n "$row" ] || return 1
+  # 2 = the query ran and found no ready Survival_1; 1 = the query itself failed.
+  [ -n "$row" ] || return 2
 
   DUNE_SURVIVAL_TARGET_ROW="$row" python3 - <<'PY'
 import json
@@ -1089,7 +1162,7 @@ PY
 
 follow_director_hagga_handoffs() {
   while true; do
-    python3 runtime/scripts/director-log-cache.py stream "$DIRECTOR_LOG_CACHE_FILE" --parent "$$" 2>/dev/null | TARGET_JSON="$(survival_partition_target_json 2>/dev/null || true)" python3 -u /dev/fd/3 3<<'PY' | while IFS='|' read -r flow_id origin_id payload_json; do
+    python3 runtime/scripts/director-log-cache.py stream "$DIRECTOR_LOG_CACHE_FILE" --parent "$$" 2>/dev/null | TARGET_FILE="${SURVIVAL_TARGET_FILE:-}" python3 -u /dev/fd/3 3<<'PY' | while IFS='|' read -r flow_id origin_id payload_json; do
 import json
 import os
 import re
@@ -1097,10 +1170,25 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 target_json = os.environ.get("TARGET_JSON", "")
-if not target_json:
+target_file = os.environ.get("TARGET_FILE", "")
+if not target_json and not target_file:
     raise SystemExit(0)
 
-target = json.loads(target_json)
+
+def current_target():
+    # The stream outlives Director restarts (unlike the `docker logs -f` pipe it
+    # replaced), and a Director restart also restarts Survival_1, so the target
+    # is re-read for every event instead of once at start (#1163). A missing or
+    # unreadable file means there is no ready Survival_1 right now: skip the
+    # event rather than hand a player a stale endpoint.
+    if target_file:
+        try:
+            with open(target_file, encoding="utf-8") as handle:
+                return json.loads(handle.read())
+        except (OSError, ValueError):
+            return None
+    return json.loads(target_json)
+
 response_re = re.compile(r'Notified player\(s\) "([^"]+)" of travel response (SH_Arrakeen3|SH_HarkoVillage4|Overmap2): (\{.*\})')
 
 for line in sys.stdin:
@@ -1119,6 +1207,9 @@ for line in sys.stdin:
         continue
     flow_id = payload.get("RequestID") or ""
     if not flow_id:
+        continue
+    target = current_target()
+    if not target:
         continue
     response_payload = dict(payload)
     response_payload["MapName"] = "HaggaBasin"
@@ -3323,6 +3414,7 @@ scan_director_browser_state() {
 
 start_director_log_cache
 follow_director_hagga_handoffs &
+follow_survival_target &
 follow_director_travel_demand &
 follow_fresh_process_lifecycle &
 supervise_sietch_override_publisher &

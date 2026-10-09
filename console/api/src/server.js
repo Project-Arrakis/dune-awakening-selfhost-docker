@@ -55,7 +55,7 @@ import { fetchWithTimeoutAndRetry } from "./services/httpWithRetry.js";
 import { createHandoff } from "./integrations/discord/handoff.js";
 import { actionForRoute, ROUTE_ACTIONS, NAMESPACES } from "./actions.js";
 import { resolvePlayerScope } from "./playerScope.js";
-import { evaluate, loadPolicies, getAllPolicies, setPolicies, resolveAllowedActions, allKnownActions, resolveSessionTier, normalizeTier } from "./policy.js";
+import { evaluate, loadPolicies, getAllPolicies, getPolicyNotices, setPolicies, resolveAllowedActions, allKnownActions, resolveSessionTier, normalizeTier } from "./policy.js";
 import { classifyPlayerTierRequest, PLAYER_TIER_ACTIONS } from "./playerTierGate.js";
 import { discordAdapterEnabled, discordWritesEnabled } from "./integrations/discord/adapter.js";
 // [Layer 3 integration audit fix, LOW, issue #1043] The 5 header constants
@@ -168,6 +168,9 @@ if (policyLoad.invalid) {
 }
 if ((policyLoad.addedDefaultDenies || []).length > 0) {
   console.warn(`IAM policy notice: the saved policy predates ${policyLoad.addedDefaultDenies.map((d) => `${d.tier} ${d.action}`).join(", ")}; the shipped Deny for each was added in memory (a saved Allow naming the action exactly would have been kept). Save the policy from Settings to persist it.`);
+}
+if ((policyLoad.keptExactAllows || []).length > 0) {
+  console.warn(`IAM policy notice: ${policyLoad.keptExactAllows.map((d) => `${d.tier} ${d.action}`).join(", ")} ${policyLoad.keptExactAllows.length === 1 ? "is" : "are"} allowed by name in the saved policy, so the shipped Deny was not added. That is kept as your explicit choice, and it lets that tier read every credential on this host through a system backup. Remove the Allow in Settings to restore the Deny.`);
 }
 if ((policyLoad.playerCappedActions || []).length > 0) {
   console.warn(`IAM policy notice: the saved player policy grants ${policyLoad.playerCappedActions.length} action(s) the strict player tier can never use (it is capped at players:read and guilds:read): ${policyLoad.playerCappedActions.slice(0, 8).join(", ")}${policyLoad.playerCappedActions.length > 8 ? ", ..." : ""}. Grant them to moderator instead.`);
@@ -1707,7 +1710,9 @@ async function handleApi(req, res, path) {
       policies,
       actions: [...allKnownActions()].sort(),
       actionMap: ROUTE_ACTIONS,
-      namespaces: NAMESPACES
+      namespaces: NAMESPACES,
+      // Why a tier's effective policy differs from the saved file (issue #1160).
+      notices: getPolicyNotices()
     });
   }
   if (path === "/api/settings/iam/policy" && req.method === "PUT") {

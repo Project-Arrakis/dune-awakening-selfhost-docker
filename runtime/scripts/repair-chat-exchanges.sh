@@ -1,4 +1,21 @@
 #!/usr/bin/env bash
+# Repairs chat resources in RabbitMQ: declares missing exchanges and adds missing
+# queue bindings. It never creates a binding that already exists, so a run that
+# finds nothing missing changes nothing, and any run is safe to repeat.
+#
+# Behaviour worth knowing (dune-awakening-selfhost-docker#1165):
+#  - Bindings are PLANNED while the database is walked (bind_queue only appends to
+#    a plan file) and APPLIED afterwards in batches of 200 (chat-binding-plan.py).
+#    The "Ensured ... bindings: N" lines are printed only after every batch
+#    succeeded, so N is what was applied. If any binding in a batch is rejected the
+#    script prints one WARN on stderr and exits 1 before any summary line; the other
+#    bindings in that batch are still applied (the Erlang side does not stop at the
+#    first failure), and the next pass retries the rest.
+#  - The one destructive step is an exchange whose type or durability is wrong: it
+#    is deleted and re-declared (declare_exchange), and its bindings are re-planned.
+#    There is no dry-run for that and it is not transactional; if the re-declare
+#    fails the exchange stays missing until the next pass.
+#  - Run with no dune-postgres / dune-rmq-game container: exits 0 without doing anything.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -28,6 +45,10 @@ end
 
 declared=0
 failed=0
+# The *_bind_failed counters below can no longer increment: bind_queue only plans a
+# binding, and apply_binding_plan reports (and exits on) any failure before the summary.
+# They are kept so the summary section stays line-for-line identical to upstream's, which
+# keeps the next `git merge upstream/main` of this file mechanical.
 guild_bound=0
 guild_bind_failed=0
 faction_bound=0
@@ -71,6 +92,9 @@ load_rmq_metadata() {
   rmq_ctl list_queues name >"$queue_list_file" 2>/dev/null || return 1
   rmq_ctl list_bindings source_name destination_name destination_kind routing_key >"$binding_list_file" 2>/dev/null || return 1
   local source destination kind key
+  # `read` with a tab IFS collapses a leading empty field, so a binding from the default
+  # exchange (empty source) is mis-parsed and skipped by the `kind = queue` test below.
+  # Chat bindings always have a source exchange, so the dedupe is correct for them.
   while IFS=$'\t' read -r source destination kind key; do
     [ "$kind" = queue ] || continue
     existing_bindings["$source|$key|$destination"]=1
