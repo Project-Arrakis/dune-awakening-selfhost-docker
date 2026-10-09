@@ -47,7 +47,7 @@ test("public probe image runs as an unprivileged dedicated user", () => {
   // dependent on whatever the floating tag happens to resolve to on a given
   // day). Bump this pin (and go.mod's `go` directive alongside it) forward
   // together whenever govulncheck finds a new reachable stdlib CVE.
-  assert.match(dockerfile, /FROM golang:1\.25\.13-alpine AS build/);
+  assert.match(dockerfile, /FROM golang:1\.26\.9-alpine AS build/);
   assert.match(dockerfile, /USER probe/);
   assert.match(dockerfile, /CGO_ENABLED=0/);
   assert.match(dockerfile, /RUN go test \.\/\.\.\./);
