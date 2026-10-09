@@ -89,3 +89,39 @@ test("shows the server's reason when a save is rejected instead of a generic fai
   expect(await screen.findByText("The owner policy must retain settings:write access.")).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Saved" })).not.toBeInTheDocument();
 });
+
+test("saves on top of the store as it is now, not the copy loaded when the page opened", async () => {
+  // Another admin changed the moderator tier after this page loaded.
+  const stale = catalog();
+  const fresh = catalog();
+  fresh.policies.moderator = { version: 1, tier: "moderator", statements: [{ Effect: "Allow" as const, Action: ["players:read"] }] };
+  const calls: { path: string; init?: RequestInit }[] = [];
+  let gets = 0;
+  vi.mocked(api).mockImplementation((async (path: string, init?: RequestInit) => {
+    calls.push({ path, init });
+    if (init?.method === "PUT") return { ok: true };
+    gets += 1;
+    return gets === 1 ? stale : fresh;
+  }) as typeof api);
+  render(<IamPolicyEditor />);
+  fireEvent.click(await screen.findByRole("button", { name: "Save admin policy" }));
+  await waitFor(() => expect(calls.some((c) => c.init?.method === "PUT")).toBe(true));
+  const sent = JSON.parse(String(calls.find((c) => c.init?.method === "PUT")!.init?.body));
+  expect(sent.moderator.statements).toEqual([{ Effect: "Allow", Action: ["players:read"] }]);
+  expect(sent.admin.statements).toEqual([{ Effect: "Allow", Action: ["backups:*"] }]);
+});
+
+test("the note about what the last save added goes away when another policy is shown", async () => {
+  const enforced = store();
+  serve({
+    ok: true,
+    policies: enforced,
+    addedDefaultDenies: SYSTEM.map((action) => ({ tier: "admin", action })),
+    notices: { addedDefaultDenies: [], keptExactAllows: [] },
+  });
+  render(<IamPolicyEditor />);
+  fireEvent.click(await screen.findByRole("button", { name: "Save admin policy" }));
+  expect(await screen.findByText(/Saved\. The shipped Deny was also added for/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Moderator" }));
+  expect(screen.queryByText(/Saved\. The shipped Deny was also added for/)).not.toBeInTheDocument();
+});

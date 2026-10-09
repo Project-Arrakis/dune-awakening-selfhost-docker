@@ -101,9 +101,13 @@ export function IamPolicyEditor() {
 
   if (!catalog && loadError) return <section className="iam-editor-error"><h3>Failed to load IAM policies</h3><button onClick={() => { setLoadError(false); window.location.reload(); }}>Retry</button></section>;
 
+  // Anything that changes the policy on screen also retires the note about the last save
+  // (#1185): "Saved. The shipped Deny was also added for ..." described a different policy.
+  const markEdited = () => { setSaved(false); setSavedNote(""); };
+
   const selectTier = (tier: string) => {
     setSelectedTier(tier);
-    setSaved(false);
+    markEdited();
     setTestResults(null);
     setSearch("");
     if (catalog) {
@@ -181,7 +185,7 @@ export function IamPolicyEditor() {
       }
     }
     setJsonText(JSON.stringify(updated, null, 2));
-    setSaved(false);
+    markEdited();
   };
 
   const validateJson = (text: string): PolicyStatement[] | null => {
@@ -213,7 +217,17 @@ export function IamPolicyEditor() {
       // The server takes the COMPLETE policy store (PUT /api/settings/iam/policy), not one tier.
       // (This used to POST { tier, statements } to a route that does not exist, so nothing
       // was ever saved: issue #1179.)
-      const next = { ...catalog.policies, [selectedTier]: { version: 1, tier: selectedTier, statements: valid } };
+      // Start from the store as it is NOW, not as it was when this page opened: the server replaces the
+      // whole store, so a stale copy would silently overwrite another admin's change to another tier
+      // (#1184). This narrows the race to one request round-trip; the API is whole-store by design.
+      let base = catalog.policies;
+      try {
+        const latest = await api<PolicyCatalog>("/api/settings/iam/policies");
+        if (latest?.policies) base = latest.policies;
+      } catch {
+        // Fall back to what is on screen; the PUT below still reports its own failure.
+      }
+      const next = { ...base, [selectedTier]: { version: 1, tier: selectedTier, statements: valid } };
       const result = await api<SavePolicyResult>("/api/settings/iam/policy", { method: "PUT", body: JSON.stringify(next) });
       // Adopt what the server now enforces: it may have added a shipped Deny to what was sent.
       const policies = result?.policies ?? next;
@@ -325,7 +339,7 @@ export function IamPolicyEditor() {
             <textarea
               className={`iam-json-textarea ${jsonError ? "has-error" : ""}`}
               value={jsonText}
-              onChange={(e) => { setJsonText(e.target.value); setSaved(false); setJsonError(""); }}
+              onChange={(e) => { setJsonText(e.target.value); markEdited(); setJsonError(""); }}
               rows={16}
               spellCheck={false}
             />

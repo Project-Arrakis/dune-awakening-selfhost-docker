@@ -129,6 +129,17 @@ director_logs_available() {
   [ -z "${DIRECTOR_LOG_CACHE_FILE:-}" ] || director_logs --since 1s >/dev/null 2>&1
 }
 
+# For a log-reading scan that has already passed director_heal_due: with the log follower down or
+# stale, defer instead of reading an empty log, and give the scan interval back so the next pass
+# retries at once instead of after a full interval. (The follower replays the retention window when
+# it reconnects, but a scan only looks back SINCE; an interval spent on an empty read is an interval
+# of events that is never looked at.) Usage: director_logs_or_defer <scan key> || return 0
+director_logs_or_defer() {
+  director_logs_available && return 0
+  director_heal_clear "scan:$1" 2>/dev/null || true
+  return 1
+}
+
 # The EXIT trap removes this process's cache directory, but a SIGKILL, an OOM kill
 # or a crash loop skips it and leaves up to ~10 minutes of Director log lines on
 # disk (0700/0600, still log data) with nothing to remove them (#1164). A live
@@ -219,12 +230,25 @@ follow_survival_target() {
 }
 
 stop_director_log_cache() {
+  # Stop the Survival_1 target refresher FIRST: it rewrites survival-target.json every few seconds,
+  # and a write after the files are removed would make the rmdir below fail silently and leave a
+  # directory holding Survival_1 endpoint data behind (#1186).
+  if [ -n "${SURVIVAL_TARGET_PID:-}" ]; then
+    kill "$SURVIVAL_TARGET_PID" 2>/dev/null || true
+    wait "$SURVIVAL_TARGET_PID" 2>/dev/null || true
+  fi
   kill "$DIRECTOR_LOG_CACHE_PID" 2>/dev/null || true
   wait "$DIRECTOR_LOG_CACHE_PID" 2>/dev/null || true
-  rm -f "$DIRECTOR_LOG_CACHE_FILE" "$DIRECTOR_LOG_CACHE_FILE-wal" "$DIRECTOR_LOG_CACHE_FILE-shm" \
-    "${SURVIVAL_TARGET_FILE:-$DIRECTOR_LOG_CACHE_DIR/survival-target.json}" \
-    "${SURVIVAL_TARGET_FILE:-$DIRECTOR_LOG_CACHE_DIR/survival-target.json}.tmp"
-  rmdir "$DIRECTOR_LOG_CACHE_DIR" 2>/dev/null || true
+  # Killing the refresher stops its loop, but a `mv` it had already started can finish a moment
+  # later and recreate the file after the removal below, so retry briefly instead of trusting one
+  # pass (a hot-writer test hit this in 2 of 25 runs).
+  for _ in 1 2 3; do
+    rm -f "$DIRECTOR_LOG_CACHE_FILE" "$DIRECTOR_LOG_CACHE_FILE-wal" "$DIRECTOR_LOG_CACHE_FILE-shm" \
+      "${SURVIVAL_TARGET_FILE:-$DIRECTOR_LOG_CACHE_DIR/survival-target.json}" \
+      "${SURVIVAL_TARGET_FILE:-$DIRECTOR_LOG_CACHE_DIR/survival-target.json}.tmp"
+    rmdir "$DIRECTOR_LOG_CACHE_DIR" 2>/dev/null && break
+    sleep 0.1
+  done
 }
 PROACTIVE_HAGGA_SCAN_SECONDS="$(validate_scan_seconds DUNE_AUTOSCALER_PROACTIVE_HAGGA_SCAN_SECONDS "${DUNE_AUTOSCALER_PROACTIVE_HAGGA_SCAN_SECONDS:-15}" 15 "$SINCE_SECONDS")"
 DEEPDESERT_LOADING_SCAN_SECONDS="$(validate_scan_seconds DUNE_AUTOSCALER_DEEPDESERT_LOADING_SCAN_SECONDS "${DUNE_AUTOSCALER_DEEPDESERT_LOADING_SCAN_SECONDS:-15}" 15 "$SINCE_SECONDS")"
@@ -1065,6 +1089,7 @@ scan_proactive_hagga_handoffs() {
   local director_log_file proactive_rows target_json
 
   director_heal_due proactive_hagga "$PROACTIVE_HAGGA_SCAN_SECONDS" || return 0
+  director_logs_or_defer proactive_hagga || return 0
 
   target_json="$(survival_partition_target_json 2>/dev/null || true)"
   [ -n "$target_json" ] || return 0
@@ -1272,6 +1297,7 @@ scan_deepdesert_loading_responses() {
   local director_log_file pending_rows now
 
   director_heal_due deepdesert_loading "$DEEPDESERT_LOADING_SCAN_SECONDS" || return 0
+  director_logs_or_defer deepdesert_loading || return 0
 
   director_log_file="$(mktemp)"
   director_logs --since "$SINCE" > "$director_log_file" 2>/dev/null || true
@@ -2365,6 +2391,7 @@ scan_rejected_story_returns() {
   local director_log_file rejected_rows completed_rows
 
   director_heal_due rejected_story_returns "$STORY_RETURN_RECOVERY_SCAN_SECONDS" || return 0
+  director_logs_or_defer rejected_story_returns || return 0
 
   director_log_file="$(mktemp)"
   director_logs --timestamps --since "$NAMED_DESTINATION_SINCE" > "$director_log_file" 2>/dev/null || true
@@ -2883,6 +2910,10 @@ scan_live_player_partition_alignment() {
 scan_travel_demand() {
   local demand_rows
 
+  # No follower, no evidence: defer quietly (the caller's `|| echo WARN` would otherwise print every
+  # DEMAND_INTERVAL for the whole outage, and this must not depend on that `||` to survive set -e).
+  director_logs_available || return 0
+
   demand_rows="$(
     # Timestamps make otherwise identical player requests distinct while
     # keeping the same log occurrence stable across overlapping scan windows.
@@ -2960,7 +2991,7 @@ for line in sys.stdin:
     source = "queue" if classical_pattern.search(line) else "request"
     print(f"{event_id}|{map_name}|{num}|{source}|{instancing_mode}")
 '
-  )"
+  )" || true
 
   while IFS='|' read -r event_id map num demand_source instancing_mode; do
     [ -n "${map:-}" ] || continue
@@ -2989,7 +3020,7 @@ scan_igwo_unavailable_maps() {
   # stale follower must defer this scan, never end the autoscaler: this file
   # runs under `set -euo pipefail`, so an unguarded failing reader inside a
   # command substitution would exit the whole process (#1156).
-  director_logs_available || return 0
+  director_logs_or_defer igwo_unavailable || return 0
   now="$(date +%s)"
 
   rows="$(
@@ -3100,7 +3131,7 @@ scan_stale_server_state() {
   # stale follower must defer this scan, never end the autoscaler: this file
   # runs under `set -euo pipefail`, so an unguarded failing reader inside a
   # command substitution would exit the whole process (#1156).
-  director_logs_available || return 0
+  director_logs_or_defer stale_server_state || return 0
   now="$(date +%s)"
 
   rows="$(
@@ -3156,7 +3187,7 @@ scan_unscoped_stale_server_state() {
   # stale follower must defer this scan, never end the autoscaler: this file
   # runs under `set -euo pipefail`, so an unguarded failing reader inside a
   # command substitution would exit the whole process (#1156).
-  director_logs_available || return 0
+  director_logs_or_defer unscoped_stale_server_state || return 0
   now="$(date +%s)"
 
   count="$(
@@ -3415,6 +3446,7 @@ scan_director_browser_state() {
 start_director_log_cache
 follow_director_hagga_handoffs &
 follow_survival_target &
+SURVIVAL_TARGET_PID=$!
 follow_director_travel_demand &
 follow_fresh_process_lifecycle &
 supervise_sietch_override_publisher &

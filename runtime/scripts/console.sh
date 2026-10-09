@@ -185,7 +185,12 @@ reload_console() {
     fi
     unset resolved
   fi
-  if [ -z "${DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET:-}" ]; then
+  # Only when the resolver FAILED. A resolver that succeeds with nothing means "not configured" (no
+  # migration history, no legacy file): if the operator removed or cleared the secret, copying the old
+  # value out of the running container would keep a removed credential alive, in plaintext, with no
+  # warning (#1181). The fallback exists for the detached helper, which cannot read the age identity
+  # and so gets a failure, not an empty answer.
+  if [ "$resolver_failed" = 1 ] && [ -z "${DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET:-}" ]; then
     # Read BEFORE the `docker rm -f` below: afterwards the container is gone and
     # so is the only copy of the secret this helper can reach.
     forwarded_oauth_secret="$(running_console_env_value DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET || true)"
@@ -193,12 +198,10 @@ reload_console() {
       export DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET="$forwarded_oauth_secret"
       # While the Console runs, the secret is therefore plaintext in its
       # environment (visible to anyone with Docker socket access), exactly as
-      # after `restart_console`. Say so when the secrets store could not be read,
-      # because a rotated or revoked secret would otherwise be silently revived.
-      if [ "$resolver_failed" = 1 ]; then
-        echo "Warning: the hosted-bot Discord OAuth client secret could not be read from the secrets store; reusing the value from the running Console. If it was rotated or removed, run 'dune console restart' on the host." >&2
-      fi
-    elif [ "$resolver_failed" = 1 ]; then
+      # after `restart_console`. Say so, because a rotated or revoked secret would
+      # otherwise be silently revived.
+      echo "Warning: the hosted-bot Discord OAuth client secret could not be read from the secrets store; reusing the value from the running Console. If it was rotated or removed, run 'dune console restart' on the host." >&2
+    else
       echo "Warning: the hosted-bot Discord OAuth client secret could not be read from the secrets store and the running Console has none; the recreated Console will start without it and hosted-bot Discord OAuth will not work until it is set again (run 'dune console restart' on the host)." >&2
     fi
     unset forwarded_oauth_secret

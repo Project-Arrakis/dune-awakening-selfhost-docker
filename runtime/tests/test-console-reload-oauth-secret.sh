@@ -147,4 +147,14 @@ grep -q "the recreated Console will start without it" "$last_dir/out" \
   || fail "Test 4: an unresolvable secret with nothing to forward was silent (hosted-bot OAuth would stop unannounced)"
 echo "PASS: Test 4 (resolver failure never aborts the reload, and the loss is announced)"
 
+# --- Test 5: the store SUCCEEDS with "not configured" while the running Console still holds a value
+# (the operator removed or cleared the secret): that is an answer, not a failure, so the old value
+# must not be copied into the recreated Console, and nothing is warned about.
+run_reload none "$secret_with_equals"
+[ -s "$last_dir/compose-called" ] || fail "Test 5: the Console was never recreated"
+seen="$(cat "$last_dir/compose-secret-seen")"
+[ "$seen" = "<unset>" ] || fail "Test 5: a removed secret was revived from the running Console (got '$seen')"
+if grep -q "^Warning:" "$last_dir/out"; then fail "Test 5: warned although the store answered normally"; fi
+echo "PASS: Test 5 (a secret removed from the store is not resurrected from the running Console)"
+
 echo "All console reload OAuth-secret tests passed."

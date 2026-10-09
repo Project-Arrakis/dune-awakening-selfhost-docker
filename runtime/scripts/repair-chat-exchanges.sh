@@ -7,7 +7,10 @@
 #  - Bindings are PLANNED while the database is walked (bind_queue only appends to
 #    a plan file) and APPLIED afterwards in batches of 200 (chat-binding-plan.py).
 #    The "Ensured ... bindings: N" lines are printed only after every batch
-#    succeeded, so N is what was applied. If any binding in a batch is rejected the
+#    succeeded, but N is not a count of repairs: bind_queue returns 0 both for a
+#    binding it only planned and for one that already exists, and the caller counts
+#    both, so N is how many bindings were CHECKED. A run that finds nothing missing
+#    still prints it (#1183). If any binding in a batch is rejected the
 #    script prints one WARN on stderr and exits 1 before any summary line; the other
 #    bindings in that batch are still applied (the Erlang side does not stop at the
 #    first failure), and the next pass retries the rest.

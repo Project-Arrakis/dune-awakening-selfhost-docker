@@ -199,6 +199,89 @@ stop_director_log_cache
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(cache.exists(), "the cache directory was left behind: " + str(list(cache.glob("*"))))
 
+    def test_stop_halts_the_refresher_before_removing_its_files(self):
+        # The refresher rewrites the target file every few seconds. If it is still running when the
+        # cache directory is cleaned up, a write after the removal makes `rmdir` fail silently and
+        # leaves the directory behind (#1186). A hot writer makes the race certain; the run is
+        # repeated so a missing kill cannot pass by luck.
+        function = SOURCE.split("stop_director_log_cache() {", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("SURVIVAL_TARGET_PID=$!", SOURCE.split("follow_survival_target &", 1)[1][:40])
+        leftovers = []
+        for attempt in range(25):
+            cache = Path(self.dir.name) / f"director-log-cache.RACE{attempt}"
+            cache.mkdir()
+            (cache / "recent.sqlite").write_text("x")
+            script = f'''
+set -euo pipefail
+stop_director_log_cache() {{{function}
+}}
+DIRECTOR_LOG_CACHE_PID=999999
+DIRECTOR_LOG_CACHE_DIR="{cache}"
+DIRECTOR_LOG_CACHE_FILE="{cache}/recent.sqlite"
+SURVIVAL_TARGET_FILE="{cache}/survival-target.json"
+( while true; do echo '{{}}' >"$SURVIVAL_TARGET_FILE.tmp" 2>/dev/null && mv -f "$SURVIVAL_TARGET_FILE.tmp" "$SURVIVAL_TARGET_FILE" 2>/dev/null; done ) &
+SURVIVAL_TARGET_PID=$!
+# Whatever stop_director_log_cache does, never leave the hot writer running (it would hold the
+# pipes open and hang the test run).
+trap 'kill "$SURVIVAL_TARGET_PID" 2>/dev/null || true' EXIT
+sleep 0.05
+stop_director_log_cache
+'''
+            result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            if cache.exists():
+                leftovers.append(attempt)
+        self.assertEqual(leftovers, [], "the refresher outlived the cleanup and recreated its files")
+
+    def stop_script(self, cache, body):
+        function = SOURCE.split("stop_director_log_cache() {", 1)[1].split("\n}\n", 1)[0]
+        return f'''
+set -euo pipefail
+stop_director_log_cache() {{{function}
+}}
+DIRECTOR_LOG_CACHE_PID=999999
+DIRECTOR_LOG_CACHE_DIR="{cache}"
+DIRECTOR_LOG_CACHE_FILE="{cache}/recent.sqlite"
+SURVIVAL_TARGET_FILE="{cache}/survival-target.json"
+{body}
+'''
+
+    def test_stop_kills_the_refresher_not_just_its_files(self):
+        # Deterministic: after the cleanup the refresher process must be gone (#1186).
+        cache = Path(self.dir.name) / "director-log-cache.KILL"
+        cache.mkdir()
+        script = self.stop_script(cache, '''
+( while true; do sleep 0.05; done ) &
+SURVIVAL_TARGET_PID=$!
+trap 'kill "$SURVIVAL_TARGET_PID" 2>/dev/null || true' EXIT
+stop_director_log_cache
+if kill -0 "$SURVIVAL_TARGET_PID" 2>/dev/null; then echo REFRESHER-STILL-RUNNING; fi
+''')
+        result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("REFRESHER-STILL-RUNNING", result.stdout)
+        self.assertFalse(cache.exists())
+
+    def test_cleanup_survives_a_straggler_write_between_rm_and_rmdir(self):
+        # A `mv` the refresher had already started can finish just after the removal and recreate the
+        # file, making the first rmdir fail. Simulate exactly that, deterministically: the first rmdir
+        # recreates the file and fails; the cleanup must go round again.
+        cache = Path(self.dir.name) / "director-log-cache.STRAGGLER"
+        cache.mkdir()
+        (cache / "recent.sqlite").write_text("x")
+        script = self.stop_script(cache, '''
+calls=0
+rmdir() {
+  calls=$((calls + 1))
+  if [ "$calls" = 1 ]; then echo straggler >"$SURVIVAL_TARGET_FILE"; return 1; fi
+  command rmdir "$@"
+}
+stop_director_log_cache
+''')
+        result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(cache.exists(), "a single cleanup pass left the directory behind: " + str(list(cache.glob("*"))))
+
     def test_loop_wiring(self):
         function = SOURCE.split("follow_director_hagga_handoffs() {", 1)[1].split("scan_deepdesert_loading_responses()", 1)[0]
         self.assertIn('TARGET_FILE="${SURVIVAL_TARGET_FILE:-}"', function)
