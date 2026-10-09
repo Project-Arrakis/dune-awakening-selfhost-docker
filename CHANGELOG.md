@@ -12,6 +12,7 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 ### Security
 
 - **System-backup import refuses a tar with too many members (#1133).** The wrapper bundle only ever holds the archive and its sidecar, but `readTarMemberIndex` walked every 512-byte header synchronously with no member cap, so an authenticated `backups:import-system` caller could freeze the Console event loop for every user with a crafted upload of empty members. It now refuses more than 8 members. No operator action. New test in `systemBackupImport.test.js`.
+- **A saved iam-policies.json no longer leaves `admin` able to download, import or restore system backups (#1117).** A saved policy replaces the defaults wholesale, so an install that had ever saved its policy never received the three `admin` Denies added with the system-backup feature and kept admin's `backups:*` allow, i.e. a route to every credential the owner has. On load the console now adds the shipped Deny for `backups:download-system`, `backups:import-system` and `backups:restore-system` to a saved `admin` tier unless that tier already denies them or names one in an Allow by exact name (your explicit choice is kept). A startup notice lists what was added; saving the policy from Settings persists it. dune-dev and dune-prod had no affected saved policy. New tests in `policy.test.js`.
 
 ### Fixed
 
