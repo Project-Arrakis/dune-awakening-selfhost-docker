@@ -563,3 +563,42 @@ test("the owner tier still holds every system backup action", () => {
     assert.equal(evaluate(owner, action, DEFAULT_POLICIES), true, `owner must hold ${action}`);
   }
 });
+
+// ---- Saved policies predating the system-backup actions (issue #1117) ----
+import { mkdtempSync as mkd, mkdirSync as mkdirp, writeFileSync as writeF } from "node:fs";
+import { tmpdir as tmp } from "node:os";
+import { join as j } from "node:path";
+
+function loadSaved(adminStatements) {
+  const root = mkd(j(tmp(), "iam-denies-"));
+  mkdirp(j(root, "runtime/generated"), { recursive: true });
+  writeF(j(root, "runtime/generated/iam-policies.json"), JSON.stringify({
+    owner: DEFAULT_POLICIES.owner,
+    admin: { version: 1, tier: "admin", statements: adminStatements }
+  }));
+  return loadPolicies(root);
+}
+
+const SYSTEM_BACKUP = ["backups:download-system", "backups:import-system", "backups:restore-system"];
+
+test("a saved policy that predates the system-backup actions still denies them to admin", () => {
+  try {
+    const result = loadSaved([{ Effect: "Allow", Action: ["backups:*", "players:*"] }]);
+    assert.equal(result.source, "file");
+    assert.equal(result.addedDefaultDenies.length, 3);
+    for (const action of SYSTEM_BACKUP) assert.equal(evaluate({ tier: "admin" }, action), false, action);
+    assert.equal(evaluate({ tier: "admin" }, "backups:create"), true, "ordinary backup work is not withdrawn");
+    assert.equal(evaluate({ tier: "owner" }, "backups:restore-system"), true);
+  } finally { loadPolicies(null); }
+});
+
+test("a saved Deny already present is not duplicated, and an exact-name Allow is the operator's choice", () => {
+  try {
+    const denied = loadSaved([{ Effect: "Allow", Action: ["backups:*"] }, { Effect: "Deny", Action: SYSTEM_BACKUP }]);
+    assert.deepEqual(denied.addedDefaultDenies, []);
+    const allowed = loadSaved([{ Effect: "Allow", Action: ["backups:*", "backups:download-system"] }]);
+    assert.deepEqual(allowed.addedDefaultDenies.map((d) => d.action).sort(), ["backups:import-system", "backups:restore-system"]);
+    assert.equal(evaluate({ tier: "admin" }, "backups:download-system"), true, "explicit allow kept");
+    assert.equal(evaluate({ tier: "admin" }, "backups:import-system"), false);
+  } finally { loadPolicies(null); }
+});

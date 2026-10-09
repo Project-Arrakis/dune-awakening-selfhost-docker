@@ -153,6 +153,33 @@ export function playerCappedActions(docs) {
   return capped;
 }
 
+// Security denials the shipped defaults carry for actions added AFTER an operator may
+// have saved iam-policies.json. A saved file replaces the defaults wholesale, so without
+// this an upgraded install keeps admin's "backups:*" allow and silently gains these
+// actions (issue #1117). Added on load only when the saved tier neither denies the action
+// nor names it in an Allow (an explicit, exact-name Allow is the operator's choice and wins).
+const SHIPPED_DEFAULT_DENIES = Object.freeze({
+  admin: ["backups:download-system", "backups:import-system", "backups:restore-system"],
+});
+
+function reconcileShippedDenies(store) {
+  const added = [];
+  let next = store;
+  for (const [tier, actions] of Object.entries(SHIPPED_DEFAULT_DENIES)) {
+    const document = store[tier];
+    if (!document) continue;
+    const missing = actions.filter((action) => !document.statements.some((statement) => {
+      const patterns = Array.isArray(statement.Action) ? statement.Action : [statement.Action];
+      if (statement.Effect === "Deny") return patterns.some((pattern) => matchAction(pattern, action));
+      return statement.Effect === "Allow" && patterns.includes(action);
+    }));
+    if (missing.length === 0) continue;
+    next = { ...next, [tier]: { ...document, statements: [...document.statements, { Effect: "Deny", Action: missing }] } };
+    added.push(...missing.map((action) => ({ tier, action })));
+  }
+  return { store: next, added };
+}
+
 export function resolveSessionTier(session) {
   if (!session) return "";
   const tier = typeof session.tier === "string" ? normalizeTier(session.tier) : "";
@@ -188,12 +215,13 @@ export function loadPolicies(repoRoot = null) {
       const raw = readFileSync(filePath, "utf8");
       const parsed = sanitizePolicyStore(JSON.parse(raw));
       if (validPolicyStore(parsed)) {
-        _policies = parsed;
+        const reconciled = reconcileShippedDenies(parsed);
+        _policies = reconciled.store;
         // Reported, not rejected: discarding the document would silently
         // revert the operator's whole policy to defaults, a bigger surprise
         // than the dead pattern. setPolicies refuses these on save, so a stored
         // file can only acquire one by hand-editing. The caller logs this.
-        return { source: "file", path: filePath, unknownActions: unknownActions(parsed), deprecatedActions: deprecatedActions(parsed), playerCappedActions: playerCappedActions(parsed) };
+        return { source: "file", path: filePath, unknownActions: unknownActions(parsed), deprecatedActions: deprecatedActions(parsed), playerCappedActions: playerCappedActions(reconciled.store), addedDefaultDenies: reconciled.added };
       }
       _policies = DEFAULT_POLICIES;
       return { source: "defaults", path: filePath, invalid: true, unknownActions: [], deprecatedActions: [] };

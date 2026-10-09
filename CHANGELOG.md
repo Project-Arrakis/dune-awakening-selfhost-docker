@@ -9,6 +9,10 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ## Unreleased (on top of upstream v1.4.47)
 
+### Security
+
+- **A saved iam-policies.json no longer leaves `admin` able to download, import or restore system backups (#1117).** A saved policy replaces the defaults wholesale, so an install that had ever saved its policy never received the three `admin` Denies added with the system-backup feature and kept admin's `backups:*` allow, i.e. a route to every credential the owner has. On load the console now adds the shipped Deny for `backups:download-system`, `backups:import-system` and `backups:restore-system` to a saved `admin` tier unless that tier already denies them or names one in an Allow by exact name (your explicit choice is kept). A startup notice lists what was added; saving the policy from Settings persists it. dune-dev and dune-prod had no affected saved policy. New tests in `policy.test.js`.
+
 ### Fixed
 
 - **`runtime/public-probe` moves to Go 1.26.9 and `golang.org/x/net` v0.60.0, clearing govulncheck advisories GO-2026-6612, -6613 and -6617 (#1152).** The HTTP/1 and HTTP/2 `net/http` server bugs have no Go 1.25 backport, so the probe image and `go.mod` move to the 1.26 line. libexpat1 CVE-2026-77214 (no fixed Debian trixie package exists) is added to `.trivyignore` with its exposure triage. No operator action: the probe is rebuilt with the console image on the next update.
