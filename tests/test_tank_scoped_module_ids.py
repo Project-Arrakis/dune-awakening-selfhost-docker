@@ -26,7 +26,7 @@ class ScopedModuleTests(unittest.TestCase):
         self.assertLessEqual(len(data), 231)
         for i in range(3):
             self.assertTrue(address <= symbols[f'site_{i}'] < address+len(data))
-        manifest = json.loads((ROOT / 'patches/experimental-tanks/2141883/manifest.json').read_text())
+        manifest = json.loads((Path(scoped.__file__).resolve().parents[1] / 'manifest.json').read_text())
         patches = {offset: (bytes.fromhex(before), bytes.fromhex(after)) for offset,before,after in manifest['sites']}
         self.assertEqual(patches[address], (b'\xcc'*len(data), data))
         for i,(offset,before,_,_) in enumerate(scoped.SITES):
@@ -131,6 +131,24 @@ int main(void) {
             result = subprocess.run([str(root/'fixture')], capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('All three native and Tank instruction paths passed', result.stdout)
+
+
+class UpdatedBuildScopedModuleTests(ScopedModuleTests):
+    def setUp(self):
+        global scoped
+        self.previous = scoped
+        spec = importlib.util.spec_from_file_location('scoped_new',
+            ROOT / 'patches/experimental-tanks/2147284/source/scoped_module_ids.py')
+        scoped = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(scoped)
+
+    def tearDown(self):
+        global scoped
+        scoped = self.previous
+
+    def test_wrong_clean_build_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, 'exact reviewed clean build'):
+            scoped.build(b'wrong executable', {})
 
 
 if __name__ == '__main__':

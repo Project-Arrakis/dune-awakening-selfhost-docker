@@ -18,6 +18,8 @@ CLEAN_SHA = '91a3cfb069dd44c67354c88b8d9a1cf1f1300dd971b462b9f8feba6da8a46150'
 POOL = 0x174135c0
 POOL_READY = 0x17413591
 CAVE = 0x14ad1819  # 231 bytes after SEED_ofb128_encrypt's ret
+DECODER = 0x1002e8a4
+DECODER_BYTES = '4489f0c1e810488d0d0f4d3e07488b44c168410fb7ce0fb73c48'
 SITES = (
     (0xf9fbbe0, '4d8b4c24e8', '4531c99090', 'mov r10d, [r12 - 8]'),
     (0xfd56b5e, '488b8568ffffff', '31c09090909090', 'mov r10d, [r12]'),
@@ -128,7 +130,7 @@ def build(source, release_spec):
     if hashlib.sha256(source).hexdigest() != CLEAN_SHA:
         raise ValueError('Scoped Tank patch requires the exact reviewed clean build.')
     # Verify the native name-pool decoder against the reviewed disassembly.
-    if source[0x1002e8a4:0x1002e8be].hex() != '4489f0c1e810488d0d0f4d3e07488b44c168410fb7ce0fb73c48':
+    if source[DECODER:DECODER+len(bytes.fromhex(DECODER_BYTES))].hex() != DECODER_BYTES:
         raise ValueError('Native FName pool layout does not match the reviewed build.')
     # Never inherit an unreviewed site or an older generated code payload.
     patches = [list(site) for site in BASE_SITES]
