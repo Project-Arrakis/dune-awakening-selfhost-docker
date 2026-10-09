@@ -14,8 +14,9 @@ misconfigurations:
       - "orchestrator/Dockerfile"
     statement: >-
       The orchestrator image sets no USER (it prepares a `dune` user but never switches to it) and needs the host's
-      Docker socket mounted by docker-compose.yml, which is the architectural trust boundary of that design.
-      Not a regression; moving it to a non-root user is a separate, larger change.
+      Docker socket mounted by docker-compose.yml, which is the architectural trust boundary of that design,
+      tracked as issue #121 (Docker socket + host networking); see docs/security/generated-command-auth-token.md
+      (non-root container users). Not a regression; moving it to a non-root user is a separate, larger change.
     expired_at: 2027-01-07
   - id: DS-0002
     paths:
@@ -32,5 +33,5 @@ misconfigurations:
     statement: >-
       `apt-get install` without `--no-install-recommends` in the orchestrator image. Accepted here rather than
       changed in a CI PR because adding the flag changes the image's installed package set and needs its own
-      build-and-run check. Re-triage and fix at expiry.
+      build-and-run check. Owner: fork maintainers, tracked in #1159. Re-triage and fix at expiry.
     expired_at: 2027-01-07
