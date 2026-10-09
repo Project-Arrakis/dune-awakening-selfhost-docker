@@ -135,14 +135,20 @@ director_logs_available() {
 # follower writes its heartbeat about once a second, so a directory with no file
 # touched for 30 minutes belongs to a process that is gone.
 sweep_orphan_director_log_caches() {
-  local dir minutes=30
+  local dir recent find_status minutes=30
   for dir in runtime/generated/director-log-cache.*; do
     [ -d "$dir" ] && [ ! -L "$dir" ] || continue
     [ "$dir" != "${DIRECTOR_LOG_CACHE_DIR:-}" ] || continue
-    if [ -z "$(find "$dir" -mmin "-$minutes" -print -quit 2>/dev/null)" ]; then
-      echo "Removing orphaned Director log cache $dir (untouched for ${minutes}m)"
-      rm -rf -- "$dir"
-    fi
+    # Best effort, never fatal: this runs at startup under `set -e`, and a leftover this user
+    # cannot read or delete (for example a root-owned one from a manual run) must not turn into
+    # an autoscaler that exits and restart-loops. A directory that cannot be inspected is left
+    # alone rather than assumed stale.
+    find_status=0
+    recent="$(find "$dir" -mmin "-$minutes" -print -quit 2>/dev/null)" || find_status=$?
+    [ "$find_status" = 0 ] || continue
+    [ -z "$recent" ] || continue
+    echo "Removing orphaned Director log cache $dir (untouched for ${minutes}m)"
+    rm -rf -- "$dir" 2>/dev/null || echo "WARN could not remove $dir; leaving it in place" >&2
   done
 }
 
@@ -168,26 +174,48 @@ ensure_director_log_cache() {
   DIRECTOR_LOG_CACHE_PID=$!
 }
 
-# Keeps the Survival_1 target (partition, port, IP of the first ready server)
-# that follow_director_hagga_handoffs hands to players current. At most one query
-# per SURVIVAL_TARGET_REFRESH_SECONDS; no ready Survival_1 removes the file so the
-# consumer skips events instead of granting a stale endpoint.
+# Keeps the Survival_1 target (partition, port, IP of the first ready server) that
+# follow_director_hagga_handoffs hands to players current. Written by follow_survival_target
+# on its own cadence (SURVIVAL_TARGET_REFRESH_SECONDS), not once per pass of the serial main
+# loop, so how stale a grant can be is bounded no matter how long a pass takes.
+#   - the query ran and found a ready Survival_1: write it (atomically);
+#   - the query ran and found none (status 2): remove the file, so the consumer skips events
+#     instead of answering with an endpoint that is gone;
+#   - the query itself failed (database blip): keep the last good file for up to
+#     SURVIVAL_TARGET_MAX_STALE_SECONDS (60) so a short outage does not drop every handoff, then
+#     remove it;
+#   - a failed write is reported, never fatal: this file is read by one consumer, it is not
+#     worth ending the autoscaler (`set -e`) for.
 refresh_survival_target_file() {
-  local now json tmp
+  local json tmp status=0 age
   [ -n "${SURVIVAL_TARGET_FILE:-}" ] || return 0
-  now="$(date +%s)"
-  if [ -n "${SURVIVAL_TARGET_REFRESHED_AT:-}" ] \
-    && [ $((now - SURVIVAL_TARGET_REFRESHED_AT)) -lt "${SURVIVAL_TARGET_REFRESH_SECONDS:-5}" ]; then
+  json="$(survival_partition_target_json 2>/dev/null)" || status=$?
+  if [ "$status" = 0 ] && [ -n "$json" ]; then
+    tmp="$SURVIVAL_TARGET_FILE.tmp"
+    if ! { printf '%s\n' "$json" >"$tmp" && mv -f "$tmp" "$SURVIVAL_TARGET_FILE"; } 2>/dev/null; then
+      rm -f "$tmp" 2>/dev/null || true
+      echo "WARN could not write $SURVIVAL_TARGET_FILE; keeping the previous Survival_1 target" >&2
+    fi
     return 0
   fi
-  SURVIVAL_TARGET_REFRESHED_AT="$now"
-  json="$(survival_partition_target_json 2>/dev/null || true)"
-  if [ -z "$json" ]; then
-    rm -f "$SURVIVAL_TARGET_FILE"
+  if [ "$status" = 2 ]; then
+    rm -f "$SURVIVAL_TARGET_FILE" 2>/dev/null || true
     return 0
   fi
-  tmp="$SURVIVAL_TARGET_FILE.tmp"
-  printf '%s\n' "$json" >"$tmp" && mv -f "$tmp" "$SURVIVAL_TARGET_FILE"
+  if [ -e "$SURVIVAL_TARGET_FILE" ]; then
+    age=$(( $(date +%s) - $(stat -c %Y "$SURVIVAL_TARGET_FILE" 2>/dev/null || echo 0) ))
+    if [ "$age" -gt "${SURVIVAL_TARGET_MAX_STALE_SECONDS:-60}" ]; then
+      rm -f "$SURVIVAL_TARGET_FILE" 2>/dev/null || true
+    fi
+  fi
+  return 0
+}
+
+follow_survival_target() {
+  while kill -0 "$$" 2>/dev/null; do
+    refresh_survival_target_file || echo "WARN Survival_1 target refresh failed; retrying"
+    sleep "${SURVIVAL_TARGET_REFRESH_SECONDS:-5}"
+  done
 }
 
 stop_director_log_cache() {
@@ -1015,7 +1043,8 @@ where wp.map = 'Survival_1'
 order by wp.partition_id
 limit 1;
 ")" || return 1
-  [ -n "$row" ] || return 1
+  # 2 = the query ran and found no ready Survival_1; 1 = the query itself failed.
+  [ -n "$row" ] || return 2
 
   DUNE_SURVIVAL_TARGET_ROW="$row" python3 - <<'PY'
 import json
@@ -3385,6 +3414,7 @@ scan_director_browser_state() {
 
 start_director_log_cache
 follow_director_hagga_handoffs &
+follow_survival_target &
 follow_director_travel_demand &
 follow_fresh_process_lifecycle &
 supervise_sietch_override_publisher &
@@ -3393,7 +3423,6 @@ repair_chat_exchanges_due
 
 while true; do
   ensure_director_log_cache
-  refresh_survival_target_file
   reconcile_always_on_maps
   scan_deepdesert_loading_responses
   ensure_overmap_travel_maps_prewarmed

@@ -72,6 +72,8 @@ class Consumer:
         stderr = self.proc.stderr.read()
         self.proc.wait(timeout=10)
         self.watchdog.cancel()
+        self.proc.stdout.close()
+        self.proc.stderr.close()
         return stdout, stderr, self.proc.returncode
 
 
@@ -123,33 +125,57 @@ class HaggaTargetRefresh(unittest.TestCase):
         self.assertEqual((flow, grant["PartitionId"]), ("flow-compat", 3))
         consumer.finish()
 
-    def test_refresh_function_writes_removes_and_rate_limits(self):
+    def refresh(self, query_script, *, age_seconds=None, extra=""):
+        """Run refresh_survival_target_file in its own bash (errexit on) with a stubbed lookup.
+
+        query_script is the body of survival_partition_target_json; it decides the exit status
+        (0 = ready server, 2 = ran and found none, 1 = the query itself failed)."""
         function = SOURCE.split("refresh_survival_target_file() {", 1)[1].split("\n}\n", 1)[0]
-        calls = Path(self.dir.name) / "calls"
+        touch = f'touch -d "@$(( $(date +%s) - {age_seconds} ))" "{self.target_file}"' if age_seconds is not None else ":"
         script = f'''
 set -euo pipefail
 refresh_survival_target_file() {{{function}
 }}
 SURVIVAL_TARGET_FILE="{self.target_file}"
-SURVIVAL_TARGET_REFRESH_SECONDS=1000
-echo '{json.dumps(target(8))}' >"{Path(self.dir.name) / "answer"}"
-survival_partition_target_json() {{ echo x >>"{calls}"; cat "{Path(self.dir.name) / "answer"}"; }}
+survival_partition_target_json() {{ {query_script}; }}
+{extra}
+{touch}
 refresh_survival_target_file
-cat "{self.target_file}"
-refresh_survival_target_file
-refresh_survival_target_file
-echo "queries=$(wc -l <"{calls}")"
-SURVIVAL_TARGET_REFRESHED_AT=0
-: >"{Path(self.dir.name) / "answer"}"
-refresh_survival_target_file
-[ ! -e "{self.target_file}" ] && echo removed-when-no-ready-server
+echo SURVIVED
 '''
-        result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+        return subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+
+    def test_refresh_writes_the_target_when_a_server_is_ready(self):
+        result = self.refresh(f"echo '{json.dumps(target(8))}'")
         self.assertEqual(result.returncode, 0, result.stderr)
-        lines = result.stdout.strip().splitlines()
-        self.assertEqual(json.loads(lines[0])["partition_id"], 8)
-        self.assertIn("queries=1", lines)  # three calls inside the interval cost one query
-        self.assertIn("removed-when-no-ready-server", lines)
+        self.assertEqual(json.loads(self.target_file.read_text())["partition_id"], 8)
+        self.assertFalse(self.target_file.with_suffix(".json.tmp").exists())
+
+    def test_refresh_removes_the_target_when_the_query_finds_no_ready_server(self):
+        self.write_target(target(8))
+        result = self.refresh("return 2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.target_file.exists(), "a confirmed absence must not leave a stale endpoint")
+
+    def test_a_failed_lookup_keeps_the_last_good_target_briefly_then_drops_it(self):
+        # A short database blip must not drop every handoff (the consumer used to keep its
+        # last target); a long outage must not keep granting an endpoint nobody can verify.
+        self.write_target(target(8))
+        fresh = self.refresh("return 1", age_seconds=5)
+        self.assertEqual(fresh.returncode, 0, fresh.stderr)
+        self.assertTrue(self.target_file.exists(), "kept through a short outage")
+        stale = self.refresh("return 1", age_seconds=600)
+        self.assertEqual(stale.returncode, 0, stale.stderr)
+        self.assertFalse(self.target_file.exists(), "dropped once older than the staleness limit")
+
+    def test_a_failed_write_is_reported_and_never_ends_the_autoscaler(self):
+        self.write_target(target(8))
+        result = self.refresh(f"echo '{json.dumps(target(9))}'", extra="mv() { return 1; }")
+        self.assertEqual(result.returncode, 0, result.stderr)  # errexit is on in this shell
+        self.assertIn("SURVIVED", result.stdout)
+        self.assertIn("could not write", result.stderr)
+        self.assertEqual(json.loads(self.target_file.read_text())["partition_id"], 8, "previous target kept")
+        self.assertFalse(self.target_file.with_suffix(".json.tmp").exists(), "no half-written temp file left")
 
     def test_normal_exit_leaves_no_cache_directory_behind(self):
         # stop_director_log_cache ends with rmdir, which fails on a non-empty
@@ -177,8 +203,19 @@ stop_director_log_cache
         function = SOURCE.split("follow_director_hagga_handoffs() {", 1)[1].split("scan_deepdesert_loading_responses()", 1)[0]
         self.assertIn('TARGET_FILE="${SURVIVAL_TARGET_FILE:-}"', function)
         self.assertNotIn("TARGET_JSON=", function.split("3<<'PY'", 1)[0])
+        # The refresh runs on its own cadence, started next to the other followers, so the age of
+        # a grant's target does not depend on how long one pass of the serial main loop takes.
+        self.assertIn("\nfollow_survival_target &\n", SOURCE)
+        follower = SOURCE.split("follow_survival_target() {", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn('kill -0 "$$"', follower)
+        self.assertIn("refresh_survival_target_file", follower)
         main_loop = SOURCE.rsplit("while true; do\n  ensure_director_log_cache", 1)[1]
-        self.assertIn("refresh_survival_target_file", main_loop.split("scan_", 1)[0])
+        self.assertNotIn("refresh_survival_target_file", main_loop, "a second writer would race the follower")
+
+    def test_lookup_status_distinguishes_no_server_from_a_failed_query(self):
+        function = SOURCE.split("survival_partition_target_json() {", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("|| return 1", function)
+        self.assertIn('[ -n "$row" ] || return 2', function)
 
 
 if __name__ == "__main__":

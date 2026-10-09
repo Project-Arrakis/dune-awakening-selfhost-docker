@@ -92,4 +92,37 @@ grep -q 'Removing orphaned Director log cache .*ORPHAN' "$work/out" || fail "rem
 rm -rf "$gen"/director-log-cache.*
 bash "$work/run.sh" >"$work/out2" 2>&1 || { cat "$work/out2" >&2; fail "the sweep aborted when there was nothing to sweep"; }
 
-echo "PASS: orphaned caches are removed; live, own, symlinked and unrelated paths are kept; nothing to sweep is not an error"
+# A leftover this user cannot inspect or delete (for example a root-owned one from a manual run) must
+# not end the autoscaler at startup: it runs under `set -e` and the container restarts on exit, so a
+# fatal sweep would crash-loop until someone deleted the directory by hand (review of PR #1172).
+# (Running as root here would bypass real permission errors, so the failures are injected.)
+orphan_again() {
+  mkdir -p "$gen/director-log-cache.STUCK"
+  echo log >"$gen/director-log-cache.STUCK/recent.sqlite"
+  touch -t "$old" "$gen/director-log-cache.STUCK/recent.sqlite" "$gen/director-log-cache.STUCK"
+}
+run_with() {
+  cat >"$work/run-injected.sh" <<EOF2
+set -euo pipefail
+cd "$work/run"
+. "$work/sweep.sh"
+$1
+DIRECTOR_LOG_CACHE_DIR="runtime/generated/director-log-cache.OWN"
+sweep_orphan_director_log_caches
+echo SURVIVED
+EOF2
+  bash "$work/run-injected.sh" 2>&1
+}
+
+orphan_again
+out="$(run_with 'rm() { return 1; }')" || fail "an undeletable orphan ended the sweep (and with it the autoscaler)"
+echo "$out" | grep -q '^SURVIVED$' || fail "the sweep did not finish when rm failed"
+echo "$out" | grep -q 'WARN could not remove .*STUCK' || fail "an undeletable orphan was not reported"
+[ -e "$gen/director-log-cache.STUCK/recent.sqlite" ] || fail "the directory vanished although rm failed"
+
+out="$(run_with 'find() { return 1; }')" || fail "a directory find could not inspect ended the sweep"
+echo "$out" | grep -q '^SURVIVED$' || fail "the sweep did not finish when find failed"
+echo "$out" | grep -q 'Removing orphaned' && fail "a directory that could not be inspected was treated as stale"
+[ -e "$gen/director-log-cache.STUCK/recent.sqlite" ] || fail "an uninspectable directory was removed"
+
+echo "PASS: orphaned caches are removed; live, own, symlinked and unrelated paths are kept; nothing to sweep, or a directory that cannot be inspected or deleted, is not an error"
