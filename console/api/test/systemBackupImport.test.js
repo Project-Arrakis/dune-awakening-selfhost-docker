@@ -219,7 +219,17 @@ test("a tar with more than the allowed number of members is refused", () => {
   const path = join(dir, "bundle.tar");
   const many = Array.from({ length: MAX_TAR_MEMBERS + 1 }, (_, i) => ({ name: `m${i}`, content: Buffer.alloc(0) }));
   writeFileSync(path, createTarArchive(many));
-  assert.throws(() => readTarMemberIndex(path), /too many tar members/i);
+  assert.throws(
+    () => readTarMemberIndex(path),
+    (error) => {
+      // The operator needs the limit and what a valid bundle holds, not just a refusal.
+      assert.match(error.message, /too many tar members/i);
+      assert.ok(error.message.includes(`limit is ${MAX_TAR_MEMBERS}`), error.message);
+      assert.match(error.message, /archive and its \.yaml metadata file/i);
+      assert.match(error.message, /upload the archive on its own/i);
+      return true;
+    }
+  );
   // The limit itself is accepted, so a normal archive + sidecar bundle is unaffected.
   writeFileSync(path, createTarArchive(many.slice(0, MAX_TAR_MEMBERS)));
   assert.equal(readTarMemberIndex(path).length, MAX_TAR_MEMBERS);

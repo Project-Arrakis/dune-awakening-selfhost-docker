@@ -91,7 +91,11 @@ export function readTarMemberIndex(filePath) {
       if (!Number.isSafeInteger(nextOffset) || start + size > fileSize || nextOffset > fileSize) {
         throw new Error("The upload contains a truncated tar member.");
       }
-      if (members.length >= MAX_TAR_MEMBERS) throw new Error("The upload contains too many tar members.");
+      if (members.length >= MAX_TAR_MEMBERS) {
+        throw new Error(
+          `The upload contains too many tar members (the limit is ${MAX_TAR_MEMBERS}). A system backup bundle holds only the backup archive and its .yaml metadata file: upload the archive on its own, or re-create the bundle with just those two files.`
+        );
+      }
       members.push({ name: prefix ? `${prefix}/${name}` : name, size, start });
       offset = nextOffset;
     }
