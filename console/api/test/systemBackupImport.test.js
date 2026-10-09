@@ -8,6 +8,7 @@ import {
   mintSystemBackupName,
   normalizeImportedSystemMetadata,
   readEncryptedArchiveHeader,
+  MAX_TAR_MEMBERS,
   readTarMemberIndex,
   sanitizeUploadFilename,
   synthesizeSystemMetadata
@@ -210,4 +211,16 @@ test("an uploaded sidecar cannot claim an encryption the archive does not have",
 test("a sidecar with no encryption line gains the verified one", () => {
   const out = normalizeImportedSystemMetadata("server_title: Old Host", { encryption: "aes-256-ocb-gpg-aead" });
   assert.match(out, /^encryption: aes-256-ocb-gpg-aead$/m);
+});
+
+// Issue #1133: only the upload size used to bound the synchronous header loop.
+test("a tar with more than the allowed number of members is refused", () => {
+  const dir = mkdtempSync(join(tmpdir(), "import-tar-many-"));
+  const path = join(dir, "bundle.tar");
+  const many = Array.from({ length: MAX_TAR_MEMBERS + 1 }, (_, i) => ({ name: `m${i}`, content: Buffer.alloc(0) }));
+  writeFileSync(path, createTarArchive(many));
+  assert.throws(() => readTarMemberIndex(path), /too many tar members/i);
+  // The limit itself is accepted, so a normal archive + sidecar bundle is unaffected.
+  writeFileSync(path, createTarArchive(many.slice(0, MAX_TAR_MEMBERS)));
+  assert.equal(readTarMemberIndex(path).length, MAX_TAR_MEMBERS);
 });

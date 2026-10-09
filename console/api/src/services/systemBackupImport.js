@@ -64,6 +64,11 @@ function tarField(block, offset, length) {
 // followed by its bytes padded to the next block, so each member's offset and
 // size are enough to stream it out later. A multi-gigabyte archive is never held
 // in memory, here or anywhere else on this path.
+// The wrapper bundle holds the archive and its sidecar and nothing else. Without a
+// cap, only the upload size bounds this synchronous loop, so a tar of empty members
+// (one per 512 bytes) would hold the event loop for about two million iterations.
+export const MAX_TAR_MEMBERS = 8;
+
 export function readTarMemberIndex(filePath) {
   const fd = openSync(filePath, "r");
   const members = [];
@@ -86,6 +91,7 @@ export function readTarMemberIndex(filePath) {
       if (!Number.isSafeInteger(nextOffset) || start + size > fileSize || nextOffset > fileSize) {
         throw new Error("The upload contains a truncated tar member.");
       }
+      if (members.length >= MAX_TAR_MEMBERS) throw new Error("The upload contains too many tar members.");
       members.push({ name: prefix ? `${prefix}/${name}` : name, size, start });
       offset = nextOffset;
     }
