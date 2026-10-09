@@ -184,6 +184,8 @@ jobs:
           tests/autoscaler-log-follower-down-test.sh
           python3 tests/test_autoscaler_log_cache.py
           python3 tests/test_chat_binding_batch.py
+          python3 tests/test_autoscaler_cache_and_plan_edges.py
+          node --test tests/deepdesert-allocation.test.mjs
           tests/psql-transport-test.sh
           tests/rmq-transport-test.sh
           tests/postgres-shutdown-test.sh
@@ -210,7 +212,7 @@ jobs:
           runtime/tests/test-discord-adapter-health-atomic-status.sh
           runtime/tests/test-discord-adapter-health-token-argv.sh
           runtime/tests/test-discord-adapter-lock-contention.sh
-      - name: Test age-based secrets library (AEAD primitive, shell seam, cross-language round-trip)
+      - name: Test age-based secrets library and the Console secret hand-off (AEAD primitive, shell seam, cross-language round-trip, reload)
         run: |
           python3 runtime/scripts/lib/test_secrets_aead.py -v
           runtime/tests/test-secrets-lib.sh
