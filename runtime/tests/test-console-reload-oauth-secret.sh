@@ -56,15 +56,21 @@ EOF
       ;;
   esac
 
-  # Stub docker: `inspect` prints the running container's env, `compose ... up`
-  # records what the secret looked like in ITS environment, the rest is a no-op.
+  # Stub docker: `inspect` prints the running container's env but, like the real
+  # thing, answers nothing once `docker rm` has removed the container (so a
+  # reload that removes the container BEFORE reading the secret loses it);
+  # `compose ... up` records what the secret looked like in ITS environment.
   cat >"$work/bin/docker" <<EOF
 #!/usr/bin/env bash
 case "\$1" in
   inspect)
+    [ -e "$work/rm-called" ] && exit 1
     echo "PATH=/usr/bin"
     if [ -n "$running" ]; then echo "DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET=$running"; fi
     echo "OTHER=x"
+    ;;
+  rm)
+    : >"$work/rm-called"
     ;;
   compose)
     for a in "\$@"; do [ "\$a" = up ] && echo called >>"$work/compose-called"; done
@@ -106,26 +112,32 @@ run_reload fail "$secret_with_equals"
 seen="$(cat "$last_dir/compose-secret-seen")"
 [ "$seen" = "$secret_with_equals" ] || fail "Test 1: recreated Console did not receive the running secret intact (got '$seen')"
 if grep -qF "$secret_with_equals" "$last_dir/out"; then fail "Test 1: the secret was printed (Requirement 24)"; fi
-echo "PASS: Test 1 (resolver fails closed, secret forwarded from the running Console, value with '=' intact, not printed)"
+grep -q "could not be read from the secrets store; reusing the value from the running Console" "$last_dir/out" \
+  || fail "Test 1: reusing the running Console's secret was silent (a rotated secret would be revived unannounced)"
+echo "PASS: Test 1 (resolver fails closed, secret forwarded from the running Console, value with '=' intact, not printed, fallback announced)"
 
 # --- Test 2: host run -- the resolved secret wins over a stale running value
 run_reload "value:resolved-on-host" "stale-running-value"
 seen="$(cat "$last_dir/compose-secret-seen")"
 [ "$seen" = "resolved-on-host" ] || fail "Test 2: expected the host-resolved secret, got '$seen'"
-echo "PASS: Test 2 (host-resolved secret wins over the running container's value)"
+if grep -q "^Warning:" "$last_dir/out"; then fail "Test 2: warned although the secret resolved normally"; fi
+echo "PASS: Test 2 (host-resolved secret wins over the running container's value, no warning)"
 
 # --- Test 3: never configured anywhere -- nothing exported, reload still happens
 run_reload none ""
 [ -s "$last_dir/compose-called" ] || fail "Test 3: the Console was never recreated"
 seen="$(cat "$last_dir/compose-secret-seen")"
 [ "$seen" = "<unset>" ] || fail "Test 3: a secret was exported for a never-configured install (got '$seen')"
-echo "PASS: Test 3 (never configured: nothing exported, reload completes)"
+if grep -q "^Warning:" "$last_dir/out"; then fail "Test 3: warned on an install that never configured hosted-bot OAuth (noise on every reload)"; fi
+echo "PASS: Test 3 (never configured: nothing exported, reload completes, stays silent)"
 
 # --- Test 4: resolver fails closed AND the running Console has none -- reload must still complete
 run_reload fail ""
 [ -s "$last_dir/compose-called" ] || fail "Test 4: a failed resolver aborted the reload before recreating the Console"
 seen="$(cat "$last_dir/compose-secret-seen")"
 [ "$seen" = "<unset>" ] || fail "Test 4: unexpected secret '$seen'"
-echo "PASS: Test 4 (resolver failure never aborts the reload)"
+grep -q "the recreated Console will start without it" "$last_dir/out" \
+  || fail "Test 4: an unresolvable secret with nothing to forward was silent (hosted-bot OAuth would stop unannounced)"
+echo "PASS: Test 4 (resolver failure never aborts the reload, and the loss is announced)"
 
 echo "All console reload OAuth-secret tests passed."
