@@ -141,10 +141,42 @@ restart_console() {
 # at startup and Docker fixes a container's environment at creation, so a
 # restored configuration needs a new container -- but not a new image, which is
 # what restart_console spends minutes producing. Nothing here touches the image.
+running_console_env_value() {
+  # Value of one environment variable of the RUNNING Console container, read
+  # with `docker inspect`. Used when a detached helper container recreates the
+  # Console: the helper has the Docker socket but not the age identity, so the
+  # container being replaced is the only place the hosted-bot OAuth client
+  # secret is still reachable. The value is only ever piped, never printed.
+  local key="$1"
+  command -v docker >/dev/null 2>&1 || return 1
+  docker inspect "$WEB_SERVICE" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
+    | sed -n "s/^${key}=//p" | head -n 1
+}
+
 reload_console() {
   require_compose
   prepare_docker_socket_gid
   prepare_host_user_ids
+  # dune-awakening-selfhost-docker#1118: like restart_console, this recreates
+  # the Console, so the hosted-bot wizard's Discord OAuth client secret has to
+  # be resolved first or the new container starts with an empty value and
+  # hosted-bot OAuth silently stops working (the plaintext .txt is gone once
+  # an operator has run cleanup-legacy). Two differences from restart_console:
+  #  - POST /api/console/reload and the Settings restore wizard reach this
+  #    through a detached helper container that cannot read the age identity,
+  #    where the resolver fails closed (returns 1). That must NOT abort the
+  #    reload before the Console is recreated, hence `|| true`.
+  #  - so the secret is then taken from the container about to be replaced.
+  # shellcheck disable=SC1091
+  . runtime/scripts/lib/console-secrets-env.sh
+  export_discord_hosted_bot_oauth_client_secret || true
+  if [ -z "${DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET:-}" ]; then
+    forwarded_oauth_secret="$(running_console_env_value DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET || true)"
+    if [ -n "$forwarded_oauth_secret" ]; then
+      export DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET="$forwarded_oauth_secret"
+    fi
+    unset forwarded_oauth_secret
+  fi
   export ADMIN_BIND_PORT="${ADMIN_WEB_PORT:-${ADMIN_BIND_PORT:-}}"
   mkdir -p runtime/generated
   echo "Recreating the Dune Docker Console container..."
