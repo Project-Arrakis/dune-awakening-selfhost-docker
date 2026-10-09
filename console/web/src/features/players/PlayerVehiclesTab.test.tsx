@@ -72,6 +72,14 @@ describe("PlayerVehiclesTab", () => {
     vi.mocked(vehiclesApi.forPlayer).mockResolvedValue(response({ totalCount: 250 }));
     render(<PlayerVehiclesTab playerId="42" playerName="Kovalt" confirmAction={confirmAction} />);
     expect(await screen.findByText(/more vehicles than can be listed here/)).toBeInTheDocument();
+    // Announced to a screen reader, not just drawn in red (issue #1166).
+    expect(screen.getByText(/more vehicles than can be listed here/)).toHaveAttribute("role", "status");
+  });
+
+  it("announces the loading state of a player's vehicle list", async () => {
+    vi.mocked(vehiclesApi.forPlayer).mockReturnValue(new Promise(() => {}));
+    render(<PlayerVehiclesTab playerId="42" playerName="Kovalt" confirmAction={confirmAction} />);
+    expect(screen.getByRole("status")).toHaveTextContent("Loading Vehicles");
   });
 
   it("keeps the Owner column, but not the Access column, on the co-owner filter", async () => {

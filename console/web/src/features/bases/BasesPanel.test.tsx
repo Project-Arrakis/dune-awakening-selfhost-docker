@@ -209,6 +209,16 @@ describe("BasesPanel player scope", () => {
     renderPanel({ playerId: "42", playerName: "Chani", embedded: true });
     expect(await screen.findByText(/more bases than can be listed here/)).toBeInTheDocument();
     expect(screen.getByLabelText("Player base totals")).toHaveTextContent("5,001 Owned");
+    // Announced to a screen reader, not just drawn in red (issue #1166).
+    expect(screen.getByText(/more bases than can be listed here/)).toHaveAttribute("role", "status");
+  });
+
+  it("announces the loading state of a player's base list", async () => {
+    vi.mocked(basesApi.forPlayer).mockReturnValue(new Promise(() => {}));
+    // A player id no earlier test used: the panel caches its last view per scope, and a cached
+    // view would render the list straight away instead of the loading state.
+    renderPanel({ playerId: "loading-state-player", playerName: "Chani", embedded: true });
+    expect(screen.getByRole("status")).toHaveTextContent("Loading Bases");
   });
 });
 

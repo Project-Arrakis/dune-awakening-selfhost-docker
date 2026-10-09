@@ -1231,7 +1231,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
         {viewSwitch}
         {playerId && <div className="action-row players-filter-row"><PlayerAccessSelect value={access} onChange={changeAccess} disabled /></div>}
       </div>
-      <div className="loading-panel">
+      <div className="loading-panel" role="status">
         <span className="spinner" aria-hidden="true" />
         <strong className="loading-dots">Loading Bases</strong>
       </div>
@@ -1428,7 +1428,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
             <span><strong>{totalPlaceables.toLocaleString()}</strong> Placeables</span>
           </div>
         : <p className="action-help-note">Total Bases: {totalBases.toLocaleString()} · Total Building Pieces: {totalPieces.toLocaleString()} · Total Placeables: {totalPlaceables.toLocaleString()}</p>}
-      {playerId && totalCount > rows.length && <p className="playerAdmin_note danger">This player has more bases than can be listed here; some bases may be missing.</p>}
+      {playerId && totalCount > rows.length && <p className="playerAdmin_note danger" role="status">This player has more bases than can be listed here; some bases may be missing.</p>}
       {!playerId && stalledCombinedCount > 0 && <div className="bases-stalled-banner" role="alert">
         <p className="bases-stalled-banner-title">
           {stalledCombinedCount.toLocaleString()} base{stalledCombinedCount === 1 ? " has" : "s have"} stalled auto-refill
