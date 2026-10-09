@@ -34,11 +34,16 @@ class TankTests(unittest.TestCase):
                 tanks.manifest('2141883-0-shipping')
 
     def test_new_build_assets_and_build_context_are_versioned(self):
-        tag = '2141883-0-shipping'
+        for tag in ('2141883-0-shipping', '2147284-0-shipping'):
+            with self.subTest(tag=tag):
+                self.check_versioned_build(tag)
+
+    def check_versioned_build(self, tag):
+        build = tag.split('-', 1)[0]
         spec = tanks.manifest(tag)
         self.assertFalse(spec['gameplayVerified'])
         for name, expected in spec['assets'].items():
-            path = ROOT / 'patches/experimental-tanks/2141883/assets' / name
+            path = ROOT / 'patches/experimental-tanks' / build / 'assets' / name
             self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), expected)
         calls = []
         def command(*args, **kwargs):
@@ -50,8 +55,8 @@ class TankTests(unittest.TestCase):
             if args[:2] == ('docker', 'build'):
                 context = Path(args[-1])
                 self.assertEqual(set(p.name for p in (context / 'assets').iterdir()), set(spec['assets']))
-                self.assertIn('2141883-0-shipping', (context / 'Dockerfile').read_text())
-                self.assertIn('redblink-dune-tanks:2141883-r6.0-candidate', args)
+                self.assertIn(tag, (context / 'Dockerfile').read_text())
+                self.assertIn(f'redblink-dune-tanks:{build}-r6.4-tank-only-ids-candidate', args)
             if args[:3] == ('docker', 'image', 'inspect'):
                 return IMAGE
             if args[:2] == ('docker', 'run'):

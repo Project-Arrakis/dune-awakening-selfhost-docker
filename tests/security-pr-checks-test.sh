@@ -162,6 +162,22 @@ if [ -n "$real_gitleaks" ] && [ -n "$real_trivy" ]; then
   run_script "$clean" "$REAL:$TOOLS" SCAN_MODE=full CI=true
   expect_rc "real scanners: a clean tree passes in full mode" 0
 
+  vendor="$(new_repo realvendor)"
+  mkdir -p "$vendor/patches/experimental-tanks/2147284"
+  cp "$ROOT/patches/experimental-tanks/2147284/Dockerfile" "$vendor/patches/experimental-tanks/2147284/Dockerfile"
+  cp "$ROOT/.trivyignore-fs.yaml" "$vendor/.trivyignore-fs.yaml"
+  git -C "$vendor" add -A
+  git -C "$vendor" -c user.email=t@t -c user.name=t commit -q -m vendoroverlay
+  run_script "$vendor" "$REAL:$TOOLS" SCAN_MODE=full CI=true
+  expect_rc "real scanners: the reviewed 2147284 vendor overlay has a scoped acceptance" 0
+
+  cp "$vendor/patches/experimental-tanks/2147284/Dockerfile" "$vendor/Dockerfile"
+  git -C "$vendor" add Dockerfile
+  git -C "$vendor" -c user.email=t@t -c user.name=t commit -q -m unrelatedoverlay
+  run_script "$vendor" "$REAL:$TOOLS" SCAN_MODE=full CI=true
+  expect_rc "real scanners: vendor acceptance does not hide the same finding at another path" 1
+  expect_out "...and unrelated root startup still names the rule" "DS-0002"
+
   leak="$(new_repo reallleak)"
   printf 'api_key = "%s%s"\n' 'a9F3kLm7Qp2Wx8Vz4Nc6' 'Rt1Yu5Hs0De9Bj7Gi3Ko' > "$leak/config.txt"
   git -C "$leak" add -A
