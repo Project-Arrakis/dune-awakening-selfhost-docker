@@ -21,10 +21,13 @@ misconfigurations:
     paths:
       - "patches/experimental-tanks/2134304/Dockerfile"
       - "patches/experimental-tanks/2141883/Dockerfile"
+      - "patches/experimental-tanks/2147284/Dockerfile"
     statement: >-
       Thin overlay images (`FROM ${BASE_IMAGE}` plus COPY --chown=dune:nogroup and one chmod) built on top of the
       vendor game-server base image. They set no USER of their own, so the runtime user is whatever that base
       image defines, which this repository cannot change. Re-check if the base image gains or drops a USER.
+      Build 2147284 was re-triaged on 2026-10-09: vendor startup performs chown and SSH setup as root,
+      then launches the game with su dune. Setting USER dune would break that startup contract.
     expired_at: 2027-01-07
   - id: DS-0029
     paths:

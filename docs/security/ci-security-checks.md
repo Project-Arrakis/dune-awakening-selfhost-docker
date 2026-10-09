@@ -44,7 +44,7 @@ new contents. Deleted files and symlinks are not copied into the scan directory.
 
 - A new or changed Dockerfile with no `USER` instruction fails the job (trivy rule DS-0002) unless it is covered
   by `.trivyignore-fs.yaml`.
-- The three Dockerfiles that currently have no `USER`, plus one `apt-get` without `--no-install-recommends`, are
+- The four Dockerfiles that currently have no `USER`, plus one `apt-get` without `--no-install-recommends`, are
   accepted in `.trivyignore-fs.yaml` until 2027-01-07 and must be re-triaged by then.
 
 ## Hardening recommendation (not applied here)
