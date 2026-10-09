@@ -55,7 +55,7 @@ import { fetchWithTimeoutAndRetry } from "./services/httpWithRetry.js";
 import { createHandoff } from "./integrations/discord/handoff.js";
 import { actionForRoute, ROUTE_ACTIONS, NAMESPACES } from "./actions.js";
 import { resolvePlayerScope } from "./playerScope.js";
-import { evaluate, loadPolicies, getAllPolicies, getPolicyNotices, setPolicies, resolveAllowedActions, allKnownActions, resolveSessionTier, normalizeTier } from "./policy.js";
+import { evaluate, loadPolicies, getAllPolicies, getPolicyNotices, policyRevision, setPolicies, resolveAllowedActions, allKnownActions, resolveSessionTier, normalizeTier } from "./policy.js";
 import { classifyPlayerTierRequest, PLAYER_TIER_ACTIONS } from "./playerTierGate.js";
 import { discordAdapterEnabled, discordWritesEnabled } from "./integrations/discord/adapter.js";
 // [Layer 3 integration audit fix, LOW, issue #1043] The 5 header constants
@@ -1712,12 +1712,28 @@ async function handleApi(req, res, path) {
       actionMap: ROUTE_ACTIONS,
       namespaces: NAMESPACES,
       // Why a tier's effective policy differs from the saved file (issue #1160).
-      notices: getPolicyNotices()
+      notices: getPolicyNotices(),
+      // Send it back as If-Match on a save so a concurrent change is refused (issue #1193).
+      revision: policyRevision()
     });
   }
   if (path === "/api/settings/iam/policy" && req.method === "PUT") {
     const body = await readJson(req);
-    const result = setPolicies(body, config.repoRoot);
+    // If-Match carries the revision from GET /api/settings/iam/policies. Absent: unconditional (older clients).
+    // Present but empty is refused rather than treated as absent, so a client whose revision variable was empty
+    // does not silently overwrite. "*" means any existing store, i.e. unconditional. A list of tags is not
+    // supported and never matches.
+    const rawIfMatch = req.headers["if-match"];
+    let ifMatch;
+    if (rawIfMatch !== undefined) {
+      ifMatch = String(rawIfMatch).trim().replace(/^W\//, "").replace(/^"|"$/g, "");
+      if (!ifMatch) return json(res, 400, { error: "If-Match must carry the revision from GET /api/settings/iam/policies." });
+    }
+    const result = setPolicies(body, config.repoRoot, ifMatch && ifMatch !== "*" ? { baseRevision: ifMatch } : {});
+    if (result.conflict) {
+      audit(config, req, "iam.policy-conflict", { baseRevision: ifMatch });
+      return json(res, 409, result);
+    }
     if (!result.ok) return json(res, 400, result);
     audit(config, req, "iam.policy-set", { tiers: Object.keys(body) });
     return json(res, 200, result);

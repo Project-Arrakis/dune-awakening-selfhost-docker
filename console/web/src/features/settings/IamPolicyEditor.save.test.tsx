@@ -158,3 +158,122 @@ test("a save that finishes after the operator switched tier does not rewrite the
   expect(shown).not.toContain("\"Deny\"");
   expect(shown).toContain("backups:*");
 });
+
+// Issue #1193: the save carries the revision it loaded; the server refuses it if another admin saved first.
+
+test("sends the revision of the store it just read as If-Match", async () => {
+  const calls = serve({ ok: true }, catalog({ revision: "rev-1" }));
+  render(<IamPolicyEditor />);
+  fireEvent.click(await screen.findByRole("button", { name: "Save admin policy" }));
+  await waitFor(() => expect(calls.some((c) => c.init?.method === "PUT")).toBe(true));
+  const put = calls.find((c) => c.init?.method === "PUT")!;
+  expect(put.init?.headers).toEqual({ "If-Match": "rev-1" });
+});
+
+test("on a conflict it keeps the admin's edit, shows the server's message, and the next Save uses the new revision", async () => {
+  const theirs = store();
+  theirs.moderator = doc("moderator", "players:read");
+  let putCount = 0;
+  const putHeaders: unknown[] = [];
+  let latest = catalog({ revision: "rev-1" });
+  vi.mocked(api).mockImplementation((async (path: string, init?: RequestInit) => {
+    if (init?.method === "PUT") {
+      putCount += 1;
+      putHeaders.push(init.headers);
+      if (putCount === 1) {
+        latest = catalog({ revision: "rev-2", policies: theirs });
+        throw Object.assign(new Error("The policies changed since you loaded them. Review the current policies and save again."), {
+          status: 409,
+          body: { conflict: true, policies: theirs, revision: "rev-2" }
+        });
+      }
+      return { ok: true, revision: "rev-3" };
+    }
+    // After the conflict the refetch fails, so the second Save depends on what the conflict response handed back.
+    if (putCount >= 1) throw new Error("offline");
+    return latest;
+  }) as typeof api);
+
+  render(<IamPolicyEditor />);
+  const save = await screen.findByRole("button", { name: "Save admin policy" });
+  fireEvent.click(save);
+  expect(await screen.findByText(/The policies changed since you loaded them/)).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Saved" })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "JSON" }));
+  expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toContain("backups:*");
+
+  fireEvent.click(await screen.findByRole("button", { name: "Save admin policy" }));
+  expect(await screen.findByRole("button", { name: "Saved" })).toBeInTheDocument();
+  expect(putHeaders).toEqual([{ "If-Match": "rev-1" }, { "If-Match": "rev-2" }]);
+});
+
+// Review of #1194: the editor re-reads the store before saving. That fresh revision must NOT be sent if
+// the tier being saved changed since the page showed it, or the server would accept the overwrite.
+
+test("does not send a save when another admin changed this tier since the page showed it", async () => {
+  const theirs = store();
+  theirs.admin = doc("admin", "backups:delete");
+  const calls: { path: string; init?: RequestInit }[] = [];
+  let gets = 0;
+  vi.mocked(api).mockImplementation((async (path: string, init?: RequestInit) => {
+    calls.push({ path, init });
+    if (init?.method === "PUT") return { ok: true };
+    gets += 1;
+    return gets === 1 ? catalog({ revision: "rev-1" }) : catalog({ revision: "rev-2", policies: theirs });
+  }) as typeof api);
+
+  render(<IamPolicyEditor />);
+  fireEvent.click(await screen.findByRole("button", { name: "Save admin policy" }));
+  expect(await screen.findByText(/Another admin changed the admin policy/)).toBeInTheDocument();
+  expect(calls.some((c) => c.init?.method === "PUT")).toBe(false);
+
+  // Their version is available on request; the admin's own text was kept until then.
+  fireEvent.click(screen.getByRole("button", { name: "JSON" }));
+  expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toContain("backups:*");
+  fireEvent.click(screen.getByRole("button", { name: "Show current policy" }));
+  expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toContain("backups:delete");
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+test("a change to ANOTHER tier does not stop the save, and its revision is the one sent", async () => {
+  const theirs = store();
+  theirs.moderator = doc("moderator", "players:read");
+  const calls: { path: string; init?: RequestInit }[] = [];
+  let gets = 0;
+  vi.mocked(api).mockImplementation((async (path: string, init?: RequestInit) => {
+    calls.push({ path, init });
+    if (init?.method === "PUT") return { ok: true, revision: "rev-3" };
+    gets += 1;
+    return gets === 1 ? catalog({ revision: "rev-1" }) : catalog({ revision: "rev-2", policies: theirs });
+  }) as typeof api);
+
+  render(<IamPolicyEditor />);
+  fireEvent.click(await screen.findByRole("button", { name: "Save admin policy" }));
+  expect(await screen.findByRole("button", { name: "Saved" })).toBeInTheDocument();
+  const put = calls.find((c) => c.init?.method === "PUT")!;
+  expect(put.init?.headers).toEqual({ "If-Match": "rev-2" });
+  expect(JSON.parse(String(put.init?.body)).moderator).toEqual(theirs.moderator);
+});
+
+test("a save response without a revision does not leave the consumed one to be sent again", async () => {
+  const puts: unknown[] = [];
+  let putCount = 0;
+  vi.mocked(api).mockImplementation((async (_path: string, init?: RequestInit) => {
+    if (init?.method === "PUT") {
+      putCount += 1;
+      puts.push(init.headers);
+      return { ok: true };
+    }
+    // The first read succeeds; later re-reads fail, so the second Save falls back to what the page holds.
+    if (putCount >= 1) throw new Error("offline");
+    return catalog({ revision: "rev-1" });
+  }) as typeof api);
+
+  render(<IamPolicyEditor />);
+  fireEvent.click(await screen.findByRole("button", { name: "Save admin policy" }));
+  expect(await screen.findByRole("button", { name: "Saved" })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Saved" }));
+  await waitFor(() => expect(puts).toHaveLength(2));
+  expect(puts[0]).toEqual({ "If-Match": "rev-1" });
+  expect(puts[1]).toBeUndefined();
+});
