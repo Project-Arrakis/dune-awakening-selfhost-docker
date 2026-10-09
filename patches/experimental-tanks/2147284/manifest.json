@@ -2,11 +2,11 @@
   "candidateOnly": true,
   "gameplayVerified": false,
   "version": "r6.4-tank-only-ids-candidate",
-  "worldTag": "2141883-0-shipping",
-  "baseImage": "registry.funcom.com/funcom/self-hosting/seabass-server@sha256:167c8bb1ef7137a43d086e022f02c965839c33277682c7cac78e7d68881335e5",
-  "baseConfigId": "sha256:df99c7800fb44624c20836783638651f85ed1824d67550bdebb19b66316ba213",
-  "cleanSha256": "91a3cfb069dd44c67354c88b8d9a1cf1f1300dd971b462b9f8feba6da8a46150",
-  "patchedSha256": "cf3d8c25df8bd324922c21ea021f5cb44833be17dd6c7a26f2827cc1a6b5aa75",
+  "worldTag": "2147284-0-shipping",
+  "baseImage": "registry.funcom.com/funcom/self-hosting/seabass-server@sha256:6ff0becf7943829bb767a57b7fa72048737612a51ea428172b8ebb45d374e948",
+  "baseConfigId": "sha256:96c2927837d1779f0e2820c24aa5c10891cf29f0937221f905aa90d782c5ef63",
+  "cleanSha256": "c04524c353ec9657759e95235ae93fb76f1ccde8838f6c5a59bc1ef4e1305522",
+  "patchedSha256": "240b4bb378a93b70134fa685fc467bc2ae94fd40d81da2feea0f987758bc9126",
   "assets": {
     "pakchunk999-RegisTank-r6_0-2141883-LinuxServer_P.pak": "9fd38ec6c7fede35688c7f748fece813947e64e47b25cd7e53bf0b70cf5be02f",
     "pakchunk999-RegisTank-r6_0-2141883-LinuxServer_P.ucas": "3d7e5f792f2d0cebf78c43958ee74d1a2ee48b191294e3a6106081b9041d6787",
@@ -14,39 +14,39 @@
   },
   "sites": [
     [
-      234071954,
-      "488d3de792ffffe892e50302",
+      234084274,
+      "488d3de792ffffe832fd0302",
       "909090909090909090909090"
     ],
     [
-      262200800,
+      262213312,
       "0f8512010000",
       "90e912010000"
     ],
     [
-      265643297,
+      265655809,
       "0f849d010000",
       "e99e01000090"
     ],
     [
-      262126560,
+      262139072,
       "4d8b4c24e8",
-      "e9895c0d05"
+      "e9a9ab0d05"
     ],
     [
-      265644894,
+      265657406,
       "488b8568ffffff",
-      "e934add7049090"
+      "e954fcd7049090"
     ],
     [
-      265667540,
+      265680052,
       "488b4008488945b8",
-      "e9ea54d704909090"
+      "e90aa4d704909090"
     ],
     [
-      346888217,
+      346920985,
       "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-      "505152803d6e1d94020074424489d189c8c1e8103d002000007333488d15851d9402488b54c2684885d274220fb7c9488d144af60201751666813a0001720f8b42020d202020203d74616e6beb0383c8015a5958c39c4152458b5424f8e89effffff750d415a9d4531c99090e95ba3f2fa415a9d4d8b4c24e8e94ea3f2fa9c4152458b1424e876ffffff750f415a9d31c09090909090e9b15228fb415a9d488b8568ffffffe9a25228fb9c41524d89eae84bffffff7510415a9d31c09090488945b8e9fcaa28fb415a9d488b4008488945b8e9ecaa28fb"
+      "505152803d6e2494020074424489d189c8c1e8103d002000007333488d1585249402488b54c2684885d274220fb7c9488d144af60201751666813a0001720f8b42020d202020203d74616e6beb0383c8015a5958c39c4152458b5424f8e89effffff750d415a9d4531c99090e93b54f2fa415a9d4d8b4c24e8e92e54f2fa9c4152458b1424e876ffffff750f415a9d31c09090909090e9910328fb415a9d488b8568ffffffe9820328fb9c41524d89eae84bffffff7510415a9d31c09090488945b8e9dc5b28fb415a9d488b4008488945b8e9cc5b28fb"
     ]
   ]
 }

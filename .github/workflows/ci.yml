@@ -117,6 +117,7 @@ jobs:
       - name: Test experimental Tank image policy and spawn safety
         run: |
           python3 tests/test_experimental_tanks.py
+          python3 tests/test_tank_scoped_module_ids.py
           python3 tests/test_admin_spawn_freshness.py
       - name: Test database updater role restoration
         run: bash tests/update-db-role-privilege-test.sh
