@@ -9,6 +9,10 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ## Unreleased (on top of upstream v1.4.47)
 
+### Added
+
+- **API key scope "Realtime Data" (`realtime:read`): live sandworms, enemies, civilians, vehicles and sandstorms (#1148, upstream PR #242 by dev-prophet-code).** Read-only; passes on what the optional MapViewer3D position agent reads from the game server processes, through `GET /api/realtime/healthz`, `/objects` and `/stream` (server-sent events). Player positions need Players > Read as well, `maps:read` does not include the scope so no existing key gains access, and an open stream ends within 10 seconds when the key is revoked or loses the scope. Installations without the agent are unaffected (the routes answer 503). Documented in `docs/console/realtime.md` and the API reference.
+
 ### Fixed
 
 - **The `security-checks` CI job scanned nothing on pushes to `main`, and its trivy step could never fail (#1144).** On a push to `main` the changed-file set is empty (HEAD is the base), so gitleaks scanned ~0 bytes and trivy printed `SKIP: no changed files` on every merge; the hourly monitor had flagged this in every run. `tests/security-pr-checks.sh` now has `SCAN_MODE` (`changed` for pull requests, `full` for every other trigger: it scans all tracked files and refuses to report a clean scan of nothing), and trivy now runs with `--exit-code 1` (it exits 0 on findings by default, so a planted root Dockerfile used to pass). The first full-tree baseline found 0 gitleaks findings over 2,758 files and 3 known trivy DS-0002 findings, accepted by path with a justification and an expiry in the new `.trivyignore-fs.yaml`. Operator-visible effect: none at runtime; contributors may now see `security-checks` fail on a PR that adds a Dockerfile without a `USER`. Docs: `docs/security/ci-security-tooling.md`. (Follow-up from review: the whitespace/conflict-marker `git diff --check` runs in both modes, so pushes to `integration/**` and `release/**` are still checked.)

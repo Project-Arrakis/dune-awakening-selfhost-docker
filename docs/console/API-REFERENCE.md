@@ -21,6 +21,7 @@ Complete reference for all HTTP API endpoints in the Dune Docker Console. All en
 - [Blueprints](#blueprints)
 - [Maps & World](#maps--world)
 - [Live Map](#live-map)
+- [Realtime Data](#realtime-data)
 - [Database](#database)
 - [Admin Tools](#admin-tools)
 - [Care Package System](#care-package-system)
@@ -863,6 +864,20 @@ coordinate conversion.
 | GET | `/api/map/bases` | Get base locations | `map?` (query param) |
 | GET | `/api/map/storage` | Get storage locations | `map?` (query param) |
 | GET | `/api/map/services` | Get service locations | `map?` (query param) |
+
+---
+
+## Realtime Data
+
+Optional. Live positions of sandworms, enemies, civilians, vehicles and sandstorms, read from the game server processes by the separate
+MapViewer3D position agent and passed on by the Console. See [realtime.md](realtime.md). Requires the API key scope **Realtime Data**
+(`realtime:read`); player objects are included only when the key also holds Players > Read. Answers `503` when the agent does not run.
+
+| Method | Route | Description | Parameters |
+|--------|-------|-------------|------------|
+| GET | `/api/realtime/healthz` | Agent availability and version: `{ available, version, ok, ready, sources }` | None |
+| GET | `/api/realtime/objects` | Current snapshot `{ gen, t, sources, objects }` | None |
+| GET | `/api/realtime/stream` | Server-sent events: `snap` (full state) and `pos` (`d`: `[id, x, y, z]`, `r`: removed ids); re-checks the key every 10 seconds | None |
 
 ---
 
