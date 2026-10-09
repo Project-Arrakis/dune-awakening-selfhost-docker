@@ -23,6 +23,7 @@
 //   if action matches statement AND Effect=Allow → mark ALLOWED
 //   if no statement matched                        → DENY (default)
 
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { ROUTE_ACTIONS, REGEX_ACTIONS, REGEX_ACTIONS_BY_METHOD, REGEX_ACTIONS_BY_METHOD_PATTERN, CONTENT_CONDITIONAL_ACTIONS, REMOVED_ACTION_ALIASES } from "./actions.js";
@@ -301,6 +302,22 @@ export function getAllPolicies(policies = null) {
   return { ...store };
 }
 
+// Key order must not change the revision, or a hand-edited file would look like someone else's save.
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+// Identifies the policy store the console is enforcing right now (issue #1193). The Settings page
+// sends the revision it loaded with a save; setPolicies refuses the save if the store has changed
+// since, so two admins cannot silently overwrite each other.
+export function policyRevision(policies = null) {
+  return createHash("sha256").update(canonicalJson(getAllPolicies(policies))).digest("hex");
+}
+
 // Every Action pattern that matches NO action in the catalog, as
 // [{ tier, pattern }]. Dead weight in an Allow; a silent lie in a Deny.
 // "Deny players:reset-progression" is the shape -- no route resolves to it
@@ -328,7 +345,22 @@ export function unknownActions(docs) {
   return dead;
 }
 
-export function setPolicies(inputDocs, repoRoot = null) {
+// options.baseRevision (optional): the revision the caller last read. When given and it no longer
+// matches, nothing is written and the result is { ok: false, conflict: true } with the current store,
+// so the caller can show what changed. Omitted keeps the old replace-the-store behaviour for
+// scripts and clients that predate revisions.
+export function setPolicies(inputDocs, repoRoot = null, options = {}) {
+  const baseRevision = options?.baseRevision;
+  if (baseRevision != null && baseRevision !== policyRevision()) {
+    return {
+      ok: false,
+      conflict: true,
+      error: "The policies changed since you loaded them. Review the current policies and save again.",
+      policies: getAllPolicies(),
+      notices: getPolicyNotices(),
+      revision: policyRevision()
+    };
+  }
   const docs = sanitizePolicyStore(inputDocs);
   if (!validPolicyStore(docs)) {
     return { ok: false, error: "Policies must contain valid tier documents and Allow/Deny statements." };
@@ -384,7 +416,8 @@ export function setPolicies(inputDocs, repoRoot = null) {
     policies: getAllPolicies(),
     playerCappedActions: playerCappedActions(reconciled.store),
     addedDefaultDenies: reconciled.added,
-    notices: getPolicyNotices()
+    notices: getPolicyNotices(),
+    revision: policyRevision()
   };
 }
 

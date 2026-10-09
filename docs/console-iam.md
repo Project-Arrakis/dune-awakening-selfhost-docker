@@ -93,7 +93,7 @@ A file at `runtime/generated/iam-policies.json` that already names a dead action
 The policy API is owner-only under the default policy:
 
 - `GET /api/settings/iam/policies` returns the active policy store plus `actions`, the full catalog of valid action names.
-- `PUT /api/settings/iam/policy` validates and atomically saves the complete policy store to `runtime/generated/iam-policies.json`.
+- `PUT /api/settings/iam/policy` validates and atomically saves the complete policy store to `runtime/generated/iam-policies.json`. `GET /api/settings/iam/policies` returns a `revision` of the store; send it back as `If-Match` and a save is refused with `409` (current `policies`, `notices` and `revision` in the body, nothing written, audited as `iam.policy-conflict`) if the store changed since you read it. Without `If-Match` the save replaces the store unconditionally, as before. The Settings editor always sends it.
 - `POST /api/settings/iam/policy/test` evaluates an action for a tier without changing policy, and reports whether the action exists (`known`).
 
 Updates that remove the owner's `settings:write` access are rejected so the local-password recovery path remains available.

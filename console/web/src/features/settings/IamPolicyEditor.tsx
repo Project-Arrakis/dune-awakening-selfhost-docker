@@ -13,6 +13,8 @@ interface PolicyCatalog {
   actionMap: Record<string, string>;
   namespaces: Record<string, string>;
   /** Why a tier's effective policy differs from the saved file (issue #1160). */
+  /** Identifies the store this page loaded; sent back as If-Match so a concurrent change is refused (#1193). */
+  revision?: string;
   notices?: {
     addedDefaultDenies: { tier: string; action: string }[];
     keptExactAllows: { tier: string; action: string }[];
@@ -22,6 +24,7 @@ interface PolicyCatalog {
 const TIERS = ["owner", "admin", "moderator", "player"] as const;
 
 interface SavePolicyResult {
+  revision?: string;
   policies?: PolicyCatalog["policies"];
   notices?: PolicyCatalog["notices"];
   addedDefaultDenies?: { tier: string; action: string }[];
@@ -84,6 +87,8 @@ export function IamPolicyEditor() {
   const [selectedTier, setSelectedTier] = useState<string>("admin");
   const [jsonText, setJsonText] = useState("");
   const [jsonError, setJsonError] = useState("");
+  // A refused save because another admin saved first. Not a validation error: it must not block the next Save.
+  const [conflictNote, setConflictNote] = useState("");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [savedNote, setSavedNote] = useState("");
@@ -111,6 +116,7 @@ export function IamPolicyEditor() {
     selectedTierRef.current = tier;
     setSelectedTier(tier);
     markEdited();
+    setConflictNote("");
     setTestResults(null);
     setSearch("");
     if (catalog) {
@@ -216,25 +222,34 @@ export function IamPolicyEditor() {
     }
     setSaving(true);
     setSavedNote("");
+    setConflictNote("");
     try {
       // The server takes the COMPLETE policy store (PUT /api/settings/iam/policy), not one tier.
       // (This used to POST { tier, statements } to a route that does not exist, so nothing
       // was ever saved: issue #1179.)
-      // Start from the store as it is NOW, not as it was when this page opened: the server replaces the
-      // whole store, so a stale copy would silently overwrite another admin's change to another tier
-      // (#1184). This narrows the race to one request round-trip; the API is whole-store by design.
+      // Start from the store as it is NOW, not as it was when this page opened, and send its revision
+      // as If-Match: the server replaces the whole store, so it refuses the save (409) if another admin
+      // changed anything after this read (#1184, #1193).
       let base = catalog.policies;
+      let revision = catalog.revision;
       try {
         const latest = await api<PolicyCatalog>("/api/settings/iam/policies");
-        if (latest?.policies) base = latest.policies;
+        if (latest?.policies) {
+          base = latest.policies;
+          revision = latest.revision;
+        }
       } catch {
         // Fall back to what is on screen; the PUT below still reports its own failure.
       }
       const next = { ...base, [selectedTier]: { version: 1, tier: selectedTier, statements: valid } };
-      const result = await api<SavePolicyResult>("/api/settings/iam/policy", { method: "PUT", body: JSON.stringify(next) });
+      const result = await api<SavePolicyResult>("/api/settings/iam/policy", {
+        method: "PUT",
+        headers: revision ? { "If-Match": revision } : undefined,
+        body: JSON.stringify(next)
+      });
       // Adopt what the server now enforces: it may have added a shipped Deny to what was sent.
       const policies = result?.policies ?? next;
-      setCatalog({ ...catalog, policies, notices: result?.notices ?? catalog.notices });
+      setCatalog({ ...catalog, policies, notices: result?.notices ?? catalog.notices, revision: result?.revision ?? revision });
       // The admin may have switched tier while this save was in flight. The catalog is updated either
       // way, but the text area, the note and the Saved state belong to the tier that was saved: writing
       // them under another tier would show its statements there, and a second Save would then write them
@@ -249,7 +264,23 @@ export function IamPolicyEditor() {
         setTimeout(() => setSaved(false), 3000);
       }
     } catch (error) {
-      if (selectedTierRef.current === selectedTier) {
+      // Another admin saved first. Adopt what is enforced now so the next Save is based on it, but keep
+      // the text this admin typed: it is their unsaved work, and the message tells them to review it.
+      const conflict = (error as { status?: number; body?: Partial<PolicyCatalog> })?.status === 409
+        ? (error as { body?: Partial<PolicyCatalog> }).body
+        : undefined;
+      if (conflict?.policies) {
+        if (selectedTierRef.current === selectedTier) {
+          setConflictNote(error instanceof Error && error.message ? error.message : "The policies changed since you loaded them.");
+        }
+        setCatalog((current) => current && {
+          ...current,
+          policies: conflict.policies!,
+          notices: conflict.notices ?? current.notices,
+          revision: conflict.revision ?? current.revision
+        });
+      }
+      if (!conflict?.policies && selectedTierRef.current === selectedTier) {
         setJsonError(error instanceof Error && error.message ? error.message : "Failed to save policy");
       }
     }
@@ -386,6 +417,7 @@ export function IamPolicyEditor() {
 
       <div className="iam-editor-footer">
         {jsonError && <p className="iam-json-error" style={{ marginBottom: "8px" }}>{jsonError}</p>}
+        {conflictNote && <p className="iam-notice iam-notice-warning" role="alert">{conflictNote} Your edits are kept; save again to apply them on top of the current policies.</p>}
         <button className="stable-action-button" onClick={savePolicy} disabled={saving || (editorTab === "json" && !!jsonError)}>
           {saving ? "Saving..." : saved ? "Saved" : `Save ${selectedTier} policy`}
         </button>

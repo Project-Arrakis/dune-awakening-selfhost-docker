@@ -158,3 +158,51 @@ test("a save that finishes after the operator switched tier does not rewrite the
   expect(shown).not.toContain("\"Deny\"");
   expect(shown).toContain("backups:*");
 });
+
+// Issue #1193: the save carries the revision it loaded; the server refuses it if another admin saved first.
+
+test("sends the revision of the store it just read as If-Match", async () => {
+  const calls = serve({ ok: true }, catalog({ revision: "rev-1" }));
+  render(<IamPolicyEditor />);
+  fireEvent.click(await screen.findByRole("button", { name: "Save admin policy" }));
+  await waitFor(() => expect(calls.some((c) => c.init?.method === "PUT")).toBe(true));
+  const put = calls.find((c) => c.init?.method === "PUT")!;
+  expect(put.init?.headers).toEqual({ "If-Match": "rev-1" });
+});
+
+test("on a conflict it keeps the admin's edit, shows the server's message, and the next Save uses the new revision", async () => {
+  const theirs = store();
+  theirs.moderator = doc("moderator", "players:read");
+  let putCount = 0;
+  const putHeaders: unknown[] = [];
+  let latest = catalog({ revision: "rev-1" });
+  vi.mocked(api).mockImplementation((async (path: string, init?: RequestInit) => {
+    if (init?.method === "PUT") {
+      putCount += 1;
+      putHeaders.push(init.headers);
+      if (putCount === 1) {
+        latest = catalog({ revision: "rev-2", policies: theirs });
+        throw Object.assign(new Error("The policies changed since you loaded them. Review the current policies and save again."), {
+          status: 409,
+          body: { conflict: true, policies: theirs, revision: "rev-2" }
+        });
+      }
+      return { ok: true, revision: "rev-3" };
+    }
+    // After the conflict the refetch fails, so the second Save depends on what the conflict response handed back.
+    if (putCount >= 1) throw new Error("offline");
+    return latest;
+  }) as typeof api);
+
+  render(<IamPolicyEditor />);
+  const save = await screen.findByRole("button", { name: "Save admin policy" });
+  fireEvent.click(save);
+  expect(await screen.findByText(/The policies changed since you loaded them/)).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Saved" })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "JSON" }));
+  expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toContain("backups:*");
+
+  fireEvent.click(await screen.findByRole("button", { name: "Save admin policy" }));
+  expect(await screen.findByRole("button", { name: "Saved" })).toBeInTheDocument();
+  expect(putHeaders).toEqual([{ "If-Match": "rev-1" }, { "If-Match": "rev-2" }]);
+});

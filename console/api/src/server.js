@@ -55,7 +55,7 @@ import { fetchWithTimeoutAndRetry } from "./services/httpWithRetry.js";
 import { createHandoff } from "./integrations/discord/handoff.js";
 import { actionForRoute, ROUTE_ACTIONS, NAMESPACES } from "./actions.js";
 import { resolvePlayerScope } from "./playerScope.js";
-import { evaluate, loadPolicies, getAllPolicies, getPolicyNotices, setPolicies, resolveAllowedActions, allKnownActions, resolveSessionTier, normalizeTier } from "./policy.js";
+import { evaluate, loadPolicies, getAllPolicies, getPolicyNotices, policyRevision, setPolicies, resolveAllowedActions, allKnownActions, resolveSessionTier, normalizeTier } from "./policy.js";
 import { classifyPlayerTierRequest, PLAYER_TIER_ACTIONS } from "./playerTierGate.js";
 import { discordAdapterEnabled, discordWritesEnabled } from "./integrations/discord/adapter.js";
 // [Layer 3 integration audit fix, LOW, issue #1043] The 5 header constants
@@ -1712,12 +1712,19 @@ async function handleApi(req, res, path) {
       actionMap: ROUTE_ACTIONS,
       namespaces: NAMESPACES,
       // Why a tier's effective policy differs from the saved file (issue #1160).
-      notices: getPolicyNotices()
+      notices: getPolicyNotices(),
+      // Send it back as If-Match on a save so a concurrent change is refused (issue #1193).
+      revision: policyRevision()
     });
   }
   if (path === "/api/settings/iam/policy" && req.method === "PUT") {
     const body = await readJson(req);
-    const result = setPolicies(body, config.repoRoot);
+    const ifMatch = String(req.headers["if-match"] || "").replace(/^W\//, "").replace(/^"|"$/g, "");
+    const result = setPolicies(body, config.repoRoot, ifMatch ? { baseRevision: ifMatch } : {});
+    if (result.conflict) {
+      audit(config, req, "iam.policy-conflict", { baseRevision: ifMatch });
+      return json(res, 409, result);
+    }
     if (!result.ok) return json(res, 400, result);
     audit(config, req, "iam.policy-set", { tiers: Object.keys(body) });
     return json(res, 200, result);
