@@ -12,6 +12,11 @@ interface PolicyCatalog {
   actions: string[];
   actionMap: Record<string, string>;
   namespaces: Record<string, string>;
+  /** Why a tier's effective policy differs from the saved file (issue #1160). */
+  notices?: {
+    addedDefaultDenies: { tier: string; action: string }[];
+    keptExactAllows: { tier: string; action: string }[];
+  };
 }
 
 const TIERS = ["owner", "admin", "moderator", "player"] as const;
@@ -216,8 +221,25 @@ export function IamPolicyEditor() {
 
   if (!catalog) return <section className="iam-editor-loading"><p className="loading-dots">Loading policies</p></section>;
 
+  const addedDenies = catalog?.notices?.addedDefaultDenies ?? [];
+  const keptAllows = catalog?.notices?.keptExactAllows ?? [];
+  const listActions = (items: { tier: string; action: string }[]) => items.map((item) => `${capitalize(item.tier)}: ${item.action}`).join(", ");
+
   return (
     <section className="iam-policy-editor">
+      {addedDenies.length > 0 && (
+        <p className="iam-notice" role="status">
+          This policy was saved before newer security defaults existed, so Deny rules were added when the Console started:{" "}
+          <strong>{listActions(addedDenies)}</strong>. The tier now gets a 403 for these actions. Save the policy to keep the
+          change, or name an action in an Allow to keep it granted.
+        </p>
+      )}
+      {keptAllows.length > 0 && (
+        <p className="iam-notice iam-notice-warning" role="status">
+          Allowed by name, so the shipped Deny was not applied: <strong>{listActions(keptAllows)}</strong>. These actions let that
+          tier read every credential on this host through a system backup. Remove the Allow to restore the Deny.
+        </p>
+      )}
       <div className="iam-tier-selector">
         {TIERS.map((tier) => (
           <button key={tier} className={`iam-tier-btn ${selectedTier === tier ? "active" : ""}`} onClick={() => selectTier(tier)}>
