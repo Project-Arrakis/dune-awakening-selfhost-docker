@@ -242,6 +242,13 @@ test("the policies endpoint hands back the vocabulary", () => {
   assert.match(body, /actions: \[\.\.\.allKnownActions\(\)\]\.sort\(\)/);
 });
 
+test("the policies endpoint tells the Settings page why a saved policy differs from what is enforced", () => {
+  const handler = serverSrc.slice(serverSrc.indexOf('path === "/api/settings/iam/policies"'));
+  const body = handler.slice(0, handler.indexOf("\n  }\n"));
+  assert.match(body, /notices: getPolicyNotices\(\)/, "issue #1160: the added Denies / kept Allows must reach the UI");
+  assert.match(serverSrc, /import \{[^}]*\bgetPolicyNotices\b[^}]*\} from "\.\/policy\.js"/);
+});
+
 // ---- Removed action aliases ----
 //
 // Splitting the coarse *:mutate actions is not a no-op for a policy that

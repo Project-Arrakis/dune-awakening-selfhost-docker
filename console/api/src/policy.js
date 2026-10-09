@@ -164,20 +164,35 @@ const SHIPPED_DEFAULT_DENIES = Object.freeze({
 
 function reconcileShippedDenies(store) {
   const added = [];
+  const kept = [];
   let next = store;
   for (const [tier, actions] of Object.entries(SHIPPED_DEFAULT_DENIES)) {
     const document = store[tier];
     if (!document) continue;
-    const missing = actions.filter((action) => !document.statements.some((statement) => {
-      const patterns = Array.isArray(statement.Action) ? statement.Action : [statement.Action];
-      if (statement.Effect === "Deny") return patterns.some((pattern) => matchAction(pattern, action));
-      return statement.Effect === "Allow" && patterns.includes(action);
-    }));
+    const patternsOf = (statement) => (Array.isArray(statement.Action) ? statement.Action : [statement.Action]);
+    const denied = (action) => document.statements.some((statement) => statement.Effect === "Deny"
+      && patternsOf(statement).some((pattern) => matchAction(pattern, action)));
+    const namedInAllow = (action) => document.statements.some((statement) => statement.Effect === "Allow"
+      && patternsOf(statement).includes(action));
+    // An exact-name Allow is the operator's choice and wins, but it must not be silent:
+    // these actions let that tier read every credential on the host (system backups).
+    kept.push(...actions.filter((action) => !denied(action) && namedInAllow(action)).map((action) => ({ tier, action })));
+    const missing = actions.filter((action) => !denied(action) && !namedInAllow(action));
     if (missing.length === 0) continue;
     next = { ...next, [tier]: { ...document, statements: [...document.statements, { Effect: "Deny", Action: missing }] } };
     added.push(...missing.map((action) => ({ tier, action })));
   }
-  return { store: next, added };
+  return { store: next, added, kept };
+}
+
+// What the last load or save decided about the shipped Denies, for the Settings page: an operator
+// whose admin tier silently lost (or deliberately kept) a system-backup action should not have to
+// read container logs to find out why (issue #1160).
+const emptyNotices = () => ({ addedDefaultDenies: [], keptExactAllows: [] });
+let _notices = emptyNotices();
+
+export function getPolicyNotices() {
+  return { addedDefaultDenies: [..._notices.addedDefaultDenies], keptExactAllows: [..._notices.keptExactAllows] };
 }
 
 export function resolveSessionTier(session) {
@@ -209,6 +224,7 @@ export function loadPolicies(repoRoot = null) {
     : resolve(process.cwd(), "../..", "runtime/generated/iam-policies.json");
 
   _allowedActions = {};
+  _notices = emptyNotices();
 
   if (existsSync(filePath)) {
     try {
@@ -217,11 +233,12 @@ export function loadPolicies(repoRoot = null) {
       if (validPolicyStore(parsed)) {
         const reconciled = reconcileShippedDenies(parsed);
         _policies = reconciled.store;
+        _notices = { addedDefaultDenies: reconciled.added, keptExactAllows: reconciled.kept };
         // Reported, not rejected: discarding the document would silently
         // revert the operator's whole policy to defaults, a bigger surprise
         // than the dead pattern. setPolicies refuses these on save, so a stored
         // file can only acquire one by hand-editing. The caller logs this.
-        return { source: "file", path: filePath, unknownActions: unknownActions(parsed), deprecatedActions: deprecatedActions(parsed), playerCappedActions: playerCappedActions(reconciled.store), addedDefaultDenies: reconciled.added };
+        return { source: "file", path: filePath, unknownActions: unknownActions(parsed), deprecatedActions: deprecatedActions(parsed), playerCappedActions: playerCappedActions(reconciled.store), addedDefaultDenies: reconciled.added, keptExactAllows: reconciled.kept };
       }
       _policies = DEFAULT_POLICIES;
       return { source: "defaults", path: filePath, invalid: true, unknownActions: [], deprecatedActions: [] };
@@ -351,6 +368,9 @@ export function setPolicies(inputDocs, repoRoot = null) {
   }
   _policies = docs;
   _allowedActions = {};
+  // What was saved is what is enforced now; it carries the Denies it was given (or the
+  // operator removed). Only a kept exact-name Allow is still worth saying out loud.
+  _notices = { addedDefaultDenies: [], keptExactAllows: reconcileShippedDenies(docs).kept };
   if (repoRoot) writeJsonAtomic(resolve(repoRoot, "runtime/generated/iam-policies.json"), docs, 0o600);
   // A grant beyond players:read/guilds:read on `player` is accepted but inert (playerTierGate
   // caps it); say so, as loadPolicies does at startup, so the save does not look effective.

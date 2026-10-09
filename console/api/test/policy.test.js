@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { actionForRoute } from "../src/actions.js";
-import { DEFAULT_POLICIES, evaluate, loadPolicies, matchAction, resolveAllowedActions, setPolicies } from "../src/policy.js";
+import { DEFAULT_POLICIES, evaluate, getPolicyNotices, loadPolicies, matchAction, resolveAllowedActions, setPolicies } from "../src/policy.js";
 
 test("policy matching supports exact and namespace wildcards", () => {
   assert.equal(matchAction("players:read", "players:read"), true);
@@ -602,3 +602,57 @@ test("a saved Deny already present is not duplicated, and an exact-name Allow is
     assert.equal(evaluate({ tier: "admin" }, "backups:import-system"), false);
   } finally { loadPolicies(null); }
 });
+
+// ---- Telling the operator what the reconcile decided (issue #1160) ----
+
+test("the Settings page is told which Denies were added at load, and which exact Allows kept the Deny away", () => {
+  try {
+    loadSaved([{ Effect: "Allow", Action: ["backups:*"] }]);
+    assert.deepEqual(getPolicyNotices(), {
+      addedDefaultDenies: SYSTEM_BACKUP.map((action) => ({ tier: "admin", action })),
+      keptExactAllows: []
+    });
+
+    const result = loadSaved([{ Effect: "Allow", Action: ["backups:*", "backups:download-system"] }]);
+    assert.deepEqual(result.keptExactAllows, [{ tier: "admin", action: "backups:download-system" }]);
+    assert.deepEqual(getPolicyNotices().keptExactAllows, [{ tier: "admin", action: "backups:download-system" }]);
+    assert.deepEqual(getPolicyNotices().addedDefaultDenies.map((d) => d.action).sort(), ["backups:import-system", "backups:restore-system"]);
+
+    // A Deny that is already there is neither "added" nor a kept Allow, even next to an exact Allow.
+    loadSaved([{ Effect: "Allow", Action: ["backups:download-system"] }, { Effect: "Deny", Action: SYSTEM_BACKUP }]);
+    assert.deepEqual(getPolicyNotices(), { addedDefaultDenies: [], keptExactAllows: [] });
+  } finally { loadPolicies(null); }
+});
+
+test("notices are empty for defaults, and a save replaces them with what is now enforced", () => {
+  try {
+    loadPolicies(null);
+    assert.deepEqual(getPolicyNotices(), { addedDefaultDenies: [], keptExactAllows: [] });
+
+    loadSaved([{ Effect: "Allow", Action: ["backups:*"] }]);
+    assert.equal(getPolicyNotices().addedDefaultDenies.length, 3);
+
+    // Saving what the Settings page showed (the reconciled policy) clears "added".
+    const saved = setPolicies(getAllPoliciesForTest(), null);
+    assert.equal(saved.ok, true);
+    assert.deepEqual(getPolicyNotices().addedDefaultDenies, []);
+    assert.deepEqual(getPolicyNotices().keptExactAllows, []);
+
+    // Saving an exact-name Allow is the operator's choice, and stays visible.
+    const withAllow = { ...getAllPoliciesForTest(), admin: { version: 1, tier: "admin", statements: [{ Effect: "Allow", Action: ["backups:*", "backups:restore-system"] }] } };
+    assert.equal(setPolicies(withAllow, null).ok, true);
+    assert.deepEqual(getPolicyNotices().keptExactAllows, [{ tier: "admin", action: "backups:restore-system" }]);
+  } finally { loadPolicies(null); }
+});
+
+test("getPolicyNotices hands out copies, so a caller cannot rewrite what the next request sees", () => {
+  try {
+    loadSaved([{ Effect: "Allow", Action: ["backups:*"] }]);
+    getPolicyNotices().addedDefaultDenies.length = 0;
+    getPolicyNotices().addedDefaultDenies.push({ tier: "x", action: "y" });
+    assert.equal(getPolicyNotices().addedDefaultDenies.length, 3);
+  } finally { loadPolicies(null); }
+});
+
+import { getAllPolicies as getAllPoliciesForTest } from "../src/policy.js";
+

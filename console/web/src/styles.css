@@ -7490,6 +7490,19 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
   max-width: 960px;
 }
 
+.iam-notice {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.14));
+  border-left-width: 4px;
+  border-radius: 6px;
+  line-height: 1.45;
+}
+
+.iam-notice-warning {
+  border-left-color: var(--warning);
+}
+
 .iam-tier-selector {
   display: flex;
   gap: 0;
