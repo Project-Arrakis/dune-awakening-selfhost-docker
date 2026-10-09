@@ -64,6 +64,30 @@ describe("CharacterAdminUI deleted-character recovery", () => {
     });
   });
 
+  it("asks the player to close the game before login-queue repair", async () => {
+    const confirmAction = vi.fn().mockResolvedValue(false);
+    render(<CharacterAdminUI
+      detail={{ player: { actual_online_status: "Offline" }, capabilities: {} }}
+      fallback={{}}
+      dbPlayerId="4832"
+      actionPlayerId="synthetic"
+      playerName="Test Player"
+      onError={vi.fn()}
+      onRefresh={vi.fn()}
+      onClose={vi.fn()}
+      confirmAction={confirmAction}
+      waitForTask={vi.fn()}
+      formatMutationResult={() => "Action completed."}
+      restartGate={vi.fn().mockResolvedValue("immediate")}
+    />);
+    fireEvent.click(screen.getByRole("button", { name: "Admin" }));
+    fireEvent.click(screen.getByRole("button", { name: "Repair Login Queue" }));
+    await waitFor(() => expect(confirmAction).toHaveBeenCalledWith(
+      expect.stringContaining("close the game first. Active queues will not be deleted."),
+      expect.objectContaining({ title: "Repair Login Queue" })
+    ));
+  });
+
   it("shows the retained character details and sends the guarded recovery request", async () => {
     const confirmAction = vi.fn().mockResolvedValue(true);
     render(<CharacterAdminUI

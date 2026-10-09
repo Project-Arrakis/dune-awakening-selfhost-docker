@@ -1619,7 +1619,7 @@ const INTERNAL_GM_PLAYER_PAWN_ID = FUNCOM_GM_PERSONA.playerPawnId;
 // "Server".
 const SYSTEM_PERSONA_PAWN_IDS = [FUNCOM_GM_PERSONA, CARE_PACKAGE_SERVER_PERSONA, MESSAGE_OF_THE_DAY_PERSONA].map((persona) => persona.playerPawnId);
 
-export async function listPlayers(db, { status = "all", q = "", page = 0, pageSize = 50, sortColumn = "character_name", sortDirection = "asc", includeTotals = true, inactiveWeeks = null, bannedFlsIds = [] } = {}) {
+export async function listPlayers(db, { status = "all", q = "", page = 0, pageSize = 50, sortColumn = "character_name", sortDirection = "asc", includeTotals = true, inactiveWeeks = null, bannedFlsIds = [], onlyPlayerControllerId = null } = {}) {
   if (!(await tableExists(db, "actors")) || !(await tableExists(db, "player_state"))) {
     return { ...unsupported("players", ["dune.actors", "dune.player_state"]), totalCount: 0, totalPlayers: 0 };
   }
@@ -1762,6 +1762,22 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
     values.push(String(q));
     const exactIdParameter = values.length;
     where += ` and (ps.character_name ilike $${fuzzySearchParameter} or ${resolvedFlsId} ilike $${fuzzySearchParameter} or a.id::text = $${exactIdParameter} or a.owner_account_id::text = $${exactIdParameter})`;
+  }
+  // Own-record scoping for the console's `player` IAM tier (Red-Blink PR #202
+  // review): the caller may only ever see the single player character linked
+  // to their own Discord account via `dune.discord_player_links`. Callers that
+  // don't need scoping (owner/admin/moderator sessions) pass null, leaving
+  // this filter a no-op -- identical to every other tier's existing behavior.
+  // /code-review high finding (2026-09-24): explicit null/undefined check,
+  // not truthiness -- player_controller_id = 0 is a real, distinct-from-NULL
+  // sentinel elsewhere in this schema (see the coalesce(...,0)/nullif(...,0)
+  // handling for it in this same file), so a bare `if (onlyPlayerControllerId)`
+  // would silently skip this own-record filter entirely for a controller id
+  // of 0, returning the caller's own-record query unfiltered against the
+  // whole roster instead of the empty/own-record result it's supposed to.
+  if (onlyPlayerControllerId !== null && onlyPlayerControllerId !== undefined) {
+    values.push(String(onlyPlayerControllerId));
+    where += ` and ps.player_controller_id::text = $${values.length}`;
   }
   values.push(safePageSize, offset);
   const limitParamIndex = values.length - 1;
@@ -2240,7 +2256,36 @@ const GUILD_SORT_COLUMNS = {
   guild_id: { order: ["guild_id"] }
 };
 
-export async function listGuilds(db, { q = "", page = 0, pageSize = 50, sortColumn = "guild_name", sortDirection = "asc" } = {}) {
+// Resolves which guild (if any) a given player CONTROLLER id currently
+// belongs to -- used by the console's `player` IAM tier to scope
+// GET /api/guilds and GET /api/guilds/:id/members to the caller's own guild
+// (Red-Blink PR #202 review; corrected 2026-09-24 -- the caller previously
+// passed the pawn/actor id here, which guild_members.player_id does not use,
+// see resolveOwnPlayerScope's own comment for how that was confirmed). A
+// player belongs to at most one guild, matching this game's own design, so
+// `limit 1` is correct here, not a shortcut.
+export async function getPlayerGuildId(db, playerControllerId) {
+  const id = Number(playerControllerId);
+  if (!Number.isFinite(id) || id <= 0) return null;
+  if (!(await tableExists(db, "guild_members"))) return null;
+  // Resolved dynamically, not hardcoded to "player_id" (/code-review high
+  // finding, 2026-09-24), matching guildMembers()'s own column-resolution a
+  // few lines down -- an install whose guild_members table names this column
+  // differently (player_controller_id/actor_id/account_id/player_pawn_id)
+  // would otherwise 500 on every own-guild-scoped request instead of the
+  // graceful "unsupported" this function's own tableExists() guard is
+  // supposed to provide.
+  const memberColumns = await columnsFor(db, "guild_members");
+  const memberPlayerColumn = firstExistingColumn(memberColumns, ["player_id", "player_controller_id", "actor_id", "account_id", "player_pawn_id"]);
+  if (!memberPlayerColumn) return null;
+  const result = await db.query(
+    `select guild_id::text as guild_id from dune.guild_members where ${quoteIdentifier(memberPlayerColumn)} = $1::bigint limit 1`,
+    [id]
+  );
+  return result.rows[0]?.guild_id || null;
+}
+
+export async function listGuilds(db, { q = "", page = 0, pageSize = 50, sortColumn = "guild_name", sortDirection = "asc", onlyGuildId = null } = {}) {
   if (!(await tableExists(db, "guilds"))) {
     return { ...unsupported("guilds", ["dune.guilds"]), totalCount: 0, totalGuilds: 0 };
   }
@@ -2274,6 +2319,12 @@ export async function listGuilds(db, { q = "", page = 0, pageSize = 50, sortColu
   if (q) {
     values.push(`%${q}%`);
     where += ` and g.${quoteIdentifier(guildNameColumn)} ilike $${values.length}`;
+  }
+  // Own-guild scoping for the console's `player` IAM tier (Red-Blink PR #202
+  // review) -- mirrors listPlayers()'s onlyPlayerControllerId above.
+  if (onlyGuildId) {
+    values.push(String(onlyGuildId));
+    where += ` and g.${quoteIdentifier(guildIdColumn)}::text = $${values.length}`;
   }
   values.push(safePageSize, offset);
   const limitParamIndex = values.length - 1;
@@ -3398,15 +3449,13 @@ const LIVE_MAP_CONFIGS = {
     image: "/images/maps/deep-desert.png",
     width: 4096,
     height: 4096,
-    // The rect is the 9x9 sector square itself: 250,000 uu cells spanning
-    // +/-1,125,000 about the map centre, which is exactly what the image covers.
-    // It used to be ~8% wider, which stretched the picture across a rect it does
-    // not fill and drew every marker short of where the image puts it -- exact at
-    // the centre, 84,163 uu adrift at the edges, a third of a sector cell.
-    minX: -1177656,
-    maxX: 1072344,
-    minY: -1177066,
-    maxY: 1072934,
+    // The rect is the in-game sector grid (see liveMapSector.js), squared up: the
+    // grid is 3,897 uu shorter in Y, so Y carries half of that at each end. It is
+    // about 90,000 uu larger each way than the 2,250,000 uu layout square.
+    minX: -1268450,
+    maxX: 1158400,
+    minY: -1261434,
+    maxY: 1165416,
     flipY: false,
     defaultPartitionId: 8
   }
@@ -5367,6 +5416,26 @@ export async function supportsVehicleDeleteQueue(db, { vehicleDelete } = {}) {
 // guard only when neither schema exposes lifecycle state.
 const VEHICLE_DELETE_BLOCKED_STATES = new Set(["Travel", "VehicleBackup", "VehicleRecovery"]);
 
+// Worded with the labels the Vehicles list shows, not the raw enum. The
+// recovery message does not say "until its owner recovers it": a Normal
+// recovery expires in-game after a limit the database does not record.
+const VEHICLE_BLOCKED_DELETE_MESSAGES = {
+  Travel: "This vehicle is In Transit and cannot be deleted until it arrives.",
+  VehicleBackup: "This vehicle is in Vehicle Backup and cannot be deleted until its owner takes it back out.",
+  VehicleRecovery: "This vehicle is Stored for Recovery and cannot be deleted as an ordinary vehicle. Deleting a stored vehicle is a separate action."
+};
+
+// The same states as a phrase, for the cargo guard's message.
+const VEHICLE_BLOCKED_STATE_PHRASES = {
+  Travel: "In Transit",
+  VehicleBackup: "in Vehicle Backup",
+  VehicleRecovery: "Stored for Recovery"
+};
+
+function isVehicleBlockedDeleteMessage(message) {
+  return Object.values(VEHICLE_BLOCKED_DELETE_MESSAGES).includes(message);
+}
+
 async function vehicleBlockedDeleteState(db, actorId) {
   const actorColumns = await columnsFor(db, "actors");
   let result;
@@ -5381,6 +5450,95 @@ async function vehicleBlockedDeleteState(db, actorId) {
   return VEHICLE_DELETE_BLOCKED_STATES.has(state) ? state : "";
 }
 
+// Probes everything the stored delete reads: who the vehicle is held for and
+// whether they are online.
+export async function supportsStoredVehicleDelete(db, { vehicleDelete } = {}) {
+  const supported = vehicleDelete !== undefined ? vehicleDelete : await supportsVehicleDelete(db);
+  if (!supported) return false;
+  if (!(await columnsFor(db, "actors")).has("state")) return false;
+  const recovered = await columnsFor(db, "recovered_vehicles");
+  if (!["vehicle_id", "character_id", "time_stored", "reason"].every((column) => recovered.has(column))) return false;
+  const playerState = await columnsFor(db, "player_state");
+  return ["id", "account_id", "character_name", "online_status"].every((column) => playerState.has(column));
+}
+
+// Who a recovered vehicle is held for. Any character on the owning account can
+// restore it in-game (load_recovered_vehicles matches on account), so "online"
+// means any of them, and any status other than Offline. No record, or a record
+// whose character is gone, reads as offline.
+//
+// `lock` takes FOR SHARE on that account's character rows first. A login
+// updates one of those rows, so it waits, and the read below then sees a login
+// that was already in flight.
+async function storedVehicleOwner(db, actorId, { lock = false } = {}) {
+  if (lock) {
+    await db.query(`
+      select o.id
+      from dune.player_state o
+      where o.account_id = (
+        select ps.account_id
+        from dune.recovered_vehicles sv
+        join dune.player_state ps on ps.id = sv.character_id
+        where sv.vehicle_id = $1::bigint
+        limit 1)
+      for share of o`, [actorId]);
+  }
+  const result = await db.query(`
+    select coalesce(ps.character_name, '') as owner_name,
+           sv.time_stored as stored_at,
+           sv.reason::text as reason,
+           exists(
+             select 1 from dune.player_state o
+             where o.account_id = ps.account_id
+               and coalesce(o.online_status::text, 'Offline') <> 'Offline'
+           ) as owner_online
+    from dune.recovered_vehicles sv
+    left join dune.player_state ps on ps.id = sv.character_id
+    where sv.vehicle_id = $1::bigint
+    limit 1`, [actorId]);
+  const row = result.rows[0];
+  return {
+    ownerName: String(row?.owner_name || ""),
+    ownerOnline: Boolean(row?.owner_online),
+    storedAt: row?.stored_at ? new Date(row.stored_at).toISOString() : "",
+    reason: String(row?.reason || "")
+  };
+}
+
+// Shared by the preflight and the delete transaction so the two cannot drift.
+export const STORED_VEHICLE_OWNER_ONLINE = "stored_owner_online";
+
+async function assertStoredVehicleDeletable(db, actorId, { lock = false } = {}) {
+  const blockedState = await vehicleBlockedDeleteState(db, actorId);
+  if (blockedState !== "VehicleRecovery") {
+    throw new Error(blockedState
+      ? VEHICLE_BLOCKED_DELETE_MESSAGES[blockedState]
+      : "This vehicle is not Stored for Recovery. Use Delete Vehicle instead.");
+  }
+  const stored = await storedVehicleOwner(db, actorId, { lock });
+  if (stored.ownerOnline) {
+    // Coded so the route can withhold the name from a caller without players:read.
+    throw Object.assign(
+      new Error(`${stored.ownerName || "The owner"} is online. A stored vehicle can only be deleted while its owner is offline.`),
+      { code: STORED_VEHICLE_OWNER_ONLINE });
+  }
+  return stored;
+}
+
+const STORED_VEHICLE_DELETE_REQUIREMENT =
+  "Deleting a stored vehicle requires dune.actors.state, dune.recovered_vehicles, and dune.player_state with online status.";
+
+// Run before the safety backup, so a request that will be refused does not
+// cost one (enough of them would rotate the real pre-delete backups out of
+// retention). Advisory: deleteVehicleCompletely repeats the checks under lock.
+export async function storedVehicleDeletePreflight(db, vehicleId) {
+  await requireCapability(await supportsVehicleDelete(db),
+    "Vehicle deletion requires dune.vehicles, dune.vehicle_modules, dune.actors, and the dune.permission_actor_destroy(bigint)/delete_actors(bigint[]) functions.");
+  await requireCapability(await supportsStoredVehicleDelete(db, { vehicleDelete: true }), STORED_VEHICLE_DELETE_REQUIREMENT);
+  const actor = await vehiclePermissionActor(db, intParam(vehicleId, "vehicle id", 1));
+  await assertStoredVehicleDeletable(db, actor.actorId);
+}
+
 // Permanently deletes a vehicle and everything on it -- modules, their
 // inventories and items, any backup/recovery record, and its permission
 // roster. A destructive, irreversible operation with the same all-or-nothing
@@ -5393,9 +5551,17 @@ async function vehicleBlockedDeleteState(db, actorId) {
 // (unlike setVehiclePermissions' path) never joins through permission_actor,
 // so an unclaimed junk vehicle resolves and deletes exactly like a claimed
 // one -- arguably the primary use case for this feature.
-export async function deleteVehicleCompletely(db, vehicleId, { allowBlockedState = false } = {}) {
+//
+// storedRecoveryOnly deletes only a VehicleRecovery vehicle, and only while
+// nobody on the owning account is online: a running game server keeps its own
+// copy of an online player's recovery list and is not told about the delete.
+// Unlike allowBlockedState, Travel and Vehicle Backup still refuse.
+export async function deleteVehicleCompletely(db, vehicleId, { allowBlockedState = false, storedRecoveryOnly = false } = {}) {
   await requireCapability(await supportsVehicleDelete(db),
     "Vehicle deletion requires dune.vehicles, dune.vehicle_modules, dune.actors, and the dune.permission_actor_destroy(bigint)/delete_actors(bigint[]) functions.");
+  if (storedRecoveryOnly) {
+    await requireCapability(await supportsStoredVehicleDelete(db, { vehicleDelete: true }), STORED_VEHICLE_DELETE_REQUIREMENT);
+  }
   const target = intParam(vehicleId, "vehicle id", 1);
   return db.transaction(async (tx) => {
     await tx.query("set local search_path to dune, public");
@@ -5405,9 +5571,14 @@ export async function deleteVehicleCompletely(db, vehicleId, { allowBlockedState
     const actor = await vehiclePermissionActor(tx, target);
     const locked = await tx.query("select id from dune.actors where id = $1::bigint for update", [actor.actorId]);
     if (!locked.rowCount) throw new Error("That vehicle was not found.");
-    const blockedState = await vehicleBlockedDeleteState(tx, actor.actorId);
-    if (blockedState && !allowBlockedState) {
-      throw new Error(`This vehicle is currently ${blockedState} and cannot be deleted until that clears. Try again once the vehicle is no longer mid-transit or pending recovery.`);
+    let stored = null;
+    if (storedRecoveryOnly) {
+      // The actors row lock above blocks restore_recovered_vehicle, which updates
+      // that row; `lock` blocks a login. See storedVehicleOwner.
+      stored = await assertStoredVehicleDeletable(tx, actor.actorId, { lock: true });
+    } else {
+      const blockedState = await vehicleBlockedDeleteState(tx, actor.actorId);
+      if (blockedState && !allowBlockedState) throw new Error(VEHICLE_BLOCKED_DELETE_MESSAGES[blockedState]);
     }
     const modules = await tx.query(
       "select count(*)::int as n from dune.vehicle_modules where vehicle_id = $1::bigint", [target]);
@@ -5427,7 +5598,8 @@ export async function deleteVehicleCompletely(db, vehicleId, { allowBlockedState
       actorId: actor.actorId,
       map: actor.map,
       partitionId: actor.partitionId,
-      deletedModuleCount: modules.rows[0].n
+      deletedModuleCount: modules.rows[0].n,
+      ...(stored ? { storedOwner: stored.ownerName, storedAt: stored.storedAt, storedReason: stored.reason } : {})
     };
   });
 }
@@ -5626,7 +5798,7 @@ export async function updateBaseLandClaim(db, baseId, { addSegments = [], vertic
   });
 }
 
-export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColumn = "name", sortDirection = "asc", includeGenerators = true, playerId = "" } = {}) {
+export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColumn = "name", sortDirection = "asc", includeGenerators = true, playerId = "", access = "all" } = {}) {
   const requiredTables = ["buildings", "building_instances", "actor_fgl_entities", "actors",
     ...(playerId ? ["permission_actor", "permission_actor_rank", "player_state"] : [])];
   // One round-trip each and none of them depends on another, so probe them
@@ -5658,8 +5830,10 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
   // is ownership; every other assigned rank is shared access. Filtering here
   // keeps the paged rows and aggregate totals on exactly the same scope and
   // avoids trusting a character name, which is neither stable nor unique.
+  // The co-owner NOT EXISTS is defensive: permission_actor_rank is unique on (actor, player), so a
+  // player cannot hold rank 1 and 2 on one actor today; it keeps co-owner exclusive of owner if that changes.
   const playerScope = player
-    ? "and exists (select 1 from dune.permission_actor_rank viewer_par where viewer_par.permission_actor_id = a.id and viewer_par.player_id = $1)"
+    ? `and exists (select 1 from dune.permission_actor_rank viewer_par where viewer_par.permission_actor_id = a.id and viewer_par.player_id = $1${access === "owner" ? " and viewer_par.rank = 1" : access === "coowner" ? " and viewer_par.rank = 2" : ""})${access === "coowner" ? " and not exists (select 1 from dune.permission_actor_rank owner_par where owner_par.permission_actor_id = a.id and owner_par.player_id = $1 and owner_par.rank = 1)" : ""}`
     : "";
   // What counts as a base, defined once. The paged query (`matched`) and the
   // totals query (`valid_claims`) run in separate round trips but must agree
@@ -8313,12 +8487,27 @@ const VEHICLE_STATUS_CTES_SQL = `${VEHICLE_MODULE_KNOWN_MAXIMA_SQL}, module_raw 
   group by generator_template
 )`;
 
+// Fixed fragments keyed by an allowlist, so the request value never reaches
+// the query text. "Owner" is what the Owner column shows. Stored vehicles are
+// their own buckets whether or not an owner resolves, and Travel always counts
+// as owned: the game only puts a vehicle in transit with a player attached.
+const VEHICLE_STORED_STATES_SQL = `('VehicleBackup', 'VehicleRecovery')`;
+const VEHICLE_STATUS_FILTERS = {
+  all: "",
+  owned: `(vc.lifecycle_state = 'Travel' or (coalesce(own.owner, '') <> '' and vc.lifecycle_state not in ${VEHICLE_STORED_STATES_SQL}))`,
+  recovery: `vc.lifecycle_state = 'VehicleRecovery'`,
+  backup: `vc.lifecycle_state = 'VehicleBackup'`,
+  unowned: `(vc.lifecycle_state <> 'Travel' and coalesce(own.owner, '') = '' and vc.lifecycle_state not in ${VEHICLE_STORED_STATES_SQL})`
+};
+
 // Lists every vehicle (across all players) for the admin console, one page at a
 // time. Reuses portalVehicles' module-durability and fuel-capacity CTEs, the
 // listPlayers totals + LEFT JOIN LATERAL pagination (so totalCount survives an
 // out-of-range page — do NOT switch to count(*) over() inside the paged CTE),
 // and the listBases shared-with lateral (resolved only on the paged rows).
-export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortColumn = "name", sortDirection = "asc", playerId = "" } = {}) {
+// `status` defaults to "all" so the player-scoped list and existing API
+// callers are unchanged.
+export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortColumn = "name", sortDirection = "asc", playerId = "", status = "all", access = "all" } = {}) {
   const requiredTables = [
     "vehicles", "vehicle_modules", "actors", "permission_actor",
     "permission_actor_rank", "player_state", "actor_fgl_entities", "fgl_entities"
@@ -8326,7 +8515,7 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
   for (const table of requiredTables) {
     if (!(await tableExists(db, table))) {
       const result = unsupported("vehicles", requiredTables.map((t) => `dune.${t}`));
-      return { ...result, capabilities: { ...result.capabilities, vehiclePermissions: false, vehicleDelete: false, vehicleDeleteQueue: false }, totalCount: 0, totalVehicles: 0 };
+      return { ...result, capabilities: { ...result.capabilities, vehiclePermissions: false, vehicleDelete: false, vehicleDeleteQueue: false, vehicleStorage: false, vehicleStoredDelete: false }, totalCount: 0, totalVehicles: 0 };
     }
   }
 
@@ -8340,6 +8529,29 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
     : await tableExists(db, "actor_state")
       ? `coalesce((select ast.state::text from dune.actor_state ast where ast.actor_id=v.id limit 1), 'Default')`
       : `'Default'::text`;
+
+  // The game clears a vehicle's roster when it stores it and keeps the owner
+  // on recovered_vehicles / backup_vehicles (character_id -> player_state.id).
+  // Probed by column so an older schema omits the fallback.
+  const storedOwnerSql = [];
+  let storedDetailSql = "null::timestamptz as stored_at, null::text as stored_reason";
+  if ((await columnsFor(db, "player_state")).has("id")) {
+    for (const table of ["recovered_vehicles", "backup_vehicles"]) {
+      const columns = await columnsFor(db, table);
+      // For the stored-delete confirmation.
+      if (table === "recovered_vehicles" && ["vehicle_id", "time_stored", "reason"].every((column) => columns.has(column))) {
+        storedDetailSql = `(select sv.time_stored from dune.recovered_vehicles sv where sv.vehicle_id=vc.id limit 1) as stored_at,
+          (select sv.reason::text from dune.recovered_vehicles sv where sv.vehicle_id=vc.id limit 1) as stored_reason`;
+      }
+      if (!columns.has("vehicle_id") || !columns.has("character_id")) continue;
+      storedOwnerSql.push(`,
+            (select ps.character_name
+               from dune.${table} sv
+               join dune.player_state ps on ps.id=sv.character_id
+               where sv.vehicle_id=vc.id
+               order by ps.character_name limit 1)`);
+    }
+  }
 
   const safePageSize = intParam(pageSize, "pageSize", 1, 200);
   const safePage = intParam(page, "page", 0);
@@ -8365,7 +8577,11 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
           from dune.permission_actor_rank par
           where par.permission_actor_id=vc.id and par.player_id=$${controllerParam}
         ) viewer on true`;
-    filters.push(`(vc.owner_account_id=$${accountParam} or viewer.rank is not null)`);
+    filters.push(access === "owner"
+      ? `(vc.owner_account_id=$${accountParam} or viewer.rank=1)`
+      : access === "coowner"
+        ? `(vc.owner_account_id is distinct from $${accountParam} and viewer.rank=2)`
+        : `(vc.owner_account_id=$${accountParam} or viewer.rank is not null)`);
     relationshipSql = `case
             when vc.owner_account_id=$${accountParam} or viewer.rank=1 then 'Owner'
             when viewer.rank=2 then 'Co-Owner'
@@ -8385,6 +8601,8 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
       + ` or vc.map ilike $${likeParam}`
       + ` or vc.id::text = $${exactParam})`);
   }
+  const statusFilter = Object.hasOwn(VEHICLE_STATUS_FILTERS, status) ? VEHICLE_STATUS_FILTERS[status] : "";
+  if (statusFilter) filters.push(statusFilter);
   const filterClause = filters.length ? `where ${filters.join(" and ")}` : "";
   values.push(safePageSize, offset);
   const limitParamIndex = values.length - 1;
@@ -8421,6 +8639,7 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
           else null end fuel_percent,
           vc.map, vc.partition_id,
           vc.lifecycle_state,
+          ${storedDetailSql},
           ((vc.transform).location).x::numeric x,
           ((vc.transform).location).y::numeric y,
           ((vc.transform).location).z::numeric z,
@@ -8445,7 +8664,7 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
             (select ps.character_name
                from dune.player_state ps
                where ps.account_id=vc.owner_account_id
-               order by ps.character_name limit 1)
+               order by ps.character_name limit 1)${storedOwnerSql.join("")}
           ) as owner
         ) own on true
         ${viewerJoin}
@@ -8515,16 +8734,19 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
     // inferring, so the Components tab hides View Contents instead of
     // offering a button that comes back unsupported on click.
     const vehicleStorage = await supportsVehicleStorage(db).catch(() => false);
+    const vehicleStoredDelete = vehicleDelete
+      ? await supportsStoredVehicleDelete(db, { vehicleDelete }).catch(() => false)
+      : false;
 
     return {
-      capabilities: { vehicles: true, vehiclePermissions, vehicleDelete, vehicleDeleteQueue, vehicleStorage },
+      capabilities: { vehicles: true, vehiclePermissions, vehicleDelete, vehicleDeleteQueue, vehicleStorage, vehicleStoredDelete },
       totalCount: result.rows[0] ? Number(result.rows[0].total_count) : 0,
       totalVehicles: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_vehicles) : 0,
       rows
     };
   } catch (error) {
     const result = unsupported("vehicles", requiredTables.map((t) => `dune.${t}`));
-    return { ...result, capabilities: { ...result.capabilities, vehiclePermissions: false, vehicleDelete: false, vehicleDeleteQueue: false, vehicleStorage: false }, totalCount: 0, totalVehicles: 0, reason: `Vehicles query failed: ${error.message}` };
+    return { ...result, capabilities: { ...result.capabilities, vehiclePermissions: false, vehicleDelete: false, vehicleDeleteQueue: false, vehicleStorage: false, vehicleStoredDelete: false }, totalCount: 0, totalVehicles: 0, reason: `Vehicles query failed: ${error.message}` };
   }
 }
 
@@ -8785,7 +9007,7 @@ export async function vehicleStorageDeleteSafety(db, vehicleId) {
 }
 
 function vehicleBlockedCargoReason(state) {
-  return `This vehicle is currently ${state} and its cargo cannot be changed until that clears. Try again once the vehicle is no longer mid-transit or pending recovery.`;
+  return `This vehicle is ${VEHICLE_BLOCKED_STATE_PHRASES[state] || state} and its cargo cannot be changed until that clears.`;
 }
 
 // The vehicle counterpart of resolveOwnedStorageContainer. Takes `tx`, not
@@ -12161,7 +12383,7 @@ export async function flushVehicleDeletes(db, repoRoot, { now = Date.now, onBefo
     if (!allowBlockedStates) {
       const blockedState = await vehicleBlockedDeleteState(db, entry.vehicleId).catch(() => "");
       if (blockedState) {
-        const message = `This vehicle is currently ${blockedState} and cannot be deleted until that clears. Try again once the vehicle is no longer mid-transit or pending recovery.`;
+        const message = VEHICLE_BLOCKED_DELETE_MESSAGES[blockedState];
         const nextRetryAt = timestamp + pendingVehicleDeleteRetryDelayMs();
         outcomes.set(entry.vehicleId, { queuedAt: entry.queuedAt, keep: true, attempts: entry.attempts, nextRetryAt, lastError: message });
         flushed.push({ vehicleId: entry.vehicleId, map: entry.map, partitionId: entry.partitionId, ok: false, attempts: entry.attempts, dropped: false, error: message });
@@ -12191,7 +12413,7 @@ export async function flushVehicleDeletes(db, repoRoot, { now = Date.now, onBefo
       // positively stopped. They are not permanent failures and must never
       // burn through the retry limit merely because the background poller saw
       // the same state several times while a restart was in progress.
-      const blockedState = /currently (Travel|VehicleBackup|VehicleRecovery) and cannot be deleted/i.test(message);
+      const blockedState = isVehicleBlockedDeleteMessage(message);
       const attempts = (blockedState || isTransientFlushError(message)) ? entry.attempts : entry.attempts + 1;
       const dropped = attempts >= MAX_DELETE_FLUSH_ATTEMPTS;
       const nextRetryAt = timestamp + pendingVehicleDeleteRetryDelayMs();

@@ -8,23 +8,27 @@
 [extend]
   useDefault = true
 
-# [allowlist] (singular) is deprecated as of gitleaks v8.25.0+ and cannot
-# coexist with [[allowlists]] in the same config (confirmed directly:
-# gitleaks refuses to load a config with both, "[allowlist] is deprecated,
-# it cannot be used alongside [[allowlists]]") -- migrated to [[allowlists]].
-[[allowlists]]
-  description = "Known command-auth fallback shared by game server"
+# The allowlist must be the singular [allowlist] table for the gitleaks release this project pins in CI
+# (v8.24.3). That release has no top-level [[allowlists]] (plural) field: it silently drops the key, so a
+# plural block here has zero effect (verified: with it, the intentionally hardcoded fallback below is still
+# flagged). Newer gitleaks releases still accept the singular table (with a deprecation notice), so this is
+# valid on both. If the pin moves past v8.25, re-check whether [[allowlists]] works before switching back.
+# The regexes are matched against the extracted SECRET and are ANCHORED (^...$), so only a value that IS the
+# placeholder is allowed. An unanchored literal would also hide any real token that merely contains it
+# (verified: a token prefixed with the literal passed the scan until anchoring was added).
+[allowlist]
+  description = "Known command-auth fallback shared by game server, and a documentation placeholder"
   regexes = [
-    "Nu6VmPWUMvdPMeB7qErr",
-  ]
-
-# Pre-existing documentation example, not a real credential -- the literal
-# string "local-dev-bot-api" in a curl example showing the Authorization
-# header's shape for a local dev deployment.
-[[allowlists]]
-  description = "Documentation example bearer token, not a real credential"
-  regexes = [
-    "local-dev-bot-api",
+    "^Nu6VmPWUMvdPMeB7qErr$",
+    # docs/integrations/discord-control-bot/admin-guide.md's curl example
+    # ("Authorization: Bearer local-dev-bot-api"): a documentation placeholder, not a credential.
+    "^local-dev-bot-api$",
+    # Synthetic Discord client ID used by test fixtures (console/api/test/envFile.test.js,
+    # console/api/test/discordOAuthDisable.integration.test.js, console/web/src/features/auth/DiscordSetupWizard.test.tsx):
+    # an obviously fake sequential-digit placeholder, never a real client ID. Anchored, so only a value that IS the
+    # placeholder is allowed. (gitleaks' discord-client-id rule matches it; the earlier [[allowlists]] block for it
+    # had no effect on the pinned v8.24.3 and could not coexist with this table on newer releases.)
+    "^123456789012345678$",
   ]
 
 # NOTE: tests/db-system-backup-test.sh's synthetic secret fixtures

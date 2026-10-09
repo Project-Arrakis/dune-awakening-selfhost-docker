@@ -669,7 +669,7 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
   }
   const sectorGrid = useMemo(() => (activeMap ? sectorGridFor(activeMap) : null), [activeMap]);
   // Keep each sector label inside the visible part of its own cell. Above about
-  // 2x zoom a 250,000 uu cell is wider than the frame, so a label pinned to the
+  // 2x zoom a sector cell is wider than the frame, so a label pinned to the
   // cell's true centre scrolls out of view and the grid stops answering the one
   // question it exists for. Positions are written straight to the DOM rather
   // than through state: this runs on every scroll frame, and re-rendering 81

@@ -15,7 +15,10 @@ source runtime/scripts/fake-k8s-serviceaccount.sh
 
 # shellcheck source=runtime/scripts/lib/postgres.sh
 source runtime/scripts/lib/postgres.sh
-IMAGE="$(resolve_game_server_image)"
+if [ -f runtime/generated/experimental-tanks.json ]; then
+  python3 runtime/scripts/experimental_tanks.py launch-guard Survival_1
+fi
+IMAGE="$(resolve_game_server_image Survival_1)"
 
 TOKEN_FILE="runtime/secrets/funcom-token.txt"
 RMQ_SECRET_FILE="runtime/secrets/rmq-http-token-auth-secret.txt"

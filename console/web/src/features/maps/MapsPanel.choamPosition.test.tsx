@@ -109,6 +109,10 @@ describe("CHOAM position editor", () => {
     captureChoamPosition.mockReturnValue(new Promise(() => {}));
     renderEditor();
     const select = await screen.findByLabelText("Character");
+    // The picker exists before the asynchronous character list has loaded.
+    // Wait for a real selectable option, not merely the label's first render.
+    await screen.findByRole("option", { name: "DarkShark" });
+    await waitFor(() => expect(select).toBeEnabled());
     fireEvent.change(select, { target: { value: "6" } });
     fireEvent.click(screen.getByRole("button", { name: /use character position/i }));
     await waitFor(() => expect(select).toBeDisabled());
@@ -119,6 +123,8 @@ describe("CHOAM position editor", () => {
     captureChoamPosition.mockReturnValue(new Promise((resolve) => { resolveCapture = resolve; }));
     renderEditor();
     const select = await screen.findByLabelText("Character");
+    await screen.findByRole("option", { name: "DarkShark" });
+    await waitFor(() => expect(select).toBeEnabled());
     fireEvent.change(select, { target: { value: "6" } });
     fireEvent.click(screen.getByRole("button", { name: /use character position/i }));
     fireEvent.click(await screen.findByRole("button", { name: /stop waiting/i }));

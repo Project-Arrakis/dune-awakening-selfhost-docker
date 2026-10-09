@@ -3,6 +3,7 @@ import {
   FOOTED_ROCK,
   INSTANCE_FLOATS,
   buildDrawCalls,
+  buildLodIndices,
   markHoveringRock,
   cullInstances,
   instanceCircles,
@@ -498,8 +499,8 @@ describe("instance culling", () => {
     ...instance(1, 5000000, 5000000)
   ]);
   const calls = [
-    { ...rock, instOff: 0, instN: 3, overlay: 0, land: false },
-    { ...land, instOff: 3, instN: 1, overlay: 0, land: true }
+    { ...rock, mesh: 0, instOff: 0, instN: 3, overlay: 0, land: false },
+    { ...land, mesh: 1, instOff: 3, instN: 1, overlay: 0, land: true }
   ];
   const view: TerrainView = { minX: -1000, maxX: 1000, minY: -1000, maxY: 1000, flipY: false };
 
@@ -515,7 +516,7 @@ describe("instance culling", () => {
     const c = instanceCircles(calls, instances);
     const out = new Float32Array(instances.length);
     const { draws, total } = cullInstances(calls, instances, c, view, 1, out);
-    expect(draws).toEqual([{ off: 0, n: 1 }, { off: 1, n: 1 }]);
+    expect(draws).toEqual([{ off: 0, n: 1, far: 0 }, { off: 1, n: 1, far: 0 }]);
     expect(total).toBe(2);
     // packed contiguously: the kept rock instance, then the land tile
     expect(Array.from(out.subarray(0, INSTANCE_FLOATS))).toEqual(Array.from(instances.subarray(0, INSTANCE_FLOATS)));
@@ -544,5 +545,86 @@ describe("instance culling", () => {
     const { total } = cullInstances(calls, instances, c, all, 0, out);
     expect(total).toBe(4);
     expect(Array.from(out)).toEqual(Array.from(instances));
+  });
+
+  it("packs the small survivors last and counts them, for the reduced mesh", () => {
+    const c = instanceCircles(calls, instances);
+    const out = new Float32Array(instances.length);
+    const all: TerrainView = { minX: -1e7, maxX: 1e7, minY: -1e7, maxY: 1e7, flipY: false };
+    // Rock radii are about 735, 735 and 0.7: a cut at 100 leaves only the tiny one small.
+    const { draws, total } = cullInstances(calls, instances, c, all, 0, out, 100);
+    expect(draws[0]).toEqual({ off: 0, n: 3, far: 1 });
+    expect(total).toBe(4);
+    // The two large ones first, in their own order, then the tiny one.
+    expect(out[9]).toBe(0);
+    expect(out[INSTANCE_FLOATS + 9]).toBe(900000);
+    expect(out[2 * INSTANCE_FLOATS + 9]).toBe(10);
+    // Nothing is lost or repeated by the split.
+    expect(cullInstances(calls, instances, c, all, 0, out, 1e9).draws[0]).toEqual({ off: 0, n: 3, far: 3 });
+    expect(cullInstances(calls, instances, c, all, 0, out, 0).draws[0]).toEqual({ off: 0, n: 3, far: 0 });
+  });
+
+  it("never sends a landscape tile to the reduced mesh", () => {
+    const c = instanceCircles(calls, instances);
+    const out = new Float32Array(instances.length);
+    const all: TerrainView = { minX: -1e7, maxX: 1e7, minY: -1e7, maxY: 1e7, flipY: false };
+    expect(cullInstances(calls, instances, c, all, 0, out, 1e12).draws[1]).toEqual({ off: 3, n: 1, far: 0 });
+  });
+});
+
+describe("buildLodIndices", () => {
+  const box: [number, number, number] = [100, 100, 100];
+  // u16 positions | 2 normal bytes per vertex | u16 indices, as the library ships them.
+  function library(vertices: number[][], triangles: number[][], extra: Partial<{ skirt: number; ext: [number, number, number] }> = {}) {
+    const pos = new Uint16Array(vertices.flat());
+    const idx = new Uint16Array(triangles.flat());
+    const geometry = new Uint8Array(pos.byteLength + vertices.length * 2 + idx.byteLength);
+    geometry.set(new Uint8Array(pos.buffer), 0);
+    geometry.set(new Uint8Array(idx.buffer), pos.byteLength + vertices.length * 2);
+    const mesh = { lo: [0, 0, 0] as [number, number, number], ext: extra.ext ?? box, vo: 0, vn: vertices.length, io: 0, ic: idx.length, skirt: extra.skirt };
+    return { lib: { posBytes: pos.byteLength, nrmBytes: vertices.length * 2, idxBytes: idx.byteLength, meshes: [mesh] }, geometry };
+  }
+  const tris = (indices: Uint16Array) => Array.from({ length: indices.length / 3 }, (_, k) => Array.from(indices.subarray(k * 3, k * 3 + 3)));
+
+  it("merges vertices that share a cell and drops the triangles that collapse", () => {
+    // Vertices 0 and 1 sit in one corner cell of a 2^3 lattice; 2, 3 and 4 each in another.
+    const { lib, geometry } = library(
+      [[0, 0, 0], [100, 100, 100], [60000, 0, 0], [0, 60000, 0], [60000, 60000, 0]],
+      [[0, 1, 2], [1, 2, 3], [2, 3, 4]]
+    );
+    const { indices, ranges } = buildLodIndices(lib, geometry, 2);
+    // [0,1,2] collapses; [1,2,3] survives on vertex 0, the first in its cell.
+    expect(tris(indices)).toEqual([[0, 2, 3], [2, 3, 4]]);
+    expect(ranges).toEqual([{ io: 0, ic: 6 }]);
+  });
+
+  it("keeps one of two triangles that become the same", () => {
+    const { lib, geometry } = library(
+      [[0, 0, 0], [100, 0, 0], [60000, 0, 0], [0, 60000, 0]],
+      [[0, 2, 3], [3, 1, 2]]
+    );
+    expect(tris(buildLodIndices(lib, geometry, 2).indices)).toEqual([[0, 2, 3]]);
+  });
+
+  it("is the full mesh when the lattice is fine enough to keep every vertex apart", () => {
+    const { lib, geometry } = library([[0, 0, 0], [20000, 0, 0], [0, 20000, 0], [20000, 20000, 0]], [[0, 1, 2], [1, 3, 2]]);
+    expect(tris(buildLodIndices(lib, geometry, 8).indices)).toEqual([[0, 1, 2], [1, 3, 2]]);
+  });
+
+  it("does not merge a skirt vertex with the surface vertex above it", () => {
+    // The shader lowers skirt vertices by index, so 3 must stay distinct from 0 although they coincide.
+    const { lib, geometry } = library(
+      [[0, 0, 0], [60000, 0, 0], [0, 60000, 0], [0, 0, 0]],
+      [[0, 1, 2], [3, 1, 2]],
+      { skirt: 3 }
+    );
+    expect(tris(buildLodIndices(lib, geometry, 2).indices)).toEqual([[0, 1, 2], [3, 1, 2]]);
+  });
+
+  it("gives a mesh that collapses entirely, and a landscape tile, no reduced range", () => {
+    const flat = library([[0, 0, 0], [10, 0, 0], [0, 10, 0]], [[0, 1, 2]]);
+    expect(buildLodIndices(flat.lib, flat.geometry, 2).ranges).toEqual([{ io: 0, ic: 0 }]);
+    const land = library([[0, 0, 0], [60000, 0, 0], [0, 60000, 0]], [[0, 1, 2]], { ext: [60000, 60000, 900] });
+    expect(buildLodIndices(land.lib, land.geometry, 2).ranges).toEqual([{ io: 0, ic: 0 }]);
   });
 });

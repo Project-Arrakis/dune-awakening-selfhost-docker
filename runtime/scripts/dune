@@ -200,6 +200,10 @@ case "$cmd" in
     runtime/scripts/init.sh
     ;;
 
+  experimental-tanks)
+    runtime/scripts/experimental-tanks.sh "${@:2}"
+    ;;
+
   manager|menu)
     cat <<'EOF'
 The interactive CLI manager has moved to Dune Docker Console.

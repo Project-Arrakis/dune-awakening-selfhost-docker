@@ -493,6 +493,11 @@ function shellQuote(value) {
 
 export function taskTimeoutMs(config, operation) {
   if (operation === "selfUpdateCheck") return Math.min(config.commandTimeoutMs, 120_000);
+  // Fresh-position capture can take two minutes before broker confirmation
+  // and persistence verification begin. Do not kill a successfully published
+  // spawn while its result is being verified.
+  if (operation === "adminSpawnVehicle") return Math.max(config.commandTimeoutMs, 5 * 60 * 1000);
+  if (operation === "experimentalTanksApply") return Math.max(config.commandTimeoutMs, 45 * 60 * 1000);
   // Depot downloads first: these are not restarts and must not inherit a floor
   // sized for one.
   if (["init", "updateApply", "updateInstallAssets"].includes(operation)) {

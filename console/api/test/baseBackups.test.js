@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import {
   BASE_BACKUP_NAME_MAX, BaseBackupError, BaseBackupTimeoutError, baseBackupHttpError, classifyTimeout, importBaseBackup,
   listBaseBackups, parseBaseBackupFile, updateBaseBackup, validateBaseBackupFile, validateBaseBackupName, versionComparison,
-  checkBaseBackupDeletable, deleteBaseBackup, exportLiveBase
+  checkBaseBackupDeletable, deleteBaseBackup, exportLiveBase, clientQueryTimeoutMs
 } from "../src/baseBackups.js";
 import { scopeAllowsAction } from "../src/apiKeyScopes.js";
 import { parseAppManifestBuildId, readSteamBuildId, steamAppId } from "../src/services/steamBuild.js";
@@ -125,13 +125,13 @@ test("BaseBackupTimeoutError names the step, the elapsed time and the limit", ()
   assert.equal(slow.message, "Base backup import timed out after 15.2s while inserting building pieces (limit 15s). Nothing was changed: the import was rolled back.");
   const fast = new BaseBackupTimeoutError({ operation: "export", step: "exporting stored items", kind: "client_timeout", elapsedMs: 61, limitMs: 60 });
   assert.equal(fast.message, "Base backup export timed out after 61ms while exporting stored items (limit 60ms). No file was produced.");
-  assert.equal(fast.statusCode, 504);
+  assert.equal(fast.statusCode, 503);
   assert.equal(fast.code, "timeout");
 });
 
 test("baseBackupHttpError maps failures to the statuses and bodies the UI reads", () => {
   const timeout = baseBackupHttpError(new BaseBackupTimeoutError({ operation: "import", step: "loading the file", kind: "server_timeout", elapsedMs: 2000, limitMs: 1000 }));
-  assert.equal(timeout.status, 504);
+  assert.equal(timeout.status, 503);
   assert.equal(timeout.body.code, "timeout");
   assert.equal(timeout.body.step, "loading the file");
   assert.equal(timeout.body.operation, "import");
@@ -179,7 +179,7 @@ function fakeDb({
     { table_name: "actors", column_name: "state", column_type: "text", is_array: false }
   ]
 } = {}) {
-  const calls = { transaction: 0, txSql: [], txParams: [] };
+  const calls = { transaction: 0, txSql: [], txParams: [], txOptions: [] };
   const db = {
     calls,
     async query(sql, params = []) {
@@ -199,8 +199,9 @@ function fakeDb({
       if (sql.includes("with base as")) return { rows: liveBase ? [liveBase] : [] };
       return { rows: [] };
     },
-    async transaction(fn) {
+    async transaction(fn, options = {}) {
       calls.transaction++;
+      calls.txOptions.push(options);
       const tx = {
         async query(sql, params = []) {
           calls.txSql.push(sql);
@@ -280,7 +281,7 @@ test("importBaseBackup reports a server-side statement timeout with the step tha
     assert.equal(error.details.step, "inserting building pieces");
     assert.equal(error.details.timeoutKind, "server_timeout");
     assert.equal(error.details.limitMs, 120000);
-    assert.equal(baseBackupHttpError(error).status, 504);
+    assert.equal(baseBackupHttpError(error).status, 503);
     return true;
   });
 });
@@ -291,7 +292,8 @@ test("importBaseBackup reports a client-side query timeout too", async () => {
     assert.ok(error instanceof BaseBackupTimeoutError);
     assert.equal(error.details.step, "loading the file");
     assert.equal(error.details.timeoutKind, "client_timeout");
-    assert.equal(error.details.limitMs, 15000);
+    // The effective client bound for the transaction: statement timeout + margin.
+    assert.equal(error.details.limitMs, clientQueryTimeoutMs());
     return true;
   });
 });
@@ -340,18 +342,19 @@ test("steam build id is read from the appmanifest and fails soft to null", async
   assert.equal(await readSteamBuildId({ spawnImpl: () => { throw new Error("no docker"); }, useCache: false }), null);
 });
 
-test("base backup routes resolve to their own actions, and import is admin-only by default", () => {
+test("base backup routes resolve to their own actions, and import is owner-only by default", () => {
   assert.equal(actionForRoute("/api/base-backups", "GET"), "bases:read");
   assert.equal(actionForRoute("/api/base-backups/7/export", "GET"), "bases:export-backup");
   assert.equal(actionForRoute("/api/base-backups/import", "POST"), "bases:import-backup");
   // Nothing else under the path resolves, so it fails closed.
   assert.equal(actionForRoute("/api/base-backups/7/items", "DELETE"), null);
   assert.equal(actionForRoute("/api/base-backups/7/export", "POST"), null);
-  for (const tier of ["owner", "admin"]) assert.equal(evaluate({ tier }, "bases:import-backup"), true);
-  for (const tier of ["moderator", "player", "observer"]) {
+  assert.equal(evaluate({ tier: "owner" }, "bases:import-backup"), true);
+  for (const tier of ["admin", "moderator", "player", "observer"]) {
     assert.equal(evaluate({ tier }, "bases:import-backup"), false);
-    assert.equal(evaluate({ tier }, "bases:read"), true);
   }
+  for (const tier of ["admin", "moderator"]) assert.equal(evaluate({ tier }, "bases:read"), true);
+  for (const tier of ["player", "observer"]) assert.equal(evaluate({ tier }, "bases:read"), false);
   // A hand-authored policy granting bases:mutate must not gain import.
   const policies = { moderator: { version: 1, tier: "moderator", statements: [{ Effect: "Allow", Action: ["bases:read", "bases:mutate"] }] } };
   assert.equal(evaluate({ tier: "moderator" }, "bases:import-backup", policies), false);
@@ -429,11 +432,11 @@ test("updateBaseBackup needs a real change", async () => {
   });
 });
 
-test("base backup editing is admin-only and not carried by a bases write key", () => {
+test("base backup editing is owner-only and not carried by a bases write key", () => {
   assert.equal(actionForRoute("/api/base-backups/7", "PUT"), "bases:edit-backup");
   assert.equal(actionForRoute("/api/base-backups/import", "PUT"), null);
-  for (const tier of ["owner", "admin"]) assert.equal(evaluate({ tier }, "bases:edit-backup"), true);
-  for (const tier of ["moderator", "player", "observer"]) assert.equal(evaluate({ tier }, "bases:edit-backup"), false);
+  assert.equal(evaluate({ tier: "owner" }, "bases:edit-backup"), true);
+  for (const tier of ["admin", "moderator", "player", "observer"]) assert.equal(evaluate({ tier }, "bases:edit-backup"), false);
   assert.equal(scopeAllowsAction("bases", "write", "bases:edit-backup"), false);
   assert.equal(scopeAllowsAction("bases", ["bases:edit-backup"], "bases:edit-backup"), true);
 });
@@ -519,11 +522,11 @@ test("deleting needs the game's base_backup_delete function", async () => {
   });
 });
 
-test("deleting a backup is its own admin-only action", () => {
+test("deleting a backup is its own owner-only action", () => {
   assert.equal(actionForRoute("/api/base-backups/7", "DELETE"), "bases:delete-backup");
   assert.equal(actionForRoute("/api/base-backups/import", "DELETE"), null);
-  for (const tier of ["owner", "admin"]) assert.equal(evaluate({ tier }, "bases:delete-backup"), true);
-  for (const tier of ["moderator", "player", "observer"]) assert.equal(evaluate({ tier }, "bases:delete-backup"), false);
+  assert.equal(evaluate({ tier: "owner" }, "bases:delete-backup"), true);
+  for (const tier of ["admin", "moderator", "player", "observer"]) assert.equal(evaluate({ tier }, "bases:delete-backup"), false);
   assert.equal(scopeAllowsAction("bases", "write", "bases:delete-backup"), false);
   assert.equal(scopeAllowsAction("bases", ["bases:delete-backup"], "bases:delete-backup"), true);
 });
@@ -536,6 +539,25 @@ test("exportLiveBase only reads: every write goes to its own temp tables", async
   assert.deepEqual(writes, []);
   assert.equal(db.calls.txSql.some((sql) => /for\s+(update|share)/i.test(sql)), false);
   assert.match(db.calls.txSql[0], /repeatable read/);
+});
+
+test("an export transaction's client query timeout sits above the statement timeout, not at the pool's 15 s", async () => {
+  const saved = process.env.ADMIN_BASE_BACKUP_STATEMENT_TIMEOUT_MS;
+  try {
+    delete process.env.ADMIN_BASE_BACKUP_STATEMENT_TIMEOUT_MS;
+    const db = fakeDb();
+    await exportLiveBase(db, 201, { gameBuild: "1" });
+    // The server cancels first (120 s) so the failure is classified as a server
+    // timeout; the client bound must never be the pool's 15 s default.
+    assert.equal(db.calls.txOptions.length, 1);
+    assert.equal(db.calls.txOptions[0].queryTimeoutMs, 130000);
+    assert.equal(clientQueryTimeoutMs(), 130000);
+    process.env.ADMIN_BASE_BACKUP_STATEMENT_TIMEOUT_MS = "600000";
+    assert.equal(clientQueryTimeoutMs(), 610000);
+  } finally {
+    if (saved === undefined) delete process.env.ADMIN_BASE_BACKUP_STATEMENT_TIMEOUT_MS;
+    else process.env.ADMIN_BASE_BACKUP_STATEMENT_TIMEOUT_MS = saved;
+  }
 });
 
 test("exportLiveBase exports what a pickup would take, not the live base's extras", async () => {
@@ -593,14 +615,14 @@ test("exportLiveBase refuses a base that was picked up after the pre-check, with
   assert.equal(db.calls.txSql.some((sql) => sql.includes("create temporary table live_base_actors")), false);
 });
 
-test("downloading a base backup file, live or picked up, is its own admin-only action", () => {
+test("downloading a base backup file, live or picked up, is its own owner-only action", () => {
   assert.equal(actionForRoute("/api/bases/201/export-backup", "GET"), "bases:export-backup");
   assert.equal(actionForRoute("/api/bases/abc/export-backup", "GET"), "bases:export-backup");
   assert.equal(actionForRoute("/api/base-backups/7/export", "GET"), "bases:export-backup");
   // The blueprint download stays a read.
   assert.equal(actionForRoute("/api/bases/201/export", "GET"), "bases:read");
-  for (const tier of ["owner", "admin"]) assert.equal(evaluate({ tier }, "bases:export-backup"), true);
-  for (const tier of ["moderator", "player", "observer"]) {
+  assert.equal(evaluate({ tier: "owner" }, "bases:export-backup"), true);
+  for (const tier of ["admin", "moderator", "player", "observer"]) {
     assert.equal(evaluate({ tier }, "bases:export-backup"), false, `${tier} must not download base backups`);
   }
   // A hand-authored policy granting bases:read is not consent to it.

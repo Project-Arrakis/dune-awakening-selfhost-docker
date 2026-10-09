@@ -17,7 +17,7 @@ import { PlayerSummary } from "./PlayerSummary";
 import { PlayerVehiclesTab } from "./PlayerVehiclesTab";
 import { SpecializationTab } from "./SpecializationTab";
 import { journeyActionsAvailable } from "./journeySafety";
-import { adminTaskFailureDetail, friendlyCraftingSource, friendlyInlineError, friendlyVehicleName, friendlyVehicleTemplateName, parseSkillModuleRows, parseVehicleCatalog, playerAdmin_bulkItemFailure, playerAdmin_friendlyFailure, playerAdmin_taskFailureMessage, playerAssignedFaction, splitInventoryByGroup, titleCaseWords, vehicleSpawnDistanceLabel, vehicleSpawnOffsetUnits } from "./playerAdminUtils";
+import { adminTaskFailureDetail, friendlyCraftingSource, friendlyInlineError, friendlyVehicleName, friendlyVehicleTemplateName as vehicleTemplateLabel, parseSkillModuleRows, parseVehicleCatalog, playerAdmin_bulkItemFailure, playerAdmin_friendlyFailure, playerAdmin_taskFailureMessage, playerAssignedFaction, splitInventoryByGroup, titleCaseWords, vehicleSpawnDistanceLabel, vehicleSpawnOffsetUnits } from "./playerAdminUtils";
 import { BlueprintsPanel } from "../blueprints/BlueprintsPanel";
 import { BaseBackupsView } from "../bases/BaseBackupsView";
 import { BuildingUnlocksTab } from "./BuildingUnlocksTab";
@@ -162,6 +162,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
   const [playerAdmin_vehicleId, playerAdmin_setVehicleId] = useState("");
   const [playerAdmin_vehicleTemplate, playerAdmin_setVehicleTemplate] = useState("");
   const [playerAdmin_vehicleCatalog, playerAdmin_setVehicleCatalog] = useState<Record<string, string[]>>({});
+  const friendlyVehicleTemplateName = (value: string) => vehicleTemplateLabel(value, playerAdmin_vehicleId);
   const [playerAdmin_vehicleDecayThreshold, playerAdmin_setVehicleDecayThreshold] = useState("50");
   const [playerAdmin_characterRecovery, playerAdmin_setCharacterRecovery] = useState<CharacterRecoveryInspection | null>(null);
   const [playerAdmin_characterRecoveryLoading, playerAdmin_setCharacterRecoveryLoading] = useState(false);
@@ -1151,9 +1152,9 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
     <section className="playerAdmin_container" aria-label="Player admin layout">
       <div className="playerAdmin_header"><h3>Player Summary</h3><button onClick={onClose}>Close</button></div>
       <PlayerSummary detail={detail} fallback={fallback} dbPlayerId={dbPlayerId} actionPlayerId={actionPlayerId} refreshKey={playerAdmin_summaryRefreshKey} onRepairFactionReputation={playerAdmin_repairFactionReputation} factionRepairDisabled={!dbPlayerId || playerAdmin_isOnline} factionRepairResult={playerAdmin_actionResult?.key === "repairFactionReputation" ? playerAdmin_actionResult : null} />
-      <div className="playerAdmin_tabs" role="tablist" aria-label="Player admin tabs">{playerAdmin_tabs.map((playerAdmin_tab) => {
+      <div className="playerAdmin_tabs" role="group" aria-label="Player admin sections">{playerAdmin_tabs.map((playerAdmin_tab) => {
         const TabIcon = playerAdmin_tab.icon;
-        return <button key={playerAdmin_tab.label} className={playerAdmin_activeTab === playerAdmin_tab.label ? "active" : ""} onClick={() => playerAdmin_setActiveTab(playerAdmin_tab.label)}><TabIcon size={17} aria-hidden="true" /><span>{playerAdmin_tab.label}</span></button>;
+        return <button key={playerAdmin_tab.label} aria-pressed={playerAdmin_activeTab === playerAdmin_tab.label} className={playerAdmin_activeTab === playerAdmin_tab.label ? "active" : ""} onClick={() => playerAdmin_setActiveTab(playerAdmin_tab.label)}><TabIcon size={17} aria-hidden="true" /><span>{playerAdmin_tab.label}</span></button>;
       })}</div>
       {playerAdmin_activeTab === "Character" && <div className="playerAdmin_content">
         {playerAdmin_toggleBox("quick_rewards", "Quick Rewards", <div className="playerAdmin_section playerAdmin_quickRewardsSection">
@@ -1342,7 +1343,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
           };
         }, `${playerName}'s vehicle durability was repaired.`, { actionType: "Repair Vehicle Decay", target: playerName, amount: `${threshold}%` });
       }}>Repair Vehicles</button><InlineActionResult result={playerAdmin_actionResult} resultKey="repairVehicleDecay" /></div></div><div className="playerAdmin_section playerAdmin_dangerSection"><h5>Danger Zone</h5><div className="playerAdmin_buttonRow"><button className="danger" disabled={!actionPlayerId || playerAdmin_actionResult?.pending} onClick={async () => {
-        if (!(await confirmAction(`Repair ${playerName}'s login queue? Use this only when the player is stuck on connection errors and is not actually in-game.`, {
+        if (!(await confirmAction(`Repair ${playerName}'s login queue? Ask the player to close the game first. Active queues will not be deleted. Use this only for a player stuck on connection errors.`, {
           title: "Repair Login Queue",
           confirmLabel: "Repair Queue",
           danger: true,

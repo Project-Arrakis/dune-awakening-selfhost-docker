@@ -157,6 +157,16 @@ if grep -q '^expired' "$hub_file"; then
   exit 1
 fi
 
+director_log_function="$(python3 - "$script" <<'PY'
+from pathlib import Path
+import sys
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+start = text.index("director_logs() {")
+end = text.index("director_logs_available()", start)
+print(text[start:end])
+PY
+)"
+
 replay_function="$(python3 - "$script" <<'PY'
 from pathlib import Path
 import sys
@@ -175,7 +185,8 @@ Notified player(s) of travel response CB_Story_OrbitalMonitor32: {"RequestID":"A
 Notified player of travel grant CB_Story_OrbitalMonitor32: {"RequestID":"AABBCCDDEEFF00112233445566778899","Map":"Survival_1"}
 LOG
 
-replay_output="$(REPLAY_LOG="$replay_log" bash -c "$replay_function
+replay_output="$(REPLAY_LOG="$replay_log" bash -c "$director_log_function
+$replay_function
 docker() { cat \"\$REPLAY_LOG\"; }
 publish_rmq_json() { printf 'PUBLISHED|%s|%s\n' \"\$2\" \"\$3\"; }
 NAMED_DESTINATION_SINCE=10m
@@ -205,7 +216,8 @@ cat >"$rejected_log" <<'LOG'
 2026-09-18T10:39:04Z [10:39:04 9 INF Main] Player 745EF36C1E46811A requested WorldPartition { PartitionId = 31, ServerId = targetServer31, Map = Survival_1, PartitionDefinition = {"box": {}}, DimensionIndex = 1, Blocked = False, Label = Alraab }. Teleport not allowed, returning to WorldPartition { PartitionId = 133, ServerId = , Map = CB_Story_OrbitalMonitor, PartitionDefinition = {"box": {}}, DimensionIndex = 0, Blocked = False, Label = OrbitalMonitor_0 }, setting return dimension to 1.
 LOG
 
-rejected_output="$(REJECTED_LOG="$rejected_log" REJECTED_SQL="$rejected_sql" REJECTED_SEEN="$rejected_seen" bash -c "$rejected_function
+rejected_output="$(REJECTED_LOG="$rejected_log" REJECTED_SQL="$rejected_sql" REJECTED_SEEN="$rejected_seen" bash -c "$director_log_function
+$rejected_function
 docker() { cat \"\$REJECTED_LOG\"; }
 hub_travel_seen() { grep -qx \"\$1\" \"\$REJECTED_SEEN\"; }
 remember_hub_travel() { printf '%s\\n' \"\$1\" >> \"\$REJECTED_SEEN\"; }
@@ -272,7 +284,8 @@ cat >"$demand_log" <<'LOG'
 2026-09-19T12:40:00Z Received travel request for 1 player(s) to CB_Story_OrbitalMonitor (instancingMode=ClassicalInstancing)
 2026-09-19T12:40:01Z Received travel request for 1 player(s) to CB_Story_DestroyedZanovar (instancingMode=ClassicalInstancing)
 LOG
-demand_output="$(DEMAND_LOG="$demand_log" bash -c "$demand_function
+demand_output="$(DEMAND_LOG="$demand_log" bash -c "$director_log_function
+$demand_function
 docker() { cat \"\$DEMAND_LOG\"; }
 handle_demand() { printf 'HANDLE|%s|%s|%s|%s\\n' \"\$1\" \"\$2\" \"\$4\" \"\$5\"; }
 SINCE=10m

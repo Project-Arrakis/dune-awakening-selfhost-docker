@@ -784,6 +784,9 @@ run_auto_update_policy() {
   remote_build="$(awk -F: '/Remote build:/ { gsub(/^[[:space:]]+/, "", $2); print $2; exit }' "$check_log")"
   remote_build="${remote_build:-unknown}"
   rm -f "$check_log"
+  if [ -f runtime/generated/experimental-tanks.json ]; then
+    runtime/scripts/experimental-tanks.sh update-guard
+  fi
 
   now="$(date +%s)"
   first_seen="$now"
@@ -1095,6 +1098,11 @@ if [ "$cmd" != "run" ] && [ "$cmd" != "apply" ] && [ "$cmd" != "install" ]; then
   echo "  dune update auto disable"
   echo "  dune update auto status"
   exit 2
+fi
+
+# Own the same lifecycle lock as startup, shutdown and automatic recovery for
+if [ -f runtime/generated/experimental-tanks.json ]; then
+  runtime/scripts/experimental-tanks.sh update-guard
 fi
 
 # Own the same lifecycle lock as startup, shutdown and automatic recovery for

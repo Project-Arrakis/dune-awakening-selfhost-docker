@@ -216,7 +216,7 @@ test("real PostgreSQL: an import that hits the statement timeout reports the ste
         importBaseBackup(db, TARGET.pawn, text, { serverBuild: "2036754" }),
         (error) => {
           assert.ok(error instanceof BaseBackupTimeoutError);
-          assert.equal(error.statusCode, 504);
+          assert.equal(error.statusCode, 503);
           assert.equal(error.code, "timeout");
           assert.equal(error.details.operation, "import");
           assert.equal(error.details.step, "loading the file");

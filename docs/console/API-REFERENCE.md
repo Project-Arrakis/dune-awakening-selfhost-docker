@@ -44,6 +44,8 @@ Complete reference for all HTTP API endpoints in the Dune Docker Console. All en
 | POST | `/api/auth/2fa/setup` | Begin TOTP enrollment; returns secret, otpauth URI and QR | None (enrollment-scope session) |
 | POST | `/api/auth/2fa/confirm` | Confirm enrollment; returns the one-time recovery codes | `code` (string) |
 | POST | `/api/auth/2fa/recovery-codes/regenerate` | Issue a fresh recovery-code set, invalidating the old one | `currentPassword`, `totpCode` |
+| GET | `/api/auth/discord/start` | Begin Discord sign-in (302 to Discord; sets the PKCE state cookie). With `?setup=1` (owner session required — the admin password comes first) the round-trip is *setup mode*: the callback captures identity + guild list for the wizard and mints no session | `setup` (query, optional) |
+| GET | `/api/auth/discord/callback` | Discord redirects here; resolves the tier — the home server's owner is Owner, else the highest mapped role (or the owner allowlist when bootstrap is on); with a bot handoff configured the handoff is authoritative — applies the Discord-2FA gate, and sets the session cookie. Failures render an HTML page with a link back to sign-in and set no cookie | `code`, `state` (query) |
 | GET | `/api/health` | Health check | None |
 | GET | `/api/setup/state` | Get setup completion state | None |
 | POST | `/api/setup/preflight` | Run preflight checks | None |
@@ -227,7 +229,8 @@ Player rows include `total_playtime_seconds`. The console samples `player_state.
 |--------|-------|-------------|------------|
 | GET | `/api/players/{playerId}` | Get player profile summary | `playerId` |
 | GET | `/api/players/{playerId}/inventory` | Get player inventory items — backpack, character gear, loadout, and unique-gear schematics (emote containers excluded), each row tagged with `inventory_type` | `playerId` |
-| GET | `/api/players/{playerId}/vehicles` | Get vehicles owned by or shared with the player, including the player's access relationship | `playerId` |
+| GET | `/api/players/{playerId}/vehicles` | Get vehicles owned by or shared with the player, including the player's access relationship. Returns at most 200 rows. Optional `?access=owner\|coowner` narrows the list: `owner` is a vehicle the player's account owns or where they hold roster rank 1; `coowner` is roster rank 2 on a vehicle their account does not own (default and any other value: all roster ranks; guild/public piece access is not per-player and is never listed). The filter narrows what is returned; it is not an authorization control, and `players:read` still gates the route | `playerId` |
+| GET | `/api/players/{playerId}/bases` | List the bases the player holds a roster rank on (one request, capped at 5,000 rows), with the player's access relationship. Optional `?access=owner\|coowner` narrows to rank 1 / rank 2 (default and any other value: all roster ranks; guild/public access is per-piece, so it is not listed here), and the totals follow the filter. Also accepts `q`, `sortColumn`, `sortDirection` | `playerId` |
 | GET | `/api/players/{playerId}/currency` | Get player currency totals | `playerId` |
 | GET | `/api/players/{playerId}/solaris-coin` | Get Solaris Coin total | `playerId` |
 | GET | `/api/players/{playerId}/factions` | Get faction reputation | `playerId` |
@@ -335,7 +338,7 @@ Player rows include `total_playtime_seconds`. The console samples `player_state.
 |--------|-------|-------------|------------|
 | GET | `/api/bases` | List bases (paginated) | `q?`, `page?`, `pageSize?`, `sortColumn?`, `sortDirection?` |
 | GET | `/api/bases/{baseId}/export` | Export base as blueprint | `baseId` |
-| GET | `/api/bases/{baseId}/export-backup` | Export a live (not picked-up) base as a base backup file, importable with `POST /api/base-backups/import` (`bases:export-backup`; rate limited, audited). Read-only; 409 `no_owner` for an ownerless base, 409 `picked_up` for a picked-up one. See [base-backups.md](base-backups.md#downloading-a-live-base-as-a-base-backup) | `baseId` |
+| GET | `/api/bases/{baseId}/export-backup` | Export a live (not picked-up) base as a base backup file, importable with `POST /api/base-backups/import` (`bases:export-backup`; rate limited, audited). Read-only; 409 `no_owner` for an ownerless base, 409 `picked_up` for a picked-up one. See [base-backups.md](base-backups.md#downloading-a-live-base-as-a-base-backup) | `baseId`; 400 bad id, 404 unknown base or no totem, 501 unsupported, 503 timeout |
 | POST | `/api/bases/{baseId}/refill-generators` | Refill all base generators and windtrap filters (queued instead if the map isn't safely writable right now). Windtrap filters keep their current tier, capped at 5. Returns "No generators, wind turbines or windtraps were found at this base" if none exist | `baseId` |
 | GET | `/api/bases/pending-refills` | List queued generator refills, grouped by restart target | None |
 | DELETE | `/api/bases/{baseId}/queued-refill` | Cancel a base's queued generator refill | `baseId` |
@@ -365,10 +368,10 @@ Player rows include `total_playtime_seconds`. The console samples `player_state.
 | GET | `/api/bases/pending-deletes` | List queued base deletes, grouped by restart target | None |
 | DELETE | `/api/bases/{baseId}/queued-delete` | Cancel a base's queued delete | `baseId` |
 | GET | `/api/base-backups` | List the game's base backups (picked-up bases) optionally for one player; includes a `supported` flag, `missing[]` when schema support is incomplete, and `maps[]` (maps a backup can be moved to) | `playerId?` (player pawn id, to list one player's backups); returns 404 if playerId is not a player |
-| GET | `/api/base-backups/{backupId}/export` | Download one base backup as a JSON file (attachment named `<owner>_<backup>_base-backup_<id>.json`; `bases:export-backup`; rate limited, audited) | `backupId`; 400 bad id, 404 unknown backup, 501 unsupported, 504 timeout |
-| PUT | `/api/base-backups/{backupId}` | Reassign a picked-up base to another player, rename it and/or move it to another map (`bases:edit-backup`). The current owner must be offline | JSON `{ ownerPlayerId?, name?, map? }` (`ownerPlayerId` is a player pawn id; `name` 1-23 characters, not starting with `##`; `map` one of the list response's `maps`); 400 invalid_name / invalid_map / no_change, 404 backup or player not found, 409 owner_online or invalid_target, 501 unsupported, 504 timeout |
-| DELETE | `/api/base-backups/{backupId}` | Permanently delete a picked-up base and everything stored in it (`bases:delete-backup`). Takes a full-database safety backup first; the current owner must be offline | JSON `{ confirmation: "DELETE BACKUP" }`; 400 confirmation_required, 404 not_found, 409 owner_online, 501 unsupported (no `dune.base_backup_delete`), 504 timeout |
-| POST | `/api/base-backups/import` | Import a base backup file as a new backup for a player | Multipart form: `player_id` (pawn id), `file`, optional `allow_version_mismatch=1`; 400 invalid_file / invalid player_id / unsupported_version, 404 player not found, 409 version_mismatch or invalid_target (player has no controller), 501 unsupported, 504 timeout |
+| GET | `/api/base-backups/{backupId}/export` | Download one base backup as a JSON file (attachment named `<owner>_<backup>_base-backup_<id>.json`; `bases:export-backup`; rate limited, audited) | `backupId`; 400 bad id, 404 unknown backup, 501 unsupported, 503 timeout |
+| PUT | `/api/base-backups/{backupId}` | Reassign a picked-up base to another player, rename it and/or move it to another map (`bases:edit-backup`). The current owner must be offline | JSON `{ ownerPlayerId?, name?, map? }` (`ownerPlayerId` is a player pawn id; `name` 1-23 characters, not starting with `##`; `map` one of the list response's `maps`); 400 invalid_name / invalid_map / no_change, 404 backup or player not found, 409 owner_online or invalid_target, 501 unsupported, 503 timeout |
+| DELETE | `/api/base-backups/{backupId}` | Permanently delete a picked-up base and everything stored in it (`bases:delete-backup`). Takes a full-database safety backup first; the current owner must be offline | JSON `{ confirmation: "DELETE BACKUP" }`; 400 confirmation_required, 404 not_found, 409 owner_online, 501 unsupported (no `dune.base_backup_delete`), 503 timeout |
+| POST | `/api/base-backups/import` | Import a base backup file as a new backup for a player | Multipart form: `player_id` (pawn id), `file`, optional `allow_version_mismatch=1`; 400 invalid_file / invalid player_id / unsupported_version, 404 player not found, 409 version_mismatch or invalid_target (player has no controller), 501 unsupported, 503 timeout |
 
 Base backups are the backups created when a player picks up a base with the
 game's own tool. See [Base backups](base-backups.md#export-and-import) for
@@ -476,8 +479,8 @@ tab can offer a retry only where retrying could actually help.
 
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|
-| GET | `/api/vehicles` | List all player vehicles (paginated), each with owner, shared-with roster, lowest-component condition %, fuel %, map/partition, coordinates, and per-component durability | `q?`, `page?`, `pageSize?`, `sortColumn?`, `sortDirection?` |
-| GET | `/api/players/{playerId}/vehicles` | List the selected player's owned and shared vehicles using the same vehicle details | `playerId` |
+| GET | `/api/vehicles` | List all player vehicles (paginated), each with owner, shared-with roster, lowest-component condition %, fuel %, map/partition, coordinates, and per-component durability. `status` narrows the list: `owned` (has an owner or is in `Travel`, not put away), `recovery` (Stored for Recovery), `backup` (Vehicle Backup), `unowned` (no owner, not put away or in `Travel`), or `all` (default) | `q?`, `page?`, `pageSize?`, `sortColumn?`, `sortDirection?`, `status?` |
+| GET | `/api/players/{playerId}/vehicles` | List the selected player's owned and shared vehicles using the same vehicle details. Accepts the same optional `?access=owner\|coowner` filter and 200-row cap | `playerId` |
 | GET | `/api/vehicles/{vehicleId}/permissions` | Get a vehicle's permission roster (Owner, Co-Owners, Associates) plus the detected system custodian | `vehicleId` |
 | PUT | `/api/vehicles/{vehicleId}/permissions` | Replace a vehicle's permission roster | `vehicleId`, `entries[]` (`playerId`, `rank`) |
 | POST | `/api/vehicles/{vehicleId}/system-custodian` | Transfer ownership to the Server or detected GM system custodian while preserving the roster; provisions Server when no custodian exists | `vehicleId` |
@@ -487,14 +490,18 @@ tab can offer a retry only where retrying could actually help.
 | DELETE | `/api/vehicles/{vehicleId}/storage/items` | Delete a chosen set of whole stacks (max 200). Requires `{ confirmation: "DELETE ITEMS" }` | `vehicleId`, `itemIds[]` |
 | DELETE | `/api/vehicles/{vehicleId}/storage/all-items` | Empty a vehicle's cargo hold. Requires `{ confirmation: "DELETE ALL ITEMS" }` | `vehicleId` |
 | DELETE | `/api/vehicles/{vehicleId}` | Permanently delete a vehicle and everything on it (queued instead if the map isn't safely writable right now); takes a full-database safety backup first. Requires `{ confirmation: "DELETE VEHICLE" }` | `vehicleId` |
+| DELETE | `/api/vehicles/{vehicleId}/stored` | Permanently delete a vehicle that is Stored for Recovery; refused for any other state and while its owner is online. Takes a full-database safety backup first. Requires `{ confirmation: "DELETE STORED VEHICLE" }` and the `vehicles:stored-delete` action | `vehicleId` |
 | GET | `/api/vehicles/pending-deletes` | List queued vehicle deletes, grouped by restart target | None |
 | DELETE | `/api/vehicles/{vehicleId}/queued-delete` | Cancel a vehicle's queued delete | `vehicleId` |
 
 `GET /api/vehicles` and the player-scoped list are read-only; the permission
 routes share their implementation with the base permission routes -- see
 [vehicle-permissions.md](vehicle-permissions.md). The system-custodian route
-mirrors the base one exactly, minus the backed-up guard, since a vehicle has
-no picked-up state. The delete route mirrors `DELETE /api/bases/{baseId}` --
+mirrors the base one exactly, minus the backed-up guard: a vehicle's stored
+states (`VehicleBackup`, `VehicleRecovery`) are actor lifecycle states rather
+than an unclaimed base. The delete route mirrors `DELETE /api/bases/{baseId}`
+and refuses those states and `Travel`; `DELETE /api/vehicles/{vehicleId}/stored`
+is the separate, separately-permissioned delete for a `VehicleRecovery` vehicle --
 see [vehicle-deletion.md](vehicle-deletion.md). The storage routes read and
 delete the vehicle's single cargo hold -- reached through
 `dune.inventories.actor_id`, not `vehicle_module_id`, which is empty in
@@ -516,12 +523,21 @@ when it is false. `capabilities.vehicleDelete` similarly gates the Delete
 Vehicle action (`dune.vehicles`/`vehicle_modules`/`actors` plus
 `permission_actor_destroy`/`delete_actors`), and `capabilities.vehicleDeleteQueue`
 additionally requires `dune.world_partition` -- without it, deletes are
-always immediate rather than queued when the map is live. See
+always immediate rather than queued when the map is live.
+`capabilities.vehicleStoredDelete` gates the Delete Stored Vehicle action; it
+needs `vehicleDelete` plus `dune.actors.state`, `dune.recovered_vehicles`
+(`vehicle_id`, `character_id`, `time_stored`, `reason`) and `dune.player_state`
+(`id`, `account_id`, `character_name`, `online_status`). See
 [vehicle-deletion.md](vehicle-deletion.md). Sortable `sortColumn` values: `id`, `name`,
 `type`, `owner`, `condition_percent`, `fuel_percent`, `map`; `q` matches vehicle
 name, type, owner, map, and exact id. Response fields mirror the paginated-list
 convention (`rows`, `totalCount`, unfiltered `totalVehicles`). Owner resolves from
-the rank-1 permission holder, falling back to the actor's account owner; the
+the rank-1 permission holder, falling back to the actor's account owner and then,
+for a stored vehicle, to the character on its `dune.recovered_vehicles` or
+`dune.backup_vehicles` record (the game clears the roster when it stores one). Each
+row carries `lifecycle_state`; a `VehicleRecovery` row also carries `stored_at` and
+`stored_reason` (`Normal`, `Migrated`, `RecoveredFromLostState`), which are null
+otherwise. The
 `shared_with` roster is the rank 2/3 holders. A component's maximum durability uses
 a verified game-data override when one is available, then its own stats blob
 (`MaxDurability`, else the decayed cap). If no known or stored maximum exists, it
@@ -1000,7 +1016,15 @@ semantics.
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|
 | POST | `/api/settings/admin-password` | Change admin password | `currentPassword`, `newPassword`, plus `totpCode` when a second factor is enrolled |
+| POST | `/api/setup/write-oauth-config` | Save Discord OAuth settings incl. role→tier mapping and the 2FA-required tiers | `DISCORD_OAUTH_CLIENT_ID`, `DISCORD_OAUTH_REDIRECT_URI`, `DISCORD_HOME_GUILD_ID`, `DISCORD_OAUTH_OWNER_ALLOWLIST`, `DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP`, `DISCORD_CONSOLE_{ADMIN,MODERATOR,PLAYER}_ROLE_IDS`, `DISCORD_OAUTH_REQUIRE_MFA_TIERS` |
+| POST | `/api/setup/discord-finalize` | Complete the guided setup from an owner session (owner session is the authorization; no password): a server the captured identity **owns**, and the role mapping; writes the config and reports `restartRequired`; returns 400 `operator_mfa_missing` if the request asks to require Discord 2FA while the captured account has 2FA off (self-lockout guard) | `guildId`, `adminRoleIds`, `moderatorRoleIds`, `playerRoleIds`, `requireMfa` |
+| POST | `/api/setup/discord-restart` | Owner-only: rebuild and restart the console container (via the docker socket) so a just-saved Discord config takes effect; returns 202 | None |
+| GET | `/api/setup/discord-identity` | The identity captured by this owner session's setup-mode round-trip and the servers it **owns** (only owned servers are kept; every entry has `owner: true`); 404 until a round-trip has happened | None |
+| POST | `/api/setup/save-oauth-secret` | Store the Discord client secret at `runtime/secrets/discord-oauth-client-secret.txt` (0600); refuses with 400 if `DISCORD_OAUTH_CLIENT_SECRET` is set as an inline env var, since that value always takes precedence over the file (review finding, upstream PR #202, 2026-09-08) | `secret`, `overwrite` |
 | POST | `/api/settings/web-port` | Change web console port | `port` (number 1-65535) |
+| GET | `/api/settings/iam/policies` | The active IAM policy store plus the action catalog the Access Control editor renders: `policies`, `actions` (route keys), `actionMap` (route → action), `allActions`, `namespaces` (`settings:read`, owner-only by default) | None |
+| PUT | `/api/settings/iam/policy` | Validate and atomically replace the whole tier-keyed policy store (`runtime/generated/iam-policies.json`); refuses an action pattern outside `[a-z0-9:*-]` by name and any store that removes the owner's `settings:write` (`settings:write`) | `{ owner, admin, moderator, player, observer }` documents |
+| POST | `/api/settings/iam/policy/test` | Evaluate one action for one tier against the active store without changing it | `action`, `tier` |
 | POST | `/api/settings` | Write config | Config object |
 | GET | `/api/settings` | Get setup state | None |
 | GET | `/api/public-directory/status` | Get public directory status | None |
@@ -1188,6 +1212,7 @@ Poll status with `GET /api/setup/tasks/{id}` or stream with `GET /api/setup/task
   second factor is required but not yet enrolled, or after a recovery-code
   sign-in (re-setup). Besides those two routes that session can reach only
   `/api/auth/me` and `/api/auth/logout`.
+- `/api/auth/discord/start` and `/api/auth/discord/callback` are public (they *create* the session) and sit behind the login rate limiter.
 - All endpoints except `/api/health`, `/api/auth/login`, and `/api/auth/state`
   require either a bearer API key (`Authorization: Bearer …`, no cookie and no
   CSRF token — see [api-keys.md](api-keys.md)) or:

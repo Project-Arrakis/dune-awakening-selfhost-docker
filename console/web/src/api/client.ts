@@ -19,7 +19,7 @@ const INVALID_RESPONSE_MESSAGE = "The console received invalid data for this pag
 // text to surface in that case.
 // A failed request. Still an Error with the same friendly message every caller
 // already shows; status and body are there for callers that need the server's
-// structured detail (a 409 offering an override, a 504 naming a step).
+// structured detail (a 409 offering an override, a 503 naming a step).
 export class ApiError extends Error {
   status: number;
   body: Record<string, unknown>;
@@ -58,7 +58,17 @@ export async function apiDownload(path: string, options: RequestInit = {}, csrfR
       const data = JSON.parse(text) as Record<string, unknown>;
       if (data && typeof data === "object") body = data;
       message = typeof body.error === "string" && body.error ? body.error : message;
-    } catch {}
+    } catch {
+      // Parse a bounded, inert document instead of using backtracking tag
+      // expressions on an uncontrolled proxy response. Never attach it to the DOM.
+      const document = new DOMParser().parseFromString(text.slice(0, 20000), "text/html");
+      document.querySelectorAll("script, style").forEach((element) => element.remove());
+      const parts = [document.title];
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      while (walker.nextNode()) parts.push(walker.currentNode.textContent || "");
+      message = parts.join(" ").replace(/\s+/g, " ").trim().slice(0, 240)
+        || `Request failed: ${response.status}`;
+    }
     if (isSessionAuthFailure(response.status, message)) {
       if (response.status === 403 && !csrfRetried && await refreshCsrfToken()) return apiDownload(path, options, true);
       announceSessionExpired();
@@ -202,6 +212,38 @@ async function refreshCsrfToken() {
 
 export function post<T>(path: string, body: unknown = {}) {
   return api<T>(path, { method: "POST", body: JSON.stringify(body) });
+}
+
+// #676 §7: `post()`/`api()` throw on any non-2xx, exposing only the error
+// STRING -- fine for a plain failure, but the zero-2FA guard's whole point is
+// a DISTINGUISHABLE 409 (zeroFactorWarning: true) a caller can react to
+// differently from an ordinary rejection, without the fragility of matching
+// on error text. This mirrors apiRequest's own request-building exactly
+// (headers, CSRF, credentials) but never throws -- callers get the real
+// status and parsed body for any outcome, 2xx or not.
+export async function postForResult<T extends Record<string, unknown>>(path: string, body: unknown = {}, csrfRetried = false): Promise<{ status: number; body: T }> {
+  const headers = new Headers({ "content-type": "application/json" });
+  if (csrfToken) headers.set("x-csrf-token", csrfToken);
+  const response = await fetch(path, { method: "POST", headers, credentials: "include", body: JSON.stringify(body) });
+  const text = await response.text();
+  let parsed: T;
+  try { parsed = text ? (JSON.parse(text) as T) : ({} as T); } catch { parsed = ({} as T); }
+  // Layer 3 audit finding (#676 follow-up): this duplicates apiRequest's own
+  // request-building, but originally omitted its 403-CSRF-refresh-retry and
+  // announceSessionExpired() handling entirely -- a genuinely expired/stale
+  // session hit this route's caller with a raw, confusing error instead of
+  // the app-wide "session expired, sign in again" flow every other mutation
+  // gets. Still never throws on the special 409 zeroFactorWarning outcome
+  // this function exists for (that isn't a session failure), and still
+  // returns the real status/body afterward either way, so callers keep
+  // their own non-throwing contract.
+  if (isSessionAuthFailure(response.status, String((parsed as Record<string, unknown>)?.error || ""), path)) {
+    if (response.status === 403 && !csrfRetried && await refreshCsrfToken()) {
+      return postForResult<T>(path, body, true);
+    }
+    announceSessionExpired();
+  }
+  return { status: response.status, body: parsed };
 }
 
 export interface LoginResponse {

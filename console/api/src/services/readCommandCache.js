@@ -29,11 +29,14 @@ export function createReadCommandCache({ ttlMs = 2000, staleMs = 0, maxEntries =
     return promise;
   }
 
-  async function run(key, work) {
+  async function run(key, work, { fresh = false } = {}) {
     const now = clock();
     const existing = entries.get(key);
-    if (existing && existing.expiresAt > now) return existing.value;
-    if (existing && existing.staleUntil > now && Object.hasOwn(existing, "value")) {
+    // Readiness transitions must await the current collection, not a previous
+    // Ready snapshot. Keep coalescing concurrent readers even in fresh mode.
+    if (fresh && existing?.promise) return existing.promise;
+    if (!fresh && existing && existing.expiresAt > now) return existing.value;
+    if (!fresh && existing && existing.staleUntil > now && Object.hasOwn(existing, "value")) {
       if (!existing.promise) {
         const previous = { value: existing.value, expiresAt: existing.expiresAt, staleUntil: existing.staleUntil };
         // Keep status polling responsive while one shared refresh runs. A

@@ -31,13 +31,18 @@ export const BASE_BACKUP_FORMAT = "dune-base-backup";
 export const BASE_BACKUP_FORMAT_VERSION = 1;
 
 // Server-side limit for each statement inside an export/import transaction.
-// The largest verified base (589 pieces, 199 items) takes ~1.6 s in total.
+// The largest verified base (589 pieces, 199 items) exports in ~0.4 s.
 // ADMIN_BASE_BACKUP_STATEMENT_TIMEOUT_MS overrides it (100 ms - 10 min).
 function statementTimeoutMs() {
   // A blank value means unset; clampInt alone would read "" as 0 -> 100 ms.
   return clampInt(process.env.ADMIN_BASE_BACKUP_STATEMENT_TIMEOUT_MS || undefined, 120000, 100, 600000);
 }
 const MAX_ENTRIES = 250000;
+
+// The game's reference rewrite walks every JSON node of a row but only changes
+// string values starting with "!!". Skipping rows without one keeps a large
+// base inside the query limit.
+const HAS_TAGGED_ID = `data::text like '%"!!%'`;
 
 const REQUIRED_TABLES = [
   "actors", "fgl_entities", "actor_fgl_entities", "permission_actor", "permission_actor_rank",
@@ -186,7 +191,8 @@ export class BaseBackupTimeoutError extends BaseBackupError {
       ? "No file was produced."
       : `Nothing was changed: the ${operation} was rolled back.`;
     super(`Base backup ${operation} timed out after ${seconds(elapsedMs)} while ${step} (limit ${seconds(limitMs)}). ${outcome}`, {
-      statusCode: 504,
+      // Not 504: Cloudflare replaces an origin 502/504 body with its own page.
+      statusCode: 503,
       code: "timeout",
       details: { operation, step, timeoutKind: kind, elapsedMs, limitMs }
     });
@@ -194,9 +200,8 @@ export class BaseBackupTimeoutError extends BaseBackupError {
   }
 }
 
-// Mirrors the pool's client-side query_timeout in db.js, for reporting only.
 // Maps an export/import failure to { status, body } for the HTTP routes.
-// Timeouts become 504 with the step that ran out of time; version refusals
+// Timeouts become 503 with the step that ran out of time; version refusals
 // 409 with both versions, so the UI can offer "Import Anyway".
 export function baseBackupHttpError(error) {
   const message = clip(redact(error?.message || "Unexpected error."), MAX_ERROR_LENGTH);
@@ -209,9 +214,14 @@ export function baseBackupHttpError(error) {
   return { status: 500, body: { ok: false, error: message } };
 }
 
-function clientQueryTimeoutMs() {
-  const value = Number(process.env.ADMIN_DB_QUERY_TIMEOUT_MS || 15000);
-  return Number.isFinite(value) && value > 0 ? value : 15000;
+// Client-side bound for each statement of an export/import transaction. It sits
+// just above the server's statement_timeout so the server cancels first and the
+// failure is classified as a server timeout; the pool's own 15 s query_timeout
+// (ADMIN_DB_QUERY_TIMEOUT_MS) would otherwise end any statement longer than 15 s
+// long before the 120 s limit, which large bases need.
+const CLIENT_TIMEOUT_MARGIN_MS = 10000;
+export function clientQueryTimeoutMs() {
+  return statementTimeoutMs() + CLIENT_TIMEOUT_MARGIN_MS;
 }
 
 export function classifyTimeout(error) {
@@ -245,7 +255,7 @@ async function runTracked(db, operation, fn) {
     }
   };
   try {
-    return await db.transaction(async (tx) => fn(step(tx)));
+    return await db.transaction(async (tx) => fn(step(tx)), { queryTimeoutMs: clientQueryTimeoutMs() });
   } catch (error) {
     if (state.failure) throw new BaseBackupTimeoutError(state.failure);
     throw error;
@@ -640,7 +650,7 @@ async function renderExport(db, versionInfo, steps, params, prepare, source) {
       await run(label, sql.replace("/*BOUNDS*/", table ? boundsExpression(table, columns) : ""), values);
     }
     await run("rewriting internal references",
-      "update pg_temp.export_data set data = dune._character_transfer_replace_local_id_with_transfer_id_in_json(data, '')");
+      `update pg_temp.export_data set data = dune._character_transfer_replace_local_id_with_transfer_id_in_json(data, '') where ${HAS_TAGGED_ID}`);
 
     const envelope = {
       format: BASE_BACKUP_FORMAT,
@@ -944,7 +954,7 @@ export async function importBaseBackup(db, playerPawnId, fileText, { allowVersio
       "insert into pg_temp.export_data(id, transfer_id, kind, data) values ($1, $2, 'act', '{}'::jsonb)",
       [player.controllerId, placeholderTransferId]);
     await run("rewriting internal references",
-      "update pg_temp.export_data set data = dune._character_transfer_replace_transfer_id_with_local_id_in_json(data, '')");
+      `update pg_temp.export_data set data = dune._character_transfer_replace_transfer_id_with_local_id_in_json(data, '') where ${HAS_TAGGED_ID}`);
 
     // Each table's rows are staged first, so every per-row fix happens before
     // anything reaches a game table: array bounds, the backed-up actor state,

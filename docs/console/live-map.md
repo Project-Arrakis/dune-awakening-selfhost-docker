@@ -326,6 +326,16 @@ lazy-loaded so a Hagga Basin user never downloads it.
   Each frame draws the instances whose bounding circle touches the view and is at
   least half a pixel in radius. Not one pixel: POI hulls are assembled from
   sub-pixel pieces and would vanish from the overview.
+- **Small pieces draw with fewer triangles.** Most of those triangles are POI kit
+  pieces of 500-2,300 triangles each, only a few pixels across at map zoom. An
+  instance under 8 pixels in radius is drawn with a reduced triangle list:
+  the mesh's vertices snapped to an 8^3 lattice, one vertex kept per cell,
+  collapsed and repeated triangles dropped. The lists are built at load from
+  the library itself (about 20 ms, 96,000 triangles against 525,000) and index
+  the same vertices, so nothing extra ships. Measured on an RTX 3070 Ti at
+  1000 x 1000: 15-20% less frame time on the whole map, 10-45% tilted, and under
+  0.1% of pixels change. A coarser lattice is faster but visibly thins the blue
+  POI hulls at map zoom; at 8 they lose about a sixth of their pixels there.
 
 ### Rock
 
@@ -384,10 +394,27 @@ fades its lines on steep dune flanks.
 ### Sector grid
 
 **Sector Grid**, in the Layers panel and on by default, overlays the Deep
-Desert's 9x9 lettered grid: 250,000 uu cells spanning +/-1,125,000 uu about the
-map centre. Top-down it is drawn over the rendered terrain or the flat image;
-tilted, the terrain draws it (below). Hagga Basin has no lettered sectors.
+Desert's 9x9 lettered grid. Top-down it is drawn over the rendered terrain or
+the flat image; tilted, the terrain draws it (below). Hagga Basin has no
+lettered sectors.
 
+The grid is the game's own, measured in game: cells are 269,650 uu wide and
+269,217 uu tall, spanning X -1,268,450 to 1,158,400 and Y -1,259,486 to
+1,163,467. The map rect is this grid squared up (Y carries the 3,897 uu
+difference, half at each end), so the map shows the whole grid, as the game's
+map does.
+
+- **How it was measured.** A character was teleported to exact coordinates and
+  the in-game map's sector label read at each. Two grid crossings were narrowed
+  to a few hundred uu: columns 1/2 with rows A/B at about (-998,800, 894,250),
+  and columns 8/9 with rows G/H at about (888,750, -721,050). Cell size is good
+  to about 100 uu. The readings are pinned in the sector tests on both sides.
+- **The same grid labels everything**: Live Map markers, POIs and spice (API),
+  the picked location, and the Vehicles page.
+- **The grid is larger than a layout.** Each Coriolis layout covers a
+  2,250,000 uu square; the grid reaches about 90,000 uu past it on every side.
+  That band is drawn from the shared outside sand and shield-wall rock, the same
+  data the tilted view uses past the edge.
 - **I is at the top and A at the bottom.** World +Y draws downward, so the letter
   runs opposite to screen-down. This matches the game's own map art and is pinned
   by tests.
@@ -442,8 +469,10 @@ the original code path runs, and everything below is inactive.
   top-down shading to ambient plus sun plus a fill from the camera. The top-down
   curve leaves steep faces near-black, which reads as holes once cliffs face the
   camera. Sand keeps the top-down curve.
-- **Past the map's edge.** The clip moves out 375,000 uu, which takes in the
-  shield walls nearest the map. That rock lies wholly outside the mapped square
+- **Past the layout square.** The clip sits 375,000 uu outside the 2,250,000 uu
+  layout square, which takes in the shield walls nearest the map. The map rect
+  shows the first 90,000 uu or so of that band top-down; tilted, the view
+  reaches all of it. That rock lies wholly outside the layout square
   and is the same in every layout, so it ships once, as a shared file, and is
   added to whichever layout is drawn. It includes the wall pieces the game
   places by hand rather than as instances, which the layout build does not
@@ -497,7 +526,7 @@ when the terrain at its spot is both nearer the eye and more than 30 m above it
 
 ### Assets
 
-`terrain/assets/` is 49 gzipped files totalling 16.0 MB, inflated in the browser:
+`terrain/assets/` is 51 gzipped files totalling 11.5 MB, inflated in the browser:
 
 | part | size |
 |---|---|
@@ -508,12 +537,23 @@ when the terrain at its spot is both nearer the eye and more than 30 m above it
 | shared: rock outside the map (221 pieces) | 5 KB |
 | shared: sand outside the map | 50 KB |
 | shared: placements every layout has (6,394) | 0.13 MB |
-| each of 12 layouts | about 0.65 MB |
+| shared: the sand every layout has | 0.35 MB |
+| each of 12 layouts | about 0.24 MB |
 
 A Coriolis reset changes only the layout, so the browser re-fetches about
-0.65 MB and the 8.2 MB shared half stays cached.
+0.24 MB and the 8.6 MB shared half stays cached.
 
-Two encodings shrink the files, and the loader undoes both:
+Three encodings shrink the files, and the loader undoes them:
+
+- **Sand heights** are stored against a shared base (`hfCoding` in a layout's
+  JSON). About four fifths of the sand is the same in every layout, so
+  `sand-base.bin.gz` holds the per-texel median of the twelve fields, each texel
+  as its step from what its left, upper and upper-left neighbours predict, and a
+  layout holds only each texel's step from that base. Heights are whole steps of
+  2 uu from one shared floor, steps are zigzagged, and high and low bytes are
+  stored apart. The twelve fields ship in 1.5 MB instead of 6.1 MB, and no
+  height moves by more than 1 uu. `decodeSandBase` and `decodeHeightField`
+  restore a plain field; nothing after the loader sees the coding.
 
 - **Mesh indices** are stored as the step from the index before, zigzagged so
   small steps either way stay small (`idxCoding` in `meshes.json.gz`). The
@@ -601,6 +641,9 @@ Feature-level changes to the Live Map, newest first.
 
 | Release | Date | Change |
 |---|---|---|
+| Unreleased | 2026-10 | Instances under 8 pixels across draw with a reduced triangle list built at load: 15-45% less frame time on the views that were slowest. |
+| Unreleased | 2026-10 | Sand height fields are stored as one shared base plus each layout's differences: terrain assets drop from 16.0 MB to 11.5 MB, and a Coriolis reset re-fetches about 0.24 MB instead of 0.65 MB. |
+| Unreleased | 2026-10 | **Sector grid corrected** to the game's measured grid (about 269,650 x 269,217 uu cells). It was 250,000 uu cells, which mislabelled anything more than a fraction of a cell from the centre. **Map rect widened** to that grid, about 90,000 uu further each way, so the whole of every edge sector shows, row A in the south included. The Vehicles page now uses the same grid. |
 | Unreleased | 2026-10 | **Tilt and rotation** of the Deep Desert terrain, with perspective: Tilt slider, Top-Down reset, right-drag and a compass. Markers are projected through the camera and hidden where rock covers them; the sector grid is drawn on the terrain, over rock and cliffs. Tilted, the view reaches 375,000 uu past the map's edge: the shield walls outside the square, hand-placed pieces included and floating upper tiers closed down to the ground, on the game's own sand for the first 90,000 uu and a level plain beyond. **Elevation Lines** layer. Rock is painted with the game's own textures (its normal map baked into the two big wall shapes), lit with its authored normals and a per-instance tone, sealed at load, lit as a solid and textured from the side when tilted; the camera's eye stays above the rock at high zoom. The map frame fits the window's height. Terrain instances are culled per frame and the depth pass stops before shading; assets are 1.9 MB smaller (delta-coded mesh indices, shared placements shipped once). |
 | v1.4.35 | 2026-09-20 | The Coriolis block is read from the game log by pattern instead of from a tail, so the layout no longer goes missing on long-running servers. |
 | v1.4.23 | 2026-09-17 | Spice and Flour Sand layers fixed after the game changed `resourcefield_state`. |

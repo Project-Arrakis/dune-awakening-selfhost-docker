@@ -240,13 +240,17 @@ Future format versions go through `upgradeEnvelope()` in `console/api/src/baseBa
 **Timeouts:** each export/import runs in one transaction with a per-statement
 limit of 120 s (override with `ADMIN_BASE_BACKUP_STATEMENT_TIMEOUT_MS`, clamped
 100 ms - 10 min; now wired through docker-compose.web.yml so it works in a
-standard install). The console pool's own 15 s client-side query timeout
-(`ADMIN_DB_QUERY_TIMEOUT_MS`) also applies per statement. A timeout returns **504**
-code `"timeout"` naming the step (e.g. `"inserting building pieces"`), elapsed
+standard install). The transaction's client-side query timeout is that limit plus
+10 s, so the server cancels first; the console pool's 15 s default
+(`ADMIN_DB_QUERY_TIMEOUT_MS`) does not apply to export/import statements, and
+without this a base that needs more than 15 s failed whatever the limit was set to.
+A timeout returns **503**, avoiding proxy handling of origin gateway-timeout responses,
+with code `"timeout"` naming the step (e.g. `"inserting building pieces"`), elapsed
 time and which limit fired; an import is rolled back completely. The UI shows
 an "Import Timed Out"/"Export Timed Out" panel with those details as visible text
 that stays until dismissed. The largest measured base (589 pieces, 199 items)
-exported in about 1.6 s and imported in about 0.8 s.
+exports in about 0.4 s. Its import took about 0.8 s when last measured, before
+the reference rewrite was limited to rows that hold a tagged id.
 
 **Permissions:**
 - Listing uses `bases:read`.
@@ -255,7 +259,7 @@ exported in about 1.6 s and imported in about 0.8 s.
   every item stored in the base and imports as a whole base on any server, so no
   `bases:read` grant covers it. The blueprint download stays `bases:read`.
 - Import is its own action, `bases:import-backup`.
-- Owner and admin reach both through `bases:*`; lower tiers don't.
+- Owner reaches both by default; lower tiers require explicit grants.
 - Both actions are in `LEVEL_EXCLUDED_ACTIONS`, so a key stored as
   `{"bases":"write"}` doesn't get them; they must be named explicitly.
 - Both downloads are rate limited (as admin changes are) and audited as
@@ -305,7 +309,7 @@ new owner, as an import does. A rename or reassign does not touch the base itsel
   (`base_backup_finish_placing`). Only maps where a claim totem has actually been placed on
   this server are offered (400 `invalid_map` otherwise), since social hubs and dungeons
   never allow building. The list response carries them as `maps`.
-- Permission: `bases:edit-backup` (owner/admin via `bases:*`), excluded from API-key
+- Permission: `bases:edit-backup` (owner-only by default), excluded from API-key
   levels like import. Every change is audit-logged as `base-backups.edit` with the before
   and after values.
 
@@ -323,7 +327,7 @@ totem, land claim, storage and items with them), then the backup row.
 - In one transaction, the delete verifies that the backup row and all its links are gone;
   otherwise it rolls back. A backup redeployed meanwhile is a 404.
 - An imported copy is independent: deleting the original leaves it intact.
-- Permission: `bases:delete-backup` (owner/admin via `bases:*`), audit-logged as
+- Permission: `bases:delete-backup` (owner-only by default), audit-logged as
   `base-backups.delete`.
 
 **CI coverage:** `console/api/test/baseBackups.test.js` (mocked) and

@@ -216,6 +216,31 @@ test("self-update check falls back to the public release redirect when the GitHu
   }
 });
 
+test("archive cleanup batches only preflighted files and preserves runtime state", async () => {
+  const root = mkdtempSync(join(tmpdir(), "arrakis-cleanup-batch-"));
+  const install = join(root, "install");
+  const backup = join(root, "backup");
+  mkdirSync(install);
+  mkdirSync(backup);
+  const names = Array.from({ length: 520 }, (_, i) => `project file ${i}.txt`);
+  for (const name of names) writeFileSync(join(install, name), "managed\n");
+  const archived = spawnSync("tar", ["-czf", join(backup, "project-files.tgz"), "-C", install, ...names]);
+  assert.equal(archived.status, 0, archived.stderr?.toString());
+  writeFileSync(join(install, "preserved.txt"), "local state\n");
+  const source = readFileSync(join(repoRoot, "runtime/scripts/self-update.sh"), "utf8");
+  const cleanup = source.slice(source.indexOf("remove_backed_up_project_files() {"), source.indexOf("\nbackup_local_state() {"));
+  const script = `set -euo pipefail\nROOT_DIR="$1"\n${cleanup}\nrm() { printf '%s\\n' "$#" >> "$CALLS"; command rm "$@"; }\nremove_backed_up_project_files "$2"`;
+  // Keep the call log outside the removal set; filenames containing spaces
+  // must stay individual arguments and no directory may be recursively removed.
+  const result = await runProcess("bash", ["-c", script, "cleanup", install, backup], {
+    env: { ...process.env, CALLS: join(root, "calls") }
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert(names.every((name) => !existsSync(join(install, name))));
+  assert.equal(readFileSync(join(install, "preserved.txt"), "utf8"), "local state\n");
+  assert.deepEqual(readFileSync(join(root, "calls"), "utf8").trim().split("\n").map(Number), [258, 258, 10, 2]);
+});
+
 test("archive self-update replaces project files and preserves local state", async () => {
   const root = mkdtempSync(join(tmpdir(), "arrakis-self-update-install-"));
   const stagingDir = join(root, "staging");

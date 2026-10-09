@@ -7,13 +7,33 @@
 // re-saving every key — which only holds while isReadAction() stays correct,
 // hence the catalog sweep in apiKeyScopes.test.js.
 
-import { allKnownActions } from "./policy.js";
+import { allKnownActions, isCrownJewelAction } from "./policy.js";
 
 // Never reachable, at any level. keyAllows() checks this BEFORE the scope
 // lookup, so a hand-edited api-keys.json cannot grant them: `settings` would
 // let a key mint further keys, `database` and `setup` sidestep the scope model
 // entirely.
 export const KEY_DENIED_NAMESPACES = new Set(["settings", "database", "setup"]);
+
+// Never reachable by a key at the ACTION level, regardless of the namespace's
+// scope grant. server:write-credentials rewrites the Funcom game-server token
+// and the server IP -- credential/identity writes that are owner-only for
+// tiered sessions and must not be reachable through an external API key either
+// (a key granting `server: write` still cannot rotate the game credential).
+export const KEY_DENIED_ACTIONS = new Set([
+  // Funcom game-server token + server IP -- credential/identity writes.
+  "server:write-credentials",
+  // Destructive/whole-DB backup operations. `backups: write` is granted for
+  // backup CREATION automation, but the namespace-coarse scope would otherwise
+  // also grant: restore (overwrite the entire live DB with an attacker-supplied
+  // import, and adopt the backup's battlegroup identity), import (stage that
+  // untrusted file), and delete/delete-all (destroy the recovery path). These
+  // are owner-only for tiered sessions and must not be key-reachable either;
+  // backups:create / backups:read / backups:write-config stay reachable.
+  "backups:restore",
+  "backups:import",
+  "backups:delete",
+]);
 
 // Offered at None/Read only. `updates` because apply/fix/repair/write-config
 // self-update the console. `addons` because POST /api/addons/installed/{id}/bridge
@@ -47,6 +67,9 @@ export const KEY_WRITE_DENIED_NAMESPACES = new Set(["updates", "addons"]);
 // and bases:delete-backup irreversibly removes the backup and everything in it.
 // A key stored as { "bases": "write" } was granted for per-base knobs; it must
 // not gain any of these on upgrade.
+//
+// vehicles:stored-delete deletes a vehicle a player can still recover; a key
+// stored as { "vehicles": "write" } predates it.
 export const LEVEL_EXCLUDED_ACTIONS = new Set([
   "backups:download-system",
   "backups:import-system",
@@ -54,7 +77,8 @@ export const LEVEL_EXCLUDED_ACTIONS = new Set([
   "bases:import-backup",
   "bases:edit-backup",
   "bases:export-backup",
-  "bases:delete-backup"
+  "bases:delete-backup",
+  "vehicles:stored-delete"
 ]);
 
 // POST-shaped but read-only in effect, so reachable by a "read" grant. Keep
@@ -107,6 +131,14 @@ export function actionsByNamespace() {
   for (const action of allKnownActions()) {
     const namespace = namespaceOf(action);
     if (!namespace || KEY_DENIED_NAMESPACES.has(namespace)) continue;
+    if (KEY_DENIED_ACTIONS.has(action)) continue; // action-level deny (credential/identity)
+    // #710: this list was never reconciled with policy.js's
+    // CROWN_JEWEL_DENY_ACTIONS (the owner-only backstop for tiered/Discord
+    // sessions) -- a key scoped e.g. players:"write" could reach
+    // players:give-item/reset/recover, denied even to a human admin session.
+    // Checked against the shared, authoritative list rather than duplicating
+    // it here so the two cannot drift again.
+    if (isCrownJewelAction(action)) continue;
     const bucket = isReadAction(action) ? "read" : "write";
     // A write-denied namespace's write actions are not part of what a key can
     // be granted, so they are absent from the catalog rather than listed and
@@ -207,6 +239,12 @@ export function normalizeScopes(input) {
 // Does this stored scope value reach this action? The single place the two
 // scope forms are interpreted, so keyAllows() and any UI preview cannot drift.
 export function scopeAllowsAction(namespace, value, action) {
+  // #710: defensive, same reason as the KEY_WRITE_DENIED_NAMESPACES check
+  // below -- a hand-edited api-keys.json naming a crown-jewel action
+  // explicitly in an action list bypasses actionsByNamespace()'s catalog
+  // filtering (that only stops normalizeScopes() at save time), so this is
+  // the one place both callers (keyAllows() and any UI preview) cannot drift.
+  if (isCrownJewelAction(action)) return false;
   if (Array.isArray(value)) {
     if (!value.includes(action)) return false;
     // Defensive, for a hand-edited api-keys.json that lists a write action in

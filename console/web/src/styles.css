@@ -436,6 +436,28 @@ main { padding: 22px; min-width: 0; }
   border-color: rgba(255, 208, 138, .24);
   backdrop-filter: blur(12px);
 }
+.panel.home-highlights { display: grid; grid-template-columns: minmax(0, .85fr) minmax(0, 1.65fr); min-width: 0; padding: 0; overflow: hidden; background: rgba(18, 20, 22, .88); border-color: rgba(255, 208, 138, .24); }
+.home-highlight-content { min-width: 0; padding: 18px; }
+.home-highlights-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
+.home-highlights-heading h2 { display: flex; align-items: center; gap: 8px; margin: 0; }
+.home-highlights-heading svg { color: #d7ad72; }
+.home-highlight-tag { color: #e2ba7e; background: rgba(191, 134, 59, .12); border: 1px solid rgba(191, 134, 59, .3); border-radius: 4px; padding: 3px 8px; font-size: 11px; }
+.home-highlight-art { position: relative; min-width: 0; overflow: hidden; background: #111315; }
+.home-highlight-art img { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: cover; object-position: center; }
+.home-highlight-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin: 0 0 12px; color: #f0ca91; font-size: 15px; }
+.home-highlight-title span { color: #b9ad9a; font-size: 11px; font-weight: 400; }
+.home-highlight-steps { display: grid; gap: 12px; padding: 0; margin: 0; list-style: none; }
+.home-highlight-steps li { display: flex; align-items: flex-start; gap: 11px; min-width: 0; }
+.home-highlight-step-number { display: grid; place-items: center; flex: 0 0 25px; height: 25px; border: 1px solid rgba(215, 173, 114, .35); border-radius: 50%; color: #e2ba7e; background: rgba(191, 134, 59, .1); font-size: 12px; }
+.home-highlight-steps strong { color: #e4c399; font-size: 13px; }
+.home-highlight-steps p { margin: 5px 0 0; color: #b9ad9a; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+@media (max-width: 900px) {
+  .panel.home-highlights { grid-column: 1 / -1; grid-template-columns: minmax(0, 1fr); }
+  .home-highlight-art { aspect-ratio: 1672 / 941; }
+}
+@media (min-width: 1600px) {
+  .panel.home-highlights { grid-template-columns: minmax(0, min(34%, 420px)) minmax(0, 1fr); }
+}
 .topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 18px; border-bottom: 1px solid #2f2a25; padding-bottom: 16px; }
 .topbar div { display: grid; gap: 4px; }
 .topbar > div:first-child span { color: #aa9c87; }
@@ -965,6 +987,19 @@ main { padding: 22px; min-width: 0; }
 .attention-text {
   margin: 8px 0 0;
   color: var(--warning);
+}
+/* Layer 3 audit finding (#676 follow-up): the zero-2FA warning and the
+   destructive Discord "Forget" form previously had no visual treatment of
+   their own beyond the generic attention-text/muted utility classes -- no
+   stronger warning than an ordinary settings section. Matches the existing
+   .error-banner pattern used elsewhere for a "danger zone" box. */
+.settings-zero-factor-warning,
+.settings-discord-forget-form {
+  background: #351b1b;
+  border: 1px solid var(--danger-strong);
+  border-radius: 6px;
+  padding: 12px;
+  margin-top: 10px;
 }
 .password-check-box {
   display: grid;
@@ -1585,6 +1620,12 @@ body.debug .technical-details { display: block; }
 .inline-filter-label { display: inline-flex; align-items: center; gap: 8px; color: var(--muted-warm); font-weight: 400; }
 .inline-filter-label select { color: #fff7e6; font-weight: 400; min-width: 150px; }
 .players-filter-row { align-items: center; }
+/* The per-player Vehicles/Bases headers turn every div under .panel-title into a grid
+   (for the title column); keep the filter row a flex row so Refresh stays button-sized. */
+.player-vehicles-panel .panel-title > .players-filter-row,
+.player-bases-panel .panel-title > .players-filter-row { display: flex; margin: 0; }
+.player-vehicles-panel .panel-title > .players-filter-row > button,
+.player-bases-panel .panel-title > .players-filter-row > button { flex: 0 0 auto; }
 .players-filter-label .players-filter-select {
   width: 150px;
   min-width: 150px;
@@ -1834,7 +1875,28 @@ body.debug .technical-details { display: block; }
 .playerAdmin_iconRailButton.active[data-category="all_categories"] img { transform: rotate(-45deg); }
 .playerAdmin_iconRailButton.active img { filter: drop-shadow(0 0 5px rgba(154, 88, 162, .58)); }
 .playerAdmin_iconRailLabel { justify-self: start; min-height: 36px; display: inline-flex; align-items: center; justify-content: center; padding: 7px 14px; border: 1px solid rgba(255, 208, 138, .38); border-radius: 6px; background: #14171a; color: #ffd08a; font-size: 16px; font-weight: 700; white-space: nowrap; }
-.playerAdmin_spawnVehicleRow select { max-width: 190px; }
+.playerAdmin_spawnVehicleRow select { max-width: 100%; min-width: 0; }
+.playerAdmin_spawnVehicleRow select:first-of-type { flex: 0 1 210px; width: 210px; }
+.playerAdmin_spawnVehicleRow select:last-of-type { flex: 0 1 280px; width: 280px; }
+.experimental-features-section { margin: 20px 0; }
+.experimental-features-section > h3 { margin: 0 0 14px; color: var(--title); }
+.experimental-features-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 360px)); gap: 16px; align-items: start; }
+.experimental-feature-card { min-width: 0; border: 2px solid var(--border-strong); border-radius: 12px; background: var(--panel-soft); color: var(--muted-warm); transition: border-color .2s; }
+.experimental-feature-card.enabled { border-color: var(--success); }
+.experimental-feature-card.disabled { border-color: var(--danger); }
+.experimental-feature-image { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 10px 10px 0 0; background: var(--panel-muted); }
+.experimental-feature-content { display: grid; gap: 12px; padding: 16px; }
+.experimental-feature-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.experimental-feature-heading h4 { margin: 0; color: var(--title); font-size: 18px; }
+.experimental-feature-status { color: var(--muted-warm); font-size: 13px; font-weight: 600; }
+.experimental-feature-card.enabled .experimental-feature-status { color: var(--success-text); }
+.experimental-feature-card.disabled .experimental-feature-status { color: var(--danger-text); }
+.experimental-feature-button { width: 100%; justify-content: center; gap: 8px; }
+.experimental-feature-content .attention-text { margin: 0; }
+.experimental-feature-content .inline-task-result { min-width: 0; flex-wrap: wrap; }
+@media (max-width: 600px) {
+  .playerAdmin_spawnVehicleRow select:first-of-type, .playerAdmin_spawnVehicleRow select:last-of-type { flex: 1 1 100%; width: 100%; }
+}
 .specialization-tab { gap: 14px; }
 .specialization-header { display: grid; grid-template-columns: minmax(180px, 1fr) auto; align-items: center; gap: 10px 16px; }
 .specialization-header h4 { margin: 0; }
@@ -2466,6 +2528,31 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 
 /* Vehicles page */
 .vehicles-search-row { margin: 12px 0; }
+/* Label-width segments that wrap on a narrow panel. Each segment has a top and
+   left divider and is pulled 1px up and left, so the container's overflow:
+   hidden clips the outer ones. Extra classes because .segmented-control is
+   declared later at equal specificity. */
+.segmented-control.vehicles-status-segments {
+  display: inline-flex;
+  flex-wrap: wrap;
+  height: auto;
+  max-width: 100%;
+  margin: 10px 0 8px;
+}
+.segmented-control.vehicles-status-segments .segmented-control-segment {
+  flex: 1 0 auto;
+  margin: -1px 0 0 -1px;
+  border-top: 1px solid var(--border);
+  border-left: 1px solid var(--border);
+}
+/* aria-disabled, not disabled, so it stays focusable; styled to match
+   button:disabled. */
+.vehicles-table .icon-toggle-button[aria-disabled="true"],
+.vehicles-table .icon-toggle-button[aria-disabled="true"]:hover {
+  opacity: .45;
+  cursor: not-allowed;
+  background: transparent;
+}
 /* Grow to fit the rows on the page instead of the shared height cap, while
    keeping the inherited horizontal `overflow: auto` so a wide table scrolls
    inside its box at narrow widths rather than breaking out of the panel. */
@@ -2908,7 +2995,7 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .settings-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 4px; }
 .settings-tabs-row .settings-tabs { margin-bottom: 0; }
 .settings-tabs button { width: auto; min-width: 120px; }
-.settings-download-buttons { display: flex; gap: 8px; margin-left: auto; }
+.settings-download-buttons { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 .settings-download-button { width: auto; min-width: 120px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
 .care-package-grant-header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 4px; }
 .care-package-grant-header .settings-tabs { margin-bottom: 0; }
@@ -7367,6 +7454,230 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
 
 .bot-items-table-wrap.table-wrap { max-height: none; overflow-x: auto; }
 
+/* ---- Tier 3 second-factor UI (login code entry, TOTP setup, recovery codes) ---- */
+.login-password-toggle { background: none; border: none; color: #817763; cursor: pointer; font-size: .78rem; padding: 4px; justify-self: center; }
+.login-password-toggle:hover { color: #c6a56e; }
+.login-password-fields { display: grid; gap: 10px; margin-top: 8px; }
+.totp-setup-qr { width: 200px; height: 200px; justify-self: center; border-radius: 6px; background: #fff; padding: 8px; }
+.totp-setup-secret-label { margin: 0; font-size: .78rem; color: #817763; }
+.totp-setup-secret { justify-self: center; padding: 6px 10px; border-radius: 4px; background: rgba(0, 0, 0, .35); font-size: .95rem; letter-spacing: .06em; word-break: break-all; }
+.totp-recovery-codes-panel { width: min(480px, calc(100vw - 32px)); }
+.totp-recovery-codes-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+.totp-recovery-codes-list code { display: block; padding: 6px 8px; border-radius: 4px; background: rgba(0, 0, 0, .35); font-size: .85rem; }
+.totp-ack-checkbox { display: flex; align-items: center; gap: 8px; justify-content: center; font-size: .85rem; margin-top: 4px; }
+/* The recovery-codes block is rendered in two places with different chrome
+   On the login screen .login-panel supplies the grid, gap and centring;
+   the settings section had none of that -- .totp-recovery-codes-panel set only
+   a width, so children collapsed with no gap, prose sat left-aligned while the
+   acknowledgment checkbox stayed centred above a left-aligned button, and a
+   100vw-derived login-screen width was applied inside a sidebar-offset
+   container. These rules give the settings copy its own layout, and give
+   .recovery-codes-heading a definition -- it previously matched no rule at all
+   and fell through to the global h1 size (up to 32px) inside a section whose
+   own headers are ~16px. */
+.settings-recovery-codes { display: grid; gap: 12px; width: 100%; max-width: 520px; text-align: left; }
+.settings-recovery-codes .recovery-codes-heading { font-size: 1rem; margin: 0; }
+.settings-recovery-codes .totp-ack-checkbox { justify-content: flex-start; }
+.settings-recovery-codes > button { justify-self: start; }
+.login-panel .recovery-codes-heading { margin: 0; }
+
+/* ---- Discord sign-in button (Tier 1) ---- */
+.login-discord-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; width: 200px; justify-self: center; padding: 9px 14px; border-radius: 6px; background: #5865F2; color: #fff; font-weight: 600; text-decoration: none; box-shadow: 0 4px 16px rgba(88, 101, 242, .35); }
+.login-discord-button:hover { background: #6774f5; }
+.login-discord-button-primary { width: 260px; padding: 12px 18px; font-size: 1rem; margin-bottom: 4px; }
+.discord-setup-panel { width: min(560px, calc(100vw - 32px)); text-align: left; gap: 10px; }
+.discord-setup-panel h2 { margin: 14px 0 2px; }
+.discord-setup-panel select { width: 100%; }
+.login-discord-button.disabled { opacity: .5; pointer-events: none; }
+button.login-discord-button { border: none; cursor: pointer; font: inherit; font-weight: 600; }
+.discord-setup-envlist,
+.discord-setup-https-options,
+.discord-setup-checklist { margin: 6px 0; padding-left: 18px; font-size: .9rem; }
+.discord-setup-envlist li,
+.discord-setup-https-options li,
+.discord-setup-checklist li { margin: 4px 0; }
+/* Auth surfaces: a consistent primary action + step heading (Tier 1/3/4). */
+.login-primary-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; width: 260px; justify-self: center; padding: 12px 18px; border: none; border-radius: 6px; background: #c6a56e; color: #1b1712; font: inherit; font-weight: 600; font-size: 1rem; cursor: pointer; }
+.login-primary-button:hover:not(:disabled) { background: #d4b57e; }
+.login-primary-button:disabled { opacity: .5; cursor: default; }
+/* A real, clearly-clickable secondary choice -- for an either/or pair where
+   neither option is a throwaway escape hatch (unlike .login-password-toggle,
+   reserved for Cancel/toggle actions). Bordered, not just a muted text link,
+   so it doesn't get overlooked next to a bold .login-primary-button sibling. */
+.login-secondary-button { width: auto; padding: 10px 16px; border: 1px solid #4d4032; border-radius: 6px; background: transparent; color: #d4b57e; font: inherit; font-weight: 600; font-size: .92rem; cursor: pointer; justify-self: center; }
+.login-secondary-button:hover { background: rgba(198, 165, 110, .12); border-color: #c6a56e; }
+.discord-setup-panel .auth-step-heading { font-size: 1rem; margin: 14px 0 2px; align-self: flex-start; }
+/* Discord as a secondary, less-prominent option beneath the password (opt-in). */
+.login-discord-button-secondary { width: auto; margin-top: 10px; padding: 8px 14px; font-size: .85rem; font-weight: 500; background: transparent; color: #8ea1f0; border: 1px solid #3b4270; box-shadow: none; }
+.login-discord-button-secondary:hover { background: rgba(88, 101, 242, .12); color: #a9b7f5; }
+/* Discord 2FA option: checkbox + title + helper, cleanly stacked (not bunched). */
+.discord-mfa-option { display: flex; align-items: flex-start; gap: 10px; margin: 10px 0 4px; text-align: left; }
+.discord-mfa-option > input { width: 16px; height: 16px; margin: 2px 0 0; flex: 0 0 auto; accent-color: var(--accent-strong); cursor: pointer; }
+.discord-mfa-text { display: flex; flex-direction: column; gap: 3px; }
+.discord-mfa-title { font-weight: 600; font-size: .9rem; display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.discord-mfa-tag { font-weight: 500; font-size: .7rem; text-transform: uppercase; letter-spacing: .04em; color: #c6a56e; border: 1px solid #4a3f2c; border-radius: 4px; padding: 1px 6px; }
+
+/* ============================================================================
+   IAM / Access Control policy editor (features/settings/IamPolicyEditor.tsx)
+   The component shipped without styles, so the base `label { display: grid }`
+   and `input { width: 100% }` rules collapsed every permission row (checkbox
+   blown full-width, spans stacked) and the tier/grid rows had no layout. This
+   section gives it the console's own card/segmented-control language.
+   ========================================================================== */
+.iam-policy-editor { display: grid; gap: 16px; min-width: 0; }
+.iam-editor-loading { padding: 28px; text-align: center; color: var(--muted); }
+
+/* Tier selector — a segmented control that fills the row instead of wrapping */
+.iam-tier-selector {
+  display: flex;
+  gap: 6px;
+  padding: 4px;
+  background: var(--panel-muted);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.iam-tier-btn { flex: 1 1 0; min-width: 84px; padding: 8px 10px; font-weight: 700; }
+
+/* Builder / JSON / Test tabs */
+.iam-editor-tabs { display: flex; gap: 6px; flex-wrap: wrap; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+.iam-editor-tabs > button { padding: 8px 16px; }
+
+.iam-editor-body { min-width: 0; }
+
+/* Search */
+.iam-search-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.iam-search-bar input { flex: 1 1 auto; min-width: 0; }
+.iam-search-clear { flex: 0 0 auto; width: 40px; height: 40px; padding: 0; font-size: 20px; line-height: 1; }
+
+/* Wildcard / Deny toggle hint */
+.iam-toggle-hint {
+  margin: 0 0 12px;
+  padding: 9px 12px;
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  background: var(--panel-soft);
+  color: var(--muted-warm);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+/* Permission grid — responsive namespace cards (fixes the squashed columns) */
+.iam-permission-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
+  gap: 12px;
+}
+.iam-empty-hint { grid-column: 1 / -1; margin: 0; padding: 16px; text-align: center; color: var(--muted); }
+
+.iam-ns-card {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  padding: 12px;
+}
+.iam-ns-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.iam-ns-name { color: var(--title); font-weight: 700; font-size: 14px; }
+.iam-ns-count { flex: 0 0 auto; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.iam-ns-actions { display: grid; gap: 3px; }
+
+/* Permission row — override base `label { display:grid }` and `input{width:100%}` */
+.iam-perm-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--text);
+}
+.iam-perm-row:hover { background: var(--panel-muted); border-color: var(--border); }
+.iam-perm-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent-strong);
+  cursor: pointer;
+}
+.iam-perm-row.perm-on .iam-perm-label { color: var(--text-strong); }
+.iam-perm-row.perm-off { color: var(--muted); }
+.iam-perm-label { flex: 1 1 auto; min-width: 0; font-size: 13px; line-height: 1.3; overflow-wrap: anywhere; }
+.iam-perm-action {
+  flex: 0 1 auto;
+  max-width: 46%;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* JSON editor tab */
+.iam-json-editor { display: grid; gap: 8px; }
+.iam-json-textarea { width: 100%; min-height: 320px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; line-height: 1.5; }
+.iam-json-textarea.has-error { border-color: var(--danger-strong); }
+.iam-json-error { margin: 0; color: var(--danger-text); font-size: 13px; }
+
+/* Test tab */
+.iam-test-panel { display: grid; gap: 12px; }
+.iam-test-summary { display: flex; flex-wrap: wrap; gap: 8px; }
+.test-count-allowed, .test-count-denied {
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  font-size: 13px;
+  font-weight: 700;
+}
+.test-count-allowed { color: var(--success-text); border-color: var(--success); }
+.test-count-denied { color: var(--danger-text); border-color: var(--danger-strong); }
+.iam-test-table { display: grid; gap: 2px; }
+.iam-test-row { display: flex; align-items: center; gap: 9px; padding: 6px 8px; border-radius: 6px; font-size: 13px; }
+.iam-test-row.test-allowed { background: rgba(61, 139, 98, .12); }
+.iam-test-row.test-denied { background: rgba(167, 73, 73, .12); }
+.test-indicator { flex: 0 0 auto; width: 18px; text-align: center; font-weight: 800; color: var(--success-text); }
+.test-indicator.test-blocked { color: var(--danger-text); }
+.test-action-name { min-width: 0; overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+
+/* Save footer */
+.iam-editor-footer { display: flex; justify-content: flex-end; align-items: center; gap: 10px; padding-top: 12px; border-top: 1px solid var(--border); }
+.iam-editor-footer .iam-json-error { margin-right: auto; }
+
+/* Editor a11y + locked-permission affordance */
+.iam-policy-editor button:focus-visible,
+.iam-policy-editor input:focus-visible,
+.iam-policy-editor textarea:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 1px; }
+.iam-perm-row:focus-within { outline: 2px solid var(--accent-strong); outline-offset: 1px; }
+.iam-perm-row.perm-locked { opacity: .82; }
+.iam-perm-row.perm-locked input[type="checkbox"] { accent-color: var(--muted); }
+.iam-perm-lock { flex: 0 0 auto; font-size: 11px; opacity: .7; }
+
+/* Signed-in user chip + logout, in the sidebar under the title.
+   Username is the prominent element; the role echoes the nav section-heading
+   style; Sign out is a small secondary ghost button, not a full-width one. */
+.sidebar-user { display: flex; flex-direction: column; gap: 5px; padding: 10px 12px 12px; margin-bottom: 4px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.sidebar-user-identity { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.sidebar-user-identity > svg { flex: 0 0 auto; color: #f0c760; }
+.sidebar-user-name { flex: 1 1 auto; min-width: 0; font-weight: 700; font-size: 14px; color: #f0c760; text-transform: capitalize; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-user-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-left: 24px; }
+.sidebar-user-tier { padding: 3px 7px; border: 1px solid rgba(240, 199, 96, .42); border-radius: 999px; background: rgba(240, 199, 96, .08); color: #ffe095; font-size: 11px; font-weight: 700; line-height: 1; text-transform: capitalize; letter-spacing: .02em; }
+.sidebar-user-tier.tier-owner { border-color: rgba(240, 199, 96, .7); color: #ffe9b0; }
+.sidebar-logout { display: inline-flex; align-items: center; border: 0; background: transparent; color: var(--muted); padding: 2px 2px; font-size: 12px; gap: 6px; min-width: 0; }
+.sidebar-logout:hover { color: var(--accent-strong); border-color: transparent; background: transparent; }
 /* --- API Keys (Settings) --------------------------------------------------
    Generic segmented control, same visual spec as .bases-rank-segments. That
    one is left alone deliberately: it is load-bearing for base and vehicle

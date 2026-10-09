@@ -68,6 +68,7 @@ const simpleOperations = {
   adminHistory: ["admin", "history"],
   adminItemList: ["admin", "item-list"],
   adminVehicleList: ["admin", "vehicle-list"],
+  experimentalTanksStatus: ["experimental-tanks", "status"],
   adminSkillModules: ["admin", "skill-modules"]
 };
 
@@ -85,6 +86,11 @@ export function buildDuneArgs(operation, payload = {}) {
   if (simpleOperations[operation]) return simpleOperations[operation];
 
   switch (operation) {
+    case "experimentalTanksApply":
+      if (typeof payload.enabled !== "boolean" || payload.confirmRestart !== true) {
+        throw new Error("Confirm the Hagga restart before changing Experimental Tanks.");
+      }
+      return ["experimental-tanks", "apply", String(payload.enabled)];
     case "selfUpdateQaApply":
       return ["self-update", "install-qa", validateCommitSha(payload.sha)];
     case "restartService":

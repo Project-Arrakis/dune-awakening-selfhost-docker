@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { clearTerrainAssetCache, decodeIndices, joinShared, loadLayoutAssets, loadSharedAssets } from "./terrainAssets";
+import { clearTerrainAssetCache, decodeHeightField, decodeIndices, decodeSandBase, joinShared, loadLayoutAssets, loadSharedAssets } from "./terrainAssets";
 import type { TerrainLibrary } from "./types";
 
 // Production resolves hashed URLs out of the Vite bundle; tests inject a plain
@@ -41,6 +41,29 @@ function layoutMeta(layout: number) {
     hfN: 2, hfZlo: 0, hfZhi: 1, hfStep: 1, hfX0: 0, hfY0: 0, draws: [{ m: 0, off: 0, n: 1, overlay: 0 }] };
 }
 
+// The encoder's side of the height coding, so the decoder is tested against it.
+const zigzag = (step: number) => (((step << 16) >> 16) << 1 ^ ((step << 16) >> 31)) & 0xffff;
+function planes(values: number[]): Uint8Array {
+  const out = new Uint8Array(values.length * 2);
+  values.forEach((v, k) => {
+    out[k] = v >> 8;
+    out[values.length + k] = v & 0xff;
+  });
+  return out;
+}
+function codeSandBase(field: number[], n: number): Uint8Array {
+  return planes(field.map((v, k) => {
+    const i = k % n;
+    const j = Math.floor(k / n);
+    const predicted = i === 0 ? (j === 0 ? 0 : field[k - n]) : j === 0 ? field[k - 1] : field[k - 1] + field[k - n] - field[k - n - 1];
+    return zigzag(v - predicted);
+  }));
+}
+const SAND_BASE = { n: 2, zlo: -100, zstep: 2, coding: "zigzag-delta2d" };
+const BASE_FIELD = [10, 4000, 9, 65000];
+const CODED_LAYOUT_FIELD = [10, 3990, 300, 2];
+const codedLayoutMeta = (layout: number) => ({ ...layoutMeta(layout), hfZlo: -100, hfZhi: -100 + 65535 * 2, hfCoding: "base-diff" });
+
 let requests: string[] = [];
 
 // A faithful fetch: it honours an AbortSignal mid-flight, which is the whole
@@ -74,6 +97,8 @@ function installFetch(overrides: Record<string, () => Promise<Response>> = {}) {
     if (url.endsWith("rock-common.json.gz")) return deliver(await gzipJson({ nInst: 1, draws: [{ m: 0, overlay: 0, off: 0, n: 1 }] }), signal);
     if (url.endsWith("rock-common.bin.gz")) return deliver(await gzip(new Uint8Array(new Float32Array(14).fill(2).buffer)), signal);
     if (url.includes("/tex/")) return deliver(await gzip(new Uint8Array(4)), signal);
+    if (url.endsWith("sand-base.json.gz")) return deliver(await gzipJson(SAND_BASE), signal);
+    if (url.endsWith("sand-base.bin.gz")) return deliver(await gzip(codeSandBase(BASE_FIELD, 2)), signal);
     const match = url.match(/layout-(\d+)\.(json|bin|hf)\.gz$/);
     if (match) {
       const n = Number(match[1]);
@@ -208,6 +233,46 @@ describe("loadLayoutAssets", () => {
     expect(layout.heightField.byteLength).toBe(8);
   });
 
+  it("rebuilds a height field stored against the shared sand base", async () => {
+    installFetch({
+      "/base/layout-3.json.gz": async () => bytesResponse(await gzipJson(codedLayoutMeta(3))),
+      "/base/layout-3.hf.gz": async () => bytesResponse(await gzip(planes(CODED_LAYOUT_FIELD.map((v, k) => zigzag(v - BASE_FIELD[k])))))
+    });
+    const layout = await loadLayoutAssets(3, at);
+    expect([...new Uint16Array(layout.heightField.buffer)]).toEqual(CODED_LAYOUT_FIELD);
+    // Decoded, it is an ordinary layout: nothing downstream sees the coding.
+    expect(layout.meta.hfCoding).toBeUndefined();
+    expect(layout.meta.hfZlo).toBe(-100);
+  });
+
+  it("fetches the sand base once, whichever layouts ask for it", async () => {
+    const coded = (n: number) => ({
+      [`/base/layout-${n}.json.gz`]: async () => bytesResponse(await gzipJson(codedLayoutMeta(n))),
+      [`/base/layout-${n}.hf.gz`]: async () => bytesResponse(await gzip(new Uint8Array(8)))
+    });
+    installFetch({ ...coded(3), ...coded(7) });
+    const [three, seven] = await Promise.all([loadLayoutAssets(3, at), loadLayoutAssets(7, at)]);
+    expect(requests.filter((u) => u.endsWith("sand-base.bin.gz"))).toHaveLength(1);
+    // A layout that differs nowhere is the base itself.
+    expect([...new Uint16Array(three.heightField.buffer)]).toEqual(BASE_FIELD);
+    expect([...new Uint16Array(seven.heightField.buffer)]).toEqual(BASE_FIELD);
+  });
+
+  it("does not fetch the sand base for a plain height field", async () => {
+    await loadLayoutAssets(3, at);
+    expect(requests.filter((u) => u.includes("sand-base"))).toHaveLength(0);
+  });
+
+  it("refuses a height coding it does not know rather than drawing garbage", async () => {
+    installFetch({ "/base/layout-3.json.gz": async () => bytesResponse(await gzipJson({ ...codedLayoutMeta(3), hfCoding: "wavelet" })) });
+    await expect(loadLayoutAssets(3, at)).rejects.toThrow(/wavelet/);
+  });
+
+  it("refuses a layout whose height scale is not the sand base's", async () => {
+    installFetch({ "/base/layout-3.json.gz": async () => bytesResponse(await gzipJson({ ...codedLayoutMeta(3), hfZlo: 0 })) });
+    await expect(loadLayoutAssets(3, at)).rejects.toThrow(/sand base/);
+  });
+
   it("rejects a height field that does not match the declared hfN", async () => {
     installFetch({ "/base/layout-3.hf.gz": async () => bytesResponse(await gzip(new Uint8Array(6))) });
     await expect(loadLayoutAssets(3, at)).rejects.toThrow(/height field/);
@@ -338,5 +403,29 @@ describe("decodeIndices", () => {
     const geometry = new Uint8Array(new Uint16Array([9]).buffer);
     expect(decodeIndices(lib, geometry)).toBe(lib);
     expect(new Uint16Array(geometry.buffer)[0]).toBe(9);
+  });
+});
+
+describe("decodeSandBase", () => {
+  it("undoes the neighbour prediction, wrapping at 16 bits", () => {
+    const field = [0, 65535, 3, 40000, 12, 13, 65535, 0, 7];
+    expect([...decodeSandBase({ ...SAND_BASE, n: 3 }, codeSandBase(field, 3))]).toEqual(field);
+  });
+
+  it("refuses a coding it does not know", () => {
+    expect(() => decodeSandBase({ ...SAND_BASE, coding: "raw" }, new Uint8Array(8))).toThrow(/raw/);
+  });
+
+  it("refuses a grid of the wrong size", () => {
+    expect(() => decodeSandBase(SAND_BASE, new Uint8Array(6))).toThrow(/sand base/);
+  });
+});
+
+describe("decodeHeightField", () => {
+  it("adds each texel's step to the base, either way", () => {
+    const base = { info: SAND_BASE, field: new Uint16Array(BASE_FIELD) };
+    const coded = planes(CODED_LAYOUT_FIELD.map((v, k) => zigzag(v - BASE_FIELD[k])));
+    const { heightField } = decodeHeightField(codedLayoutMeta(3), coded, base);
+    expect([...new Uint16Array(heightField.buffer)]).toEqual(CODED_LAYOUT_FIELD);
   });
 });
