@@ -97,6 +97,25 @@ CVE-2026-66046  # libexpat1 -- expat storeAtts() quadratic DoS; no fix in Debian
 CVE-2026-76956  # libexpat1 -- hash-flooding denial of service; no fix in Debian
 CVE-2026-76957  # libexpat1 -- memory corruption allows RCE or DoS; no fix in Debian
 
+# Added 2026-10-09 (issue #1152). One more libexpat1 HIGH advisory, published
+# after main's last passing run of this gate (2026-10-07T16:41Z), first seen on
+# PR #1150 whose diff is not the cause. Same package and version already
+# tracked above (libexpat1 2.8.3-1~deb13u1). Per this file's policy a version
+# bump was checked FIRST and none exists: the Debian security tracker lists
+# trixie, trixie (security) and forky as vulnerable and only sid (2.9.0-1) as
+# fixed, so no base-image tag can resolve it. This one is a heap over-read in
+# XML_ParseBuffer (information disclosure), a different class from the three
+# above, but the exposure argument is the same: libexpat1 arrives only as a
+# transitive dependency of python3.13-stdlib's pyexpat (issue #489), and the
+# server side parses no XML. The check `git grep -iE "expat|xml2js|fast-xml|
+# xmldom|DOMParser|import xml|from xml|xml\.etree" -- console/api/src
+# console/web runtime/scripts` now returns one line,
+# console/web/src/api/client.ts, `new DOMParser().parseFromString(..., "text/html")`.
+# That is HTML parsing in the operator's browser, not in this image, so it does
+# not reach libexpat. Re-check on every image rebuild and drop this line when
+# Debian publishes a fixed libexpat1.
+CVE-2026-77214  # libexpat1 -- XML_ParseBuffer heap over-read; no fix in Debian
+
 # Debian 13.6 (trixie) python3.13, added 2026-08-25 alongside issue #489's fix
 # (console/api/Dockerfile now installs python3 explicitly -- see that file's
 # comment for why the console cannot function without it). Per this file's own
