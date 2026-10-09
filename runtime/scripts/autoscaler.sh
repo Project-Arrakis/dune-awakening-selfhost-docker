@@ -132,7 +132,9 @@ director_logs_available() {
 start_director_log_cache() {
   DIRECTOR_LOG_CACHE_DIR="$(mktemp -d runtime/generated/director-log-cache.XXXXXX)"
   DIRECTOR_LOG_CACHE_FILE="$DIRECTOR_LOG_CACHE_DIR/recent.sqlite"
+  SURVIVAL_TARGET_FILE="$DIRECTOR_LOG_CACHE_DIR/survival-target.json"
   ensure_director_log_cache
+  refresh_survival_target_file
   trap 'stop_director_log_cache' EXIT
   trap 'exit 143' TERM
   trap 'exit 130' INT
@@ -148,10 +150,34 @@ ensure_director_log_cache() {
   DIRECTOR_LOG_CACHE_PID=$!
 }
 
+# Keeps the Survival_1 target (partition, port, IP of the first ready server)
+# that follow_director_hagga_handoffs hands to players current. At most one query
+# per SURVIVAL_TARGET_REFRESH_SECONDS; no ready Survival_1 removes the file so the
+# consumer skips events instead of granting a stale endpoint.
+refresh_survival_target_file() {
+  local now json tmp
+  [ -n "${SURVIVAL_TARGET_FILE:-}" ] || return 0
+  now="$(date +%s)"
+  if [ -n "${SURVIVAL_TARGET_REFRESHED_AT:-}" ] \
+    && [ $((now - SURVIVAL_TARGET_REFRESHED_AT)) -lt "${SURVIVAL_TARGET_REFRESH_SECONDS:-5}" ]; then
+    return 0
+  fi
+  SURVIVAL_TARGET_REFRESHED_AT="$now"
+  json="$(survival_partition_target_json 2>/dev/null || true)"
+  if [ -z "$json" ]; then
+    rm -f "$SURVIVAL_TARGET_FILE"
+    return 0
+  fi
+  tmp="$SURVIVAL_TARGET_FILE.tmp"
+  printf '%s\n' "$json" >"$tmp" && mv -f "$tmp" "$SURVIVAL_TARGET_FILE"
+}
+
 stop_director_log_cache() {
   kill "$DIRECTOR_LOG_CACHE_PID" 2>/dev/null || true
   wait "$DIRECTOR_LOG_CACHE_PID" 2>/dev/null || true
-  rm -f "$DIRECTOR_LOG_CACHE_FILE" "$DIRECTOR_LOG_CACHE_FILE-wal" "$DIRECTOR_LOG_CACHE_FILE-shm"
+  rm -f "$DIRECTOR_LOG_CACHE_FILE" "$DIRECTOR_LOG_CACHE_FILE-wal" "$DIRECTOR_LOG_CACHE_FILE-shm" \
+    "${SURVIVAL_TARGET_FILE:-$DIRECTOR_LOG_CACHE_DIR/survival-target.json}" \
+    "${SURVIVAL_TARGET_FILE:-$DIRECTOR_LOG_CACHE_DIR/survival-target.json}.tmp"
   rmdir "$DIRECTOR_LOG_CACHE_DIR" 2>/dev/null || true
 }
 PROACTIVE_HAGGA_SCAN_SECONDS="$(validate_scan_seconds DUNE_AUTOSCALER_PROACTIVE_HAGGA_SCAN_SECONDS "${DUNE_AUTOSCALER_PROACTIVE_HAGGA_SCAN_SECONDS:-15}" 15 "$SINCE_SECONDS")"
@@ -1089,7 +1115,7 @@ PY
 
 follow_director_hagga_handoffs() {
   while true; do
-    python3 runtime/scripts/director-log-cache.py stream "$DIRECTOR_LOG_CACHE_FILE" --parent "$$" 2>/dev/null | TARGET_JSON="$(survival_partition_target_json 2>/dev/null || true)" python3 -u /dev/fd/3 3<<'PY' | while IFS='|' read -r flow_id origin_id payload_json; do
+    python3 runtime/scripts/director-log-cache.py stream "$DIRECTOR_LOG_CACHE_FILE" --parent "$$" 2>/dev/null | TARGET_FILE="${SURVIVAL_TARGET_FILE:-}" python3 -u /dev/fd/3 3<<'PY' | while IFS='|' read -r flow_id origin_id payload_json; do
 import json
 import os
 import re
@@ -1097,10 +1123,25 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 target_json = os.environ.get("TARGET_JSON", "")
-if not target_json:
+target_file = os.environ.get("TARGET_FILE", "")
+if not target_json and not target_file:
     raise SystemExit(0)
 
-target = json.loads(target_json)
+
+def current_target():
+    # The stream outlives Director restarts (unlike the `docker logs -f` pipe it
+    # replaced), and a Director restart also restarts Survival_1, so the target
+    # is re-read for every event instead of once at start (#1163). A missing or
+    # unreadable file means there is no ready Survival_1 right now: skip the
+    # event rather than hand a player a stale endpoint.
+    if target_file:
+        try:
+            with open(target_file, encoding="utf-8") as handle:
+                return json.loads(handle.read())
+        except (OSError, ValueError):
+            return None
+    return json.loads(target_json)
+
 response_re = re.compile(r'Notified player\(s\) "([^"]+)" of travel response (SH_Arrakeen3|SH_HarkoVillage4|Overmap2): (\{.*\})')
 
 for line in sys.stdin:
@@ -1119,6 +1160,9 @@ for line in sys.stdin:
         continue
     flow_id = payload.get("RequestID") or ""
     if not flow_id:
+        continue
+    target = current_target()
+    if not target:
         continue
     response_payload = dict(payload)
     response_payload["MapName"] = "HaggaBasin"
@@ -3331,6 +3375,7 @@ repair_chat_exchanges_due
 
 while true; do
   ensure_director_log_cache
+  refresh_survival_target_file
   reconcile_always_on_maps
   scan_deepdesert_loading_responses
   ensure_overmap_travel_maps_prewarmed
