@@ -175,7 +175,9 @@ refresh_survival_target_file() {
 stop_director_log_cache() {
   kill "$DIRECTOR_LOG_CACHE_PID" 2>/dev/null || true
   wait "$DIRECTOR_LOG_CACHE_PID" 2>/dev/null || true
-  rm -f "$DIRECTOR_LOG_CACHE_FILE" "$DIRECTOR_LOG_CACHE_FILE-wal" "$DIRECTOR_LOG_CACHE_FILE-shm"
+  rm -f "$DIRECTOR_LOG_CACHE_FILE" "$DIRECTOR_LOG_CACHE_FILE-wal" "$DIRECTOR_LOG_CACHE_FILE-shm" \
+    "${SURVIVAL_TARGET_FILE:-$DIRECTOR_LOG_CACHE_DIR/survival-target.json}" \
+    "${SURVIVAL_TARGET_FILE:-$DIRECTOR_LOG_CACHE_DIR/survival-target.json}.tmp"
   rmdir "$DIRECTOR_LOG_CACHE_DIR" 2>/dev/null || true
 }
 PROACTIVE_HAGGA_SCAN_SECONDS="$(validate_scan_seconds DUNE_AUTOSCALER_PROACTIVE_HAGGA_SCAN_SECONDS "${DUNE_AUTOSCALER_PROACTIVE_HAGGA_SCAN_SECONDS:-15}" 15 "$SINCE_SECONDS")"

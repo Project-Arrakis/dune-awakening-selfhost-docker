@@ -151,6 +151,28 @@ refresh_survival_target_file
         self.assertIn("queries=1", lines)  # three calls inside the interval cost one query
         self.assertIn("removed-when-no-ready-server", lines)
 
+    def test_normal_exit_leaves_no_cache_directory_behind(self):
+        # stop_director_log_cache ends with rmdir, which fails on a non-empty
+        # directory: the target file added in #1163 must be removed with the rest.
+        function = SOURCE.split("stop_director_log_cache() {", 1)[1].split("\n}\n", 1)[0]
+        cache = Path(self.dir.name) / "director-log-cache.ABC123"
+        cache.mkdir()
+        for name in ("recent.sqlite", "recent.sqlite-wal", "recent.sqlite-shm", "survival-target.json", "survival-target.json.tmp"):
+            (cache / name).write_text("x")
+        script = f'''
+set -euo pipefail
+stop_director_log_cache() {{{function}
+}}
+DIRECTOR_LOG_CACHE_PID=999999
+DIRECTOR_LOG_CACHE_DIR="{cache}"
+DIRECTOR_LOG_CACHE_FILE="{cache}/recent.sqlite"
+SURVIVAL_TARGET_FILE="{cache}/survival-target.json"
+stop_director_log_cache
+'''
+        result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(cache.exists(), "the cache directory was left behind: " + str(list(cache.glob("*"))))
+
     def test_loop_wiring(self):
         function = SOURCE.split("follow_director_hagga_handoffs() {", 1)[1].split("scan_deepdesert_loading_responses()", 1)[0]
         self.assertIn('TARGET_FILE="${SURVIVAL_TARGET_FILE:-}"', function)
