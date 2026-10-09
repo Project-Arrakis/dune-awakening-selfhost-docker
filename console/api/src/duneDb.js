@@ -5722,6 +5722,10 @@ export async function deleteVehicleCompletely(db, vehicleId, { allowBlockedState
   if (storedRecoveryOnly) {
     await requireCapability(await supportsStoredVehicleDelete(db, { vehicleDelete: true }), STORED_VEHICLE_DELETE_REQUIREMENT);
   }
+  // The owner-online rule needs recovered_vehicles and player_state. Without them the
+  // check cannot run and a queued delete behaves as it did before #1134.
+  const checkOwnerOnline = allowBlockedState && !storedRecoveryOnly
+    && await supportsStoredVehicleDelete(db, { vehicleDelete: true });
   const target = intParam(vehicleId, "vehicle id", 1);
   return db.transaction(async (tx) => {
     await tx.query("set local search_path to dune, public");
@@ -5739,6 +5743,13 @@ export async function deleteVehicleCompletely(db, vehicleId, { allowBlockedState
     } else {
       const blockedState = await vehicleBlockedDeleteState(tx, actor.actorId);
       if (blockedState && !allowBlockedState) throw new Error(VEHICLE_BLOCKED_DELETE_MESSAGES[blockedState]);
+      // A queued or map-down delete may find a vehicle that became Stored for
+      // Recovery after it was queued. The running game server keeps an online
+      // owner's recovery list and is not told about the delete, so the same
+      // owner-offline rule as the stored override applies (#1134).
+      if (checkOwnerOnline && blockedState === "VehicleRecovery") {
+        await assertStoredVehicleDeletable(tx, actor.actorId, { lock: true });
+      }
     }
     const modules = await tx.query(
       "select count(*)::int as n from dune.vehicle_modules where vehicle_id = $1::bigint", [target]);
@@ -5958,7 +5969,7 @@ export async function updateBaseLandClaim(db, baseId, { addSegments = [], vertic
   });
 }
 
-export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColumn = "name", sortDirection = "asc", includeGenerators = true, playerId = "" } = {}) {
+export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColumn = "name", sortDirection = "asc", includeGenerators = true, playerId = "", access = "all" } = {}) {
   const requiredTables = ["buildings", "building_instances", "actor_fgl_entities", "actors",
     ...(playerId ? ["permission_actor", "permission_actor_rank", "player_state"] : [])];
   // One round-trip each and none of them depends on another, so probe them
@@ -5991,7 +6002,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
   // keeps the paged rows and aggregate totals on exactly the same scope and
   // avoids trusting a character name, which is neither stable nor unique.
   const playerScope = player
-    ? "and exists (select 1 from dune.permission_actor_rank viewer_par where viewer_par.permission_actor_id = a.id and viewer_par.player_id = $1)"
+    ? `and exists (select 1 from dune.permission_actor_rank viewer_par where viewer_par.permission_actor_id = a.id and viewer_par.player_id = $1${access === "owner" ? " and viewer_par.rank = 1" : access === "coowner" ? " and viewer_par.rank = 2" : ""})${access === "coowner" ? " and not exists (select 1 from dune.permission_actor_rank owner_par where owner_par.permission_actor_id = a.id and owner_par.player_id = $1 and owner_par.rank = 1)" : ""}`
     : "";
   // What counts as a base, defined once. The paged query (`matched`) and the
   // totals query (`valid_claims`) run in separate round trips but must agree
@@ -8949,7 +8960,7 @@ const VEHICLE_STATUS_FILTERS = {
 // and the listBases shared-with lateral (resolved only on the paged rows).
 // `status` defaults to "all" so the player-scoped list and existing API
 // callers are unchanged.
-export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortColumn = "name", sortDirection = "asc", playerId = "", status = "all" } = {}) {
+export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortColumn = "name", sortDirection = "asc", playerId = "", status = "all", access = "all" } = {}) {
   const requiredTables = [
     "vehicles", "vehicle_modules", "actors", "permission_actor",
     "permission_actor_rank", "player_state", "actor_fgl_entities", "fgl_entities"
@@ -9019,7 +9030,11 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
           from dune.permission_actor_rank par
           where par.permission_actor_id=vc.id and par.player_id=$${controllerParam}
         ) viewer on true`;
-    filters.push(`(vc.owner_account_id=$${accountParam} or viewer.rank is not null)`);
+    filters.push(access === "owner"
+      ? `(vc.owner_account_id=$${accountParam} or viewer.rank=1)`
+      : access === "coowner"
+        ? `(vc.owner_account_id is distinct from $${accountParam} and viewer.rank=2)`
+        : `(vc.owner_account_id=$${accountParam} or viewer.rank is not null)`);
     relationshipSql = `case
             when vc.owner_account_id=$${accountParam} or viewer.rank=1 then 'Owner'
             when viewer.rank=2 then 'Co-Owner'
@@ -12940,7 +12955,11 @@ export async function flushVehicleDeletes(db, repoRoot, { now = Date.now, onBefo
       outcomes.set(entry.vehicleId, { queuedAt: entry.queuedAt, keep: false });
       flushed.push({ vehicleId: entry.vehicleId, map: entry.map, partitionId: entry.partitionId, ok: true, ...result });
     } catch (error) {
-      const message = String(error?.message || "Unexpected error.").slice(0, 300);
+      // The owner's name is players:read information; the queue file, the audit entry and
+      // the vehicles:read pending-deletes route must not carry it.
+      const message = error?.code === STORED_VEHICLE_OWNER_ONLINE
+        ? "The vehicle's owner is online. The delete retries once they are offline."
+        : String(error?.message || "Unexpected error.").slice(0, 300);
       if (vehicleDeleteAlreadyGone(message)) {
         outcomes.set(entry.vehicleId, { queuedAt: entry.queuedAt, keep: false });
         flushed.push({ vehicleId: entry.vehicleId, map: entry.map, partitionId: entry.partitionId, ok: true, alreadyGone: true });
@@ -12950,7 +12969,8 @@ export async function flushVehicleDeletes(db, repoRoot, { now = Date.now, onBefo
       // positively stopped. They are not permanent failures and must never
       // burn through the retry limit merely because the background poller saw
       // the same state several times while a restart was in progress.
-      const blockedState = isVehicleBlockedDeleteMessage(message);
+      // An online owner is as temporary as a lifecycle state: it ends at logout.
+      const blockedState = isVehicleBlockedDeleteMessage(message) || error?.code === STORED_VEHICLE_OWNER_ONLINE;
       const attempts = (blockedState || isTransientFlushError(message)) ? entry.attempts : entry.attempts + 1;
       const dropped = attempts >= MAX_DELETE_FLUSH_ATTEMPTS;
       const nextRetryAt = timestamp + pendingVehicleDeleteRetryDelayMs();

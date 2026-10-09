@@ -21,6 +21,7 @@ import { buildDuneArgs, isDynamicServerService, parseVehicleList, runDockerLogs,
 // space so it cannot fuse tokens or hide a leading `delete`. Sharing one
 // classifier with duneDb.runSql also keeps the authorization decision and the
 // execution decision from diverging.
+import { playerAccessParam } from "./playerAccessParam.js";
 import { createDb, hasExecutableStatement, isReadOnlySql, quoteIdentifier } from "./db.js";
 import * as duneDb from "./duneDb.js";
 import { audit, recordAdminHistory } from "./audit.js";
@@ -550,9 +551,13 @@ async function enforcePlayerTier(res, path, method, action, session) {
     return true;
   }
   const route = classifyPlayerTierRequest(path, method);
-  if (route.kind === "open" || route.kind === "scoped-list") return false;
+  if (route.kind === "scoped-list" || route.kind === "global-read") return false;
   const notFound = () => { json(res, 404, { error: "Not found." }); return true; };
   if (route.kind === "deny") return notFound();
+  // A route outside /api/players and /api/guilds that still carries a player action (the
+  // choam-terminals capture reads any character's position) has no ownership rule here,
+  // so it is closed to the player tier rather than left to take a raw playerId.
+  if (route.kind === "open") return action ? notFound() : false;
   try {
     const scope = await resolvePlayerScopedIds(session, db);
     if (route.kind === "own-player") {
@@ -1972,12 +1977,13 @@ async function handleApi(req, res, path) {
   if (path.match(/^\/api\/players\/[^/]+\/customizations$/) && req.method === "GET") return customizationGrantsRoute(res, path);
   if (path.match(/^\/api\/players\/[^/]+\/journey$/)) return dbPlayerRoute(res, path, (database, playerId) => duneDb.playerJourney(database, playerId, journeyTagsData));
   if (path.match(/^\/api\/players\/[^/]+\/inventory$/)) return dbPlayerRoute(res, path, duneDb.playerInventoryAll);
-  if (path.match(/^\/api\/players\/[^/]+\/vehicles$/) && req.method === "GET") return dbPlayerRoute(res, path, (database, playerId) => duneDb.listVehicles(database, { playerId, pageSize: 200 }));
+  if (path.match(/^\/api\/players\/[^/]+\/vehicles$/) && req.method === "GET") return dbPlayerRoute(res, path, (database, playerId) => duneDb.listVehicles(database, { playerId, pageSize: 200, access: playerAccessParam(url) }));
   if (path.match(/^\/api\/players\/[^/]+\/bases$/) && req.method === "GET") return dbPlayerRoute(res, path, (database, playerId) => duneDb.listBases(database, {
     playerId,
     q: url.searchParams.get("q") || "",
     page: 0,
     pageSize: 5000,
+    access: playerAccessParam(url),
     sortColumn: url.searchParams.get("sortColumn") || "name",
     sortDirection: url.searchParams.get("sortDirection") || "asc"
   }));

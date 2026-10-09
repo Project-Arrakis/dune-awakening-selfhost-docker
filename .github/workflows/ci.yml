@@ -264,9 +264,14 @@ jobs:
       # upstream PR to Red-Blink (Requirement 19) should still re-run this
       # script manually with BASE_REF=upstream/main (the script's own
       # default) to see the diff upstream will actually see.
+      # SCAN_MODE: pull requests scan only their diff; every other trigger (push to main,
+      # integration/** and release/**, manual dispatch) scans the whole tracked tree. On a push to
+      # main the changed-file set is empty (HEAD is BASE_REF), so the old behaviour reported
+      # success while gitleaks scanned ~0 bytes and trivy printed "no changed files".
       - name: Run security PR checks
         env:
           BASE_REF: origin/main
+          SCAN_MODE: ${{ github.event_name == 'pull_request' && 'changed' || 'full' }}
         run: bash tests/security-pr-checks.sh
 
   api-dependency-audit:
