@@ -2,7 +2,7 @@ runtime/rabbitmq-game/certs/
 
 # --- console runtime image (trivy-image-scan CI gate) -----------------------
 # Findings accepted below were re-triaged 2026-08-21 against the CURRENT
-# console/api/Dockerfile (node:24-trixie-slim, Docker CLI 29.7.2, Docker
+# console/api/Dockerfile (node:24-trixie-slim, Docker CLI 29.7.2 at that time, Docker
 # Compose v5.5.0 -- all confirmed the latest available release of each at
 # triage time) after the standing trivy-image-scan gate was added, replacing
 # issue #54's stale June 2026 residual list (whose base image/CLI/Compose
@@ -119,6 +119,19 @@ CVE-2026-76957  # libexpat1 -- memory corruption allows RCE or DoS; no fix in De
 # (same date as every .trivyignore-fs.yaml entry). Tracked in #1180, which stays open until it is re-triaged.
 CVE-2026-77214 exp:2027-01-07  # libexpat1 -- XML_ParseBuffer heap over-read; no fix in Debian
 
+# Added 2026-10-09 (found on PR #1194, unrelated to its diff: advisories published after main's last green run).
+# Each was checked for a fix first. All expire 2027-01-07, the date of the standing re-triage in #1180.
+#  - Docker CLI 29.7.2 -> 29.9.0 (Dockerfile): the CLI's own stdlib findings are gone (pinned trivy 0.73, no ignore file).
+#  - Docker Compose: v5.6.0 is the latest release and is still built with Go 1.26.8, so it carries the same two stdlib
+#    findings as the pinned v5.5.1 (both scanned directly; the fix is Go 1.26.9). It runs as a CLI per command against the
+#    local daemon, not as a listening server; the advisories are denial-of-service in the HTTP/TLS stack. Accepted, not analysed further.
+#  - libgnutls30t64: Debian lists both as "affected" with no fixed version for trixie. Which packages in the image use it
+#    was not analysed; this entry is a time-boxed acceptance, not a finding of non-exposure.
+CVE-2026-78667 exp:2027-01-07  # Go stdlib net/http in docker-compose; fix is Go 1.26.9, Compose has none yet
+CVE-2026-97031 exp:2027-01-07  # Go stdlib crypto/tls in docker-compose; same
+CVE-2026-88647 exp:2027-01-07  # libgnutls30t64 -- no Debian fix at triage time
+CVE-2026-88648 exp:2027-01-07  # libgnutls30t64 -- no Debian fix at triage time
+
 # Debian 13.6 (trixie) python3.13, added 2026-08-25 alongside issue #489's fix
 # (console/api/Dockerfile now installs python3 explicitly -- see that file's
 # comment for why the console cannot function without it). Per this file's own
@@ -176,18 +189,6 @@ CVE-2026-59874  # tar
 CVE-2026-69152  # brace-expansion
 CVE-2026-69192  # ip-address
 CVE-2026-73566  # tar (issue #466; latest published npm, 12.0.2, still bundles 7.5.19)
-
-# Docker CLI 29.7.2's own embedded Go standard library -- confirmed the
-# latest available release at triage time (curl -sI against
-# download.docker.com). Re-check whenever a newer Docker CLI release ships.
-CVE-2026-33818  # encoding/asn1 (stdlib)
-CVE-2026-39821  # golang.org/x/net/idna (stdlib)
-CVE-2026-46600  # stdlib
-CVE-2026-56853  # net/http (stdlib)
-CVE-2026-56858  # html/template (stdlib)
-CVE-2026-56859  # encoding/xml (stdlib)
-CVE-2026-56860  # net/url (stdlib)
-CVE-2026-56862  # crypto/tls (stdlib)
 
 # Docker Compose v5.5.0's own embedded Go dependencies -- confirmed the
 # latest available release at triage time (git ls-remote against
