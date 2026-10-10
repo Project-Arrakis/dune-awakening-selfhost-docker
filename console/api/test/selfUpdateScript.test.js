@@ -115,6 +115,72 @@ test("self-update preflight explains how to repair unreadable local state", () =
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("self-update preflight repairs unreadable local state once before failing", () => {
+  const source = readFileSync(join(repoRoot, "runtime/scripts/self-update.sh"), "utf8");
+  const functions = source.slice(
+    source.indexOf("local_state_paths() {"),
+    source.indexOf("\nensure_self_update_preflight()")
+  );
+  const blockedPath = "runtime/generated/director-capacity.ini";
+  // Root reads any file, so a root test run drops to an unprivileged user.
+  const unprivileged = process.getuid?.() === 0 ? { uid: 65534, gid: 65534 } : {};
+  const run = (repairBody, { repairMode = 0o755, blockedIsDirectory = false } = {}) => {
+    const root = mkdtempSync(join(tmpdir(), "arrakis-state-repair-"));
+    try {
+      mkdirSync(join(root, "runtime/generated"), { recursive: true });
+      mkdirSync(join(root, "runtime/scripts"), { recursive: true });
+      if (blockedIsDirectory) mkdirSync(join(root, blockedPath));
+      else {
+        writeFileSync(join(root, blockedPath), "[Survival_1]\n");
+        chmodSync(join(root, blockedPath), 0o000);
+      }
+      const repairScript = join(root, "runtime/scripts/repair-host-runtime-permissions.sh");
+      writeFileSync(repairScript, `#!/usr/bin/env bash\nset -eu\necho ran >> repair-calls\n${repairBody}\n`);
+      chmodSync(repairScript, repairMode);
+      if (unprivileged.uid) assert.equal(spawnSync("chown", ["-R", "65534:65534", root]).status, 0);
+      const result = spawnSync("bash", ["-c", `set -euo pipefail\n${functions}\nensure_local_state_readable\necho preflight-continued`], {
+        cwd: root,
+        encoding: "utf8",
+        ...unprivileged
+      });
+      const calls = existsSync(join(root, "repair-calls")) ? readFileSync(join(root, "repair-calls"), "utf8") : "";
+      return { result, calls };
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  };
+  const fix = `chmod 600 ${blockedPath}`;
+
+  const repaired = run(fix);
+  assert.equal(repaired.result.status, 0, repaired.result.stderr);
+  assert.match(repaired.result.stdout, /repairing host-managed runtime ownership: runtime\/generated\/director-capacity\.ini/);
+  assert.match(repaired.result.stdout, /preflight-continued/);
+  assert.equal(repaired.calls, "ran\n");
+
+  // The repair can fix the file and still fail one of its later checks.
+  const repairedButFailed = run(`${fix}\nexit 1`);
+  assert.equal(repairedButFailed.result.status, 0, repairedButFailed.result.stderr);
+  assert.match(repairedButFailed.result.stderr, /repair reported a problem/);
+  assert.equal(repairedButFailed.calls, "ran\n");
+
+  for (const repairBody of ["exit 0", "exit 1"]) {
+    const { result, calls } = run(repairBody);
+    assert.equal(result.status, 13, `repair body: ${repairBody}`);
+    assert.match(result.stdout, /runtime\/generated\/director-capacity\.ini/);
+    assert.match(result.stdout, /No release files were replaced\./);
+    assert.match(result.stdout, /automatic ownership repair was attempted/);
+    assert.doesNotMatch(result.stdout, /preflight-continued/);
+    assert.equal(calls, "ran\n");
+  }
+
+  // No repair is attempted when it cannot run or cannot help.
+  for (const options of [{ repairMode: 0o644 }, { blockedIsDirectory: true }]) {
+    const { result, calls } = run(fix, options);
+    assert.equal(result.status, 13, JSON.stringify(options));
+    assert.match(result.stdout, /No release files were replaced\./);
+    assert.doesNotMatch(result.stdout, /repair was attempted|preflight-continued/);
+    assert.equal(calls, "");
+  }
+});
+
 test("self-update check prefers the official upstream release repo in fork checkouts", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-self-update-"));
   mkdirSync(join(dir, "runtime", "scripts"), { recursive: true });

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
-import { readFileSync, statSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { chownSync, lstatSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -58,4 +60,34 @@ test("latency tuning uses a unique temporary log instead of a shared root-owned 
   assert.doesNotMatch(runtimeEnv, />\/tmp\/dune-host-latency-tune\.log/);
   assert.match(runtimeEnv, /dune_set_host_path_owner "\$stamp"/);
   assert.match(runtimeEnv, /dune_set_host_path_owner "\$latency_log"/);
+});
+
+test("ownership helper hands root-written files to the install owner without following symlinks", () => {
+  const helperPath = resolve(repoRoot, "runtime/scripts/host-file-ownership.sh");
+  const root = mkdtempSync(join(tmpdir(), "dune-host-owner-"));
+  const isRoot = process.getuid?.() === 0;
+  try {
+    writeFileSync(join(root, "snapshot.tmp"), "[Survival_1]\n");
+    writeFileSync(join(root, "victim"), "keep\n");
+    symlinkSync(join(root, "victim"), join(root, "link.tmp"));
+    // The helper takes the owner from the install folder, which is its cwd.
+    if (isRoot) chownSync(root, 12345, 12346);
+    const result = spawnSync("bash", ["-c", 'set -euo pipefail\nsource "$1"\ndune_set_host_path_owner snapshot.tmp\ndune_set_host_path_owner link.tmp', "test", helperPath], {
+      cwd: root,
+      env: { ...process.env, DUNE_HOST_UID: "", DUNE_HOST_GID: "" },
+      encoding: "utf8"
+    });
+    assert.equal(result.status, 0, result.stderr);
+
+    const owner = path => [lstatSync(join(root, path)).uid, lstatSync(join(root, path)).gid];
+    if (isRoot) {
+      assert.deepEqual(owner("snapshot.tmp"), [12345, 12346]);
+      assert.deepEqual(owner("link.tmp"), [12345, 12346]);
+      assert.deepEqual(owner("victim"), [0, 0], "the symlink target must keep its owner");
+    } else {
+      assert.equal(owner("snapshot.tmp")[0], process.getuid());
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

@@ -210,6 +210,9 @@ awk '
   /^(PlayerHardCap|ShouldUpdatePlayerCountOnFls)=/ { print }
 ' runtime/director/config/director_config.ini > "$capacity_snapshot_tmp"
 chmod 600 "$capacity_snapshot_tmp"
+# A root-run restart (the game auto-update unit) must not leave the snapshot
+# unreadable to the host user's Console.
+dune_set_host_path_owner "$capacity_snapshot_tmp"
 mv -f "$capacity_snapshot_tmp" "$DIRECTOR_CAPACITY_SNAPSHOT"
 
 cat >> runtime/director/config/director_config.ini <<EOF

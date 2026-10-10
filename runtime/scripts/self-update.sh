@@ -723,22 +723,48 @@ print_local_state_not_readable() {
   echo "No release files were replaced."
 }
 
-ensure_local_state_readable() {
+first_unreadable_local_state_path() {
   local path
 
   while IFS= read -r path; do
     [ -e "$path" ] || continue
     if [ ! -f "$path" ] || [ ! -r "$path" ]; then
-      print_local_state_not_readable "$path"
-      exit 13
+      printf '%s\n' "$path"
+      return 0
     fi
   done < <(local_state_paths)
 }
 
+ensure_local_state_readable() {
+  local blocked repair_attempted=0 repair_script="runtime/scripts/repair-host-runtime-permissions.sh"
+
+  blocked="$(first_unreadable_local_state_path)"
+  [ -n "$blocked" ] || return 0
+
+  # A root-run restart, such as the game auto-update, can leave state files
+  # root-owned. Try the supported repair once; it cannot fix a non-file path.
+  if [ -f "$blocked" ] && [ -x "$repair_script" ]; then
+    echo "Local state file is not readable; repairing host-managed runtime ownership: $blocked"
+    # The repair can fix this file and still fail a later check, so re-check
+    # readability whatever it returns.
+    "$repair_script" || echo "Host runtime ownership repair reported a problem." >&2
+    blocked="$(first_unreadable_local_state_path)"
+    [ -n "$blocked" ] || return 0
+    repair_attempted=1
+  fi
+
+  print_local_state_not_readable "$blocked"
+  if [ "$repair_attempted" = "1" ]; then
+    echo "An automatic ownership repair was attempted and did not clear this path."
+  fi
+  exit 13
+}
+
 ensure_self_update_preflight() {
   ensure_self_update_writable
-  ensure_local_state_readable
+  # Docker access first: the local-state check may run a Docker-based repair.
   ensure_docker_access_for_console_rebuild
+  ensure_local_state_readable
 }
 
 download_release_archive() {
