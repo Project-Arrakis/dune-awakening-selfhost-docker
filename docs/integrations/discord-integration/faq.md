@@ -136,8 +136,9 @@ directory has 0600 permissions and is gitignored.
 **Q: Can the bot do anything destructive?**
 
 No. All commands are read-only by default. Write commands like broadcast are
-behind `DUNE_DISCORD_WRITES_ENABLED=true` which is off by default. The bot
-has no access to the Docker socket, database, or game files.
+behind `DUNE_DISCORD_WRITES_ENABLED=1` (`true` also works, case-insensitively)
+which is off by default. The bot has no access to the Docker socket, database,
+or game files.
 
 **Q: Does the bot see my Discord messages?**
 

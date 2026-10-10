@@ -1,20 +1,19 @@
 # Market Board (Exchange)
 
-**Status:** Current | **Last Updated:** August 2026
+**Status:** Current | **Last Updated:** September 2026
 
 The Market Board is a **read-only** view of the in-game CHOAM exchange. It reads the
 game's own exchange tables (the game writes them; the console never mutates them) so
 an admin can see what is currently listed for sale — prices, stock, and sellers — at
-a glance. It is modeled on the Market tab from
-[Icehunter/dune-admin](https://github.com/Icehunter/dune-admin), rendered in the
-console's own theme and components.
+a glance, using the Console's theme and components.
 
 See [API-REFERENCE.md](API-REFERENCE.md#market-board) for the endpoint contract.
 
-The panel has two tabs: **Exchange** (the read-only board below) and **Bot
-items** (the Market Bot's editable catalog — see [Bot items](#bot-items-catalog-overrides)).
+The panel has three tabs: **Exchange** (the read-only board below), **Bot
+Items** (the Market Bot's editable catalog — see [Bot items](#bot-items-catalog-overrides)),
+and **Transactions** (completed-order activity recorded from this release forward).
 The filter gear and Market Bot icons are unrelated to the tabs and work the
-same from either one.
+same from every tab.
 
 ## What it shows
 
@@ -85,6 +84,43 @@ validated as numeric owner-id strings, deduped, and length-capped. Saving the co
 is a mutation: it is rate-limited and written to the audit log (only the id counts
 are recorded, no personal data). Blacklisting is a moderation action — it changes
 what the market shows — which is why every change is audited.
+
+## Transaction history
+
+The **Transactions** tab records completed-order activity as it happens and
+shows the newest events in a filterable, paginated table. Summary cards report
+the number of recorded events, units, and per-unit-price × quantity value for
+the selected period. Filters cover item or owner, period, party type, and
+exchange id. PostgreSQL `bigint` ids and amounts stay decimal strings through
+the API and are formatted in the browser without JavaScript number rounding.
+
+Recording is installed automatically when the Console starts. The history
+lives in the Console-owned `console_market_history.transactions` table, outside
+the `dune` schema. A lightweight trigger on
+`dune.dune_exchange_fulfilled_orders` captures both new completion rows and the
+positive delta when Funcom aggregates a later partial sale by increasing an
+existing row's `stack_size`. It snapshots the primary, source, and original
+order references and owners, the raw completion type, item, grade, durability,
+per-unit price, and exchange id. The UI deliberately labels the primary order
+owner as the transaction's **Party** rather than guessing buyer/seller roles:
+the fulfilled-order table does not preserve a buyer id for every completion
+path. Raw references remain available for future verified completion-type
+mapping and market-price recommendations.
+
+Capture is observability only. The trigger catches its own errors and returns
+the game row unchanged, so missing custom objects or future schema drift cannot
+reject an in-game purchase. The Console reconciles the trigger every five
+minutes because a game migration that recreates the fulfilled-orders table
+would remove attached triggers. Existing fulfilled rows are not backfilled:
+they may represent aggregated activity with no trustworthy event time, so
+presenting them as new transactions would be misleading.
+
+History is retained indefinitely by default and is included in normal full
+database backups. Set `ADMIN_MARKET_HISTORY_RETENTION_DAYS` to a value from 7
+through 3650 to remove older history during reconciliation; `0` keeps all
+records. Blacklisted Exchange owner ids are omitted from the Transactions tab,
+and configured bot owner ids are classified as **Market Bot** while native
+`is_npc_order` rows remain a separate **NPC Broker** party type.
 
 ## Market Bot
 
@@ -192,10 +228,62 @@ Exchange Bot addon drives through the scheduler bridge, now first-class):
   ones are pruned by the sidecar origin — including unlabeled ones written by
   earlier releases. Manual, automatic, and safety backups are never candidates.
   Set `DUNE_MARKET_BOT_BACKUP_KEEP` to change the count.
+- **Safety Backups toggle**: the **Safety Backups** block above the Market Bot
+  tabs turns these backups off for the whole bot — buyback, reseed, and NPC
+  listing removal, scheduled and manual. It is on by default; turning it off
+  asks for confirmation and the server requires the phrase
+  `DISABLE MARKET BOT BACKUPS`, while turning it back on needs none. The setting
+  lives in `runtime/generated/market-bot/settings.json`; a missing or corrupt
+  file keeps backups on. A run that skipped its backup says so in its run
+  summary, its audit entry (`backupSkipped: true`), and its Buyback Sweep Log
+  batch. Existing backups are left alone.
 - **Schedules** run unattended inside the console API process (no browser page needs
   to stay open) and survive restarts. They are console-owned and authorized by RBAC
   at save time. Seed and buyback share one running lock, so they can never write the
   exchange concurrently.
+
+### In-game weapon categories
+
+The CHOAM client filters listings with Funcom's
+`dune.get_exchange_orders_by_mask(mask, depth)`, which is a **prefix** match
+on `category_mask` at the selected folder depth. The Weapons tab's depth-2
+folders are Melee (0), Ranged (1), Ammunition (2), and Unique Schematics (3)
+in the game's category hierarchy.
+
+The legacy seed mapping placed melee under folder 0 at depth 3, but
+left each ranged type as a depth-2 sibling (`pistol=2` … `lasgun=13`,
+`ammunition=14`). Seeded Maula pistols therefore sat at `0x01020000` depth 2
+— the Ammunition folder — and were the only items that folder showed, while
+Ranged Weapons (`0x0101xxxx`) was empty. Unique schematics already used
+folder 3 correctly (Maula patterns at `0x01030200`).
+
+The bundled seed plan, plus seed/buyback/CSV load, now nest those guessed
+gun types under Ranged Weapons at depth 3 (Maula `0x01010200`) and move
+ammunition to `0x01020000`. The gun remap applies only to `equippable`
+rows, so a custom schematic sitting in Unique Schematics (`0x01030000`
+depth 2) is not pulled into Ranged Weapons subtype 3. This Console seeds
+from a static plan, so it corrects the map before use. A reseed is required
+for already-listed NPC orders to pick up the new masks.
+
+### In-game vehicle categories
+
+The Vehicles tab's depth-2 folders are One-Man Groundcar (0), Buggy (1), Light
+Ornithopter (2), Medium Ornithopter (3), Carry-all (4), Sandcrawler (5), and
+Unique Schematics (6). The legacy mapping had no treadwheel category,
+so Lost Harvest Treadwheel parts were filed under Sandcrawler (`0x0205xxxx`)
+with the same depth-3 slots Sandbike uses (chassis, hull, engine, PSU, treads,
+utility). Unique Treadwheel schematics used Sandcrawler's unique slot
+(`0x02060500`). Funcom's CHOAM UI treats Treadwheel as a One-Man Groundcar
+alongside Sandbike, so those parts showed up in Sandcrawler.
+
+The bundled seed plan, plus seed/buyback/CSV load, now move `Treadwheel*`
+equippables to One-Man Groundcar (`0x0200xxxx`, same depth-3 slot) and
+`Treadwheel*` unique schematics to the One-Man unique slot (`0x02060000`).
+The remap keys off the `Treadwheel` template-id prefix and kind, so real
+`Sandcrawler*` parts and unique schematics stay in folder 5. Other CHOAM
+tabs (Garments, Utility, Augmentations, Misc) already match their intended
+folder families; ranged weapons were corrected separately. A reseed is
+required for already-listed NPC orders to pick up the new masks.
 
 ### Bot items (catalog overrides)
 

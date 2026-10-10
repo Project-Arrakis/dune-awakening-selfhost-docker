@@ -6,6 +6,17 @@ import { discordSafeError, sanitizeDiscordPublicStatus, sanitizeDiscordValue } f
 export const DISCORD_ADAPTER_ROUTES = Object.freeze({
   HEALTH: "/api/integrations/discord/health",
   STATUS: "/api/integrations/discord/status",
+  // WORLD_CORIOLIS (mentat#370, issue #942): public tier, farm-wide storm
+  // seed + next-cycle timestamp, parsed from each running game-server
+  // container's own startup log via resolveCoriolisCycle() -- already used
+  // by the general (non-Discord) /api/map/markers and /api/map/spice
+  // routes, just not previously exposed to the Discord adapter.
+  WORLD_CORIOLIS: "/api/integrations/discord/world/coriolis",
+  // WORLD_ATLAS (mentat#376, issue #938): public tier, per-sietch/per-Deep-
+  // Desert-instance summary (PvP/PvE, live sandstorm status, the farm-wide
+  // Coriolis cycle) -- reuses the same combat-state/Coriolis/sandstorm
+  // resolvers already used elsewhere (see services/sietchAtlas.js).
+  WORLD_ATLAS: "/api/integrations/discord/world/atlas",
   READINESS: "/api/integrations/discord/readiness",
   SERVICES: "/api/integrations/discord/services",
   POPULATION: "/api/integrations/discord/population",
@@ -71,10 +82,33 @@ export const DISCORD_ADAPTER_ROUTES = Object.freeze({
   // Discord servers at all) and returns aggregate counts only, never a
   // per-user mapping.
   GUILD_FACTION_SUMMARY: "/api/integrations/discord/guilds/faction-summary",
+  // PLAYERS_CHEATER_TRACKING (meta#64 "Chronicles of Kanly", mentat#361):
+  // staff-only, admin/owner tier -- unlike every other PLAYERS_* route,
+  // this is NOT self-scoped (it deliberately takes an explicit target
+  // actorId in the request body, never the caller's own linked player) --
+  // Mentat calls it to check an APPLICANT's anti-cheat record when a staff
+  // member reviews a Swordmaster/Sietch Guard trust-role application, which
+  // is almost never the reviewing staff member's own character.
+  PLAYERS_CHEATER_TRACKING: "/api/integrations/discord/players/cheater-tracking",
+  // PLAYERS_ITEM_AUDIT_LOG (meta#64 "Chronicles of Kanly", mentat#368):
+  // moderator tier and up -- like PLAYERS_FIND/GUILD_FIND this is a
+  // targeted lookup, but unlike them it is NOT self-scoped: the request
+  // body names an explicit target actorId (the player under theft
+  // investigation), never the calling staff member's own character, since
+  // Mentat calls this to proactively cross-reference base theft against
+  // new Exchange listings, not for a player to look up their own history.
+  PLAYERS_ITEM_AUDIT_LOG: "/api/integrations/discord/players/item-audit-log",
   VERSION: "/api/integrations/discord/version",
   SERVERS: "/api/integrations/discord/servers",
   PORTS: "/api/integrations/discord/ports",
   DB: "/api/integrations/discord/db",
+  // WRITE_PREVIEW / WRITE_EXECUTE (issue #215, docs/rw-architecture.md
+  // section 3): the write bridge. Gated by requireDiscordBotToken() (like
+  // every route in this table, automatically, before any route-specific
+  // dispatch) + verifyActorSignature({required:true}) + requireDiscordCapability
+  // (WRITE_BRIDGE_ACCESS) + meetsMinTier() for the specific requested action.
+  WRITE_PREVIEW: "/api/integrations/discord/write/preview",
+  WRITE_EXECUTE: "/api/integrations/discord/write/execute",
   // CATALOG is deliberately NOT added to DISCORD_LIVE_ADAPTER_ROUTES below.
   // It is metadata ABOUT the live routes, not itself one of them -- adding
   // it there would require commandCatalog.js's COMMAND_METADATA to have an
@@ -89,6 +123,8 @@ export const DISCORD_ADAPTER_ROUTES = Object.freeze({
 export const DISCORD_LIVE_ADAPTER_ROUTES = Object.freeze([
   DISCORD_ADAPTER_ROUTES.HEALTH,
   DISCORD_ADAPTER_ROUTES.STATUS,
+  DISCORD_ADAPTER_ROUTES.WORLD_CORIOLIS,
+  DISCORD_ADAPTER_ROUTES.WORLD_ATLAS,
   DISCORD_ADAPTER_ROUTES.READINESS,
   DISCORD_ADAPTER_ROUTES.SERVICES,
   DISCORD_ADAPTER_ROUTES.POPULATION,
@@ -97,6 +133,10 @@ export const DISCORD_LIVE_ADAPTER_ROUTES = Object.freeze([
   DISCORD_ADAPTER_ROUTES.OPS_RESOURCES,
   DISCORD_ADAPTER_ROUTES.OPS_ECONOMY,
   DISCORD_ADAPTER_ROUTES.OPS_INVENTORY,
+  // Issue #1001 (R0 completion): wires the already-existing, permanent
+  // opsLocationProvider() placeholder (see its own comment in
+  // opsProvider.js) as a live route -- not real per-player tracking.
+  DISCORD_ADAPTER_ROUTES.OPS_LOCATION,
   DISCORD_ADAPTER_ROUTES.OPS_SOC,
   DISCORD_ADAPTER_ROUTES.OPS_PROMETHEUS,
   DISCORD_ADAPTER_ROUTES.OPS_DASHBOARD,
@@ -127,10 +167,14 @@ export const DISCORD_LIVE_ADAPTER_ROUTES = Object.freeze([
   DISCORD_ADAPTER_ROUTES.GUILD_STORAGE,
   DISCORD_ADAPTER_ROUTES.GUILD_FIND,
   DISCORD_ADAPTER_ROUTES.GUILD_FACTION_SUMMARY,
+  DISCORD_ADAPTER_ROUTES.PLAYERS_CHEATER_TRACKING,
+  DISCORD_ADAPTER_ROUTES.PLAYERS_ITEM_AUDIT_LOG,
   DISCORD_ADAPTER_ROUTES.VERSION,
   DISCORD_ADAPTER_ROUTES.SERVERS,
   DISCORD_ADAPTER_ROUTES.PORTS,
-  DISCORD_ADAPTER_ROUTES.DB
+  DISCORD_ADAPTER_ROUTES.DB,
+  DISCORD_ADAPTER_ROUTES.WRITE_PREVIEW,
+  DISCORD_ADAPTER_ROUTES.WRITE_EXECUTE
 ]);
 
 export const DISCORD_PLANNED_ADAPTER_ROUTES = Object.freeze(
@@ -334,6 +378,6 @@ export function discordAdapterErrorResponse(error) {
   };
 }
 
-function csv(value) {
+export function csv(value) {
   return String(value || "").split(",").map((item) => item.trim()).filter(Boolean);
 }

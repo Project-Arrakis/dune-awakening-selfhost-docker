@@ -3,6 +3,7 @@ import { readLearnedPool, fieldsForLearnedSeed, recordObservedFields } from "./l
 import { resolveCoriolisCycle } from "./coriolisSeed.js";
 import { decodeFieldPosition } from "./spiceFieldDecode.js";
 import { liveMapSpiceFieldRows, liveMapFlourSandFieldRows } from "../duneDb.js";
+import { withLiveMapSector } from "../liveMapSector.js";
 
 // Three independent resource-field layers for the live map:
 //
@@ -33,9 +34,9 @@ import { liveMapSpiceFieldRows, liveMapFlourSandFieldRows } from "../duneDb.js";
 // - "flour_sand" -- always decode-only, no archive: there's no historical
 //   pool data for flour sand at all, on either map. Unverified assumption:
 //   the bit-packing decode has only been validated against spice ground
-//   truth (field_kind_id=1); it should apply identically since it's a
-//   property of the engine's spawn system, not spice-specific, but this is
-//   genuinely untested for field_kind_id=0.
+//   truth; it should apply identically since it's a property of the
+//   engine's spawn system, not spice-specific, but this is genuinely
+//   untested for flour sand.
 //
 // The archive/learned pool are an accuracy/completeness enhancement for
 // spice, not a hard requirement: spice_active and flour_sand both work
@@ -50,7 +51,12 @@ export async function liveMapSpice(db, config, map = "", {
   fetchFlourSandRows = liveMapFlourSandFieldRows,
   persistObservedFields = recordObservedFields
 } = {}) {
-  const { seed: currentSeed, nextCycleAt } = await resolveCycle({ map, partitionId });
+  // staleSince is set when the logged cycle boundary has already passed, i.e.
+  // the world re-rolled but no container has restarted to print the new seed
+  // yet. currentSeed is null in that window, so every static/learned lookup
+  // below short-circuits and nothing is written back -- the map shows only
+  // live active fields rather than the previous cycle's pool.
+  const { seed: currentSeed, nextCycleAt, staleSince } = await resolveCycle({ map, partitionId });
 
   // The archive remains available during lightweight refreshes so active
   // fields still use its ground-truth coordinates; only the static pool rows
@@ -103,6 +109,7 @@ export async function liveMapSpice(db, config, map = "", {
     capabilities: { ...(includeStaticPool ? { spice: poolRows.length > 0 } : {}), spice_active: activeRows.length > 0, flour_sand: flourSandRows.length > 0 },
     currentSeed: currentSeed || "",
     nextCycleAt: nextCycleAt || "",
+    seedStaleSince: staleSince || "",
     generatedAt: archive?.generatedAt || "",
     rows: [...poolRows, ...activeRows, ...flourSandRows]
   };
@@ -111,5 +118,5 @@ export async function liveMapSpice(db, config, map = "", {
 function spiceRow(fieldId, type, name, map, x, y, confidence, subtype) {
   const row = { id: fieldId, type, name, map, x, y, z: null, confidence };
   if (subtype) row.subtype = subtype;
-  return row;
+  return withLiveMapSector(row);
 }

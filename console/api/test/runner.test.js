@@ -1,15 +1,29 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { appendBoundedOutput, buildDuneArgs, dockerContainerForLogService, isReadOnlySql, parseVehicleList, runDockerLogs, validateServiceName } from "../src/runner.js";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { spawn } from "node:child_process";
+import { CURRENT_GAME_LOG_SCRIPT, appendBoundedOutput, buildDuneArgs, dockerContainerForLogService, isReadOnlySql, parseVehicleList, runDockerCurrentGameLog, runDockerLogs, validateServiceName } from "../src/runner.js";
 import { redact } from "../src/redact.js";
 import { taskOperations } from "../src/tasks.js";
 
 test("validates known service names and aliases", () => {
   assert.equal(validateServiceName("gateway"), "gateway");
   assert.equal(validateServiceName("sgw"), "gateway");
+  assert.equal(validateServiceName("coriolis"), "coriolis");
+  assert.equal(dockerContainerForLogService("coriolis"), "dune-coriolis-coordinator");
   assert.equal(validateServiceName("dune-server-survival-1-43"), "dune-server-survival-1-43");
   assert.throws(() => validateServiceName("gateway; rm -rf /"));
+});
+
+test("Experimental Tanks require an explicit Hagga restart confirmation", () => {
+  assert.deepEqual(buildDuneArgs("experimentalTanksStatus"), ["experimental-tanks", "status"]);
+  assert.deepEqual(buildDuneArgs("experimentalTanksApply", { enabled: true, confirmRestart: true }), ["experimental-tanks", "apply", "true"]);
+  assert.deepEqual(buildDuneArgs("experimentalTanksApply", { enabled: false, confirmRestart: true }), ["experimental-tanks", "apply", "false"]);
+  assert.throws(() => buildDuneArgs("experimentalTanksApply", { enabled: true }));
+  assert.throws(() => buildDuneArgs("experimentalTanksApply", { enabled: "true", confirmRestart: true }));
 });
 
 test("bounds captured child-process output while retaining its newest tail", () => {
@@ -49,6 +63,60 @@ test("live Docker logs do not buffer output and stop when the client aborts", as
   assert.equal(result.stderr, "");
 });
 
+test("orchestrator logs use the Compose service instead of a fixed container name", async () => {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.kill = () => {};
+  let command = null;
+  let args = null;
+  let spawnOptions = null;
+  const resultPromise = runDockerLogs("orchestrator", {
+    tail: 25,
+    timeoutMs: 1000,
+    spawnImpl: (nextCommand, nextArgs, nextOptions) => {
+      command = nextCommand;
+      args = nextArgs;
+      spawnOptions = nextOptions;
+      return child;
+    }
+  });
+  child.emit("close", 0, null);
+  await resultPromise;
+
+  assert.equal(command, "docker");
+  assert.deepEqual(args, ["compose", "logs", "--tail", "25", "orchestrator"]);
+  assert.equal(spawnOptions.shell, false);
+  assert.ok(!args.includes("dune-orchestrator"));
+});
+
+test("current game logs are read from the allowlisted container without interpolating service input", async () => {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.kill = () => {};
+  let command = null;
+  let args = null;
+  const resultPromise = runDockerCurrentGameLog("dune-server-deepdesert-1-59", {
+    tail: 1234,
+    timeoutMs: 1000,
+    spawnImpl: (nextCommand, nextArgs) => {
+      command = nextCommand;
+      args = nextArgs;
+      return child;
+    }
+  });
+  child.stdout.emit("data", Buffer.from("Current Coriolis World Seed: 4\n"));
+  child.emit("close", 0, null);
+  const result = await resultPromise;
+
+  assert.equal(command, "docker");
+  assert.deepEqual(args.slice(0, 3), ["exec", "dune-server-deepdesert-1-59", "sh"]);
+  assert.equal(args.at(-1), "1234");
+  assert.match(result.stdout, /World Seed: 4/);
+  assert.throws(() => runDockerCurrentGameLog("dune-server-deepdesert-1-59; touch /tmp/nope"), /Unsupported service/);
+});
+
 test("allows dynamic map containers as log targets", () => {
   assert.equal(dockerContainerForLogService("survival-1"), "dune-server-survival-1");
   assert.equal(dockerContainerForLogService("dune-server-survival-1-43"), "dune-server-survival-1-43");
@@ -63,6 +131,7 @@ test("builds allowlisted command arguments without shell interpolation", () => {
   assert.deepEqual(buildDuneArgs("storageCleanupBuildCache"), ["storage", "cleanup", "--build-cache"]);
   assert.deepEqual(buildDuneArgs("restartService", { service: "director" }), ["restart", "director"]);
   assert.deepEqual(buildDuneArgs("restartServiceStop", { service: "survival" }), ["stop-service", "survival"]);
+  assert.deepEqual(buildDuneArgs("restartServiceStop", { service: "overmap" }), ["stop-service", "overmap"]);
   assert.deepEqual(buildDuneArgs("restartServiceStart", { service: "survival" }), ["restart", "survival"]);
   assert.deepEqual(buildDuneArgs("logs", { service: "gateway" }), ["logs", "gateway"]);
   assert.deepEqual(buildDuneArgs("backupRestore", { backup: "dune-db-test.backup" }), ["db", "restore", "dune-db-test.backup", "--no-safety-backup"]);
@@ -70,9 +139,13 @@ test("builds allowlisted command arguments without shell interpolation", () => {
   assert.deepEqual(buildDuneArgs("backupRestore", { backup: "dune-db-test.backup", identityMode: "keep-current" }), ["db", "restore", "dune-db-test.backup", "--no-safety-backup", "--keep-current-battlegroup"]);
   assert.throws(() => buildDuneArgs("backupRestore", { backup: "dune-db-test.backup", identityMode: "automatic" }), /Unsupported backup Battlegroup identity choice/);
   assert.deepEqual(buildDuneArgs("backupDelete", { backup: "dune-db-test.backup" }), ["db", "delete", "dune-db-test.backup"]);
+  assert.deepEqual(buildDuneArgs("backupDeleteSelected", { backups: ["one.backup", "two.backup", "one.backup"] }), ["db", "delete", "one.backup", "two.backup"]);
+  assert.throws(() => buildDuneArgs("backupDeleteSelected", { backups: [] }), /Select between 1 and 100 backups/);
   assert.deepEqual(buildDuneArgs("backupDeleteAll"), ["db", "delete", "--all"]);
+  assert.deepEqual(buildDuneArgs("stopGameServersForDbWrites"), ["stop-game-servers-for-db-writes"]);
   assert.deepEqual(buildDuneArgs("adminAddXp", { playerId: "FLS_TEST", amount: 1000 }), ["admin", "award-xp", "FLS_TEST", "1000"]);
   assert.deepEqual(buildDuneArgs("updateApply"), ["update", "--yes"]);
+  assert.deepEqual(buildDuneArgs("updateInstallAssets"), ["update", "install-assets"]);
   assert.deepEqual(buildDuneArgs("updateAutoStatus"), ["update", "auto", "status"]);
   assert.deepEqual(buildDuneArgs("updateAutoEnable"), ["update", "auto", "enable", "60", "1", "1", "15,10,5,1", "0", "360"]);
   assert.deepEqual(buildDuneArgs("updateAutoEnable", {
@@ -85,6 +158,8 @@ test("builds allowlisted command arguments without shell interpolation", () => {
   }), ["update", "auto", "enable", "30", "1", "1", "10,5,1", "1", "240"]);
   assert.deepEqual(buildDuneArgs("updateAutoDisable"), ["update", "auto", "disable"]);
   assert.deepEqual(buildDuneArgs("selfUpdateApply"), ["self-update", "install", "latest"]);
+  assert.deepEqual(buildDuneArgs("selfUpdateQaApply", { sha: "a".repeat(40) }), ["self-update", "install-qa", "a".repeat(40)]);
+  assert.throws(() => buildDuneArgs("selfUpdateQaApply", { sha: "main; touch /tmp/nope" }), /Invalid QA build/);
   assert.deepEqual(buildDuneArgs("backupAutoStatus"), ["db", "auto", "status"]);
   assert.deepEqual(buildDuneArgs("backupAutoEnable", { time: "05:30", retentionDays: 14 }), ["db", "auto", "enable", "05:30", "14"]);
   assert.deepEqual(buildDuneArgs("backupAutoEnable", { time: "05:30", retentionDays: 0 }), ["db", "auto", "enable", "05:30"]);
@@ -135,12 +210,19 @@ test("builds allowlisted command arguments without shell interpolation", () => {
   assert.throws(() => buildDuneArgs("sietchesSetDisplay", { partitionId: 38, displayName: "Duke's Sietch" }), /not supported/);
   assert.throws(() => buildDuneArgs("sietchesSetDisplay", { partitionId: 38, displayName: "Alpha|Beta" }), /not supported/);
   assert.deepEqual(buildDuneArgs("deepdesertAction", { action: "disable" }), ["deepdesert", "dual", "disable", "--yes", "--force"]);
+  assert.deepEqual(buildDuneArgs("deepdesertAction", { instances: 3, thirdRole: "pvp" }), ["deepdesert", "layout", "set", "3", "--third-role", "pvp", "--yes", "--force"]);
+  assert.deepEqual(buildDuneArgs("deepdesertAction", { instances: 2 }), ["deepdesert", "layout", "set", "2", "--third-role", "pve", "--yes", "--force"]);
+  assert.throws(() => buildDuneArgs("deepdesertAction", { instances: 3, thirdRole: "open" }), /must be pve or pvp/);
+  assert.throws(() => buildDuneArgs("deepdesertAction", { instances: 4 }), /Expected integer 1-3/);
   assert.deepEqual(buildDuneArgs("userSettingsEngineValues"), ["usersettings", "engine-values"]);
   assert.deepEqual(buildDuneArgs("userSettingsMapEngineValues", { map: "Survival_1" }), ["usersettings", "map-engine-values", "Survival_1"]);
   assert.deepEqual(buildDuneArgs("userSettingsPartitionEngineValues", { map: "Survival_1", partitionId: 3 }), ["usersettings", "partition-engine-values", "Survival_1", "3"]);
   assert.deepEqual(buildDuneArgs("userSettingsGlobalValues"), ["usersettings", "global-values"]);
   assert.deepEqual(buildDuneArgs("userSettingsMapValues", { map: "Survival_1" }), ["usersettings", "map-values", "Survival_1"]);
   assert.deepEqual(buildDuneArgs("userSettingsPartitionValues", { map: "Survival_1", partitionId: 1 }), ["usersettings", "partition-values", "Survival_1", "1"]);
+  assert.deepEqual(buildDuneArgs("userSettingsServerCustomValues", { scope: "serverCustomGlobal", map: "Survival_1" }), ["usersettings", "server-custom-values", "global", "Survival_1", ""]);
+  assert.deepEqual(buildDuneArgs("userSettingsServerCustomValues", { scope: "serverCustomPartition", map: "Survival_1", partitionId: 1 }), ["usersettings", "server-custom-values", "partition", "Survival_1", "1"]);
+  assert.deepEqual(buildDuneArgs("userSettingsSave", { scope: "serverCustomMap", map: "Overmap", values: { gathering_amount: "2.0" } }).slice(0, 5), ["usersettings", "bulk-save", "serverCustomMap", "Overmap", ""]);
   assert.deepEqual(buildDuneArgs("userSettingsResetAndRestart", { scope: "global" }), ["usersettings", "reset-global-game"]);
   assert.deepEqual(buildDuneArgs("userSettingsResetAndRestart", { scope: "mapEngine", map: "Survival_1" }), ["usersettings", "reset-map-engine", "Survival_1"]);
   assert.deepEqual(buildDuneArgs("userSettingsResetAndRestart", { scope: "partitionEngine", map: "Survival_1", partitionId: 3 }), ["usersettings", "reset-partition-engine", "Survival_1", "3"]);
@@ -316,4 +398,115 @@ test("redacts token-like sensitive values", () => {
   assert.doesNotMatch(output, /hunter2/);
   assert.doesNotMatch(output, /eyJaaaaaaaa/);
   assert.doesNotMatch(output, /runtime\/secrets\/funcom-token\.txt/);
+});
+
+// Credentials reach operator-facing text from more than postgres. These are
+// generic rules rather than a list of names, so a variable added later is
+// covered without anyone remembering to add it here.
+test("redacts credentials in any URI scheme, not only postgres", () => {
+  const longScheme = `a${"b".repeat(200)}+secure`;
+  for (const uri of ["amqp://admin:RmqS3cret@rabbitmq:5672", "redis://user:hunter2@cache:6379", "https://bob:pw123@example.com/x", `${longScheme}://user:longSchemeSecret@example.com/x`]) {
+    const output = redact(uri);
+    assert.doesNotMatch(output, /RmqS3cret|hunter2|pw123|longSchemeSecret/);
+    // The host has to survive -- redacting it would make the error useless.
+    assert.match(output, /@(rabbitmq|cache|example\.com)/);
+  }
+});
+
+test("redaction remains fast on long uncontrolled input", () => {
+  const input = `${"-".repeat(500_000)}! not-a-uri DUNE_COMMAND_AUTH_TOKEN=${"x".repeat(500_000)}`;
+  const started = Date.now();
+  const output = redact(input);
+  assert.ok(Date.now() - started < 2_000);
+  assert.doesNotMatch(output, /x{100}/);
+});
+
+test("redacts any *_TOKEN / *_SECRET / *_KEY assignment by shape", () => {
+  const output = redact("DUNE_COMMAND_AUTH_TOKEN=abc123deadbeef rejected, X_API_KEY=zzz");
+  assert.doesNotMatch(output, /abc123deadbeef|zzz/);
+  assert.match(output, /DUNE_COMMAND_AUTH_TOKEN=<redacted>/);
+  // The surrounding message still has to read as a diagnosis.
+  assert.match(output, /rejected/);
+});
+
+test("leaves an error carrying no credential untouched, and is idempotent", () => {
+  assert.equal(redact("connect ECONNREFUSED 127.0.0.1:15432"), "connect ECONNREFUSED 127.0.0.1:15432");
+  assert.equal(redact(redact("amqp://admin:s3cret@rabbitmq:5672")), redact("amqp://admin:s3cret@rabbitmq:5672"));
+});
+
+// The Coriolis block is written once at startup, so it sits near the top of the
+// current session's log. Tailing that file found it only while the server was
+// young: on a live farm the log reached 24,539 lines with the block at 383-576,
+// so `tail -n 10000` started at 14,438 and returned none of it. Because an
+// active log that opens is treated as authoritative, the Deep Desert layout --
+// and with it the rendered terrain -- silently went missing after a few hours.
+test("reads the Coriolis block out of a log far too long to tail", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "dune-log-"));
+  try {
+    const logPath = path.join(dir, "DuneSandbox_PIDX-8.log");
+    const line = (n) => `[2026.09.19-15.13.05:243][  0][939]LogNet: routine chatter ${n}`;
+    const body = [
+      ...Array.from({ length: 382 }, (_, i) => line(i)),
+      "[2026.09.19-15.13.05:243][  0][939]LogCoriolis: Display: Current Coriolis World Seed: 6",
+      "[2026.09.19-15.13.05:243][  0][939]LogCoriolis: Display: Next Coriolis Cycle start date UTC: 2026.09.22-11.00.00",
+      ...Array.from({ length: 190 }, (_, i) => line(i)),
+      "[2026.09.19-15.13.35:072][104][939][8]LogWorldLayout: Display: BP_DuneGameState_C_2147481318: 'DA_DeepDesert_1_Layout_06' layout selected with 682 content blocks.",
+      // Far more than any tail window, exactly as a server up 32 hours produces.
+      ...Array.from({ length: 24000 }, (_, i) => line(i))
+    ];
+    await fs.writeFile(logPath, `${body.join("\n")}\n`);
+
+    // The real script, pointed at the fixture instead of the game's log dir.
+    const script = CURRENT_GAME_LOG_SCRIPT.replace(
+      "log_dir=/home/dune/server/DuneSandbox/Saved/Logs",
+      `log_dir=${dir}`
+    );
+    const run = (args) => new Promise((resolve) => {
+      const child = spawn("sh", ["-c", script, "dune-current-game-log", ...args]);
+      let stdout = "";
+      child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
+      child.on("close", (code) => resolve({ code, stdout }));
+    });
+
+    const { code, stdout } = await run(["10000"]);
+    assert.equal(code, 0);
+    assert.match(stdout, /Current Coriolis World Seed: 6/);
+    assert.match(stdout, /Next Coriolis Cycle start date UTC/);
+    assert.match(stdout, /DA_DeepDesert_1_Layout_06/);
+
+    // The block really is out of reach of the tail this replaced.
+    const tailed = await new Promise((resolve) => {
+      const child = spawn("sh", ["-c", `tail -n 10000 "${logPath}"`]);
+      let out = "";
+      child.stdout.on("data", (chunk) => { out += chunk.toString(); });
+      child.on("close", () => resolve(out));
+    });
+    assert.ok(!/DA_DeepDesert_1_Layout_06/.test(tailed));
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an active log with no Coriolis block succeeds empty rather than erroring", async () => {
+  // Upstream treats an open active log as authoritative even when it has no
+  // block yet, so a warming-up server cannot revive the previous cycle's seed
+  // from retained Docker output. Exiting non-zero here would break that.
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "dune-log-"));
+  try {
+    await fs.writeFile(path.join(dir, "DuneSandbox_PIDX-8.log"), "LogNet: nothing of interest\n");
+    const script = CURRENT_GAME_LOG_SCRIPT.replace(
+      "log_dir=/home/dune/server/DuneSandbox/Saved/Logs",
+      `log_dir=${dir}`
+    );
+    const { code, stdout } = await new Promise((resolve) => {
+      const child = spawn("sh", ["-c", script, "dune-current-game-log", "10000"]);
+      let out = "";
+      child.stdout.on("data", (chunk) => { out += chunk.toString(); });
+      child.on("close", (exit) => resolve({ code: exit, stdout: out }));
+    });
+    assert.equal(code, 0);
+    assert.equal(stdout.trim(), "");
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
 });

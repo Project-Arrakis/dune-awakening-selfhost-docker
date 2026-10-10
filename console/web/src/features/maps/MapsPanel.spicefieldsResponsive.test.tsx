@@ -2,39 +2,18 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { SpicefieldsEditor } from "./MapsPanel";
 
-describe("Spice Fields responsive editor", () => {
-  it("labels every editable cell for the mobile card layout", () => {
-    const row = {
-      spicefield_type_id: 7,
-      map_name: "Deep Desert",
-      field_type: "Large",
-      dimension_index: 2,
-      max_globally_active: 6,
-      max_globally_primed: 2,
-      current_globally_active: 3,
-      current_globally_primed: 1,
-      is_spawning_active: true,
-      global_spawn_weight: 1.5
-    };
+describe("Spice Fields Patch 1.5 settings", () => {
+  it("renders active resource fields from the current schema with mobile labels", () => {
+    const row = { field_id: "12345", map_name: "HaggaBasin", field_type: "Small" as const, dimension_index: 0, spawn_time: 10, value_remaining: 5000 };
+    const { container } = render(<SpicefieldsEditor rows={[row]} allRows={[row]} loaded filter="" result={null} onFilterChange={vi.fn()} onRefresh={vi.fn()} />);
 
-    const { container } = render(<SpicefieldsEditor
-      rows={[row]}
-      allRows={[row]}
-      drafts={{ "7": { maxActive: "6", maxPrimed: "2", spawningActive: true, spawnWeight: "1.5" } }}
-      filter=""
-      savingId=""
-      result={null}
-      onFilterChange={vi.fn()}
-      onRefresh={vi.fn()}
-      onDraftChange={vi.fn()}
-      onDiscard={vi.fn()}
-      onSave={vi.fn()}
-    />);
+    expect(screen.getByText("Small").closest("td")).toHaveAttribute("data-label", "Size");
+    expect(screen.getByText("5,000").closest("td")).toHaveAttribute("data-label", "Spice Remaining");
+    expect(container.querySelectorAll("tbody td[data-label]")).toHaveLength(5);
+  });
 
-    expect(screen.getByRole("spinbutton", { name: "Deep Desert Max Active" }).closest("td")).toHaveAttribute("data-label", "Max Active");
-    expect(screen.getByRole("spinbutton", { name: "Deep Desert Max Primed" }).closest("td")).toHaveAttribute("data-label", "Max Primed");
-    expect(screen.getByRole("combobox", { name: "Deep Desert Spawning" }).closest("td")).toHaveAttribute("data-label", "Spawning");
-    expect(screen.getByRole("spinbutton", { name: "Deep Desert Weight" }).closest("td")).toHaveAttribute("data-label", "Weight");
-    expect(container.querySelectorAll("tbody td[data-label]")).toHaveLength(9);
+  it("reports a valid empty state when no fields are currently active", () => {
+    render(<SpicefieldsEditor rows={[]} allRows={[]} loaded filter="" result={null} onFilterChange={vi.fn()} onRefresh={vi.fn()} />);
+    expect(screen.getByText("No Spice Fields are active right now.")).toBeInTheDocument();
   });
 });

@@ -33,6 +33,39 @@ export function getBridgeRequestSummary(now = Date.now()) {
   return { requests, errors };
 }
 
+// Who performed the action, in a form that is safe to write to a durable log.
+//
+// Deliberately NOT the browser session id: that id is half of the asc_session
+// cookie value, so writing it here would put a credential component into a file
+// kept for security review. The API key id is safe -- it is the public half of
+// the key and is already shown in the console's key list.
+//
+// Returns null for the pre-auth routes (login, logout, the Discord adapter),
+// which run before req.authSession is set. That is the honest answer for them.
+export function principalOf(session) {
+  if (!session) return null;
+  if (session.apiKeyId) return { type: "api-key", id: session.apiKeyId };
+  // [Layer 3 integration audit fix, HIGH, issue #1041, STRIDE Repudiation]
+  // resolveWriteBridgePrincipal() (writeBridgeCredential.js) sets
+  // source:"discord-write-bridge" specifically so a write-bridge-triggered
+  // mutation can be told apart from a real interactive session -- before
+  // this branch, this function only ever read .apiKeyId/.tier/.userId, so
+  // the two produced byte-identical audit rows. This is deliberately a
+  // SEPARATE branch from the generic "session" one below (not merged into
+  // it): a regular Discord-OAuth console login session also carries
+  // tier+userId with no apiKeyId, and test/audit.test.js already locks in
+  // that that case stays type:"session" -- only the write-bridge's own
+  // principal object carries this specific .source marker.
+  if (session.source === "discord-write-bridge") {
+    const principal = { type: "discord-write-bridge", tier: session.tier || "" };
+    if (session.userId) principal.userId = session.userId;
+    return principal;
+  }
+  const principal = { type: "session", tier: session.tier || "" };
+  if (session.userId) principal.userId = session.userId;
+  return principal;
+}
+
 export function audit(config, req, action, detail = {}) {
   mkdirSync(dirname(config.auditLog), { recursive: true });
   const row = {
@@ -41,6 +74,10 @@ export function audit(config, req, action, detail = {}) {
     method: req?.method,
     path: req?.url,
     remote: req?.socket?.remoteAddress,
+    // Added with API keys: until there were two principal types, every row was
+    // implicitly the local owner. A key-performed mutation would otherwise be
+    // indistinguishable from one the operator made in the browser.
+    principal: principalOf(req?.authSession),
     detail: redactValue(detail)
   };
   appendFileSync(config.auditLog, `${JSON.stringify(row)}\n`, { mode: 0o600 });

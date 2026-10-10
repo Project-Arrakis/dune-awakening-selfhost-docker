@@ -1,4 +1,6 @@
-import { existsSync, statSync } from "node:fs";
+import { createWriteStream, existsSync, statSync } from "node:fs";
+import { Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 
 function existsAsFile(path) {
@@ -25,7 +27,14 @@ export async function readJsonBody(req, maxBytes) {
   if (!chunks.length) return {};
   const text = Buffer.concat(chunks).toString("utf8").trim();
   if (!text) return {};
-  return JSON.parse(text);
+  const parsed = JSON.parse(text);
+  // A body of literal `null` parses to null, and every one of the ~82
+  // readJson call sites then does `body.someField` -- a TypeError that
+  // surfaces as a 500 from an authenticated route rather than a 400.
+  // Only null is normalized: numbers, strings and arrays all allow
+  // property access (yielding undefined), so they still reach each
+  // route's own validation unchanged.
+  return parsed === null ? {} : parsed;
 }
 
 export async function readMultipartForm(req, maxBytes) {
@@ -78,6 +87,28 @@ export async function readRawBody(req, maxBytes) {
     chunks.push(buffer);
   }
   return Buffer.concat(chunks);
+}
+
+// Writes a request body straight to disk, counting as it goes. readRawBody
+// concatenates the whole upload in memory before anything looks at it, which is
+// fine for a JSON body or a database dump and not for a system archive that
+// grows with the world. Flag "wx" refuses to clobber, so a staging name can
+// never land on an existing file.
+export async function streamRequestToFile(req, destination, maxBytes) {
+  let received = 0;
+  const meter = new Transform({
+    transform(chunk, encoding, done) {
+      received += chunk.length;
+      if (received > maxBytes) {
+        const error = new Error(`Upload exceeds ${maxBytes} bytes`);
+        error.statusCode = 413;
+        return done(error);
+      }
+      done(null, chunk);
+    }
+  });
+  await pipeline(req, meter, createWriteStream(destination, { flags: "wx", mode: 0o600 }));
+  return received;
 }
 
 export function safeStaticTarget(staticDir, requestPath) {

@@ -8,11 +8,11 @@ import { playersApi } from "../../api/players";
 
 const currencyIcon = (label: string): LucideIcon => {
   if (label === "Solari Credit") return CircleDollarSign;
-  if (label === "Scrip") return Banknote;
+  if (label === "Scrip" || label === "House Credit") return Banknote;
   return Coins;
 };
 
-type CurrencyRow = { currency_id: number; balance: number; label?: string };
+type CurrencyRow = { currency_id: number | string; balance: number; label?: string };
 type FactionRow = { faction_id: number; faction_name?: string; reputation_amount: number; component_reputation_amount?: number | null; reputation_in_sync?: boolean; estimated_rank?: number; current_rank_limit?: number | null; rank_limited_by_progression?: boolean; progression_repair_available?: boolean; progression_repair_target?: number | null };
 type FactionRepairResult = { tone: "success" | "danger" | "neutral"; text: string; pending?: boolean };
 type Progression = { level?: number; xp?: number; totalSkillPoints?: number; unspentSkillPoints?: number };

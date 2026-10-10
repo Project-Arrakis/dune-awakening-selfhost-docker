@@ -18,6 +18,7 @@ The project is experimental, and Funcom self-hosting behavior may change over ti
 - Control maps, Sietches, Deep Desert layouts, and live map activity
 - Configure memory, autoscaling, and game settings
 - Manage databases, bases, storage, and player blueprints
+- Plan, preview, and share base layouts in 3D with the Base Builder
 - Extend the console with optional Community Addons
 
 See the [Screenshots Gallery](docs/screenshots.md) for a closer look.
@@ -59,6 +60,7 @@ For public/internet hosting, forward these ports:
 | `31982` | TCP | RabbitMQ Game Messaging Endpoint |
 | `31983` | TCP | RabbitMQ Game HTTP Endpoint. This endpoint can enumerate and purge queues, not just view counts -- treat it with the same care as `31982`. |
 | `7777-7810` | UDP | Game Traffic |
+| `32000-32015` | UDP | Optional direct public-directory latency probes; relay remains available when closed |
 
 Keep database and internal admin ports private. Do not expose the Web UI to untrusted users.
 
@@ -69,10 +71,18 @@ Run the installer from a regular user account with `sudo` access, not while logg
 Copy and paste this command on a fresh Linux server:
 
 ```sh
-sh -c 'set -eu; echo "==> Setting up Dune Docker Console..."; if command -v curl >/dev/null 2>&1; then _download() { curl -fsSL "$1"; }; _download_progress() { curl -fSL "$1"; }; _download_effective_url() { curl -fsSLI -o /dev/null -w "%{url_effective}" "$1"; }; elif command -v wget >/dev/null 2>&1; then _download() { wget -qO- "$1"; }; _download_progress() { wget -O- "$1"; }; _download_effective_url() { wget -qS --spider "$1" 2>&1 | grep -i "^ *Location:" | tail -1 | awk "{print \$2}"; }; else echo "==> Neither curl nor wget found. Installing prerequisites..."; if command -v apt-get >/dev/null 2>&1; then sudo apt-get update && sudo apt-get install -y ca-certificates curl tar; elif command -v dnf >/dev/null 2>&1; then sudo dnf install -y curl tar; elif command -v yum >/dev/null 2>&1; then sudo yum install -y curl tar; elif command -v zypper >/dev/null 2>&1; then sudo zypper install -y curl tar; elif command -v pacman >/dev/null 2>&1; then sudo pacman -Sy --noconfirm curl tar; elif command -v apk >/dev/null 2>&1; then sudo apk add --no-cache curl tar; elif command -v xbps-install >/dev/null 2>&1; then sudo xbps-install -Sy curl tar; else echo "Could not detect package manager. Please install curl or wget manually." >&2; exit 1; fi; _download() { curl -fsSL "$1"; }; _download_progress() { curl -fSL "$1"; }; _download_effective_url() { curl -fsSLI -o /dev/null -w "%{url_effective}" "$1"; }; fi; mkdir -p "$HOME/dune-awakening-selfhost-docker"; cd "$HOME/dune-awakening-selfhost-docker"; echo "==> Finding the latest release..."; latest_url="$(_download_effective_url https://github.com/Red-Blink/dune-awakening-selfhost-docker/releases/latest)"; version="${latest_url##*/}"; echo "==> Downloading dune-awakening-selfhost-docker ${version}..."; _download_progress "https://github.com/Red-Blink/dune-awakening-selfhost-docker/archive/refs/tags/${version}.tar.gz" | tar -xz --strip-components=1; chmod +x install.sh; echo "==> Starting the installer..."; ./install.sh'
+curl -fsSL https://raw.githubusercontent.com/Red-Blink/dune-awakening-selfhost-docker/main/bootstrap.sh | sh
 ```
 
 The installer downloads the latest release, starts the Web UI, and tells you which address to open. Complete the remaining setup in your browser.
+
+The default installation path is `~/dune-awakening-selfhost-docker`. To use a different Linux disk, set the complete destination explicitly:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Red-Blink/dune-awakening-selfhost-docker/main/bootstrap.sh | DUNE_INSTALL_DIR=/mnt/dune/dune-awakening-selfhost-docker sh
+```
+
+On Windows, run the command in the supported Linux VM or Ubuntu WSL2 terminal—not PowerShell, Command Prompt, or Docker Desktop's internal shell. The bootstrap checks that the destination is writable and has space before it extracts anything; failed downloads never leave a partially overwritten installation.
 
 On Alpine Linux, the installer uses the distribution's Docker and Docker Compose packages and starts Docker through OpenRC. If the community repository is unavailable, the installer asks before changing repository configuration.
 
@@ -82,7 +92,17 @@ On Alpine Linux, the installer uses the distribution's Docker and Docker Compose
 
 Owners can claim their listing directly from the Console Settings page to verify ownership, manage their public profile and Discord invite, and promote their server through the directory. Public listings can be enabled or disabled at any time.
 
+Personalized latency uses UDP `32000-32015` for the fastest direct measurement. Allow this range through both the host firewall and any internet-to-DMZ firewall or NAT forwarding. Servers that do not expose the range remain compatible and automatically use the Dune Docker relay instead.
+
 Local and LAN-only servers are never listed. For transparency, installations contribute only an anonymous server count by default—never server names, addresses, players, or settings—and this can be disabled separately in Settings.
+
+## Base Builder
+
+[Dune Docker Base Builder](https://blueprints.dunedocker.app/) is a browser-based 3D planning and sharing tool for Dune: Awakening bases. It lets you experiment with layouts before committing time and materials in-game, using a searchable catalog of structures and placeables with placement, snapping, rotation, collision, and claim-coverage tools.
+
+Preview designs from different angles, switch between day and night, walk through the finished layout, and capture screenshots. Existing layouts can be imported for planning, while completed designs can be exported for future use.
+
+Signed-in community members can save projects, choose public, unlisted, or private visibility, publish previews, explore shared community designs, and fork a published blueprint as a starting point. The Base Builder is also linked directly from the Console footer.
 
 ## Community Addons
 
@@ -93,8 +113,10 @@ Developers can start with the [Official Addon Template](https://github.com/Red-B
 ## Help and Documentation
 
 - [Official Website](https://dunedocker.app/) — Project information, installation guidance, FAQ, and server directory
+- [Base Builder](https://blueprints.dunedocker.app/) — Plan, preview, save, and share Dune: Awakening base layouts in 3D
+- [Official Documentation](https://docs.dunedocker.app/) — Guides, feature documentation, technical references, and API documentation
 - [Discord Community](https://discord.gg/duneawakeningdocker) — Support, updates, addons, and community discussion
-- [Documentation](docs/README.md) — Technical and feature documentation
+- [Repository Documentation](docs/README.md) — Technical notes and references maintained alongside the source code
 - [Support the Project](https://ko-fi.com/redblink) — Help support development, testing, and infrastructure
 
 ## Contributing

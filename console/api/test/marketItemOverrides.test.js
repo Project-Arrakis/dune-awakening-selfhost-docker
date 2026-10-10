@@ -117,6 +117,46 @@ test("saveMarketItemOverrides only accepts new items that resolve in admin-items
   });
 });
 
+test("saveMarketItemOverrides remaps Treadwheel vehicle masks on new items", () => {
+  withRepo((repo) => {
+    seedPlanFile(repo);
+    seedAdminItems(repo, [{ id: "TreadwheelChassis_9", name: "Treadwheel Chassis Mk9", category: "vehicles", source: "Vehicles" }]);
+    const saved = saveMarketItemOverrides(repo, {
+      newItems: {
+        TreadwheelChassis_9: {
+          price: 100,
+          listings: 1,
+          categoryMask: 0x02050000,
+          categoryDepth: 3,
+          kind: "equippable"
+        }
+      }
+    });
+    assert.equal(saved.newItems.TreadwheelChassis_9.categoryMask, 0x02000000);
+    assert.equal(saved.newItems.TreadwheelChassis_9.categoryDepth, 3);
+  });
+});
+
+test("saveMarketItemOverrides remaps legacy depth-2 ranged masks on new items", () => {
+  withRepo((repo) => {
+    seedPlanFile(repo);
+    seedAdminItems(repo, [{ id: "ChoamSda9", name: "Maula Pistol Mk9", category: "weapons", source: "Weapons" }]);
+    const saved = saveMarketItemOverrides(repo, {
+      newItems: {
+        ChoamSda9: {
+          price: 100,
+          listings: 1,
+          categoryMask: 0x01020000,
+          categoryDepth: 2,
+          kind: "equippable"
+        }
+      }
+    });
+    assert.equal(saved.newItems.ChoamSda9.categoryMask, 0x01010200);
+    assert.equal(saved.newItems.ChoamSda9.categoryDepth, 3);
+  });
+});
+
 test("saveMarketItemOverrides rejects a base-plan item even when it has no existing override", () => {
   withRepo((repo) => {
     seedPlanFile(repo);

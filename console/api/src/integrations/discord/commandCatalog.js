@@ -164,6 +164,18 @@ export const COMMAND_METADATA = Object.freeze({
       { name: "diagnostic", type: "BOOLEAN", required: false, description: "Admin-only: full diagnostic with containers table." }
     ]
   },
+  [DISCORD_ADAPTER_ROUTES.WORLD_CORIOLIS]: {
+    group: "server", subcommand: "coriolis",
+    description: "Show the current Coriolis storm seed and next-cycle timing.",
+    capability: DISCORD_CAPABILITIES.CORIOLIS_READ,
+    params: []
+  },
+  [DISCORD_ADAPTER_ROUTES.WORLD_ATLAS]: {
+    group: "server", subcommand: "atlas",
+    description: "Show per-sietch PvP/PvE and live sandstorm status, plus the Coriolis cycle.",
+    capability: DISCORD_CAPABILITIES.ATLAS_READ,
+    params: []
+  },
   [DISCORD_ADAPTER_ROUTES.READINESS]: {
     group: "server", subcommand: "readiness",
     description: "Show readiness and preflight state.",
@@ -271,6 +283,12 @@ export const COMMAND_METADATA = Object.freeze({
     group: "ops", subcommand: "armory",
     description: "Aggregate armory/inventory summary.",
     capability: DISCORD_CAPABILITIES.OPS_INVENTORY_READ,
+    params: []
+  },
+  [DISCORD_ADAPTER_ROUTES.OPS_LOCATION]: {
+    group: "ops", subcommand: "location",
+    description: "Map location activity summary (permanent placeholder -- real per-player tracking is out of scope by design; see opsLocationProvider()).",
+    capability: DISCORD_CAPABILITIES.OPS_LOCATION_READ,
     params: []
   },
   [DISCORD_ADAPTER_ROUTES.OPS_SOC]: {
@@ -580,6 +598,38 @@ export const COMMAND_METADATA = Object.freeze({
       { name: "search", bodyField: "query", type: "STRING", required: false, description: "Filter by item name (optional)." }
     ]
   },
+  // meta#64 "Chronicles of Kanly" / mentat#361: staff-only trust-role
+  // vetting lookup, not a player-facing subcommand of its own -- Mentat
+  // calls this internally when a staff member reviews a Swordmaster/Sietch
+  // Guard application, the same "internal, not directly Discord-facing"
+  // shape as GUILD_FACTION_SUMMARY above.
+  [DISCORD_ADAPTER_ROUTES.PLAYERS_CHEATER_TRACKING]: {
+    group: "player", subcommand: "cheater-tracking",
+    description: "Staff-only: anti-cheat flag history for a specific applicant under trust-role review.",
+    capability: DISCORD_CAPABILITIES.CHEATER_TRACKING_READ,
+    // params: [] -- same reasoning as GUILD_FACTION_SUMMARY above: the
+    // route's real body.actorId is an internal dune.actors id Mentat
+    // resolves itself (from the applicant it's already vetting), never a
+    // value a staff member types into a literal Discord slash-command
+    // option. Code review (2026-09-15) correctly flagged an earlier draft
+    // that declared this as a required, Discord-facing STRING param --
+    // this file's own convention only does that for genuinely
+    // user-typeable values (see PLAYERS_LINK's character name), never a
+    // raw internal primary key.
+    params: []
+  },
+  // meta#64 "Chronicles of Kanly" / mentat#368: staff/system stolen-goods
+  // cross-reference lookup, not a player-facing subcommand of its own --
+  // same "internal, not directly Discord-facing" shape as
+  // GUILD_FACTION_SUMMARY and PLAYERS_CHEATER_TRACKING above. actorId is
+  // an internal dune.actors id Mentat resolves itself, never a value a
+  // staff member types into a literal Discord slash-command option.
+  [DISCORD_ADAPTER_ROUTES.PLAYERS_ITEM_AUDIT_LOG]: {
+    group: "player", subcommand: "item-audit-log",
+    description: "Staff-only: item-movement history for a specific player's inventories, for stolen-goods cross-reference.",
+    capability: DISCORD_CAPABILITIES.ITEM_AUDIT_LOG_READ,
+    params: []
+  },
   [DISCORD_ADAPTER_ROUTES.VERSION]: {
     group: "infra", subcommand: "version",
     description: "Show Dune stack version.",
@@ -608,6 +658,45 @@ export const COMMAND_METADATA = Object.freeze({
     description: "Show database status and health.",
     capability: DISCORD_CAPABILITIES.SERVICES_READ,
     params: []
+  },
+  // WRITE_PREVIEW / WRITE_EXECUTE (issue #215): unlike every other entry in
+  // this catalog, these are not themselves a user-facing slash-command
+  // group/subcommand a Discord admin types -- they are the internal API the
+  // bot's OWN dispatch layer calls on behalf of every real write command
+  // (kick, ban, restart, ...). Documented here anyway, under a dedicated
+  // "write" group, since this catalog's own stated job is to describe every
+  // real, live route on Core (matching the PLAYERS_ACCOUNTS_LINK precedent
+  // above, which is kept in the catalog despite having no live bot caller
+  // today) -- not to enumerate only end-user-typed commands.
+  [DISCORD_ADAPTER_ROUTES.WRITE_PREVIEW]: {
+    group: "write", subcommand: "preview",
+    description: "Internal: validate a write action and mint a single-use confirmation nonce. Never mutates game state.",
+    capability: DISCORD_CAPABILITIES.WRITE_BRIDGE_ACCESS,
+    requiresWritesEnabled: true,
+    params: [
+      { name: "action", type: "STRING", required: true, description: "The dot-namespaced write action, e.g. player.kick." },
+      { name: "params", type: "OBJECT", required: false, description: "Action-specific parameters (playerId, baseId, guildId, ...)." }
+      // idempotencyKey is NOT yet a real, read field -- the persisted
+      // idempotency cache (docs/rw-architecture.md section 3.8) is not
+      // implemented yet. Add it here only once write/execute actually
+      // reads and enforces it, matching this catalog's own "describe real
+      // code, not aspirational design" discipline.
+    ]
+  },
+  [DISCORD_ADAPTER_ROUTES.WRITE_EXECUTE]: {
+    group: "write", subcommand: "execute",
+    description: "Internal: consume a write/preview nonce and perform the real mutation.",
+    capability: DISCORD_CAPABILITIES.WRITE_BRIDGE_ACCESS,
+    requiresWritesEnabled: true,
+    params: [
+      { name: "nonce", type: "STRING", required: true, description: "The nonce returned by write/preview." },
+      { name: "action", type: "STRING", required: true, description: "Must match the action the nonce was issued for." }
+      // params is deliberately NOT read from this route's own request body
+      // -- write/execute uses the params captured in the nonce at preview
+      // time (docs/rw-architecture.md section 3.2's exact-match binding),
+      // never whatever a caller resends here. idempotencyKey: see the
+      // write/preview entry's own note above.
+    ]
   }
 });
 

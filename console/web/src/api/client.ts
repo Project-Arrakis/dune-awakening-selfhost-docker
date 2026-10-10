@@ -8,6 +8,20 @@ export const AUTH_SESSION_EXPIRED_MESSAGE = "Your browser login session expired.
 const POSTGRES_UNAVAILABLE_MESSAGE = "Postgres is not running or is restarting. Wait for the database service to come back online, then refresh.";
 const INVALID_RESPONSE_MESSAGE = "The console received invalid data for this page. Refresh the page and try again.";
 
+// A failed request. Still an Error with the same friendly message every caller
+// already shows; status and body are there for callers that need the server's
+// structured detail (a 409 offering an override, a 503 naming a step).
+export class ApiError extends Error {
+  status: number;
+  body: Record<string, unknown>;
+  constructor(message: string, status: number, body: Record<string, unknown> = {}) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.body = body;
+  }
+}
+
 export function setCsrfToken(value: string | null) {
   csrfToken = value;
 }
@@ -24,18 +38,83 @@ export async function apiDownload(path: string, options: RequestInit = {}, csrfR
   if (!response.ok) {
     const text = await response.text();
     let message = text || `Request failed: ${response.status}`;
+    let body: Record<string, unknown> = {};
     try {
-      const data = JSON.parse(text) as { error?: string };
-      message = data.error || message;
-    } catch {}
+      const data = JSON.parse(text) as Record<string, unknown>;
+      if (data && typeof data === "object") body = data;
+      message = typeof body.error === "string" && body.error ? body.error : message;
+    } catch {
+      // Parse a bounded, inert document instead of using backtracking tag
+      // expressions on an uncontrolled proxy response. Never attach it to the DOM.
+      const document = new DOMParser().parseFromString(text.slice(0, 20000), "text/html");
+      document.querySelectorAll("script, style").forEach((element) => element.remove());
+      const parts = [document.title];
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      while (walker.nextNode()) parts.push(walker.currentNode.textContent || "");
+      message = parts.join(" ").replace(/\s+/g, " ").trim().slice(0, 240)
+        || `Request failed: ${response.status}`;
+    }
     if (isSessionAuthFailure(response.status, message)) {
       if (response.status === 403 && !csrfRetried && await refreshCsrfToken()) return apiDownload(path, options, true);
       announceSessionExpired();
       throw new Error(AUTH_SESSION_EXPIRED_MESSAGE);
     }
-    throw new Error(friendlyApiError(message));
+    throw new ApiError(friendlyApiError(message), response.status, body);
   }
   return response;
+}
+
+// Uploads with progress. fetch cannot report upload progress at all, so this is
+// XHR -- but it lives here rather than in a panel so it inherits the same CSRF
+// header, cookie handling and session-expiry behaviour as every other mutating
+// request. Doing it by hand in the panel is what made the first attempt fail
+// with "login session expired": a raw XHR sends neither.
+export async function apiUpload(
+  path: string,
+  body: Blob,
+  options: { onProgress?: (percent: number) => void; contentType?: string } = {},
+  csrfRetried = false
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const result = await new Promise<{ status: number; body: Record<string, unknown> }>((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("POST", path);
+    request.withCredentials = true;
+    request.setRequestHeader("content-type", options.contentType || "application/octet-stream");
+    if (csrfToken) request.setRequestHeader("x-csrf-token", csrfToken);
+    request.upload.onprogress = (event) => {
+      if (event.lengthComputable) options.onProgress?.(Math.round((event.loaded / event.total) * 100));
+    };
+    request.onload = () => {
+      let parsed: Record<string, unknown> = {};
+      try {
+        const data = JSON.parse(request.responseText || "{}");
+        parsed = data && typeof data === "object" ? data as Record<string, unknown> : {};
+      } catch {
+        parsed = { error: request.responseText ? friendlyApiError(request.responseText.replace(/<[^>]+>/g, " ").trim().slice(0, 240)) : INVALID_RESPONSE_MESSAGE };
+      }
+      resolve({ status: request.status, body: parsed });
+    };
+    request.onerror = () => reject(new Error("The upload failed before it reached the server."));
+    // Without these, an aborted or timed-out upload never settles this promise
+    // at all: the caller's busy state (and Cancel, which is disabled while busy)
+    // stays stuck forever. No .timeout is set here -- a large archive over a slow
+    // line can legitimately take a long time -- so ontimeout only matters if a
+    // future caller sets one; onabort matters the moment anything calls .abort().
+    request.onabort = () => reject(new Error("The upload was cancelled."));
+    request.ontimeout = () => reject(new Error("The upload timed out before it reached the server."));
+    request.send(body);
+  });
+
+  if (isSessionAuthFailure(result.status, String(result.body.error || ""))) {
+    // A stale CSRF token is recoverable and worth retrying once, exactly as the
+    // fetch paths do -- otherwise a long-idle tab loses the whole upload.
+    if (result.status === 403 && !csrfRetried && await refreshCsrfToken()) {
+      return apiUpload(path, body, options, true);
+    }
+    announceSessionExpired();
+    throw new Error(AUTH_SESSION_EXPIRED_MESSAGE);
+  }
+  return result;
 }
 
 async function apiRequest<T>(path: string, options: RequestInit = {}, csrfRetried = false): ApiResult<T> {
@@ -56,7 +135,7 @@ async function apiRequest<T>(path: string, options: RequestInit = {}, csrfRetrie
     }
   }
   const record = data && typeof data === "object" ? data as Record<string, unknown> : {};
-  if (isSessionAuthFailure(response.status, String(record.error || ""))) {
+  if (isSessionAuthFailure(response.status, String(record.error || ""), path)) {
     if (response.status === 403 && !csrfRetried && await refreshCsrfToken()) {
       return apiRequest<T>(path, options, true);
     }
@@ -64,7 +143,7 @@ async function apiRequest<T>(path: string, options: RequestInit = {}, csrfRetrie
     throw new Error(AUTH_SESSION_EXPIRED_MESSAGE);
   }
   if (response.ok && invalidJsonResponse) throw new Error(INVALID_RESPONSE_MESSAGE);
-  if (!response.ok) throw new Error(friendlyApiError(String(record.error || `Request failed: ${response.status}`)));
+  if (!response.ok) throw new ApiError(friendlyApiError(String(record.error || `Request failed: ${response.status}`)), response.status, record);
   return data as T;
 }
 
@@ -73,13 +152,32 @@ async function apiRequest<T>(path: string, options: RequestInit = {}, csrfRetrie
 // message to actually say so, matching the real text requireAuth() and
 // requireEnrollmentSession() send (the latter two phrases cover a missing or
 // out-of-scope enrollment session on the Tier 3 setup screen).
-function isSessionAuthFailure(status: number, message: string) {
+function isSessionAuthFailure(status: number, message: string, path = "") {
+  // A rejected login is not an expired session. Preserve the API's specific
+  // error so the sign-in form reports an incorrect password accurately.
+  if (path === "/api/auth/login") return false;
   return (status === 401 || status === 403) && /authentication required|csrf token|session expired|login session|sign in to begin|finish setting up/i.test(message);
 }
 
 function announceSessionExpired() {
   csrfToken = null;
   if (typeof window !== "undefined") window.dispatchEvent(new Event(AUTH_SESSION_EXPIRED_EVENT));
+}
+
+// Bypasses the ordinary api() helper's caching (implicit `default` fetch
+// mode) on purpose: callers of this specific function need to know the
+// console's *actual current* running build -- used both by the console
+// update flow's own reload-readiness check and by useStaleBuildWatcher to
+// detect a build change on an idle tab -- so a cached response would
+// defeat the point.
+export async function fetchConsoleAuthState() {
+  const response = await fetch("/api/auth/state", {
+    credentials: "include",
+    cache: "no-store",
+    headers: { accept: "application/json" }
+  });
+  if (!response.ok) throw new Error(`Console state check failed: ${response.status}`);
+  return await response.json() as { config?: { version?: string; buildId?: string } };
 }
 
 async function refreshCsrfToken() {

@@ -75,6 +75,7 @@ CONTROL_PATHS=(
   runtime/rabbitmq-game/config
   runtime/rabbitmq-game/certs
   runtime/postgres/initdb
+  runtime/postgres/bootstrap
 )
 
 path_list="$(printf '%s\n' "${CONTROL_PATHS[@]}")"
@@ -115,7 +116,7 @@ docker run --rm \
         chown "$TARGET_UID:$TARGET_GID" "$path"
         [ ! -d "$path" ] || chmod u+rwx "$path"
       done
-      for path in runtime/game/*/Saved/UserSettings; do
+      for path in runtime/game/*/Saved/UserSettings runtime/game/*/Saved/Config/LinuxServer; do
         [ -e "$path" ] || continue
         find "$path" -xdev \( ! -uid "$TARGET_UID" -o ! -gid "$TARGET_GID" \) \
           -exec chown -h "$TARGET_UID:$TARGET_GID" {} +

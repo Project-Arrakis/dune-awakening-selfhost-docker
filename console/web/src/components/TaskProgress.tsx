@@ -1,3 +1,4 @@
+import { TriangleAlert } from "lucide-react";
 import type { Task } from "../api/setup";
 import { StatusBadge } from "./StatusBadge";
 import { useEffect, useState } from "react";
@@ -36,12 +37,14 @@ export function TaskProgress({ task, onDismiss }: { task: Task | null; onDismiss
   if (!liveTask) return null;
   const message = taskMessage(liveTask);
   const error = taskErrorMessage(liveTask, message);
+  const warnings = liveTask.warnings || [];
   return (
     <section className="panel">
       <div className="panel-title">
         <h3 className={!terminalStatuses.has(liveTask.status) ? "loading-dots" : ""}>{formatUiSentence(taskTitle(liveTask), !terminalStatuses.has(liveTask.status))}</h3>
         <div className="action-row">
           <StatusBadge status={liveTask.status} />
+          {warnings.length > 0 && <span className="badge badge-warn task-warning-count" title={warningLabel(warnings.length)} aria-label={warningLabel(warnings.length)}><TriangleAlert size={13} aria-hidden="true" />{warnings.length}</span>}
           {terminalStatuses.has(liveTask.status) && <button onClick={onDismiss}>Dismiss</button>}
         </div>
       </div>
@@ -49,12 +52,26 @@ export function TaskProgress({ task, onDismiss }: { task: Task | null; onDismiss
       {liveTask.operation === "init" && !terminalStatuses.has(liveTask.status) && <p className="task-elapsed">This can take a while on a fresh server. Elapsed time: <strong>{formatElapsed(now - new Date(liveTask.startedAt).getTime())}</strong></p>}
       {liveTask.operation === "init" && <ProgressBar progress={initTaskProgress(liveTask)} />}
       {error && <p className="error">{formatUiSentence(error)}</p>}
-      <details className={liveTask.operation === "init" ? "task-technical-details" : "technical-details"}>
+      {/* A task can succeed while a queued base or vehicle write inside it did
+          not apply. That is not a task failure -- the restart itself worked --
+          so it surfaces here rather than as an error, and in the panel body
+          rather than only inside the collapsed log. */}
+      {warnings.length > 0 && <div className="task-warnings">
+        {warnings.map((warning, index) => <p key={`${warning}-${index}`}><TriangleAlert size={14} aria-hidden="true" />{formatUiSentence(warning)}</p>)}
+      </div>}
+      <details className="task-technical-details">
         <summary>{liveTask.operation === "init" ? "Deployment Log" : "Technical details"}</summary>
-        <pre className="log-box">{liveTask.logLines.slice(-120).map((line) => line.line).join("\n")}</pre>
+        <pre className="log-box">{liveTask.logLines.slice(-120).map((line) => stripTerminalFormatting(line.line)).filter((line) => line.trim()).join("\n")}</pre>
       </details>
     </section>
   );
+}
+
+// The badge shows only a numeral, which says nothing on its own to a screen
+// reader, so this is the accessible name rather than decoration. Doubles as the
+// hover tooltip, matching how App.tsx labels its icon-only update indicator.
+function warningLabel(count: number) {
+  return count === 1 ? "1 warning" : `${count} warnings`;
 }
 
 function formatElapsed(ms: number) {
@@ -101,12 +118,32 @@ function taskTitle(task: Task) {
     if (backupRestoreHasCompletedImport(task)) return "Restarting Dune Services";
     return "Restoring Backup";
   }
-  return task.operation;
+  if (task.operation === "updateInstallAssets") {
+    if (task.status === "succeeded") return "Game Files Installed";
+    if (task.status === "failed") return "Game File Install Failed";
+    return "Installing Game Files";
+  }
+  if (task.operation === "backupSystemRestore") {
+    if (task.status === "succeeded") return "System Backup Restored";
+    if (task.status === "failed") return "System Backup Restore Failed";
+    return "Restoring System Backup";
+  }
+  // An operation with no title of its own is an identifier, not a sentence:
+  // rendering it raw put "UpdateInstallAssets" in front of an operator. Split
+  // the camel case so a future operation reads as words even before anyone
+  // names it here.
+  return humanizeOperation(task.operation);
+}
+
+function humanizeOperation(operation: string) {
+  return String(operation || "")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/^./, (character) => character.toUpperCase());
 }
 
 function taskMessage(task: Task) {
   if (task.operation === "init") return initTaskMessage(task);
-  if (task.operation !== "backupRestore") return task.progressMessage || task.currentStep;
+  if (task.operation !== "backupRestore") return latestMeaningfulLine(task) || task.currentStep;
   if (task.status === "succeeded") return "Database restore finished and the Dune console restart completed.";
   if (task.status === "failed") return task.errorMessage || "Database restore failed.";
 
@@ -192,6 +229,19 @@ function steamContentHostFailure(task: Task) {
   const text = [task.errorMessage || "", ...task.logLines.map((row) => row.line)].map(stripTerminalFormatting).join("\n");
   if (!/Steam could not download from its selected content host|Steam repeatedly (?:failed to download from|selected an unresolved) (?:this|its assigned)?\s*content host|This is a Steam content-host failure/i.test(text)) return "";
   return "Steam could not download the Dune server files from its selected content host. This is usually temporary; retry deployment later so Steam can select another host.";
+}
+
+// A SteamCMD progress line ends in a colour reset, so task.progressMessage is
+// regularly nothing but an escape sequence -- which rendered as a stray "[0m"
+// and, once stripped, as an empty status while the real progress sat in the
+// log. Walk back to the newest line with content.
+function latestMeaningfulLine(task: Task) {
+  const candidates = [task.progressMessage, ...task.logLines.map((row) => row.line)].reverse();
+  for (const candidate of candidates) {
+    const text = stripTerminalFormatting(candidate || "").trim();
+    if (text) return text;
+  }
+  return "";
 }
 
 function stripTerminalFormatting(value: string) {

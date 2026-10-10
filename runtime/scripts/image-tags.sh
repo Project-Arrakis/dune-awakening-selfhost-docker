@@ -25,6 +25,14 @@ resolve_world_image_tag() {
 }
 
 resolve_game_server_image() {
+  local map_name="${1:-}" experimental_image=""
+  if [ "$map_name" = "Survival_1" ] && [ -f runtime/generated/experimental-tanks.json ]; then
+    experimental_image="$(DUNE_WORLD_IMAGE_TAG="$(resolve_world_image_tag)" python3 runtime/scripts/experimental_tanks.py resolve "$map_name")" || return 1
+    if [ -n "$experimental_image" ]; then
+      printf '%s' "$experimental_image"
+      return 0
+    fi
+  fi
   if [ -n "${DUNE_GAME_SERVER_IMAGE:-}" ]; then
     printf '%s' "$DUNE_GAME_SERVER_IMAGE"
     return 0

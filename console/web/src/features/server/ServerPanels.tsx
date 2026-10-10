@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
+import { HomeHighlights } from "./HomeHighlights";
 import type { Dispatch, SetStateAction } from "react";
-import { Droplet, Fuel, Play, Trash2 } from "lucide-react";
-import { serverApi, type PerformanceSnapshot } from "../../api/server";
+import { Play, Trash2 } from "lucide-react";
+import { serverApi, type PerformanceSnapshot, type RestartHistoryResponse, type RestartHistoryRow } from "../../api/server";
+import { ServerHostnameSetting, useServerHostname } from "./ServerHostnameSetting";
 import { runGatedRestart, serviceRestartTarget, type RestartGate } from "./restartQueueGuard";
 import { setupApi, type Task } from "../../api/setup";
 import { PortChecklist } from "../../components/PortChecklist";
@@ -11,7 +13,9 @@ import { KeyValueGrid, StatusPill, TechnicalDetails } from "../../components/com
 import { formatDisplayValue, formatUiSentence, friendlyColumnName, stripAnsi, summarizeCommandText, titleCase } from "../../lib/display";
 import { friendlyServiceName } from "../../lib/serviceDisplay";
 import { conciseTaskError, funcomTokenMismatchDetected } from "../../lib/taskDisplay";
-import { usePendingRefills, usePendingWaterRefills } from "../../lib/usePendingRefills";
+import { QueueBadges, queueCountsSummary, queueCountsTotal, type QueueCounts } from "../../components/common/QueueBadges";
+import { childAccessPieceCount, usePendingQueues } from "../../lib/usePendingRefills";
+
 export type HomeLoadResult = { statusLoaded: boolean; readinessLoaded: boolean; statusError: string; readinessError: string; statusText: string; readinessText: string };
 export type HomeTaskResult = { status: "running" | "succeeded" | "failed" | "stopped"; title: string; message?: string; details?: string };
 export type RestartLifecycleState = { stopObserved: boolean; startObserved: boolean };
@@ -21,27 +25,28 @@ export type RestartLifecycleState = { stopObserved: boolean; startObserved: bool
 // step opens a window with Postgres reachable and the map server not yet
 // booted, which the background flush uses. Both battlegroup control rows say so.
 function PendingRefillNote() {
-  const { pending } = usePendingRefills();
-  const { pending: pendingWater } = usePendingWaterRefills();
-  const fuelTotal = pending?.total || 0;
-  const waterTotal = pendingWater?.total || 0;
-  const total = fuelTotal + waterTotal;
+  const { fuel, water, deletes, vehicleDeletes, permissions } = usePendingQueues();
+  // Split per resource rather than reporting one number: every queue flushes on
+  // the same restart, but which one is waiting decides whether an operator goes
+  // looking at generators, water containers, a deleted base, or a permission
+  // change. Same badge vocabulary as the Bases panel's queue banner, from the
+  // same component so the two cannot drift.
+  const counts: QueueCounts = {
+    fuel: fuel.pending?.total || 0,
+    water: water.pending?.total || 0,
+    deletes: deletes.pending?.total || 0,
+    vehicleDeletes: vehicleDeletes.pending?.total || 0,
+    permissions: childAccessPieceCount(permissions.pending)
+  };
+  const total = queueCountsTotal(counts);
   if (!total) return null;
-  // Split per resource rather than reporting one number: both queues flush on
-  // the same restart, but which one is waiting decides whether an operator
-  // goes looking at generators or at water containers. Same badge vocabulary
-  // as the Bases panel's queue banner.
+  const summary = queueCountsSummary(counts);
   return <p className="action-help-note pending-refill-note">
-    {fuelTotal > 0 && <span className="bases-queue-badge bases-queue-badge-fuel">
-      <Fuel size={13} aria-hidden="true" />{fuelTotal.toLocaleString()} fuel
-    </span>}
-    {waterTotal > 0 && <> <span className="bases-queue-badge bases-queue-badge-water">
-      <Droplet size={13} aria-hidden="true" />{waterTotal.toLocaleString()} water
-    </span></>}
+    <QueueBadges counts={counts} />
     {/* Explicit space: the badges are inline elements, so without it the
         paragraph's text content reads "1 waterrefills queued" to a screen
         reader and to anyone copying it. The CSS margin is visual only. */}
-    {" "}refill{total === 1 ? "" : "s"} queued across all maps. Restarting the battlegroup applies {total === 1 ? "it" : "them"}; stopping leaves {total === 1 ? "it" : "them"} queued.
+    {" "}{summary.toLowerCase()} queued across all maps. Restarting the battlegroup applies {total === 1 ? "it" : "them"}; stopping leaves {total === 1 ? "it" : "them"} queued.
   </p>;
 }
 type ConfirmAction = (message: string, options?: { title?: string; confirmLabel?: string; cancelLabel?: string; danger?: boolean }) => Promise<boolean>;
@@ -128,6 +133,7 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
   const [readinessWarning, setReadinessWarning] = useState("");
   const [performance, setPerformance] = useState<PerformanceSnapshot | null>(null);
   const [performanceError, setPerformanceError] = useState("");
+  const [restartHistory, setRestartHistory] = useState<RestartHistoryResponse | null>(null);
   const [hasLoaded, setHasLoaded] = useState(Boolean(status || readiness));
   const homeActionRunId = useRef(0);
   const homeActionStartedAt = useRef(0);
@@ -268,6 +274,14 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
 
   useEffect(() => {
     let active = true;
+    Promise.resolve().then(() => serverApi.restartHistory()).then((result) => {
+      if (active) setRestartHistory(result);
+    }).catch(() => null);
+    return () => { active = false; };
+  }, [taskResult?.status, taskResult?.title]);
+
+  useEffect(() => {
+    let active = true;
     async function checkRecentFuncomAuthLogs() {
       const authCheck = await serverApi.checkFuncomToken("10m").catch(() => null);
       if (!active || !authCheck) return;
@@ -390,6 +404,7 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
       <article className="hero-panel">
         <h2>Server Overview</h2>
         <p>Use this dashboard for setup, service health, logs, backups, updates, and player admin actions.</p>
+        <p className="home-last-restart"><span>Last Battlegroup Restart</span><strong>{restartHistory?.lastBattlegroupRestart ? formatRestartTime(restartHistory.lastBattlegroupRestart.finishedAt) : "Not Recorded Yet"}</strong></p>
         <div className="action-row">
           <button className={loading ? "refresh-status-button refreshing" : "refresh-status-button"} disabled={refreshDisabled} onClick={() => refresh()}>{loading ? <span className="loading-dots">Refreshing</span> : "Refresh Status"}</button>
           <button disabled={startDisabled} title={controlsState.running ? "Battlegroup is already running." : ""} onClick={() => runServerAction("start")}><Play size={16} /> Start</button>
@@ -400,6 +415,7 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
         {taskResult && <HomeTaskResultCard result={taskResult} />}
         {localError && <p className="error">{localError}</p>}
       </article>
+      <HomeHighlights />
       <PerformanceCards performance={performance} error={performanceError} />
       <HomeHealthCards status={status} readiness={readiness} readinessWarning={readinessWarning} loading={loading} runningAction={runningAction} restartStartObserved={restartStartObserved} taskResult={taskResult} funcomTokenResult={funcomTokenResult} />
     </section>
@@ -418,13 +434,13 @@ function PerformanceCards({ performance, error }: { performance: PerformanceSnap
       label: "Memory",
       value: performance?.memory.percent == null ? "Unknown" : `${performance.memory.percent.toFixed(1)}%`,
       percent: performance?.memory.percent ?? 0,
-      detail: performance ? `${formatBytes(performance.memory.usedBytes)} / ${formatBytes(performance.memory.totalBytes)}` : "Waiting for sample"
+      detail: performance ? `${formatBytes(performance.memory.usedBytes)} / ${formatBytes(performance.memory.totalBytes)}` : "Waiting for Sample"
     },
     {
       label: "Disk",
       value: performance?.disk.percent == null ? "Unknown" : `${performance.disk.percent.toFixed(1)}%`,
       percent: performance?.disk.percent ?? 0,
-      detail: performance ? `${formatBytes(performance.disk.usedBytes)} / ${formatBytes(performance.disk.totalBytes)}` : "Waiting for sample"
+      detail: performance ? `${formatBytes(performance.disk.usedBytes)} / ${formatBytes(performance.disk.totalBytes)}` : "Waiting for Sample"
     },
     {
       label: "Uptime",
@@ -502,6 +518,7 @@ export function ServerPanel(props: {
   const [restartTime, setRestartTime] = useState("05:00");
   const [scheduleResult, setScheduleResult] = useState<HomeTaskResult | null>(null);
   const [serverTitle, setServerTitle] = useState("");
+  const hostname = useServerHostname();
   const [savedServerTitle, setSavedServerTitle] = useState("");
   const [serverMode, setServerMode] = useState<ServerMode>("public");
   const [savedServerMode, setSavedServerMode] = useState<ServerMode>("public");
@@ -592,7 +609,9 @@ export function ServerPanel(props: {
     }
     const titleChanged = title !== savedServerTitle.trim();
     const modeChanged = serverMode !== savedServerMode;
-    if (!titleChanged && !modeChanged) {
+    const hostnameChanged = hostname.changed;
+    if (!hostname.ready || !hostname.valid) return;
+    if (!titleChanged && !modeChanged && !hostnameChanged) {
       setTitleResult({ status: "succeeded", title: "No Changes to Save" });
       return;
     }
@@ -600,10 +619,15 @@ export function ServerPanel(props: {
       titleChanged ? `title to "${title}"` : "",
       modeChanged ? `mode to ${titleCase(serverMode)}` : ""
     ].filter(Boolean).join(" and ");
-    if (!(await confirmAction(`Change server ${changeList}? This saves the setting and refreshes Director/Gateway only if they are already running.`))) return;
+    if ((titleChanged || modeChanged) && !(await confirmAction(`Change server ${changeList}? This saves the setting and refreshes Director/Gateway only if they are already running.${hostnameChanged ? " The hostname will be saved afterward and requires your next Battlegroup restart." : ""}`))) return;
     setTitleResult({ status: "running", title: "Saving Settings" });
     props.onError("");
     try {
+      if (!titleChanged && !modeChanged) {
+        await hostname.save();
+        setTitleResult({ status: "succeeded", title: "Settings Saved — Battlegroup Restart Required" });
+        return;
+      }
       const final = await waitForTaskSilently((await serverApi.saveConfig({
         ...(titleChanged ? { title } : {}),
         ...(modeChanged ? { mode: serverMode } : {})
@@ -613,9 +637,10 @@ export function ServerPanel(props: {
       if (final.status === "succeeded") {
         if (titleChanged) setSavedServerTitle(title);
         if (modeChanged) setSavedServerMode(serverMode);
+        if (hostnameChanged) await hostname.save();
       }
       setTitleResult(final.status === "succeeded"
-        ? { status: "succeeded", title: "Settings Saved Successfully", details }
+        ? { status: "succeeded", title: hostnameChanged ? "Settings Saved — Battlegroup Restart Required" : "Settings Saved Successfully", details }
         : { status: "failed", title: "Settings Save Failed", details });
     } catch (error) {
       setTitleResult({ status: "failed", title: "Settings Save Failed", details: error instanceof Error ? error.message : String(error) });
@@ -997,7 +1022,8 @@ export function ServerPanel(props: {
             <option value="public">Public</option>
             <option value="local">Local</option>
           </select></label>
-          <button disabled={actionRunning || serviceRestartRunning || titleSaving} onClick={saveServerConfig}>Save Settings</button>
+          <ServerHostnameSetting hostname={hostname} disabled={actionRunning || serviceRestartRunning || titleSaving} />
+          <button disabled={actionRunning || serviceRestartRunning || titleSaving || !hostname.ready || !hostname.valid} onClick={saveServerConfig}>Save Settings</button>
           {titleResult && <span className={`inline-task-result result-${titleResult.status === "succeeded" ? "ok" : titleResult.status === "failed" ? "fail" : "running"}`}>
             <strong className={titleResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(titleResult.title, titleResult.status === "running")}</strong>
           </span>}
@@ -1020,6 +1046,7 @@ export function ServerPanel(props: {
           <strong className={serviceRestartResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(serviceRestartResult.title, serviceRestartResult.status === "running")}</strong>
         </span>}
       </div>
+      <RestartHistoryPanel refreshKey={`${taskResult?.status || ""}:${serviceRestartResult?.status || ""}`} />
       <ReadinessTimeline text={props.readiness} statusText={props.status} />
       <PortChecklist text={props.ports} statusText={props.status} />
       <section className="action-section">
@@ -1050,6 +1077,67 @@ export function ServerPanel(props: {
 
     </section>
   );
+}
+
+export function RestartHistoryPanel({ refreshKey }: { refreshKey: string }) {
+  const [history, setHistory] = useState<RestartHistoryResponse | null>(null);
+  const [filter, setFilter] = useState<"all" | RestartHistoryRow["scope"]>("all");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  async function load() {
+    setLoading(true);
+    setError("");
+    try { setHistory(await serverApi.restartHistory()); }
+    catch (loadError) { setError(loadError instanceof Error ? loadError.message : String(loadError)); }
+    finally { setLoading(false); }
+  }
+
+  useEffect(() => { void load(); }, [refreshKey]);
+  const rows = (history?.rows || []).filter((row) => filter === "all" || row.scope === filter);
+
+  return <details className="restart-history-panel">
+    <summary><span><strong>Restart History</strong><small>{history?.lastBattlegroupRestart ? `Last Battlegroup restart ${formatRestartTime(history.lastBattlegroupRestart.finishedAt)}` : "Tracking begins after this update"}</small></span></summary>
+    <div className="restart-history-content">
+      <div className="restart-history-toolbar">
+        <label>Show<select value={filter} onChange={(event) => setFilter(event.target.value as typeof filter)}>
+          <option value="all">All Restarts</option>
+          <option value="battlegroup">Battlegroup</option>
+          <option value="map">Maps</option>
+          <option value="service">Services</option>
+        </select></label>
+        <button className="secondary" disabled={loading} onClick={() => void load()}>{loading ? "Refreshing" : "Refresh"}</button>
+      </div>
+      {error && <p className="restart-history-message restart-history-error">{error}</p>}
+      {!error && !rows.length && <div className="restart-history-empty"><strong>No Matching Restarts</strong><span>No matching restarts have been recorded yet.</span></div>}
+      {rows.length > 0 && <div className="restart-history-table-wrap"><table className="restart-history-table">
+        <thead><tr><th>Completed</th><th>Type</th><th>Target</th><th>Source</th><th>Reason</th><th>Duration</th><th>Result</th></tr></thead>
+        <tbody>{rows.map((row) => <tr key={row.id}>
+          <td data-label="Completed" className="restart-history-completed">{formatRestartTime(row.finishedAt)}</td>
+          <td data-label="Type"><span className={`restart-history-scope scope-${row.scope}`}>{titleCase(row.scope)}</span></td>
+          <td data-label="Target" className="restart-history-target"><strong>{row.target}</strong>{row.partitionId && <small>Partition {row.partitionId}</small>}</td>
+          <td data-label="Source">{row.source}</td>
+          <td data-label="Reason" className="restart-history-reason">{row.reason}</td>
+          <td data-label="Duration">{formatRestartDuration(row.durationSeconds)}</td>
+          <td data-label="Result"><StatusPill value={row.result} /></td>
+        </tr>)}</tbody>
+      </table></div>}
+    </div>
+  </details>;
+}
+
+function formatRestartTime(value: string) {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "Unknown";
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
+}
+
+function formatRestartDuration(seconds: number) {
+  const value = Math.max(0, Math.round(seconds || 0));
+  if (value < 60) return `${value}s`;
+  const minutes = Math.floor(value / 60);
+  const remainder = value % 60;
+  return remainder ? `${minutes}m ${remainder}s` : `${minutes}m`;
 }
 
 async function waitForTask(task: Task, setTask: (task: Task) => void) {
@@ -1418,7 +1506,7 @@ function summarizeHomeStatus(status: string, readiness: string, readinessWarning
     ? restartStartObserved ? "Starting" : "Restarting Battlegroup"
     : runningAction === "stop" ? "Stopping" : isStarting ? "Starting" : "";
   const warmingOverall = /^Warming$/i.test(rawGames.label) ? "Warming" : "";
-  const overall = readinessReady && !runningAction ? "OK" : isStarting ? transitionOverall : runningAction ? transitionOverall : serverState.stopped || actionStopped ? "Stopped" : coreReadyWithReview ? "Needs Review" : warmingOverall || liveOverall;
+  const overall = readinessReady && !runningAction ? "OK" : isStarting ? transitionOverall : runningAction ? transitionOverall : serverState.databaseOnly && !actionStopped ? "Database Only" : serverState.stopped || actionStopped ? "Stopped" : coreReadyWithReview ? "Needs Review" : warmingOverall || liveOverall;
   const attentionHealth = !isStarting && !restartSuccessAwaitingFreshStatus && (serverState.stopped || actionStopped || actionFailed) ? attentionHomeHealthCards() : null;
   const transitionAction: "start" | "stop" | "restart" | "" = restartStartObserved
     ? "start"
@@ -1679,6 +1767,29 @@ function isHomeStartComplete(status: string, readiness: string) {
   return containersReady && listenersReady && databaseReady && flsReady && rabbitReady;
 }
 
+// dune-postgres, dune-orchestrator and dune-coriolis-coordinator all run
+// without a Battlegroup -- the console starts Postgres by itself for backups
+// and restores -- so none of them says whether the Battlegroup is up. Only the
+// game stack does.
+const gameStackContainers = [
+  "dune-rmq-admin",
+  "dune-rmq-game",
+  "dune-text-router",
+  "dune-director",
+  "dune-server-gateway",
+  "dune-server-survival-1",
+  "dune-server-overmap"
+];
+
+export function isGameStackDown(status: string) {
+  const containerLines = sectionLines(status, "Containers").filter((line) => !/^SERVICE\s+STATUS/i.test(line));
+  const reported = gameStackContainers.filter((name) => containerLines.some((line) => containerStatusLineHas(name, line, /.*/)));
+  // A partial container list is not evidence of anything.
+  if (reported.length < gameStackContainers.length) return false;
+  return gameStackContainers.every((name) => containerLines.some((line) =>
+    containerStatusLineHas(name, line, /\b(missing|stopped|exited|dead|not running)\b/i)));
+}
+
 export function containerStatusLineHas(containerName: string, line: string, statusPattern: RegExp) {
   const trimmed = line.trim();
   const firstSpace = trimmed.search(/\s/);
@@ -1720,7 +1831,7 @@ function preferKnownHomeHealth(primary: { label: string; status: string; detail:
   return /^Unknown$/i.test(primary.label) && !/^Unknown$/i.test(fallback.label) ? fallback : primary;
 }
 
-function getHomeServerState(status: string, readiness: string) {
+export function getHomeServerState(status: string, readiness: string) {
   const text = `${status}\n${readiness}`;
   const overall = findLineValue(status, ["overall"]);
   const containerLines = sectionLines(status, "Containers").filter((line) => !/^SERVICE\s+STATUS/i.test(line));
@@ -1745,12 +1856,19 @@ function getHomeServerState(status: string, readiness: string) {
     /\bNo\s+(running\s+)?containers\b/i.test(text),
     /\b(all|dune)\s+containers\s+(are\s+)?(stopped|down)\b/i.test(text),
     allContainersMissing,
-    publishOnlyPartialState
+    publishOnlyPartialState,
+    isGameStackDown(status)
   ];
+  // A state the console creates on purpose: it starts Postgres by itself for
+  // backups and restores, and leaves it up. Calling that plainly "stopped"
+  // hides a running database, and calling it "starting" was the bug this
+  // replaces -- nothing is starting.
+  const databaseUp = containerLines.some((line) => containerStatusLineHas("dune-postgres", line, /^Up\b/i));
+  const databaseOnly = databaseUp && isGameStackDown(status);
   const stopped = !bootStarting && stoppedSignals.some(Boolean);
   const running = !stopped && runningSignals.some(Boolean);
   const starting = bootStarting || (!stopped && !running && coreRuntimeContainerUp && (/\bUp\s+\d+/i.test(text) || /\b(WARMING|WAIT|STARTING)\b/i.test(text)));
-  return { running, stopped, starting };
+  return { running, stopped, starting, databaseOnly };
 }
 
 function isHomeBootStarting(status: string, readiness: string) {
@@ -1758,6 +1876,7 @@ function isHomeBootStarting(status: string, readiness: string) {
   if (!text.trim()) return false;
   if (/\b(server|stack)\s+(is\s+)?(stopped|offline)\b/i.test(text) || /\bNo\s+(running\s+)?containers\b/i.test(text)) return false;
   if (/Overall:\s*(READY|STOPPED|OFFLINE)/i.test(status) || /^READY:/m.test(readiness)) return false;
+  if (isGameStackDown(status)) return false;
   const containerLines = sectionLines(status, "Containers").filter((line) => !/^SERVICE\s+STATUS/i.test(line));
   const anyContainerUp = containerLines.some((line) => /\bUp\b/i.test(line));
   const coreStartupContainerUp = containerLines.some((line) =>
@@ -1782,6 +1901,7 @@ function homeOverallBadge(value: string) {
   const normalized = String(value || "").trim().toLowerCase();
   if (/\b(restarting|restart|stopping|starting)\b/.test(normalized)) return "WARN";
   if (/^stopped$/i.test(value)) return "WARN";
+  if (/^database only$/i.test(value)) return "WARN";
   if (/^issue(?: detected)?$/i.test(value)) return "WARN";
   if (/warming/i.test(value)) return "Info";
   if (/stopped|not running|offline/i.test(value)) return "WARN";

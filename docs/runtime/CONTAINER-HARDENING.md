@@ -164,5 +164,5 @@ $ bash tests/container-lifecycle-test.sh
 All 4 upstream CI checks pass on every push:
 - `api-tests` — full test suite
 - `metrics-unit` — metrics stack tests
-- `security-checks` — gitleaks, trivy, shellcheck, whitespace
+- `security-checks` — gitleaks, trivy, shellcheck, whitespace (details: [CI security checks](../security/ci-security-checks.md))
 - `api-dependency-audit` — npm audit

@@ -93,7 +93,10 @@ Defined in `docker-compose.public-probe.yml` (a small Go program,
 that switches it to `network_mode: host`. Requires three mandatory env vars
 (`DUNE_PUBLIC_PROBE_SERVER_ID`, `_SECRET`, `_SIGNAL_URL`). This is the
 mechanism backing the DuneDocker.app public server directory heartbeat —
-see the root [`README.md`](../../README.md), "Public Server Directory."
+see the root [`README.md`](../../README.md), "Public Server Directory." On
+native Linux it confines direct ICE candidates to UDP `32000-32015`; when that
+range is not permitted through the host and upstream network, the website's
+relay path remains available.
 
 ### 1.5 The gameplay containers (raw `docker run`, not Compose)
 
@@ -105,7 +108,21 @@ TextRouter → BattlegroupDirector → the always-on world servers
 map partitions (via `dune spawn` / `dune despawn`). An Autoscaler process
 (`runtime/scripts/autoscaler.sh`) runs continuously to spawn/despawn
 dynamic maps based on demand signals it tracks under
-`runtime/generated/autoscaler-*`.
+`runtime/generated/autoscaler-*`. Its two loop intervals are tunable
+(`DUNE_AUTOSCALER_INTERVAL`, `DUNE_AUTOSCALER_DEMAND_INTERVAL`), and its
+database queries go through the transport seam described in
+[DATABASE.md §2.1](DATABASE.md#21-how-runtime-scripts-connect) — relevant
+because this is the one process that queries Postgres continuously.
+
+Director log-based scans share one reconnecting, timestamped log follower.
+Its private, indexed cache retains the configured scan windows; replacing
+Director clears evidence from the previous container. Travel checks retain
+their two-second cadence, and unavailable log evidence defers recovery.
+Chat repair snapshots existing bindings and repairs only missing bindings in
+batches of at most 200. The optional `.env` values
+`DUNE_AUTOSCALER_CHAT_EXCHANGE_REPAIR_SECONDS` (default 300) and
+`DUNE_AUTOSCALER_CHAT_EXCHANGE_REPAIR_TIMEOUT_SECONDS` (default 60) are
+forwarded when the Autoscaler is recreated.
 
 ---
 
@@ -166,8 +183,8 @@ Authorization is a four-step pipeline invoked per request inside
    dedicated test (`test/rbacParity.test.js`) prevents merging a new route
    with no mapping.
 
-Five tiers are defined: `owner`, `admin`, `moderator`, `player`,
-`observer` (`policy.js`). Password login and `ADMIN_AUTH_DISABLED=1` both
+Four console tiers are defined: `owner`, `admin`, `moderator`, `player`
+(`policy.js`; the former `observer` is an alias for `player`). Password login and `ADMIN_AUTH_DISABLED=1` both
 always produce an `owner`-tier session. Policy documents persist to
 `runtime/generated/iam-policies.json` (mode `0600`) via an atomic write; a
 policy update that would strip the `owner` tier's `settings:write` action
@@ -186,10 +203,16 @@ server both write to the same `dune` schema, but they are separate OS
 processes — the closed-source game server establishes its own connection
 to Postgres independently; it does not share this repo's in-process `pg`
 pool object. The `dune` schema is the game-world schema, populated
-primarily by the closed-source dedicated server itself (`dune.accounts`,
-`dune.actors`, `dune.player_state`, `dune.landsraad_*`, world-partition
-tables, etc.). A small number of console-authored tables also live in
-this schema.
+primarily by the closed-source dedicated server itself. A small number of
+project-authored objects also live in this database, including the
+`console_market_history` and conditional `dune_runtime` schemas.
+
+**See [`DATABASE.md`](DATABASE.md) for the database itself** — the
+encryption view layer, partition provisioning, the notify channels that
+make a write take effect on a running map server, the capability probes
+that absorb schema drift between game builds, and a domain map of the
+tables. That document is the reference; this section only places the
+database within the component map.
 
 Backups of this database are covered by the `pg_dump`-based backup
 pipeline — see
@@ -202,7 +225,8 @@ from `https://raw.githubusercontent.com/Red-Blink/dune-docker-addons/main/index.
 verified by SHA-256 against the addon's manifest, and validated against a
 fixed, hardcoded permission allowlist
 (`ALLOWED_ADDON_PERMISSIONS`, e.g. `players:read`,
-`database:write`, `admin:grant-items`, `broadcast:send` — see the source
+`files:addon-data`, `rewards:grant`, `players:message`, `database:write`,
+`admin:grant-items`, `broadcast:send` — see the source
 for the exact, current full list). An optional
 `DUNE_SELF_UPDATE_TOKEN` (GitHub token), if configured, is attached to
 the catalog index/manifest fetch only — it is never sent with the addon
@@ -292,13 +316,45 @@ reads/writes them. All are relative to the repo root.
 |---|---|---|
 | `runtime/secrets/` | Yes | Operator credentials: Funcom Self-Host Service Token, FLS API key, RabbitMQ HTTP token-auth secret, command-auth token, the console's own auto-generated admin password. Created empty by `dune init`. |
 | `runtime/generated/` | Yes | Ephemeral/derived state written by running scripts: battlegroup identity, image-tag resolution, per-partition port reservations, map/sietch/Deep-Desert config, systemd-timer state (auto-update, restart-schedule, IP-change-restart, shutdown-protection), the IAM policy store (`iam-policies.json`), the admin command audit log. Created empty by `dune init`. |
-| `runtime/backups/` | Yes | `db/` (database backups), `self-update/` (both the CLI's own Git-state-repair tarballs and `self-update.sh`'s own backups), `system/` (encrypted full-system archives from `dune db backup-system`). |
+| `runtime/backups/` | Yes | `db/` (database backups), `self-update/` (both the CLI's own Git-state-repair tarballs and `self-update.sh`'s own backups), `system/` (encrypted full-system archives, mode `0600`, each with a non-secret `.yaml` sidecar), `restore-<timestamp>/` (what a system restore replaced, written before it applies). |
 | `runtime/data/` | No (shipped in the repo) | Static reference/lookup JSON shipped with the repo for `dune admin` item/vehicle/skill-module/XP-event-tag lookups — not operator-generated. |
-| `runtime/defaults/` | No (shipped in the repo) | `UserEngine.ini`, `UserGame.ini` — default engine config templates referenced by the multi-server documentation and `usersettings.py`. |
+| `runtime/defaults/` | No (shipped in the repo) | `UserEngine.ini`, `UserGame.ini` — default engine config templates referenced by the multi-server documentation and `usersettings.py`. Patch-1.5 native difficulty controls are materialized into each server's `Saved/Config/LinuxServer/ServerCustomSettings.ini`. |
 
 `.env` is also git-ignored and holds the resolved Compose project name plus
 every operator-set configuration value (see `.env.example` for the full,
 commented list of every supported variable, grouped by feature area).
+
+### 4.1 System backups
+
+`runtime/backups/system/` is the one runtime directory whose contents are
+*more* sensitive than the tree they came from: each archive bundles a database
+dump together with `.env`, all of `runtime/generated/` and all of
+`runtime/secrets/`. Nothing is redacted or excluded on the grounds of being a
+secret — confidentiality comes entirely from GPG AES-256-OCB (AEAD)
+encryption under an operator-supplied passphrase, and there is no recovery
+without it.
+
+Three structural points, each load-bearing:
+
+- **Shell-owned.** `backup_system` and `restore_system` live in
+  `runtime/scripts/db.sh`, not the console, because they have to work on a host
+  whose console is not configured yet — which is the migration case the
+  feature exists for. The console invokes them like any other operation.
+- **The passphrase never enters argv, the payload, or the audit log.** It
+  travels in the task's environment (`tasks.create`'s `options.env`, kept in
+  the run closure only, since the task object itself is retained and
+  serialized). The audit call and the secret are on different arguments.
+- **The non-secret `.yaml` sidecar is the console's read path.** Listing,
+  and the decisions the restore flow has to make before spending a passphrase
+  (Battlegroup identity, whether the archive carries an admin audit log), are
+  answered from the sidecar rather than by decrypting.
+
+Restore copies everything it is about to replace into
+`runtime/backups/restore-<timestamp>/` first, restores the database before
+swapping `.env` (the credentials the running process is using), and never
+restarts the stack — restoring `.env` can change the admin password and the
+database credentials, so that is left to the operator. See
+[`docs/console/database-backups.md`](../console/database-backups.md).
 
 ---
 

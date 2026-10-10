@@ -35,6 +35,18 @@ describe("exchangeApi", () => {
     expect(url).toContain("owner=all");
   });
 
+  it("builds the transaction-history query without rounding exchange ids", () => {
+    exchangeApi.transactions({ q: "spice", page: 2, pageSize: 100, hours: 720, party: "player", exchangeId: "9223372036854775000" });
+    const url = vi.mocked(api).mock.calls[0][0];
+    expect(url).toContain("/api/exchange/transactions?");
+    expect(url).toContain("q=spice");
+    expect(url).toContain("page=2");
+    expect(url).toContain("pageSize=100");
+    expect(url).toContain("hours=720");
+    expect(url).toContain("party=player");
+    expect(url).toContain("exchangeId=9223372036854775000");
+  });
+
   it("saves config via POST", () => {
     exchangeApi.saveConfig({ includeNpcBroker: true, botOwnerIds: ["75"], blacklistedOwnerIds: [] });
     expect(vi.mocked(post)).toHaveBeenCalledWith("/api/exchange/config", { includeNpcBroker: true, botOwnerIds: ["75"], blacklistedOwnerIds: [] });

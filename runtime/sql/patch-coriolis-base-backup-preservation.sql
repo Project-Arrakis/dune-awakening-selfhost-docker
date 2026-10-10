@@ -30,7 +30,7 @@ begin
   select pg_get_functiondef(target_oid) into original_definition;
   desired_count := regexp_count(
     original_definition,
-    $pattern$s[.]state[[:space:]]+IS[[:space:]]+DISTINCT[[:space:]]+FROM[[:space:]]+'BaseBackup'$pattern$,
+    $pattern$[as][.]state[[:space:]]+(IS[[:space:]]+DISTINCT[[:space:]]+FROM|<>)[[:space:]]+'BaseBackup'$pattern$,
     1,
     'i'
   );
@@ -45,9 +45,9 @@ begin
   if original_definition !~* $pattern$DELETE[[:space:]]+FROM[[:space:]]+actors$pattern$
     or original_definition !~* $pattern$owner_account_id[[:space:]]+IS[[:space:]]+NULL$pattern$
     or original_definition !~* $pattern$server_info_match[(]a,[[:space:]]*in_server_info[)]$pattern$
-    or regexp_count(original_definition, $pattern$s[.]state[[:space:]]+IS[[:space:]]+DISTINCT[[:space:]]+FROM[[:space:]]+'Travel'$pattern$, 1, 'i') <> 1
-    or regexp_count(original_definition, $pattern$s[.]state[[:space:]]+IS[[:space:]]+DISTINCT[[:space:]]+FROM[[:space:]]+'VehicleBackup'$pattern$, 1, 'i') <> 1
-    or regexp_count(original_definition, $pattern$s[.]state[[:space:]]+IS[[:space:]]+DISTINCT[[:space:]]+FROM[[:space:]]+'VehicleRecovery'$pattern$, 1, 'i') <> 1
+    or regexp_count(original_definition, $pattern$[as][.]state[[:space:]]+(IS[[:space:]]+DISTINCT[[:space:]]+FROM|<>)[[:space:]]+'Travel'$pattern$, 1, 'i') <> 1
+    or regexp_count(original_definition, $pattern$[as][.]state[[:space:]]+(IS[[:space:]]+DISTINCT[[:space:]]+FROM|<>)[[:space:]]+'VehicleBackup'$pattern$, 1, 'i') <> 1
+    or regexp_count(original_definition, $pattern$[as][.]state[[:space:]]+(IS[[:space:]]+DISTINCT[[:space:]]+FROM|<>)[[:space:]]+'VehicleRecovery'$pattern$, 1, 'i') <> 1
   then
     raise exception using
       message = 'Coriolis base-backup compatibility patch: Funcom function shape is not recognized; no change was made.',
@@ -56,9 +56,9 @@ begin
 
   patched_definition := regexp_replace(
     original_definition,
-    $pattern$(s[.]state[[:space:]]+IS[[:space:]]+DISTINCT[[:space:]]+FROM[[:space:]]+'VehicleBackup')$pattern$,
+    $pattern$(([as])[.]state[[:space:]]+(IS[[:space:]]+DISTINCT[[:space:]]+FROM|<>)[[:space:]]+'VehicleBackup')$pattern$,
     $replacement$\1
-        AND s.state IS DISTINCT FROM 'BaseBackup'$replacement$,
+        AND \2.state \3 'BaseBackup'$replacement$,
     'i'
   );
   if patched_definition = original_definition then
@@ -69,7 +69,7 @@ begin
 
   select regexp_count(
     pg_get_functiondef(target_oid),
-    $pattern$s[.]state[[:space:]]+IS[[:space:]]+DISTINCT[[:space:]]+FROM[[:space:]]+'BaseBackup'$pattern$,
+    $pattern$[as][.]state[[:space:]]+(IS[[:space:]]+DISTINCT[[:space:]]+FROM|<>)[[:space:]]+'BaseBackup'$pattern$,
     1,
     'i'
   ) into desired_count;

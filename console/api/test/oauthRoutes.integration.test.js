@@ -411,7 +411,7 @@ test("exchange denies a Discord account that does not match the configured allow
   }
 });
 
-test("exchange grants the allowlisted user a read-only observer session, never owner", async () => {
+test("exchange grants the allowlisted user a read-only player session, never owner", async () => {
   const consolePort = await getFreePort();
   const discordPort = await getFreePort();
   const tempDir = mkdtempSync(join(tmpdir(), "oauth-e2e-exch-ok-"));
@@ -429,9 +429,9 @@ test("exchange grants the allowlisted user a read-only observer session, never o
     const me = await (await fetch(`http://127.0.0.1:${consolePort}/api/auth/me`, {
       headers: { cookie: `asc_session=${sessionValue}` }
     })).json();
-    assert.equal(me.user.tier, "observer", "exchange must mint observer, not owner (issue #403)");
+    assert.equal(me.user.tier, "player", "exchange must mint player, not owner (issue #403)");
     assert.equal(me.user.id, USER_ID);
-    assert.match(exchangeAuditRows(tempDir), /"tier":"observer"/, "successful exchange must audit the granted observer tier (only the success path writes tier:observer)");
+    assert.match(exchangeAuditRows(tempDir), /"tier":"player"/, "successful exchange must audit the granted player tier (only the success path writes tier:player)");
   } finally {
     await stopProcess(console.child);
     await closeDiscordServer(discordServer);

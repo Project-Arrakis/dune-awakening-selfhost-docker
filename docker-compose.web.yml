@@ -38,8 +38,23 @@ services:
       ADMIN_AUTH_DISABLED: "${ADMIN_AUTH_DISABLED:-0}"
       ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
       ADMIN_TASK_RETENTION: "${ADMIN_TASK_RETENTION:-200}"
+      # Seed values for the Bases auto-refill settings. The console settings
+      # overlay writes runtime/generated/auto-refill-settings.json, which wins
+      # over these; they are the fallback when nothing has been set there.
+      # Without this passthrough the console never sees them at all -- there is
+      # no env_file here, so .env reaches the container only via this map.
+      ADMIN_AUTO_REFILL_THRESHOLD_PERCENT: "${ADMIN_AUTO_REFILL_THRESHOLD_PERCENT:-50}"
+      ADMIN_AUTO_REFILL_INTERVAL_HOURS: "${ADMIN_AUTO_REFILL_INTERVAL_HOURS:-24}"
+      ADMIN_AUTO_REFILL_WINDTRAP_THRESHOLD_PERCENT: "${ADMIN_AUTO_REFILL_WINDTRAP_THRESHOLD_PERCENT:-40}"
+      ADMIN_AUTO_REFILL_WATER_THRESHOLD_PERCENT: "${ADMIN_AUTO_REFILL_WATER_THRESHOLD_PERCENT:-50}"
+      ADMIN_AUTO_REFILL_WATER_INTERVAL_HOURS: "${ADMIN_AUTO_REFILL_WATER_INTERVAL_HOURS:-24}"
+      ADMIN_MARKET_HISTORY_RETENTION_DAYS: "${ADMIN_MARKET_HISTORY_RETENTION_DAYS:-0}"
       ADMIN_COMMAND_TIMEOUT_MS: "${ADMIN_COMMAND_TIMEOUT_MS:-1800000}"
+      ADMIN_UPDATE_CHECK_CACHE_MS: "${ADMIN_UPDATE_CHECK_CACHE_MS:-1800000}"
+      ADMIN_MAP_WRITE_FLUSH_TIMEOUT_MS: "${ADMIN_MAP_WRITE_FLUSH_TIMEOUT_MS:-300000}"
       ADMIN_MAX_JSON_BYTES: "${ADMIN_MAX_JSON_BYTES:-2097152}"
+      # Per-statement limit for base backup export/import (docs/console/base-backups.md).
+      ADMIN_BASE_BACKUP_STATEMENT_TIMEOUT_MS: "${ADMIN_BASE_BACKUP_STATEMENT_TIMEOUT_MS:-120000}"
       ALLOW_HOST_BOOTSTRAP: "${ALLOW_HOST_BOOTSTRAP:-false}"
       ADMIN_MOCK_MODE: "${ADMIN_MOCK_MODE:-0}"
       ADMIN_STATIC_DIR: /app/web-dist
@@ -66,9 +81,35 @@ services:
       # Forward the operator's Market Bot retention override to the console;
       # its backup subprocess inherits this environment value.
       DUNE_MARKET_BOT_BACKUP_KEEP: "${DUNE_MARKET_BOT_BACKUP_KEEP:-5}"
+      DUNE_VEHICLE_DELETE_BACKUP_KEEP: "${DUNE_VEHICLE_DELETE_BACKUP_KEEP:-10}"
+      DUNE_BASE_DELETE_BACKUP_KEEP: "${DUNE_BASE_DELETE_BACKUP_KEEP:-10}"
+      # System backups run db.sh inside this container, so these reach it only
+      # through this map -- documented in .env.example, they would otherwise
+      # have no effect on anything the console does.
+      DUNE_DB_AUTOSTART_POSTGRES: "${DUNE_DB_AUTOSTART_POSTGRES:-1}"
+      DUNE_SYSTEM_BACKUP_KEEP: "${DUNE_SYSTEM_BACKUP_KEEP:-0}"
+      DUNE_RESTORE_SAFETY_KEEP: "${DUNE_RESTORE_SAFETY_KEEP:-5}"
+      ADMIN_ASSET_DOWNLOAD_TIMEOUT_MS: "${ADMIN_ASSET_DOWNLOAD_TIMEOUT_MS:-14400000}"
+      ADMIN_MAX_UPLOAD_BYTES: "${ADMIN_MAX_UPLOAD_BYTES:-1073741824}"
+      ADMIN_RESTORE_PREVIEW_TTL_MS: "${ADMIN_RESTORE_PREVIEW_TTL_MS:-900000}"
       DUNE_DISCORD_ADAPTER_ENABLED: "${DUNE_DISCORD_ADAPTER_ENABLED:-false}"
       DUNE_DISCORD_ADAPTER_TOKEN: "${DUNE_DISCORD_ADAPTER_TOKEN:-}"
       DUNE_DISCORD_ADAPTER_TOKEN_FILE: "${DUNE_DISCORD_ADAPTER_TOKEN_FILE:-}"
+      # Write bridge (issue #215): found missing from this allowlist via live
+      # UAT on dune-dev -- the exact same bug class this file's own
+      # CONSOLE_TOTP_ENABLED/hosted-bot-OAuth comments below already
+      # document repeatedly ("never wired through here... unreachable in any
+      # real docker-compose deployment regardless of .env"). Without these,
+      # DUNE_DISCORD_WRITES_ENABLED=1 and a configured actor secret in .env
+      # have zero effect -- the write bridge stays completely disabled with
+      # no error indicating why, since the values never reach the running
+      # process at all. Confirmed live: applying this same fix directly to
+      # dune-dev's running deployment made a full, real write/preview ->
+      # write/execute round trip succeed against its live Core instance for
+      # the first time.
+      DUNE_DISCORD_WRITES_ENABLED: "${DUNE_DISCORD_WRITES_ENABLED:-}"
+      DUNE_DISCORD_ACTOR_SECRET: "${DUNE_DISCORD_ACTOR_SECRET:-}"
+      DUNE_DISCORD_ACTOR_SECRET_FILE: "${DUNE_DISCORD_ACTOR_SECRET_FILE:-}"
       # Hosted-bot console-initiated OAuth registration (Tasks 2/3/6, #739):
       # found missing from this allowlist during the final-review re-review
       # pass -- the exact same bug class this file's own CONSOLE_TOTP_ENABLED

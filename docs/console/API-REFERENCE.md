@@ -2,7 +2,7 @@
 
 **Status:** Current | **Last Updated:** August 2026
 
-Complete reference for all HTTP API endpoints in the Dune Docker Console. All endpoints require authentication (session cookie + CSRF token) unless otherwise noted.
+Complete reference for all HTTP API endpoints in the Dune Docker Console. All endpoints require authentication unless otherwise noted — either a browser session (session cookie + CSRF token) or a scoped API key sent as `Authorization: Bearer <key>`. See [api-keys.md](api-keys.md) for how key scopes are granted and what they can never reach. For the database these endpoints read and write — the encryption view layer, the notify channels that decide whether a write reaches a running map server, and the capability probes that make an endpoint report a feature as unsupported rather than fail — see [DATABASE.md](../architecture/DATABASE.md).
 
 **Format:** HTTP Method | Route | Description | Parameters
 
@@ -27,6 +27,7 @@ Complete reference for all HTTP API endpoints in the Dune Docker Console. All en
 - [Addons](#addons)
 - [Logs & Monitoring](#logs--monitoring)
 - [Settings & Public Directory](#settings--public-directory)
+- [API Keys](#api-keys)
 - [Discord Adapter (Experimental)](#discord-adapter-experimental)
 - [Implementation Details](#implementation-details)
 
@@ -60,7 +61,7 @@ Complete reference for all HTTP API endpoints in the Dune Docker Console. All en
 
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|
-| GET | `/api/server/status` | Server status command | None |
+| GET | `/api/server/status` | Structured server status and command diagnostics | `raw?` (`0` omits legacy command output) |
 | GET | `/api/server/performance` | Performance snapshot (CPU, memory, disk) | None |
 | GET | `/api/server/readiness` | Service readiness check | None |
 | GET | `/api/server/ports` | List service ports | None |
@@ -77,6 +78,7 @@ Complete reference for all HTTP API endpoints in the Dune Docker Console. All en
 | POST | `/api/server/config` | Set server config | `title?`, `mode?` ("public" \| "local") |
 | POST | `/api/server/funcom-token` | Save Funcom token | `token` (string) |
 | GET | `/api/server/funcom-token/check` | Check Funcom token validity | `since` (query param) |
+| GET | `/api/server/restart-history` | Recent restarts (newest first, up to 100 rows) plus the last successful Battlegroup restart, or `null` if none | None |
 | GET | `/api/server/restart-schedule` | Get restart schedule status | None |
 | POST | `/api/server/restart-schedule` | Save restart schedule | `enabled`, `time`, `notifyMinutes?` |
 | GET | `/api/server/ip-change-restart` | Get IP change restart status | None |
@@ -97,6 +99,37 @@ When the Restart Queue is enabled, the restart routes above (`/api/server/restar
 `?restartQueue=immediate` to force an immediate restart. See
 [restart-queue.md](restart-queue.md).
 
+### Structured Server Status
+
+`GET /api/server/status` returns a stable, versioned object for integrations. Use `data` instead of parsing command output:
+
+```json
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "data": {
+    "summary": {
+      "overall": "READY",
+      "title": "My Dune Server",
+      "region": "Europe",
+      "mode": "public",
+      "serverIp": "203.0.113.10",
+      "battlegroup": "sh-example",
+      "population": { "current": 4, "capacity": 60 }
+    },
+    "containers": [{ "name": "dune-postgres", "status": "Up 2 hours" }],
+    "listeners": [{ "name": "Postgres localhost", "port": 15432, "protocol": "TCP", "status": "OK" }],
+    "database": { "worldPartitions": 36 },
+    "gameServers": [{ "map": "Survival_1", "status": "READY", "uptime": "Up 2 hours" }],
+    "automation": { "autoscaler": "RUNNING", "autoUpdates": "DISABLED" },
+    "rabbitmq": { "directorConnections": 1, "gameServerConnections": 2, "textRouterConnections": 1, "details": null },
+    "fls": { "directorHeartbeat": "OK", "populationDeclaration": "OK", "maxCapacityDeclaration": "OK", "gatewayDbMonitoring": "OK" }
+  }
+}
+```
+
+Unavailable numeric and boolean values are `null`, and unavailable collections are empty arrays. `ok` reports whether the underlying status command completed successfully; health is reported separately in `data.summary.overall`. The legacy `operation`, `stdout`, `stderr`, and `exitCode` fields remain available for command diagnostics and backward compatibility. Add `?raw=0` to omit those legacy fields and return only the compact structured response. Status snapshots are cached briefly and refreshed in the background so frequent integration polling does not repeatedly block on the same host checks.
+
 ---
 
 ## Updates
@@ -106,12 +139,25 @@ When the Restart Queue is enabled, the restart routes above (`/api/server/restar
 | POST | `/api/updates/check-game` | Check for game updates | `fresh?` (boolean) |
 | POST | `/api/updates/apply-game` | Apply game updates | None |
 | POST | `/api/updates/fix-steamcmd` | Fix SteamCMD issues | None |
+| POST | `/api/updates/install-assets` | Install game files and images only, without touching the database | None |
+| POST | `/api/console/reload` | Recreate the Console container so it reads a changed `.env` (no image rebuild) | None |
 | POST | `/api/updates/check-stack` | Check for stack updates | None |
 | POST | `/api/updates/apply-stack` | Apply stack updates | None |
 | GET | `/api/updates/auto-game` | Get auto-update status | None |
 | GET | `/api/updates/stack-progress` | Progress of an in-flight stack update | None |
 | POST | `/api/updates/auto-game` | Save auto-update config | `enabled`, `intervalMinutes`, `applyEnabled`, `notifyEnabled`, `notifyMinutes`, `waitUntilEmpty`, `maxWaitMinutes`, `confirmation` |
 | POST | `/api/updates/repair-runtime` | Repair runtime installation | None |
+| GET | `/api/updates/qa/status` | Check whether this session is authorized for Discord-gated QA pre-release updates | `refresh?` (`"1"` to bypass cache) |
+| POST | `/api/updates/qa/login` | Start Discord OAuth authorization for QA pre-release updates | None |
+| POST | `/api/updates/qa/logout` | Revoke this session's QA authorization | None |
+| GET | `/api/updates/qa/build` | Check the latest QA pre-release build and whether it's ready to apply | None |
+| POST | `/api/updates/qa/apply` | Apply the latest QA pre-release build | None |
+| POST | `/api/updates/qa/reinstall-release` | Reinstall the public release, overwriting a QA pre-release build | None |
+
+Successful game checks are cached for 30 minutes in
+`runtime/generated/game-update-check.json`, including across Console restarts.
+Authenticated browser requests may pass `fresh: true` to force a live Steam
+query; API keys always use the shared cached path.
 
 ---
 
@@ -122,24 +168,68 @@ When the Restart Queue is enabled, the restart routes above (`/api/server/restar
 | GET | `/api/backups` | List all backups | None |
 | POST | `/api/backups/create` | Create new backup | None |
 | POST | `/api/backups/restore` | Restore from backup | `backup` (string, filename) |
-| GET | `/api/backups/{backup}/download` | Download backup archive | `backup` (string) |
+| GET | `/api/backups/{backup}/download` | Download backup archive (dump + metadata) | `backup` (string) |
 | DELETE | `/api/backups/{backup}` | Delete backup | `backup` (string) |
 | POST | `/api/backups/delete-all` | Delete all backups | None |
+| POST | `/api/backups/delete-selected` | Delete a chosen subset of backups | `backups` (array of filenames) |
 | POST | `/api/backups/import-external` | Import external backup | multipart form: `backup`, `metadata` |
+| GET | `/api/backups/system` | List encrypted system backups (archive + non-secret sidecar fields) | None |
+| POST | `/api/backups/system/create` | Create an encrypted system backup (database + `.env` + `runtime/generated` + `runtime/secrets`). Requires `backups:create-system` | `passphrase` (string, 12-1024 chars, at least 5 different characters) |
+| POST | `/api/backups/system/import` | Upload a system backup: the `.tar` the download produces, or a bare `.tar.gz.enc`. Body is the file itself, streamed to disk. Requires `backups:import-system` | `filename` (query), `onConflict` (query: `overwrite` or `rename`) |
+| GET | `/api/backups/system/{name}/download` | Download a system backup as one uncompressed `.tar` holding the encrypted archive and its `.yaml` sidecar. Add `?raw=1` for the bare archive, or name the sidecar directly to fetch it alone. Streamed, never buffered. Requires `backups:download-system` | `name` (string), `raw` (optional) |
+| DELETE | `/api/backups/system/{name}` | Delete a system backup and its `.yaml` sidecar. Requires `backups:delete-system` | `name` (string) |
+| POST | `/api/backups/system/delete-selected` | Delete the named system backups. Requires `backups:delete-system` | `backups` (string array) |
+| POST | `/api/backups/system/delete-all` | Delete every system backup. Requires `backups:delete-system` | None |
+| POST | `/api/backups/system/{name}/restore` | Restore a system backup: database, `.env`, `runtime/generated`, `runtime/secrets`. Dry run unless `apply` is set. **An apply is refused with 409 unless the same caller has successfully previewed this archive** (see below). Does not restart the stack. Requires `backups:restore-system` | `name` (string), `passphrase` (12-1024 chars), `apply` (optional), `identityMode` (optional: `adopt-backup` or `keep-current`), `auditLogMode` (optional: `adopt-backup` or `keep-current`) |
 | GET | `/api/backups/auto` | Get auto-backup status | None |
 | POST | `/api/backups/auto` | Save auto-backup config | `enabled`, `time`, `retentionDays`, `intervalHours` |
+
+See [database-backups.md](database-backups.md) for the difference between a plain
+backup and a system backup, the passphrase and Battlegroup-identity rules the
+`system/*` and `restore` routes above enforce, and how to move an archive to a
+new host.
+
+### Preview before apply is enforced by the API
+
+A system restore replaces `.env`, `runtime/secrets/`, `runtime/generated/` and the
+database. `apply` is therefore refused with **409** unless the *same* caller has
+already run a preview of that archive that **succeeded**:
+
+- Send the restore with `apply` omitted (or false) and wait for the task to
+  finish. A preview that fails authorizes nothing.
+- Then send it again with `apply: true`.
+
+The preview is remembered against the calling session or API key, the archive's
+name, and a hash of the archive's bytes. An apply is refused when the archive
+changed after the preview (409, "changed after it was previewed"), when the
+preview has expired (409, "expired"), or when it was another caller who
+previewed. A successful restore consumes the preview, so a repeated apply needs
+a fresh one; a *failed* restore does not, so a retry does not need one.
+
+`identityMode` and `auditLogMode` may be chosen at apply time even when the
+preview did not carry them — the preview is what reveals that a choice is
+needed. Changing an answer the preview already carried is refused.
+
+The window is `ADMIN_RESTORE_PREVIEW_TTL_MS` (default 15 minutes, floor 1 minute,
+ceiling 2 hours). Previews are held in memory, so restarting the console clears
+them.
 
 ---
 
 ## Players
 
+> **`player`-tier sessions** see only their own data: `GET /api/players`, `/online` and `/search` return just the caller's linked characters, `GET /api/players/{id}` and its `inventory`, `vehicles`, `bases`, `currency` and `solaris-coin` sub-resources work only for the caller's own character, and every other `/api/players/**` path (and any non-GET) answers `404`. The same applies to `/api/guilds` (own guild only; `/members` returns names and ranks). See [console-iam.md](../console-iam.md).
+
 ### Listing & Search
 
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|
-| GET | `/api/players` | List players (paginated) | `q?`, `page?`, `pageSize?`, `status?` (`all`, `online`, `offline`, or `banned`), `sortColumn?`, `sortDirection?` |
+| GET | `/api/players` | List players (paginated). Set `recentOnly=1` to keep online players and hide offline players beyond the configured inactivity threshold. | `q?`, `page?`, `pageSize?`, `status?` (`all`, `online`, `offline`, or `banned`), `sortColumn?`, `sortDirection?`, `recentOnly?` |
+| GET | `/api/players/list-settings` | Read the Active Players visibility threshold (`null`/Never by default) and whether the current session may change it | None |
+| POST | `/api/players/list-settings` | Change the inactivity threshold; `null` means Never | `inactiveWeeks` (whole number from 1 to 8, or `null`) |
 | GET | `/api/players/online` | List currently online players | `page?`, `pageSize?` |
 | GET | `/api/players/search` | Search players by name/ID | `q` (required, query param) |
+| GET | `/api/players/deleted-characters` | List deleted characters holding bases or vehicles, plus unattributed orphaned assets. See [deleted-characters.md](deleted-characters.md) | None |
 
 Player rows include `total_playtime_seconds`. The console samples `player_state.online_status` every 10 seconds and persists completed session time in `dune.console_player_playtime`; the currently active session is included from `last_login_time`. Tracking begins when this console version first runs, so time from older completed sessions cannot be reconstructed.
 
@@ -149,12 +239,13 @@ Player rows include `total_playtime_seconds`. The console samples `player_state.
 |--------|-------|-------------|------------|
 | GET | `/api/players/{playerId}` | Get player profile summary | `playerId` |
 | GET | `/api/players/{playerId}/inventory` | Get player inventory items — backpack, character gear, loadout, and unique-gear schematics (emote containers excluded), each row tagged with `inventory_type` | `playerId` |
-| GET | `/api/players/{playerId}/vehicles` | Get vehicles owned by or shared with the player, including the player's access relationship | `playerId` |
+| GET | `/api/players/{playerId}/vehicles` | Get vehicles owned by or shared with the player, including the player's access relationship. Returns at most 200 rows. Optional `?access=owner\|coowner` narrows the list: `owner` is a vehicle the player's account owns or where they hold roster rank 1; `coowner` is roster rank 2 on a vehicle their account does not own (default and any other value: all roster ranks; guild/public piece access is not per-player and is never listed). The filter narrows what is returned; it is not an authorization control, and `players:read` still gates the route | `playerId` |
+| GET | `/api/players/{playerId}/bases` | List the bases the player holds a roster rank on (one request, capped at 5,000 rows), with the player's access relationship. Optional `?access=owner\|coowner` narrows to rank 1 / rank 2 (default and any other value: all roster ranks; guild/public access is per-piece, so it is not listed here), and the totals follow the filter. Also accepts `q`, `sortColumn`, `sortDirection` | `playerId` |
 | GET | `/api/players/{playerId}/currency` | Get player currency totals | `playerId` |
 | GET | `/api/players/{playerId}/solaris-coin` | Get Solaris Coin total | `playerId` |
 | GET | `/api/players/{playerId}/factions` | Get faction reputation | `playerId` |
 | GET | `/api/players/{playerId}/intel` | Get intel data | `playerId` |
-| GET | `/api/players/{playerId}/specs` | Get skill specializations | `playerId` |
+| GET | `/api/players/{playerId}/specs` | Get skill specializations. Each `skillModules` row carries the raw `skill_points_spent` (the game stores a cumulative point *cost*, not a rank) plus `max_level` from the catalog and the `level` resolved against that module's `pointLadder` in `runtime/data/admin-skill-modules.json` — read `level` for the rank | `playerId` |
 | GET | `/api/players/{playerId}/position` | Get player position on map | `playerId` |
 | GET | `/api/players/{playerId}/progression` | Get level and progression | `playerId` |
 | GET | `/api/players/{playerId}/vitals` | Get health/hydration/addiction | `playerId` |
@@ -257,11 +348,14 @@ Player rows include `total_playtime_seconds`. The console samples `player_state.
 |--------|-------|-------------|------------|
 | GET | `/api/bases` | List bases (paginated) | `q?`, `page?`, `pageSize?`, `sortColumn?`, `sortDirection?` |
 | GET | `/api/bases/{baseId}/export` | Export base as blueprint | `baseId` |
-| POST | `/api/bases/{baseId}/refill-generators` | Refill all base generators (queued instead if the map isn't safely writable right now) | `baseId` |
+| GET | `/api/bases/{baseId}/export-backup` | Export a live (not picked-up) base as a base backup file, importable with `POST /api/base-backups/import` (`bases:export-backup`; rate limited, audited). Read-only; 409 `no_owner` for an ownerless base, 409 `picked_up` for a picked-up one. See [base-backups.md](base-backups.md#downloading-a-live-base-as-a-base-backup) | `baseId`; 400 bad id, 404 unknown base or no totem, 501 unsupported, 503 timeout |
+| POST | `/api/bases/{baseId}/refill-generators` | Refill all base generators and windtrap filters (queued instead if the map isn't safely writable right now). Windtrap filters keep their current tier, capped at 5. Returns "No generators, wind turbines or windtraps were found at this base" if none exist | `baseId` |
 | GET | `/api/bases/pending-refills` | List queued generator refills, grouped by restart target | None |
 | DELETE | `/api/bases/{baseId}/queued-refill` | Cancel a base's queued generator refill | `baseId` |
 | GET | `/api/bases/auto-refill` | Get per-base auto-refill enrollment state | None |
 | POST | `/api/bases/{baseId}/auto-refill` | Enable/disable auto-refill for a base | `baseId`, `enabled` |
+| GET | `/api/bases/auto-refill/settings` | Get the threshold and scan interval for both auto-refill subsystems, with the source (`console`/`env`/`default`), reset value, and range of each | None |
+| POST | `/api/bases/auto-refill/settings` | Save auto-refill thresholds/intervals. A number sets, `null` resets to the env/default layer, an omitted key is unchanged. Rate limited; requires `bases:write-config`, not `bases:mutate` | `thresholdPercent?`, `windtrapThresholdPercent?`, `intervalHours?`, `waterThresholdPercent?`, `waterIntervalHours?` |
 | GET | `/api/bases/{baseId}/water` | Get a base's water storage containers (count, volume, fill %; blood volume/fill for Blood Purifiers) | `baseId` |
 | POST | `/api/bases/{baseId}/refill-water` | Refill all base water storage (queued instead if the map isn't safely writable right now). Water only -- blood is never touched | `baseId` |
 | GET | `/api/bases/pending-water-refills` | List queued water refills, grouped by restart target | None |
@@ -276,9 +370,22 @@ Player rows include `total_playtime_seconds`. The console samples `player_state.
 | POST | `/api/bases/{baseId}/system-custodian` | Transfer ownership to the Server or detected GM system custodian while preserving the roster; provisions Server when no custodian exists | `baseId` |
 | PUT | `/api/bases/{baseId}/permissions` | Replace a base's permission roster | `baseId`, `entries[]` (`playerId`, `rank`) |
 | GET | `/api/bases/permission-candidates` | Search players eligible to be added to a roster | `q?`, `limit?` |
+| GET | `/api/bases/{baseId}/child-access` | Every child piece (door, device) on a base plus its own root totem (`is_child=false`), each with its access level — a different 5-tier scale from the roster rank above; Sub-Fief is Associate (3) | `baseId` |
+| POST | `/api/bases/{baseId}/child-access` | Set specific pieces to specific access levels (1-5); queued for the next map restart instead if the base's map is live (`result.queued`). Requires `{ updates: [{ actorId, accessLevel }], confirmation: "SET CHILD ACCESS" }` | `baseId`, `updates[]` |
+| GET | `/api/bases/pending-child-access` | List queued permission changes, grouped by restart target. Each entry carries its own `updates[]` payload | None |
+| DELETE | `/api/bases/{baseId}/queued-child-access` | Discard a base's queued permission changes | `baseId` |
 | DELETE | `/api/bases/{baseId}` | Permanently delete a base and everything on it (queued instead if the map isn't safely writable right now); takes a full-database safety backup first. Requires `{ confirmation: "DELETE BASE" }` | `baseId` |
 | GET | `/api/bases/pending-deletes` | List queued base deletes, grouped by restart target | None |
 | DELETE | `/api/bases/{baseId}/queued-delete` | Cancel a base's queued delete | `baseId` |
+| GET | `/api/base-backups` | List the game's base backups (picked-up bases) optionally for one player; includes a `supported` flag, `missing[]` when schema support is incomplete, and `maps[]` (maps a backup can be moved to) | `playerId?` (player pawn id, to list one player's backups); returns 404 if playerId is not a player |
+| GET | `/api/base-backups/{backupId}/export` | Download one base backup as a JSON file (attachment named `<owner>_<backup>_base-backup_<id>.json`; `bases:export-backup`; rate limited, audited) | `backupId`; 400 bad id, 404 unknown backup, 501 unsupported, 503 timeout |
+| PUT | `/api/base-backups/{backupId}` | Reassign a picked-up base to another player, rename it and/or move it to another map (`bases:edit-backup`). The current owner must be offline | JSON `{ ownerPlayerId?, name?, map? }` (`ownerPlayerId` is a player pawn id; `name` 1-23 characters, not starting with `##`; `map` one of the list response's `maps`); 400 invalid_name / invalid_map / no_change, 404 backup or player not found, 409 owner_online or invalid_target, 501 unsupported, 503 timeout |
+| DELETE | `/api/base-backups/{backupId}` | Permanently delete a picked-up base and everything stored in it (`bases:delete-backup`). Takes a full-database safety backup first; the current owner must be offline | JSON `{ confirmation: "DELETE BACKUP" }`; 400 confirmation_required, 404 not_found, 409 owner_online, 501 unsupported (no `dune.base_backup_delete`), 503 timeout |
+| POST | `/api/base-backups/import` | Import a base backup file as a new backup for a player | Multipart form: `player_id` (pawn id), `file`, optional `allow_version_mismatch=1`; 400 invalid_file / invalid player_id / unsupported_version, 404 player not found, 409 version_mismatch or invalid_target (player has no controller), 501 unsupported, 503 timeout |
+
+Base backups are the backups created when a player picks up a base with the
+game's own tool. See [Base backups](base-backups.md#export-and-import) for
+import/export details.
 
 `GET /api/bases` excludes a base that has been picked up via the game's own
 base-backup tool (unclaimed and registered in `dune.base_backup_linked_actors`
@@ -310,6 +417,15 @@ a delete against a live map is written straight away rather than queued, matchin
 the refill routes' behavior on a schema without `world_partition`. See
 [Base deletion](base-deletion.md).
 
+`GET /api/bases` also reports `capabilities.baseChildAccessQueue` (child access
+plus `dune.world_partition`). Without it a child-access write against a live map
+is applied straight away rather than queued, matching how the refill and delete
+queues degrade on an older schema. Unlike those queues this one is not about an
+autosave race — the write would stick — but a running map never applies an
+access level change, so queuing keeps the console from showing a level the game
+does not enforce. See
+[base-child-permissions.md](base-child-permissions.md).
+
 `PUT` takes the whole roster rather than a delta — the server diffs it against
 current state and applies only the difference. `rank` is `1` Owner, `2` Co-Owner,
 `3` Associate, and exactly one entry must be rank 1. `playerId` must be a player's
@@ -322,8 +438,8 @@ generator refill routes above. See [base-permissions.md](base-permissions.md).
 
 `GET /api/bases/{baseId}/inventory` covers storage containers plus refinery,
 fabricator, and other inventories (recycler, repair station, the base's own
-Sub-Fief console); generator and windtrap fuel belong to the refill and water
-routes above. Its `containers[].items[]` is merged per item template, not per
+Sub-Fief console); generator fuel and windtrap filters belong to the refill route
+above, and stored water belongs to the water route. Its `containers[].items[]` is merged per item template, not per
 slot — `GET /api/bases/{baseId}/containers/{placeableId}` is the per-slot view,
 fetched one container at a time because slots roughly triple the response.
 
@@ -373,34 +489,70 @@ tab can offer a retry only where retrying could actually help.
 
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|
-| GET | `/api/vehicles` | List all player vehicles (paginated), each with owner, shared-with roster, lowest-component condition %, fuel %, map/partition, coordinates, and per-component durability | `q?`, `page?`, `pageSize?`, `sortColumn?`, `sortDirection?` |
-| GET | `/api/players/{playerId}/vehicles` | List the selected player's owned and shared vehicles using the same vehicle details | `playerId` |
-| GET | `/api/vehicles/{vehicleId}/permissions` | Get a vehicle's permission roster (Owner, Co-Owners, Associates) | `vehicleId` |
+| GET | `/api/vehicles` | List all player vehicles (paginated), each with owner, shared-with roster, lowest-component condition %, fuel %, map/partition, coordinates, and per-component durability. `status` narrows the list: `owned` (has an owner or is in `Travel`, not put away), `recovery` (Stored for Recovery), `backup` (Vehicle Backup), `unowned` (no owner, not put away or in `Travel`), or `all` (default) | `q?`, `page?`, `pageSize?`, `sortColumn?`, `sortDirection?`, `status?` |
+| GET | `/api/players/{playerId}/vehicles` | List the selected player's owned and shared vehicles using the same vehicle details. Accepts the same optional `?access=owner\|coowner` filter and 200-row cap | `playerId` |
+| GET | `/api/vehicles/{vehicleId}/permissions` | Get a vehicle's permission roster (Owner, Co-Owners, Associates) plus the detected system custodian | `vehicleId` |
 | PUT | `/api/vehicles/{vehicleId}/permissions` | Replace a vehicle's permission roster | `vehicleId`, `entries[]` (`playerId`, `rank`) |
+| POST | `/api/vehicles/{vehicleId}/system-custodian` | Transfer ownership to the Server or detected GM system custodian while preserving the roster; provisions Server when no custodian exists | `vehicleId` |
 | GET | `/api/vehicles/permission-candidates` | Search players eligible to be added to a vehicle roster | `q?`, `limit?` |
+| GET | `/api/vehicles/{vehicleId}/storage` | Read a vehicle's cargo hold slot by slot (read-only): capacity, per-slot item, quantity, grade, durability and augments | `vehicleId` |
+| DELETE | `/api/vehicles/{vehicleId}/storage/items/{itemId}` | Delete one stack from a vehicle's cargo hold, or part of it with `count`. Requires `{ confirmation: "DELETE ITEM" }` | `vehicleId`, `itemId`, `count?` |
+| DELETE | `/api/vehicles/{vehicleId}/storage/items` | Delete a chosen set of whole stacks (max 200). Requires `{ confirmation: "DELETE ITEMS" }` | `vehicleId`, `itemIds[]` |
+| DELETE | `/api/vehicles/{vehicleId}/storage/all-items` | Empty a vehicle's cargo hold. Requires `{ confirmation: "DELETE ALL ITEMS" }` | `vehicleId` |
+| DELETE | `/api/vehicles/{vehicleId}` | Permanently delete a vehicle and everything on it (queued instead if the map isn't safely writable right now); takes a full-database safety backup first. Requires `{ confirmation: "DELETE VEHICLE" }` | `vehicleId` |
+| DELETE | `/api/vehicles/{vehicleId}/stored` | Permanently delete a vehicle that is Stored for Recovery; refused for any other state and while its owner is online. Takes a full-database safety backup first. Requires `{ confirmation: "DELETE STORED VEHICLE" }` and the `vehicles:stored-delete` action | `vehicleId` |
+| GET | `/api/vehicles/pending-deletes` | List queued vehicle deletes, grouped by restart target | None |
+| DELETE | `/api/vehicles/{vehicleId}/queued-delete` | Cancel a vehicle's queued delete | `vehicleId` |
 
-`GET /api/vehicles` and the player-scoped list are read-only; the three
-permission routes above are the only vehicle mutations, and they share their
-implementation with the base permission routes -- see
-[vehicle-permissions.md](vehicle-permissions.md). Unlike bases, there is no
-vehicle transfer/system-custodian route by design.
+`GET /api/vehicles` and the player-scoped list are read-only; the permission
+routes share their implementation with the base permission routes -- see
+[vehicle-permissions.md](vehicle-permissions.md). The system-custodian route
+mirrors the base one exactly, minus the backed-up guard: a vehicle's stored
+states (`VehicleBackup`, `VehicleRecovery`) are actor lifecycle states rather
+than an unclaimed base. The delete route mirrors `DELETE /api/bases/{baseId}`
+and refuses those states and `Travel`; `DELETE /api/vehicles/{vehicleId}/stored`
+is the separate, separately-permissioned delete for a `VehicleRecovery` vehicle --
+see [vehicle-deletion.md](vehicle-deletion.md). The storage routes read and
+delete the vehicle's single cargo hold -- reached through
+`dune.inventories.actor_id`, not `vehicle_module_id`, which is empty in
+production. Deletion needs no stopped map but refuses while the vehicle is in
+`Travel`/`VehicleBackup`/`VehicleRecovery`, and is gated on `vehicles:delete-item`
+/ `vehicles:bulk-delete-items` rather than `vehicles:mutate` -- see
+[vehicle-storage.md](vehicle-storage.md).
 
 `GET /api/vehicles` reports `capabilities.vehicles`; it is false (with a
 `reason`) when the schema lacks the required tables (`vehicles`, `vehicle_modules`,
 `actors`, `permission_actor`, `permission_actor_rank`, `player_state`,
 `actor_fgl_entities`, `fgl_entities`). It also reports
-`capabilities.vehiclePermissions` (the schema additionally has `dune.map_names`
+`capabilities.vehicleStorage` (the schema additionally has `dune.inventories`
+and `dune.items`, which is what gates the Components tab's View Contents
+button), and `capabilities.vehiclePermissions` (the schema additionally has `dune.map_names`
 and the game's `permission_set_player_rank` / `permission_remove_player_rank`
 procedures) -- the permission routes and the Permissions tab are unavailable
-when it is false. Sortable `sortColumn` values: `id`, `name`,
+when it is false. `capabilities.vehicleDelete` similarly gates the Delete
+Vehicle action (`dune.vehicles`/`vehicle_modules`/`actors` plus
+`permission_actor_destroy`/`delete_actors`), and `capabilities.vehicleDeleteQueue`
+additionally requires `dune.world_partition` -- without it, deletes are
+always immediate rather than queued when the map is live.
+`capabilities.vehicleStoredDelete` gates the Delete Stored Vehicle action; it
+needs `vehicleDelete` plus `dune.actors.state`, `dune.recovered_vehicles`
+(`vehicle_id`, `character_id`, `time_stored`, `reason`) and `dune.player_state`
+(`id`, `account_id`, `character_name`, `online_status`). See
+[vehicle-deletion.md](vehicle-deletion.md). Sortable `sortColumn` values: `id`, `name`,
 `type`, `owner`, `condition_percent`, `fuel_percent`, `map`; `q` matches vehicle
 name, type, owner, map, and exact id. Response fields mirror the paginated-list
 convention (`rows`, `totalCount`, unfiltered `totalVehicles`). Owner resolves from
-the rank-1 permission holder, falling back to the actor's account owner; the
-`shared_with` roster is the rank 2/3 holders. A component's maximum durability is
-read from its own stats blob (`MaxDurability`, else the decayed cap). If no stored
-maximum exists, it is inferred only when at least two non-null current-durability
-observations exist for the same template; inferred rows set `maxInferred: true`.
+the rank-1 permission holder, falling back to the actor's account owner and then,
+for a stored vehicle, to the character on its `dune.recovered_vehicles` or
+`dune.backup_vehicles` record (the game clears the roster when it stores one). Each
+row carries `lifecycle_state`; a `VehicleRecovery` row also carries `stored_at` and
+`stored_reason` (`Normal`, `Migrated`, `RecoveredFromLostState`), which are null
+otherwise. The
+`shared_with` roster is the rank 2/3 holders. A component's maximum durability uses
+a verified game-data override when one is available, then its own stats blob
+(`MaxDurability`, else the decayed cap). If no known or stored maximum exists, it
+is inferred only when at least two non-null current-durability observations exist
+for the same template; inferred rows set `maxInferred: true`.
 Missing current durability remains null and is never treated as 0% or 100%.
 `condition_percent` is the lowest comparable component and
 `condition_estimated` reports whether an inferred maximum contributed. Fuel
@@ -416,7 +568,12 @@ Each row also carries a `region` sub-region name where the map has a region tabl
 (`runtime/data/hagga-regions.json`, extracted from the game paks; Hagga Basin is
 covered). It is resolved from the nearest `dune.markers.area_id` and is best-effort
 — absent when marker data is unavailable. Deep Desert instead exposes its A–I/1–9
-sector grid, derived client-side from coordinates.
+sector grid as the `sector` field, derived from each row's coordinates.
+`partition_id` remains null when Funcom has not deployed the vehicle into a
+current world partition; it is never rewritten as the nonexistent partition 0.
+When available, `lifecycle_state` explains these records (`Travel`,
+`VehicleBackup`, or `VehicleRecovery`) so clients can label them as in transit
+or stored rather than spawned.
 
 The separate `/api/admin/vehicles*` routes under [Admin Tools](#admin-tools) are a
 different, CLI-backed surface (blueprint catalog and spawning), not this Postgres
@@ -431,11 +588,12 @@ read.
 | GET | `/api/exchange/items` | List active CHOAM exchange sell orders aggregated by item + grade (paginated): lowest price, total stock, listing count | `q?`, `page?`, `pageSize?`, `sortColumn?`, `sortDirection?`, `owner?`, `category?` |
 | GET | `/api/exchange/listings` | List the individual sell orders for one item, each with a resolved seller | `templateId`, `quality?`, `owner?` |
 | GET | `/api/exchange/stats` | Aggregate totals (total, bot, player listings; unique items) | None |
+| GET | `/api/exchange/transactions` | Paginated completed-order activity captured from this Console release forward, plus filtered event/unit/value totals | `q?`, `page?`, `pageSize?`, `hours?` (`0`\|`24`\|`168`\|`720`\|`2160`), `party?` (`all`\|`player`\|`bot`\|`npc`), `exchangeId?` |
 | GET | `/api/exchange/config` | Read the console-local bot/blacklist filter config | None |
 | POST | `/api/exchange/config` | Save the bot/blacklist filter config (audited, rate-limited) | body: `includeNpcBroker`, `botOwnerIds[]`, `blacklistedOwnerIds[]` |
 
-Read-only over the game's own exchange tables (the game writes them; the console
-never mutates them). `GET /api/exchange/items` reports `capabilities.exchange`; it
+The board endpoints are read-only over the game's own exchange rows (the game
+writes them; the console never mutates them). `GET /api/exchange/items` reports `capabilities.exchange`; it
 is false (with a `reason`) when the schema lacks the required tables
 (`dune_exchange_orders`, `dune_exchange_sell_orders`, `items`, `actors`,
 `player_state`).
@@ -463,9 +621,16 @@ optional. Each row carries `owner_type` (`player`|`bot`) and a resolved `owner_n
 actor class; NPC/broker orders show the in-game broker), plus `price`, `stock`, and
 `quality`.
 
-`POST /api/exchange/config` is the **only** write in this feature and persists
-**only** the console-local `runtime/generated/exchange-config.json` (no game-DB
-writes). Ids are validated as numeric owner-id strings, deduped, and length-capped.
+`GET /api/exchange/transactions` reads the Console-owned
+`console_market_history.transactions` table. Its installation trigger snapshots
+new fulfilled rows and positive `stack_size` update deltas without changing the
+game row; ordinary recorder errors are handled inside the trigger. Quantities,
+prices, values, and ids that originate as PostgreSQL `bigint` are returned as
+decimal strings. `capabilities.exchangeHistory` reports schema support.
+
+`POST /api/exchange/config` is the only user-triggered write in the board surface
+and persists **only** the console-local `runtime/generated/exchange-config.json`
+(no game-row writes). Ids are validated as numeric owner-id strings, deduped, and length-capped.
 See [exchange.md](exchange.md) for how bot listings are identified and how the
 blacklist behaves.
 
@@ -484,6 +649,7 @@ blacklist behaves.
 | POST | `/api/exchange/market/buyback/run` | Run a buyback sweep now with the saved schedule (probe → backup → sweep) | None |
 | POST | `/api/exchange/market/seed/run` | Run a market reseed now with the saved schedule (backup → clear bot listings → seed) | None |
 | POST | `/api/exchange/market/seed/clear` | Remove the bot's NPC listings from one exchange without reseeding (probe → backup → clear; no backup when the bot has none). Player listings and pending seller payments are never touched. Requires `exchange:market-write`. Rate-limited. | body: `exchangeId?` (defaults to the saved seed schedule's exchange) |
+| POST | `/api/exchange/market/settings` | Save bot-wide Market Bot settings. `safetyBackups: false` skips the pre-write backup for buyback, reseed, and clear runs (scheduled and manual) and requires `confirmation: "DISABLE MARKET BOT BACKUPS"`; re-enabling needs no phrase. Current settings are returned as `settings` by `GET /api/exchange/market`. Requires `exchange:market-write`. Audited, rate-limited. | body: `safetyBackups` (boolean), `confirmation?` |
 | GET | `/api/exchange/market/plans/csv` | Download the selected (or active) seed plan as CSV | query: `planId?` |
 | POST | `/api/exchange/market/plans/csv` | Upload a UTF-8 CSV as the current seeding list: creates or replaces a named custom plan and makes it active. Only the documented seed-plan columns (names and numbers) are accepted; extra columns, SQL/JSON/HTML, formulas, and non-numeric cells are rejected. The bundled plan is never overwritten. Requires `exchange:market-write`. Rate-limited. | multipart: `file` (`.csv`), `name?` (friendly name; required when creating a plan), `planId?` (existing custom plan to replace) |
 | POST | `/api/exchange/market/plans/active` | Set the active seed plan used by reseed and buyback | body: `planId` (`bundled` or a custom plan id) |
@@ -527,7 +693,7 @@ console API process, and do not require an addon; the seed plan is the **active*
 named plan (the bundled `runtime/data/market-seed-plan.json` until the operator
 imports a CSV-backed list and sets it active). `buybackPercent` is an integer
 from 1 to 500. Every write is preceded by a database
-backup, and buyback runs probe eligibility read-only first so idle intervals
+backup unless Safety Backups are turned off (`POST /api/exchange/market/settings`), and buyback runs probe eligibility read-only first so idle intervals
 never take a backup. See [exchange.md](exchange.md#market-bot) for behavior
 details.
 
@@ -538,6 +704,8 @@ details.
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|
 | GET | `/api/blueprints` | List all blueprints | None |
+| GET | `/api/blueprints/community` | Browse the community Blueprint catalog | `q`, `set`, `sort`, `limit`, `offset` (all optional query params) |
+| GET | `/api/blueprints/community/{id}/preview` | Preview a community blueprint's image | `id` |
 | GET | `/api/blueprints/{blueprintId}/export` | Export single blueprint | `blueprintId` |
 | POST | `/api/blueprints/export` | Bulk export blueprints | `ids[]` (array, max 500) |
 | POST | `/api/blueprints/import` | Import blueprint file | multipart form: `player_id`, `file` |
@@ -553,9 +721,9 @@ See [blueprints.md](blueprints.md) for the full import/export design.
 
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|
-| GET | `/api/maps` | List all maps | None |
+| GET | `/api/maps` | List all maps | `raw?` (`0` omits legacy command output) |
 | GET | `/api/map/overlays` | Return the configured map overlay definitions | None |
-| GET | `/api/map/status` | Get status of all maps | None |
+| GET | `/api/map/status` | Get structured status of all maps | `raw?` (`0` omits legacy command output) |
 | GET | `/api/maps/mode` | Get map mode (static/dynamic) | `map?` (query param) |
 | POST | `/api/maps/mode` | Set map mode | `map`, `mode`, `confirmation: "SET MAP MODE"` |
 | POST | `/api/maps/settings` | Save map settings | `map`, `partitionId?`, `mode?`, `memory?`, `modeChanged`, `memoryChanged`, `confirmation: "SAVE MAP SETTINGS"` |
@@ -565,6 +733,17 @@ See [blueprints.md](blueprints.md) for the full import/export design.
 | POST | `/api/maps/spawn` | Spawn map server | `target`, `confirmation: "SPAWN MAP"` |
 | POST | `/api/maps/despawn` | Despawn map server | `target`, `confirmation: "DESPAWN MAP"` |
 | POST | `/api/maps/respawn` | Restart a map with no managed service (despawn then respawn its partition) | `target`, `confirmation: "RESTART MAP"` |
+
+### Structured Map Status
+
+`GET /api/map/status` returns `schemaVersion`, `ok`, and a `data` object with these integration-ready fields:
+
+- `data.maps`: map configuration rows with `map`, `mode`, numeric `partitions`, and numeric `assigned` values.
+- `data.partitions`: partition rows with numeric IDs and ports, nullable booleans for `ready` and `alive`, and a derived `status`.
+- `data.readiness`: overall readiness plus a `checks` array of `{ section, status, label }` objects.
+- `data.autoscaler`: the Autoscaler state, container name, and container status.
+
+The existing `maps`, `services`, `readiness`, and `autoscaler` command result objects remain available for backward compatibility. Each contains its raw `stdout`, `stderr`, and `exitCode`; new integrations should consume `data` instead and use `?raw=0` for a smaller response. `GET /api/maps` follows the same contract: typed map rows are available under `data.maps`, while its legacy command fields remain present unless `?raw=0` is supplied.
 
 ### Memory Management
 
@@ -594,6 +773,35 @@ See [blueprints.md](blueprints.md) for the full import/export design.
 | GET | `/api/maps/choam-terminals` | Get CHOAM terminal overview | None |
 | POST | `/api/maps/choam-terminals` | Install CHOAM terminals | `tradeCenterKey` |
 | DELETE | `/api/maps/choam-terminals` | Remove CHOAM terminals | `tradeCenterKey` |
+| GET | `/api/maps/choam-terminals/capture` | Preview where a terminal would sit if placed at a character's position (saves nothing). Polled — see below | `tradeCenterKey`, `playerId`, and on follow-up polls `afterSerial`, `afterX`, `afterY`, `afterZ`, `afterYaw` (query params) |
+| POST | `/api/maps/choam-terminals/position` | Save a custom terminal position for a trade post | `tradeCenterKey`, `x`, `y`, `z`, `yaw`, `sourcePlayerId?`, `applyNow?` |
+| DELETE | `/api/maps/choam-terminals/position` | Clear a custom position and fall back to the shipped default | `tradeCenterKey` |
+
+A custom position is bounded to its trade post: `CHOAM_POSITION_RADIUS_UU` (default 5000 uu / 50 m)
+horizontally and `CHOAM_POSITION_VERTICAL_UU` (default 2000 uu) vertically, measured from the
+shipped default rather than from any previously saved override. Saving only changes what the next
+install writes — an already-installed terminal must be removed and reinstalled to move.
+
+`capture` derives the placement from a standing character: the terminal root sits 15 uu below the
+character's `z` (the Blueprint's mesh-component offset; a pawn's stored `z` is at ground level),
+and the terminal's yaw is the character's facing minus 90° (the console mesh fronts on local +Y
+while a pawn faces local +X). It requires `players:read`, not `maps:read`, because it returns a
+live player position.
+
+**`capture` is polled, not awaited.** `dune.actors` lags live movement, and repeated reads inside
+that lag return identical *stale* values — so a position that has stopped changing is not
+necessarily current. Freshness is established from `dune.actors.serial`, a periodic row heartbeat
+(~60 s) that rewrites the row with the live position even when the character has not moved. The
+first call returns `{ ready: false, serial }`; the client passes that `serial` and position back as
+`afterSerial`/`afterX`/`afterY`/`afterZ`/`afterYaw` and keeps polling. Once `serial` advances the
+row is current by construction: if the position it wrote matches the baseline the response is
+`ready` (the character held still across the write), otherwise `state: "moving"` and the caller
+re-baselines. Expect up to ~2 minutes.
+
+`applyNow: true` on a save also moves any already-installed terminals for that post, removing and
+reinstalling them **in a single transaction** so a failed install cannot leave the post with no
+terminal. Without it the save only changes what the next install writes, and the response carries
+`reinstallRequired: true`. A restart of that terminal's map is still required for either to appear in-game.
 
 ### Combat & User Settings
 
@@ -632,17 +840,25 @@ See [blueprints.md](blueprints.md) for the full import/export design.
 ## Live Map
 
 See [live-map.md](live-map.md) for how the panel uses these endpoints --
-partition display-name resolution, the spice/POI data model, and the
-Layers legend's default-settings mechanism.
+partition display-name resolution, the spice/POI data model, the
+Layers legend's default-settings mechanism, and what `coriolisLayout`
+drives: the WebGL renderer that draws the Deep Desert's own cartography
+meshes, and the conditions under which it falls back to the flat image.
+
+Coordinate-bearing Deep Desert marker rows include a `sector` field such as
+`"F6"`. It is `null` when a coordinate lies outside the A1–I9 grid. This applies
+to the combined marker response and the dedicated player, base, storage, spice,
+and POI responses, so announcement tools and bots do not need to duplicate the
+coordinate conversion.
 
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|
 | GET | `/api/map/capabilities` | Get map feature capabilities | None |
-| GET | `/api/map/markers` | Get map markers & configuration (actors, merged with spice/POI rows; response also includes `coriolisSeed`, `coriolisNextCycleAt`) | `map?`, `partitionId?`, `static?` (`0` omits static archive/POI rows for lightweight live refreshes) |
+| GET | `/api/map/markers` | Get map markers & configuration (actors, merged with spice/POI rows; response also includes `coriolisSeed`, `coriolisNextCycleAt`, `coriolisSeedStaleSince`, and `coriolisLayout`) | `map?`, `partitionId?`, `static?` (`0` omits static archive/POI rows for lightweight live refreshes) |
 | GET | `/api/map/spice` | Get spice/flour-sand layers (static pool, active blows, flour sand) for a map/partition | `map?`, `partitionId?` (query params) |
 | GET | `/api/map/poi` | Get registry-driven POI layers (ore, scrap, flora, poi, house_representative, trainer, fortress, hazard, enemy) for a map | `map?` (query param) |
-| POST | `/api/map/teleport-player` | Teleport player to map coords | `playerId`, `x`, `y`, `z`, `yaw?`, `partitionId?`, `online?` |
-| GET | `/api/map/partitions` | List map partitions | None |
+| POST | `/api/map/teleport-player` | Teleport a player to coordinates in the player's current ready partition; this never starts a dynamic map or crosses partitions | `playerId`, `x`, `y`, `z`, `yaw?`, `partitionId?`, `online?` |
+| GET | `/api/map/partitions` | List live-map partitions, including `alive` and `ready` runtime state for stopped dynamic maps | None |
 | GET | `/api/map/players` | Get player positions | `map?` (query param) |
 | GET | `/api/map/bases` | Get base locations | `map?` (query param) |
 | GET | `/api/map/storage` | Get storage locations | `map?` (query param) |
@@ -663,10 +879,31 @@ Layers legend's default-settings mechanism.
 | GET | `/api/database/tables/{schema}/{table}/count` | Get row count | `schema`, `table`, `filter?` |
 | PATCH | `/api/database/tables/{schema}/{table}/row` | Update table row | `rowId`, `values` (object) |
 | GET | `/api/database/search` | Search database | `q` or `term` (query param) |
-| POST | `/api/database/query` | Execute SQL query | `query` (read or write) |
+| POST | `/api/database/query` | Execute SQL query | `query` (read or write) — see note below |
 | POST | `/api/database/export` | Export query results | `query` (read-only SELECT/WITH/SHOW/EXPLAIN) |
 | POST | `/api/database/password` | Change database password | `password` |
 | GET | `/api/database/table/{table}` | Preview table | `table`, `limit?`, `offset?` |
+
+**`/api/database/query` authorizes on the SQL, not just the route.** The route
+resolves to `database:query`, which covers read-only SQL (`SELECT`, `WITH`,
+`SHOW`, `EXPLAIN`). SQL the classifier reads as a write additionally requires
+`database:execute`, checked inside the handler once the body is parsed; a caller
+without it gets `403` before the rate-limit tick and before the pre-write backup.
+
+**The permission is not the enforcement.** `database:execute` is selected by a
+classifier that a mutating `select dune.<fn>(...)` passes — so a write can be
+routed down the read path. That path executes inside a `set transaction read
+only` transaction, and Postgres refuses the write whatever the classifier
+concluded. The transaction is the guarantee; the action decides which path is
+taken and whether a backup is made.
+
+The default `admin` policy grants `database:query` and denies `database:execute`;
+`owner` holds both. Use `/api/database/export` for read-only result export.
+
+A body with nothing to execute — empty, whitespace, `;`, or entirely
+commented-out SQL — returns `400` first. Such input does not start with a read
+keyword, so without that check it classifies as a write and triggers a full
+pre-write backup before the query is rejected.
 
 ---
 
@@ -695,6 +932,8 @@ Layers legend's default-settings mechanism.
 | POST | `/api/admin/message-of-the-day` | Save/restore MOTD | `settings?` or `restoreDefaults: true` |
 | GET | `/api/admin/player-announcements` | Get announcement settings | None |
 | POST | `/api/admin/player-announcements` | Save/restore announcements | `settings?` or `restoreDefaults: true` |
+| GET | `/api/admin/map-chat-schedules` | List scheduled recurring in-map chat messages | None |
+| POST | `/api/admin/map-chat-schedules` | Save, delete, or immediately run a scheduled map message | `action` (`"save"`, `"delete"`, or `"run"`), plus `schedule` (for `save`) or `id` (for `delete`/`run`) |
 
 ### Landsraad
 
@@ -719,6 +958,10 @@ Layers legend's default-settings mechanism.
 ---
 
 ## Care Package System
+
+Automatic scans return skipped-player results without adding routine skips to grant history. When history reaches 8 MiB, background maintenance compacts it to the latest 500 non-skip records within a 4 MiB budget. Existing oversized files are streamed rather than loaded into memory in full. Older display records are removed, not rotated into additional archives.
+
+Successful and partially delivered grants are preserved as compact eligibility receipts independently of display history. These receipts and first-online claims are included in self-update backups; history cleanup does not reset eligibility or authorize duplicate rewards.
 
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|
@@ -752,6 +995,21 @@ Layers legend's default-settings mechanism.
 | POST | `/api/addons/installed/{id}/bridge` | Addon bridge API | `id`, `action`, payload varies |
 | GET | `/api/addons/installed/{id}/content/{path}` | Get addon content file | `id`, `path` |
 
+### Player Identity Bridge
+
+`players.identity.list` requires an approved `players:read` addon permission. It returns the minimal player identity data needed to correlate addon events: `name`, `actorId`, `controllerId`, `accountId`, `funcomId`, `flsId`, `platformId`, `platformName`, `status`, and `map`. Addons do not need direct access to the Console player REST endpoints.
+
+### Addon Runtime Bridge
+
+`players.summary.list` and `players.progression.get` provide typed player and
+supported progression data under `players:read`. `addon.storage.*` provides
+versioned addon-scoped JSON storage under `files:addon-data`.
+`rewards.deliver`, `rewards.status`, and `rewards.list` provide persistent,
+idempotent reward delivery under `rewards:grant`. `players.message.*` provides
+queued private messages under `players:message`. See
+[Addon Runtime API](../addons/addon-runtime-api.md) for payloads and delivery
+semantics.
+
 ### Hardware Status Bridge
 
 `server.hardware.status` requires approved `server:status` addon permission and returns the core-owned hardware snapshot documented in [Addon Hardware Status Bridge](../addons/hardware-status.md). Addon packages are never permitted to execute their own telemetry scripts.
@@ -782,6 +1040,9 @@ Layers legend's default-settings mechanism.
 | POST | `/api/settings` | Write config | Config object |
 | GET | `/api/settings` | Get setup state | None |
 | GET | `/api/public-directory/status` | Get public directory status | None |
+| POST | `/api/settings/server-startup` | Choose whether the Battlegroup starts automatically after the host boots (the Console always starts with Docker) | `autoStartBattlegroup` (boolean, required) |
+| GET | `/api/settings/experimental-tanks` | Read the Experimental Tanks status as reported by `dune experimental-tanks status` | None |
+| POST | `/api/settings/experimental-tanks` | Enable or disable Experimental Tanks; starts a long-running task that restarts Hagga | `enabled` (boolean), `confirmRestart: true` (required) |
 | POST | `/api/settings/public-directory` | Save public directory and anonymous-count settings | `enabled?`, `anonymousCountEnabled?`, `discordInvite?` |
 | POST | `/api/settings/public-directory/claim` | Claim server listing | `code` |
 | GET | `/api/settings/discord-bot` | Read the Discord Bot adapter's current settings state (enabled flag, configured role IDs per tier, whether a bot token is configured). Never returns the token itself. | None |
@@ -793,6 +1054,60 @@ Layers legend's default-settings mechanism.
 | POST | `/api/settings/discord-bot/oauth-config` | Configure the hosted-bot connection's own, independent Discord Application (Client ID + Redirect URI) -- deliberately separate from Settings -> Discord OAuth's console-sign-in credentials; neither requires the other. Restart the console for changes to take effect. | `clientId?` (Discord snowflake), `redirectUri?` (URL) |
 | POST | `/api/settings/discord-bot/oauth-secret` | Save the hosted-bot connection's Discord Application client secret. File-only, written to its own secrets file, never echoed back. | `secret` (at least 20 characters) |
 | POST | `/api/settings/discord-bot/choice` | Persist the hosted/self-hosted deployment choice immediately, ahead of role config or enabling the adapter. Does not restart the console -- nothing about the live adapter's runtime behavior depends on this value. | `deploymentChoice` (`"hosted"` or `"self-hosted"`) |
+
+---
+
+## IAM Policies
+
+Per-tier Allow/Deny documents for the action catalog. Architecture and evaluation order: [../console-iam.md](../console-iam.md).
+
+| Method | Route | Description | Parameters |
+|--------|-------|-------------|------------|
+| GET | `/api/settings/iam/policies` | Active policy store, plus `actions`: the full sorted catalog of valid action names | None |
+| PUT | `/api/settings/iam/policy` | Validate and atomically save the complete policy store | Policy store object (every tier) |
+| POST | `/api/settings/iam/policy/test` | Evaluate one action for one tier without changing policy | `action`, `tier` |
+
+`PUT` refuses two kinds of bad action name, each with its own `400` payload:
+
+- **`unknownActions`** — the name matches nothing in the catalog. The test is
+  whether a pattern matches at least one catalogued action, so wildcards remain
+  legal (`players:*`, `bases:delete-*`) while near-misses that match nothing
+  (`player:*`, `players:reset-*`) are rejected. This matters because the failure
+  is asymmetric: a misspelled action in an `Allow` grants nothing, but in a
+  `Deny` it withholds nothing while reading exactly like a restriction.
+- **`deprecatedActions`** — the name is one the catalog used to have
+  (`players:mutate`, `guilds:mutate`, `blueprints:mutate`, `addons:mutate`). Each
+  entry carries `successors`, so the edit is mechanical. These still evaluate
+  with their original meaning, so a stored policy keeps working; only saving is
+  refused. See [../console-iam.md](../console-iam.md#upgrading-a-policy-that-names-a-removed-action).
+
+`POST .../test` returns `known` alongside `allowed`. A misspelled action answers
+`allowed: false`, which reads as a working `Deny`; `known: false` is what separates a
+real denial from a typo.
+
+---
+
+## API Keys
+
+Named, revocable bearer credentials for calling this API from outside the browser. Full feature documentation: [api-keys.md](api-keys.md).
+
+| Method | Route | Description | Parameters |
+|--------|-------|-------------|------------|
+| GET | `/api/settings/api-keys` | List API keys, without any secret or hash | None |
+| GET | `/api/settings/api-keys/catalog` | List the namespaces a key can be scoped to, and whether each supports writes | None |
+| POST | `/api/settings/api-keys` | Create a key. Returns the full key once, in `secret` | `name`, `scopes?` (map of namespace to `"read"` \| `"write"`), `expiresAt?` (ISO date or null), `rateLimitPerMinute?` (1-10000, default 60) |
+| PUT | `/api/settings/api-keys/{id}` | Update a key. `scopes` replaces wholesale | `id`, `name?`, `scopes?`, `enabled?`, `expiresAt?`, `rateLimitPerMinute?` |
+| DELETE | `/api/settings/api-keys/{id}` | Revoke a key permanently | `id` |
+
+These five routes map to `settings:read` and `settings:write`, and the `settings` namespace is permanently denied to API keys — so a key can never list, create, or revoke keys, including itself. Key management is a browser-session operation only.
+
+`POST` returns `{ key, secret }`. `secret` is the only time the full key exists outside the server; only its SHA-256 hash is stored, so a lost key must be revoked and replaced rather than recovered.
+
+A key omitting `scopes` is created with no access at all. Unrecognised namespaces, unrecognised levels, and the permanently denied `settings`, `database` and `setup` namespaces are dropped rather than coerced — nothing falls back to `"read"`. A `"write"` level on `updates` or `addons`, whose writes are denied to keys, is stored as `"read"`.
+
+Invalid input to the create and update routes — a blank or over-long name, or an expiry that is not a future date string — returns `400` with the reason.
+
+Requests authenticated by a key return `401` when the credential is invalid, disabled or expired, `403` when the key's scopes do not cover the route's action, and `429` with a `retry-after` header when the key exceeds its per-minute limit. A request carrying no `Authorization` header is unaffected and uses the browser session as before.
 
 ---
 
@@ -811,6 +1126,8 @@ See [../integrations/discord-integration/README.md](../integrations/discord-inte
 | GET | `/api/integrations/discord/readiness` | Service readiness | `readiness:read` |
 | GET | `/api/integrations/discord/services` | Services list | `services:read` |
 | GET | `/api/integrations/discord/population` | Player population | `population:read` |
+| POST | `/api/integrations/discord/world/coriolis` | Farm-wide Coriolis storm seed + next-cycle timing (meta#64, mentat#370) -- public tier | `coriolis:read` |
+| POST | `/api/integrations/discord/world/atlas` | Per-sietch PvP/PvE + live sandstorm status + Coriolis cycle + non-default world/per-sietch modifiers (`worldModifiers`, per-sietch `modifiers`), for #the-atlas (meta#64, mentat#376) -- public tier. Each sietch's `loginPassword` (the real `Bgd.ServerLoginPassword`) is only populated when the calling actor's `roleIds` intersect `DUNE_ATLAS_PASSWORD_ROLE_IDS` (comma-separated role IDs) -- `null` otherwise, regardless of tier. This is independent of any Discord channel permission setup; set the same value on mentat's own `DUNE_ATLAS_PASSWORD_ROLE_IDS` so its scheduled refresh actually receives the password. | `atlas:read` |
 | GET | `/api/integrations/discord/version` | Adapter version | None |
 | GET | `/api/integrations/discord/servers` | Servers list | None |
 | GET | `/api/integrations/discord/ports` | Ports list | None |
@@ -848,6 +1165,12 @@ See [../integrations/discord-integration/README.md](../integrations/discord-inte
 | GET | `/api/integrations/discord/players/storage` | Get player storage | `inventory:read` |
 | GET | `/api/integrations/discord/players/find` | Find player | `players:read` |
 | GET | `/api/integrations/discord/players/inventory-search` | Search inventory | `inventory:read` |
+| POST | `/api/integrations/discord/players/cheater-tracking` | Staff-only: anti-cheat flag history for a target player under trust-role review (meta#64, mentat#361) -- not self-scoped, admin/owner tier | `cheater-tracking:read` |
+| POST | `/api/integrations/discord/players/item-audit-log` | Staff-only: item-movement history for a target player's inventories, for stolen-goods cross-reference (meta#64, mentat#368) -- not self-scoped, moderator tier and up, time-windowed (default 7d/cap 30d) and row-capped (default 200/cap 500) | `item-audit-log:read` |
+
+> **`cheater-tracking` response semantics:** `rows: []`/`count: 0` alone does NOT mean "clean record." Check `capabilities.cheaterTracking` and `flsId` first: `capabilities.cheaterTracking: false` means the feature is unsupported on this instance (no signal either way); `capabilities.cheaterTracking: true` with `flsId: null` means the player resolved but has no stable FLS id (no signal either way); only `capabilities.cheaterTracking: true` with a non-null `flsId` and `rows: []` is a verified clean record. A consumer that branches on `count === 0` alone risks a false "clean" result for a trust/safety gate.
+
+> **`item-audit-log` response semantics:** the same ambiguity applies -- `rows: []`/`count: 0` does NOT distinguish "unsupported on this instance" from "genuinely no item-movement activity in the requested window." Check `capabilities.itemAuditLog` first (`false` = unsupported, no signal either way; `true` with `rows: []` = a real, empty result for that window).
 
 ### Guilds & Data
 
@@ -867,6 +1190,8 @@ See [../integrations/discord-integration/README.md](../integrations/discord-inte
 | POST | `/api/integrations/discord/hosted-bot/auto-invite/start` | Start the fully-automated auto-invite flow: silently enables the hosted-bot adapter token if needed, asks mentat-link to mint a pending state, and returns the single Discord consent-screen `authorizeUrl` for the console to open in a popup | `settings:discord-bot-hosted-oauth` | owner |
 | GET | `/api/integrations/discord/hosted-bot/auto-invite/complete` | Popup return leg reached via mentat-link's signed bounce page; verifies the double-submit state cookie and renders a small page that `postMessage`s the outcome (`ok`/`guildName`/`reason`/`reclaimed`/`confirmationId`) back to the opener before closing | `settings:discord-bot-hosted-oauth` | owner |
 | GET | `/api/integrations/discord/hosted-bot/auto-invite/confirmation-status` | Round 4 completion-signal poll: forwards `confirmationId` to mentat-link's own `/confirmation-status` proxy and returns `{status, guildName?}`; on `status: "confirmed"`, persists the connected guild the same way the old `/register` route does | `settings:discord-bot-hosted-oauth` | owner |
+| GET | `/api/integrations/discord/hosted-bot/roles` | Role-picker widget's read side (#853/mentat-link#183): relays to mentat's own `GET /api/consoles/:guildId/roles` via mentat-link's proxy for the console's connected guild, returning `{roles, cacheStale}` | `updates:read` | admin+ |
+| POST | `/api/integrations/discord/hosted-bot/roles` | Role-picker widget's write side: relays `{playerRoleIds, moderatorRoleIds, adminRoleIds}` (array-shaped, unlike the self-hosted `/role-ids` route's comma-separated strings) to mentat, which enforces the tier-conflict check and writes `guild_roles` directly -- no restart is queued, mentat's write is authoritative. A `409` tier conflict is relayed as-is. Changing admin-tier role IDs requires owner access, same as the self-hosted route. | `updates:apply` | admin+ (owner for admin-tier changes) |
 
 ---
 

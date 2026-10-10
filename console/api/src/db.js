@@ -1,8 +1,20 @@
 import pg from "pg";
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 import { redact } from "./redact.js";
 import { resolvePorts } from "./config.js";
 
 const { Pool } = pg;
+const DATABASE_RESTORE_MAINTENANCE_PATH = "runtime/generated/db-restore-maintenance";
+const DATABASE_RESTORE_MAINTENANCE_MESSAGE = "Database restore is in progress. Try again after it finishes.";
+
+export function databaseRestoreMaintenanceFile(repoRoot, env = process.env) {
+  return resolve(repoRoot || process.cwd(), env.DUNE_DB_RESTORE_MAINTENANCE_FILE || DATABASE_RESTORE_MAINTENANCE_PATH);
+}
+
+export function databaseRestoreMaintenanceActive(repoRoot, env = process.env) {
+  return existsSync(databaseRestoreMaintenanceFile(repoRoot, env));
+}
 
 export function discoverDbConfig(env = process.env, repoRoot = process.cwd()) {
   if (env.ADMIN_DATABASE_URL) {
@@ -35,6 +47,7 @@ export function discoverDbConfig(env = process.env, repoRoot = process.cwd()) {
 
 export function createDb(config) {
   const dbConfig = discoverDbConfig(process.env, config?.repoRoot);
+  const repoRoot = config?.repoRoot || process.cwd();
   const pool = new Pool({
     ...dbConfig,
     max: Number(process.env.ADMIN_DB_POOL_SIZE || 5),
@@ -48,6 +61,7 @@ export function createDb(config) {
   });
 
   async function query(text, values = []) {
+    if (databaseRestoreMaintenanceActive(repoRoot)) throw new Error(DATABASE_RESTORE_MAINTENANCE_MESSAGE);
     try {
       return await pool.query(text, values);
     } catch (error) {
@@ -55,20 +69,28 @@ export function createDb(config) {
     }
   }
 
-  async function transaction(fn) {
+  // options.queryTimeoutMs replaces the pool's client-side query_timeout for the
+  // statements of this one transaction (node-pg takes it per query). Work that
+  // legitimately outlasts the 15 s pool default, such as a large base export,
+  // sets its own bound instead of loosening it for every console query.
+  async function transaction(fn, options = {}) {
+    if (databaseRestoreMaintenanceActive(repoRoot)) throw new Error(DATABASE_RESTORE_MAINTENANCE_MESSAGE);
+    const queryTimeoutMs = Number(options?.queryTimeoutMs);
     const client = await pool.connect();
     try {
       await client.query("begin");
       const tx = {
         config: publicDbConfig(dbConfig),
-        query: (text, values = []) => client.query(text, values)
+        query: Number.isFinite(queryTimeoutMs) && queryTimeoutMs > 0
+          ? (text, values = []) => client.query({ text, values, query_timeout: queryTimeoutMs })
+          : (text, values = []) => client.query(text, values)
       };
       const result = await fn(tx);
       await client.query("commit");
       return result;
     } catch (error) {
       try { await client.query("rollback"); } catch {}
-      throw new Error(redactDbError(error));
+      throw transactionError(error);
     } finally {
       client.release();
     }
@@ -131,13 +153,33 @@ export function bigintParam(value, label, min = 1n, max = 9223372036854775807n) 
   return n.toString();
 }
 
-export function isReadOnlySql(query) {
-  const stripped = String(query || "")
+export function stripSqlComments(query) {
+  return String(query || "")
     .replace(/\/\*[\s\S]*?\*\//g, " ")
     .replace(/--[^\n]*/g, " ")
     .trim();
+}
+
+export function isReadOnlySql(query) {
+  const stripped = stripSqlComments(query);
   return /^(select|with|show|explain)\b/i.test(stripped) &&
     !/\b(insert|update|delete|drop|alter|truncate|create|grant|revoke|copy\s+.*\s+from)\b/i.test(stripped);
+}
+
+// True when there is something here Postgres would actually run.
+//
+// isReadOnlySql answers "does this START with a read keyword", so "", "   ",
+// ";" and a fully commented-out block all answer NO and classify as WRITES --
+// down the write path, which takes a full pre-write backup. Callers check this
+// first so obviously-empty input is a 400 rather than a pg_dump.
+//
+// The comment stripping is naive about string literals, and it can remove real
+// SQL: `SELECT '/*' as a, '*/' as b` strips to `select ' ' as b`. That is safe
+// here only because this decides whether ANYTHING remains, and every such case
+// still leaves a non-empty string. Do not reuse it where the stripped text
+// itself matters. The corpus in databaseQueryAuthz.test.js pins the cases tried.
+export function hasExecutableStatement(query) {
+  return stripSqlComments(query).replace(/;/g, "").trim().length > 0;
 }
 
 function normalizeQueryResult(result) {
@@ -158,4 +200,13 @@ export function rowsResult(result) {
     rowCount: normalized?.rowCount ?? rows.length,
     command: normalized?.command || ""
   };
+}
+
+// What a failed transaction rethrows: the redacted message, plus the `code` of an
+// application error (e.g. stored_owner_online) so callers can still branch on it.
+// A Postgres error is recognised by its `severity` and keeps no code, as before.
+export function transactionError(error) {
+  const wrapped = new Error(redactDbError(error));
+  if (typeof error?.code === "string" && error.severity === undefined) wrapped.code = error.code;
+  return wrapped;
 }

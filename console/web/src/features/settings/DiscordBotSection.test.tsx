@@ -5,10 +5,14 @@ import { api, post } from "../../api/client";
 import { discordHostedBotApi } from "../../api/discordHostedBotApi";
 import { DiscordBotSection } from "./DiscordBotSection";
 
-vi.mock("../../api/client", () => ({
-  api: vi.fn(),
-  post: vi.fn(),
-}));
+// dune-awakening-selfhost-docker#853: importOriginal preserves the real
+// ApiError export while mocking api()/post() -- discordHostedBotApi.ts's
+// saveRoles() does `err instanceof ApiError` in its catch block, which
+// would throw against a mock that dropped ApiError entirely.
+vi.mock("../../api/client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../api/client")>();
+  return { ...actual, api: vi.fn(), post: vi.fn() };
+});
 
 const mockApi = vi.mocked(api);
 const mockPost = vi.mocked(post);
@@ -130,27 +134,36 @@ describe("DiscordBotSection", () => {
   // too, and that picking "Hosted bot" there and saving persists it the
   // same way the Disabled-phase toggle already does (via
   // handleUpdateRoleIds' own deploymentChoice: choice payload).
-  it("renders the hosted/self-hosted toggle in the Enabled phase too, and Save Role IDs persists a choice made there", async () => {
+  it("renders the hosted/self-hosted toggle in the Enabled phase too, and Save Role IDs persists a choice made there via the hosted path", async () => {
+    // dune-awakening-selfhost-docker#853: switching to "Hosted bot" here and
+    // clicking Save Role IDs must go through the mentat-backed hosted route
+    // (no restart, no self-hosted env-var write) -- previously (before this
+    // widget existed) it went through the self-hosted /role-ids route
+    // regardless of the choice just picked, which is exactly the bug this
+    // widget's own wiring fixes. The role-list fetch resolves cacheStale so
+    // the picker falls back to the manual fields, keeping this test focused
+    // on the save-path routing rather than the picker's own rendering.
     mockApi.mockResolvedValue({
       enabled: true,
       roleIds: { player: [], moderator: [], admin: [] },
       tokenConfigured: true,
-      deploymentChoice: null
+      deploymentChoice: null,
+      roles: [],
+      cacheStale: true
     } as never);
-    mockPost.mockResolvedValue({ task: { id: "task-1", state: "running" } } as never);
+    mockPost.mockResolvedValue({ ok: true, applied: true } as never);
     render(<DiscordBotSection />);
     await screen.findByText(/Enabled/i);
     expect(screen.getByText(/Which are you using/i)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /^Hosted bot$/i }));
     fireEvent.click(screen.getByRole("button", { name: /Save Role IDs/i }));
-    await screen.findByText(/restart to apply this change/i);
-    fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
-    fireEvent.click(await screen.findByRole("button", { name: /^Restart Now$/i }));
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/api/settings/discord-bot/choice", { deploymentChoice: "hosted" }));
     await waitFor(() => expect(mockPost).toHaveBeenCalledWith(
-      "/api/settings/discord-bot/role-ids",
-      expect.objectContaining({ deploymentChoice: "hosted" })
+      "/api/integrations/discord/hosted-bot/roles",
+      { playerRoleIds: [], moderatorRoleIds: [], adminRoleIds: [] }
     ));
+    expect(mockPost).not.toHaveBeenCalledWith("/api/settings/discord-bot/role-ids", expect.anything());
   });
 
   it("shows a disambiguating note distinguishing this section from Discord OAuth", async () => {
@@ -1571,9 +1584,9 @@ describe("DiscordBotSection", () => {
   // discord, 2) configure roles, 3) restart" -- as one continuous flow,
   // not just its individual pieces.
   it("Continue on step 1 stays disabled until a guild is actually registered, then unlocks the rest of the 3-step flow", async () => {
-    mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false, deploymentChoice: null } as never);
+    mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false, deploymentChoice: null, roles: [], cacheStale: true } as never);
     seedOwnedGuilds([{ id: "111111111111111111", name: "My Test Guild", owner: true }]);
-    mockPost.mockResolvedValue({ ok: true, token: "abc" } as never);
+    mockPost.mockResolvedValue({ ok: true, token: "abc", applied: true } as never);
 
     render(<DiscordBotSection />);
     await screen.findByText(/Which are you using/i);
@@ -1600,20 +1613,20 @@ describe("DiscordBotSection", () => {
     fireEvent.change(screen.getByLabelText(/Player role IDs/i), { target: { value: "222222222222222222" } });
     fireEvent.click(screen.getByRole("button", { name: /^Continue$/i }));
 
-    // Step 3 for the hosted path: "Save & Restart" (updateRoleIds), not
-    // "Enable Discord Bot Integration" -- the adapter was already silently
-    // enabled back in step 1.
-    const finishButton = await screen.findByRole("button", { name: /^Save & Restart$/i });
+    // Step 3 for the hosted path: "Save Roles" (handleSaveHostedRoles,
+    // saving through mentat), not "Enable Discord Bot Integration" -- the
+    // adapter was already silently enabled back in step 1. Unlike the
+    // self-hosted path, this doesn't restart anything, so there's no
+    // restart-confirm dialog here either.
+    const finishButton = await screen.findByRole("button", { name: /^Save Roles$/i });
     expect(screen.queryByRole("button", { name: /Enable Discord Bot Integration/i })).toBeNull();
     fireEvent.click(finishButton);
-    await screen.findByText(/restart to apply this change/i);
-    fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
-    fireEvent.click(await screen.findByRole("button", { name: /^Restart Now$/i }));
 
     await waitFor(() => expect(mockPost).toHaveBeenCalledWith(
-      "/api/settings/discord-bot/role-ids",
-      expect.objectContaining({ playerRoleIds: "222222222222222222", deploymentChoice: "hosted" })
+      "/api/integrations/discord/hosted-bot/roles",
+      { playerRoleIds: ["222222222222222222"], moderatorRoleIds: [], adminRoleIds: [] }
     ));
+    expect(mockPost).not.toHaveBeenCalledWith("/api/settings/discord-bot/role-ids", expect.anything());
   });
 
   // Independent UI/UX hat review (2026-09-10, CRITICAL C1): picking

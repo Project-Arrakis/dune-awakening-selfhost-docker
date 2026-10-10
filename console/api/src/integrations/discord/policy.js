@@ -2,6 +2,15 @@ export const DISCORD_ROLE_TIERS = ["public", "observer", "moderator", "admin", "
 
 export const DISCORD_CAPABILITIES = Object.freeze({
   STATUS_READ: "status:read",
+  // CORIOLIS_READ (mentat#370): the farm-wide Coriolis storm seed and next-
+  // cycle timestamp are genuinely public in-game knowledge (every player on
+  // the server experiences the same storm at the same time) -- public tier,
+  // same as STATUS_READ, not staff-gated like most other read capabilities.
+  CORIOLIS_READ: "coriolis:read",
+  // ATLAS_READ (mentat#376, issue #938): per-sietch PvP/PvE and live
+  // sandstorm status are the same kind of genuinely public in-game
+  // knowledge as CORIOLIS_READ -- public tier, not staff-gated.
+  ATLAS_READ: "atlas:read",
   READINESS_READ: "readiness:read",
   SERVICES_READ: "services:read",
   POPULATION_READ: "population:read",
@@ -16,6 +25,12 @@ export const DISCORD_CAPABILITIES = Object.freeze({
   OPS_RESOURCES_READ: "ops:resources:read",
   OPS_ECONOMY_READ: "ops:economy:read",
   OPS_INVENTORY_READ: "ops:inventory:read",
+  // OPS_LOCATION_READ (issue #1001, R0 completion): opsLocationProvider()
+  // is a permanent, dated (2026-07-24) placeholder, not real per-player
+  // tracking -- see that function's own comment. Admin/owner only, same
+  // as every sibling ops:* capability (CAPABILITY_BY_TIER's moderator set
+  // below deliberately excludes all of them).
+  OPS_LOCATION_READ: "ops:location:read",
   OPS_SOC_READ: "ops:soc:read",
   OPS_PROMETHEUS_READ: "ops:prometheus:read",
   OPS_DASHBOARD_READ: "ops:dashboard:read",
@@ -39,13 +54,39 @@ export const DISCORD_CAPABILITIES = Object.freeze({
   // distinct capability (not a reuse of PLAYER_LINK_WRITE) so the two
   // linking flows can be enabled/disabled or audited independently.
   ACCOUNT_LINK_WRITE: "account-link:write",
-  BROADCAST_SEND: "broadcast:send"
+  BROADCAST_SEND: "broadcast:send",
+  // CHEATER_TRACKING_READ (meta#64, mentat#361): deliberately excluded from
+  // the moderator tier's explicit Set below, same reasoning as the OPS_*
+  // capabilities' own comment there -- this exposes another player's
+  // anti-cheat flag history, a materially more sensitive disclosure than
+  // moderator's existing INVENTORY_READ/STORAGE_READ/GUILD_READ grants, so
+  // it is admin/owner only.
+  CHEATER_TRACKING_READ: "cheater-tracking:read",
+  // ITEM_AUDIT_LOG_READ (meta#64, mentat#368): item-movement history for a
+  // specific player's inventories, used to cross-reference base theft
+  // against new Exchange listings. Same sensitivity class as the existing
+  // INVENTORY_READ/STORAGE_READ/GUILD_READ grants (item contents, just
+  // historical instead of point-in-time) -- unlike CHEATER_TRACKING_READ,
+  // this is not a categorically more sensitive disciplinary record, so it
+  // is granted to moderator, not admin/owner only.
+  ITEM_AUDIT_LOG_READ: "item-audit-log:read",
+  // WRITE_BRIDGE_ACCESS (issue #215, docs/rw-architecture.md section 3.3): the
+  // coarse floor gate for write/preview and write/execute -- "is this actor at
+  // least moderator tier at all." This is deliberately NOT one capability per
+  // write action; CAPABILITY_BY_TIER computes admin and owner as the identical
+  // set (see section 3.3's own comment), so it structurally cannot express
+  // "owner but not admin" for a specific action the way the tier ladder in
+  // Section 1 requires. The real per-action decision is
+  // writeActionMinTier.js's meetsMinTier(), checked separately and
+  // additionally, never assumed to be redundant with this coarse gate.
+  WRITE_BRIDGE_ACCESS: "write-bridge:access"
 });
 
 export const DISCORD_WRITE_CAPABILITIES = Object.freeze(new Set([
   DISCORD_CAPABILITIES.PLAYER_LINK_WRITE,
   DISCORD_CAPABILITIES.ACCOUNT_LINK_WRITE,
-  DISCORD_CAPABILITIES.BROADCAST_SEND
+  DISCORD_CAPABILITIES.BROADCAST_SEND,
+  DISCORD_CAPABILITIES.WRITE_BRIDGE_ACCESS
 ]));
 
 // Capabilities that are self-scoped identity actions rather than
@@ -64,14 +105,18 @@ export const EXPERIMENTAL_READ_ONLY_CAPABILITIES = Object.freeze(
 );
 
 const CAPABILITY_BY_TIER = Object.freeze({
-  public: new Set([DISCORD_CAPABILITIES.STATUS_READ]),
+  public: new Set([DISCORD_CAPABILITIES.STATUS_READ, DISCORD_CAPABILITIES.CORIOLIS_READ, DISCORD_CAPABILITIES.ATLAS_READ]),
   observer: new Set([
     DISCORD_CAPABILITIES.STATUS_READ,
+    DISCORD_CAPABILITIES.CORIOLIS_READ,
+    DISCORD_CAPABILITIES.ATLAS_READ,
     DISCORD_CAPABILITIES.READINESS_READ,
     DISCORD_CAPABILITIES.SERVICES_READ
   ]),
   moderator: new Set([
     DISCORD_CAPABILITIES.STATUS_READ,
+    DISCORD_CAPABILITIES.CORIOLIS_READ,
+    DISCORD_CAPABILITIES.ATLAS_READ,
     DISCORD_CAPABILITIES.READINESS_READ,
     DISCORD_CAPABILITIES.SERVICES_READ,
     DISCORD_CAPABILITIES.POPULATION_READ,
@@ -79,7 +124,13 @@ const CAPABILITY_BY_TIER = Object.freeze({
     DISCORD_CAPABILITIES.BACKUPS_READ,
     DISCORD_CAPABILITIES.INVENTORY_READ,
     DISCORD_CAPABILITIES.STORAGE_READ,
-    DISCORD_CAPABILITIES.GUILD_READ
+    DISCORD_CAPABILITIES.GUILD_READ,
+    DISCORD_CAPABILITIES.ITEM_AUDIT_LOG_READ,
+    // WRITE_BRIDGE_ACCESS (issue #215): moderator is the lowest tier eligible
+    // to reach ANY write action (player.warn is moderator-tier per
+    // writeActionMinTier.js) -- Section 0's permanent invariant is that
+    // public/observer must never have it, not that moderator can't.
+    DISCORD_CAPABILITIES.WRITE_BRIDGE_ACCESS
     // OPS_* capabilities are deliberately admin/owner only, not granted to
     // moderator -- confirmed via upstream's own test ("OPS capabilities are
     // granted only to admin and owner tiers", discordPolicy.test.js) and
@@ -118,7 +169,18 @@ export function normalizeDiscordActor(value) {
     // Issue #691: optional, unsigned claim of who Discord itself reports as
     // this guild's real owner -- see discordActorTier()'s own comment for
     // why it's trusted at the same level roleIds already is today.
-    guildOwnerId: optionalString(value.guildOwnerId)
+    guildOwnerId: optionalString(value.guildOwnerId),
+    // roleSnapshotAt (issue #215, docs/rw-architecture.md section 3.8):
+    // Unix-seconds timestamp of when the bot re-derived actor.roleIds from
+    // Discord, used only by the write bridge's own freshness check at
+    // write/execute. Purely additive -- every existing caller of this
+    // function simply ignores it. Kept as the raw value (not coerced/
+    // validated here) since a malformed value must fail loud at the one
+    // call site that actually enforces it (writeExecuteRoute), not be
+    // silently normalized to 0/"" here in a way that could mask the exact
+    // "malformed timestamp silently treated as valid" bug class
+    // docs/rw-architecture.md section 3.8 explicitly warns about.
+    roleSnapshotAt: value.roleSnapshotAt
   };
   return actor;
 }

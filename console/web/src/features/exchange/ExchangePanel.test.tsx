@@ -10,6 +10,7 @@ vi.mock("../../api/exchange", () => ({
     items: vi.fn(),
     listings: vi.fn(),
     stats: vi.fn(),
+    transactions: vi.fn(),
     getConfig: vi.fn(),
     saveConfig: vi.fn()
   }
@@ -75,6 +76,7 @@ beforeEach(() => {
   _resetExchangeCacheForTests();
   vi.mocked(exchangeApi.getConfig).mockResolvedValue({ includeNpcBroker: true, botOwnerIds: [], blacklistedOwnerIds: [] });
   vi.mocked(exchangeApi.listings).mockResolvedValue({ capabilities: { exchange: true }, rows: [] });
+  vi.mocked(exchangeApi.transactions).mockResolvedValue({ capabilities: { exchangeHistory: true }, rows: [], totalCount: 0, summary: { events: 0, units: "0", solari: "0", firstCapturedAt: null }, retentionDays: 0 });
   // Default: no exchange:market permission — the Market Bot button stays hidden.
   vi.mocked(marketBotApi.status).mockRejectedValue(new Error("Forbidden"));
   vi.mocked(marketBotItemsApi.list).mockResolvedValue({

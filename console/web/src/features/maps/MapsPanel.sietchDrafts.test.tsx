@@ -39,8 +39,19 @@ vi.mock("../../api/setup", () => ({ setupApi: new Proxy({} as Record<string, unk
 }) }));
 vi.mock("../../lib/usePendingRefills", () => ({
   usePendingRefills: () => ({ pending: null, refresh: () => {} }),
+  usePendingQueues: () => ({
+    fuel: { pending: null, refresh: () => {} },
+    water: { pending: null, refresh: () => {} },
+    deletes: { pending: null, refresh: () => {} },
+    vehicleDeletes: { pending: null, refresh: () => {} },
+    permissions: { pending: null, refresh: () => {} }
+  }),
   pendingRefillCountForMap: () => 0,
-  pendingRefillCountForPartition: () => 0
+  pendingRefillCountForPartition: () => 0,
+  vehicleDeleteCountForMap: () => 0,
+  vehicleDeleteCountForPartition: () => 0,
+  childAccessPieceCountForMap: () => 0,
+  childAccessPieceCountForPartition: () => 0
 }));
 
 // Real `dune sietches dimensions Survival_1` output. The --ids output is one
@@ -117,6 +128,21 @@ beforeEach(() => {
 });
 
 describe("MapsPanel sietch drafts", () => {
+  it("warns about the coordinated primary restart before reducing active Sietches", async () => {
+    const api = stubMapsApi();
+    const props = renderMapsPanel();
+    props.confirmAction.mockResolvedValue(false);
+    await waitFor(() => expect(sietchRow("31")).toBeTruthy());
+    const row = [...document.querySelectorAll("tr")].find((node) =>
+      node.querySelector("td.actions-column") && !node.querySelector(".sietch-child-meta"));
+    expect(row).toBeTruthy();
+    fireEvent.click(within(row as HTMLElement).getByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText("Active Sietches"), { target: { value: "1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save Map Settings" }));
+    await waitFor(() => expect(props.confirmAction).toHaveBeenCalledWith(expect.stringContaining("Director and primary Sietch will restart")));
+    expect(api.updateSietches).not.toHaveBeenCalled();
+  });
+
   it("keeps a fallback row's pending edit when another sietch is saved", async () => {
     const api = stubMapsApi();
     renderMapsPanel();

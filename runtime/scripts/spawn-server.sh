@@ -3,6 +3,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
+# shellcheck source=runtime/scripts/lib/postgres.sh
+source runtime/scripts/lib/postgres.sh
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -42,7 +45,6 @@ source runtime/scripts/image-tags.sh
 source runtime/scripts/sietch-login-password-args.sh
 source runtime/scripts/fake-k8s-serviceaccount.sh
 
-IMAGE="$(resolve_game_server_image)"
 
 TOKEN_FILE="runtime/secrets/funcom-token.txt"
 RMQ_SECRET_FILE="runtime/secrets/rmq-http-token-auth-secret.txt"
@@ -90,10 +92,6 @@ if ! docker ps --format '{{.Names}}' | grep -qx dune-postgres; then
   exit 1
 fi
 
-psql_value() {
-  docker exec dune-postgres psql -U postgres -d dune -Atc "$1"
-}
-
 container_name_for_map_partition() {
   local map="$1"
   local partition_id="$2"
@@ -108,7 +106,7 @@ rebuild_port_reservation_file() {
   local rows partition_id map game_port igw_port container_name
 
   : >"$output_path"
-  rows="$(docker exec dune-postgres psql -U postgres -d dune -At -F '|' -c "
+  rows="$(dune_psql -At -F '|' -c "
     select
       wp.partition_id,
       wp.map,
@@ -233,7 +231,7 @@ purge_stale_farm_rows_for_map() {
   local safe_map
   safe_map="${map//\'/\'\'}"
 
-  docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+  dune_psql -v ON_ERROR_STOP=1 -c "
 begin;
 delete from dune.farm_state fs
 where fs.map = '$safe_map'
@@ -266,7 +264,7 @@ clear_dead_partition_assignment() {
     return 1
   fi
 
-  docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+  dune_psql -v ON_ERROR_STOP=1 -c "
 begin;
 update dune.world_partition
 set server_id = null
@@ -307,16 +305,27 @@ bind_partition_to_live_server() {
     " | tr -d '\r[:space:]')"
 
     if [ -n "$live_server_id" ]; then
-      docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+      if live_server_id="$(dune_psql -Atq -v ON_ERROR_STOP=1 -c "
 begin;
-update dune.world_partition
+set local lock_timeout = '5s';
+lock table dune.world_partition in share row exclusive mode;
+update dune.world_partition wp
 set server_id = '$live_server_id'
-where partition_id = $partition_id
-  and coalesce(server_id, '') = '';
+where wp.partition_id = $partition_id
+  and wp.map = '${map_name//\'/\'\'}'
+  and (coalesce(wp.server_id, '') = '' or wp.server_id = '$live_server_id')
+  and not exists (
+    select 1 from dune.world_partition assigned
+    where assigned.server_id = '$live_server_id'
+      and assigned.map = wp.map
+      and assigned.partition_id <> wp.partition_id
+  )
+returning wp.server_id;
 commit;
-" >/dev/null
-      printf '%s' "$live_server_id"
-      return 0
+" )" && [ -n "$live_server_id" ]; then
+        printf '%s' "$live_server_id"
+        return 0
+      fi
     fi
 
     sleep "$sleep_seconds"
@@ -361,6 +370,10 @@ if [ -z "$ROW" ]; then
 fi
 
 IFS='|' read -r PARTITION_ID MAP_NAME DIMENSION_INDEX LABEL ASSIGNED_SERVER <<< "$ROW"
+if [ -f runtime/generated/experimental-tanks.json ]; then
+  python3 runtime/scripts/experimental_tanks.py launch-guard "$MAP_NAME"
+fi
+IMAGE="$(resolve_game_server_image "$MAP_NAME")"
 
 mkdir -p runtime/generated
 PARTITION_SPAWN_LOCK_FILE="runtime/generated/spawn-partition-${PARTITION_ID}.lock"
@@ -534,15 +547,15 @@ echo "  igw port:   $IGW_PORT"
 echo "  container:  $CONTAINER_NAME"
 echo
 
-runtime/scripts/repair-map-settings-permissions.sh "$safe_name"
 mkdir -p runtime/game/artifacts
 mkdir -p runtime/container
-python3 runtime/scripts/usersettings.py materialize "$MAP_NAME" "$PWD/runtime/game/$safe_name/Saved" "$PARTITION_ID"
 purge_stale_farm_rows_for_map "$MAP_NAME"
 runtime/scripts/network-addresses.sh reconcile >/dev/null 2>&1 || true
 prepare_fake_k8s_serviceaccount "$FAKE_K8S_SERVICEACCOUNT_DIR" "funcom-seabass-$BATTLEGROUP_ID"
 
 docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+runtime/scripts/repair-map-settings-permissions.sh "$safe_name"
+python3 runtime/scripts/usersettings.py materialize "$MAP_NAME" "$PWD/runtime/game/$safe_name/Saved" "$PARTITION_ID"
 ensure_host_latency_tuned
 mapfile -t MEMORY_SWAP_ARGS < <(memory_swap_docker_args "$MEMORY")
 
@@ -676,7 +689,7 @@ if [ "$MAP_NAME" != "Survival_1" ]; then
           break
         fi
 
-        if docker exec dune-postgres psql -U postgres -d dune -Atc "
+        if dune_psql -Atc "
           select exists (
             select 1
             from dune.world_partition wp

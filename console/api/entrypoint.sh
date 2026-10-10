@@ -30,4 +30,15 @@ if ! touch /repo/.dune-write-test 2>/dev/null; then
 fi
 rm -f /repo/.dune-write-test
 
+# The updater that installs this image may come from an older release and
+# cannot know about services introduced by the files it has just installed.
+# Reconcile the coordinator from the newly built image so direct upgrades from
+# any supported older release converge during that same update.
+if [ -x /repo/runtime/scripts/start-coriolis-coordinator.sh ]; then
+  (
+    cd /repo
+    runtime/scripts/start-coriolis-coordinator.sh --if-stack-running
+  ) || echo "[entrypoint] WARNING: The Coriolis Coordinator could not be started." >&2
+fi
+
 exec "$@"

@@ -1,7 +1,31 @@
 #!/usr/bin/env bash
+# Repairs chat resources in RabbitMQ: declares missing exchanges and adds missing
+# queue bindings. It never creates a binding that already exists, so a run that
+# finds nothing missing changes nothing, and any run is safe to repeat.
+#
+# Behaviour worth knowing (dune-awakening-selfhost-docker#1165):
+#  - Bindings are PLANNED while the database is walked (bind_queue only appends to
+#    a plan file) and APPLIED afterwards in batches of 200 (chat-binding-plan.py).
+#    The "Ensured ... bindings: N" lines are printed only after every batch
+#    succeeded, but N is not a count of repairs: bind_queue returns 0 both for a
+#    binding it only planned and for one that already exists, and the caller counts
+#    both, so N is how many bindings were CHECKED. A run that finds nothing missing
+#    still prints it (#1183). If any binding in a batch is rejected the
+#    script prints one WARN on stderr and exits 1 before any summary line; the other
+#    bindings in that batch are still applied (the Erlang side does not stop at the
+#    first failure), and the next pass retries the rest.
+#  - The one destructive step is an exchange whose type or durability is wrong: it
+#    is deleted and re-declared (declare_exchange), and its bindings are re-planned.
+#    There is no dry-run for that and it is not transactional; if the re-declare
+#    fails the exchange stays missing until the next pass.
+#  - Run with no dune-postgres / dune-rmq-game container: exits 0 without doing anything.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
+
+[ -f .env ] && . ./.env
+# shellcheck source=runtime/scripts/lib/postgres.sh
+source runtime/scripts/lib/postgres.sh
 
 is_running() {
   docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$1"
@@ -24,6 +48,10 @@ end
 
 declared=0
 failed=0
+# The *_bind_failed counters below can no longer increment: bind_queue only plans a
+# binding, and apply_binding_plan reports (and exits on) any failure before the summary.
+# They are kept so the summary section stays line-for-line identical to upstream's, which
+# keeps the next `git merge upstream/main` of this file mechanical.
 guild_bound=0
 guild_bind_failed=0
 faction_bound=0
@@ -37,10 +65,15 @@ notification_bind_failed=0
 rmq_timeout_seconds="${CHAT_REPAIR_RMQ_TIMEOUT_SECONDS:-10}"
 exchange_list_file=""
 queue_list_file=""
+binding_list_file=""
+binding_plan_file=""
+declare -A existing_bindings=()
 
 cleanup() {
   [ -n "$exchange_list_file" ] && rm -f "$exchange_list_file"
   [ -n "$queue_list_file" ] && rm -f "$queue_list_file"
+  [ -n "$binding_list_file" ] && rm -f "$binding_list_file"
+  [ -n "$binding_plan_file" ] && rm -f "$binding_plan_file"
 }
 
 trap cleanup EXIT
@@ -56,8 +89,19 @@ rmq_eval() {
 load_rmq_metadata() {
   exchange_list_file="$(mktemp)"
   queue_list_file="$(mktemp)"
+  binding_list_file="$(mktemp)"
+  binding_plan_file="$(mktemp)"
   rmq_ctl list_exchanges name type durable >"$exchange_list_file" 2>/dev/null || return 1
   rmq_ctl list_queues name >"$queue_list_file" 2>/dev/null || return 1
+  rmq_ctl list_bindings source_name destination_name destination_kind routing_key >"$binding_list_file" 2>/dev/null || return 1
+  local source destination kind key
+  # `read` with a tab IFS collapses a leading empty field, so a binding from the default
+  # exchange (empty source) is mis-parsed and skipped by the `kind = queue` test below.
+  # Chat bindings always have a source exchange, so the dedupe is correct for them.
+  while IFS=$'\t' read -r source destination kind key; do
+    [ "$kind" = queue ] || continue
+    existing_bindings["$source|$key|$destination"]=1
+  done <"$binding_list_file"
 }
 
 exchange_exists() {
@@ -98,13 +142,19 @@ declare_exchange() {
 X = {resource, <<\"/\">>, exchange, <<\"${exchange}\">>},
 rabbit_exchange:delete(X, false, <<\"repair-chat-exchanges\">>).
 " >/dev/null 2>&1 || return 1
+    local binding
+    for binding in "${!existing_bindings[@]}"; do
+      [[ "$binding" = "$exchange|"* ]] && unset 'existing_bindings[$binding]'
+    done
+    awk -F '\t' -v name="$exchange" '$1 != name' "$exchange_list_file" >"${exchange_list_file}.new"
+    mv "${exchange_list_file}.new" "$exchange_list_file"
   fi
 
   if rmq_eval "
 X = {resource, <<\"/\">>, exchange, <<\"${exchange}\">>},
 rabbit_exchange:declare(X, ${kind}, ${durable}, false, false, [], <<\"repair-chat-exchanges\">>).
 " >/dev/null 2>&1; then
-    printf '%s\t%s\n' "$exchange" "$kind" >>"$exchange_list_file"
+    printf '%s\t%s\t%s\n' "$exchange" "$kind" "$durable" >>"$exchange_list_file"
     return 0
   fi
 
@@ -117,14 +167,23 @@ bind_queue() {
   local queue="$3"
 
   queue_exists "$queue" || return 0
-  rmq_eval "
-B = {binding,
-  {resource, <<\"/\">>, exchange, <<\"${exchange}\">>},
-  <<\"${routing_key}\">>,
-  {resource, <<\"/\">>, queue, <<\"${queue}\">>},
-  []},
-rabbit_binding:add(B, <<\"repair-chat-exchanges\">>).
-" >/dev/null 2>&1
+  [ -z "${existing_bindings["$exchange|$routing_key|$queue"]:-}" ] || return 0
+  printf '%s\t%s\t%s\n' "$exchange" "$routing_key" "$queue" >>"$binding_plan_file"
+  existing_bindings["$exchange|$routing_key|$queue"]=1
+}
+
+apply_binding_plan() {
+  [ -s "$binding_plan_file" ] || return 0
+  local expression result expressions batch_failed=0
+  expressions="$(python3 runtime/scripts/chat-binding-plan.py "$binding_plan_file")" || return 1
+  while IFS= read -r expression; do
+    result="$(rmq_eval "$expression" 2>&1)" || batch_failed=1
+    printf '%s\n' "$result" | grep -qx 'chat-bindings-ok' || batch_failed=1
+  done <<< "$expressions"
+  if [ "$batch_failed" -ne 0 ]; then
+    echo "WARN some chat queue bindings could not be repaired; they will be retried on the next repair pass." >&2
+    return 1
+  fi
 }
 
 if ! load_rmq_metadata; then
@@ -133,7 +192,7 @@ if ! load_rmq_metadata; then
 fi
 
 guild_ids="$(
-  docker exec dune-postgres psql -U dune -d dune -Atc "
+  psql_app_value "
     select guild_id
     from dune.guilds
     where guild_id is not null
@@ -155,7 +214,7 @@ while IFS= read -r guild_id; do
 done <<< "$guild_ids"
 
 faction_ids="$(
-  docker exec dune-postgres psql -U dune -d dune -Atc "
+  psql_app_value "
     select distinct id
     from dune.factions
     where id is not null
@@ -208,7 +267,7 @@ else
 fi
 
 guild_bindings="$(
-  docker exec dune-postgres psql -U dune -d dune -At -F $'\t' -c "
+  dune_psql_app -At -F $'\t' -c "
     select distinct gm.guild_id, concat(ac.\"user\", '_queue') as queue_name
     from dune.guild_members gm
     join dune.player_state ps on ps.player_controller_id = gm.player_id
@@ -236,7 +295,7 @@ while IFS=$'\t' read -r guild_id queue_name; do
 done <<< "$guild_bindings"
 
 faction_bindings="$(
-  docker exec dune-postgres psql -U dune -d dune -At -F $'\t' -c "
+  dune_psql_app -At -F $'\t' -c "
     select distinct pf.faction_id, concat(ac.\"user\", '_queue') as queue_name
     from dune.player_faction pf
     join dune.player_state ps on ps.player_controller_id = pf.actor_id
@@ -264,7 +323,7 @@ while IFS=$'\t' read -r faction_id queue_name; do
 done <<< "$faction_bindings"
 
 map_bindings="$(
-  docker exec dune-postgres psql -U dune -d dune -At -F $'\t' -c "
+  dune_psql_app -At -F $'\t' -c "
     select distinct concat(($map_chat_region_sql), '.', coalesce(wp.dimension_index, 0)) as routing_key,
            concat(ac.\"user\", '_queue') as queue_name
     from dune.player_state ps
@@ -292,7 +351,7 @@ while IFS=$'\t' read -r routing_key queue_name; do
 done <<< "$map_bindings"
 
 direct_bindings="$(
-  docker exec dune-postgres psql -U dune -d dune -At -F $'\t' -c "
+  dune_psql_app -At -F $'\t' -c "
     select distinct routing_key, queue_name
     from (
       select ac.\"user\" as routing_key,
@@ -331,7 +390,7 @@ while IFS=$'\t' read -r routing_key queue_name; do
 done <<< "$direct_bindings"
 
 notification_bindings="$(
-  docker exec dune-postgres psql -U dune -d dune -At -F $'\t' -c "
+  dune_psql_app -At -F $'\t' -c "
     select distinct concat('player.#.', ac.funcom_id) as routing_key,
            concat(ac.\"user\", '_queue') as queue_name
     from dune.player_state ps
@@ -356,6 +415,10 @@ while IFS=$'\t' read -r routing_key queue_name; do
     echo "WARN failed to bind notification queue: notifications $routing_key -> $queue_name" >&2
   fi
 done <<< "$notification_bindings"
+
+# Repair only missing bindings, in one RabbitMQ operation rather than starting
+# an Erlang CLI VM per player/binding. Each result is checked independently.
+apply_binding_plan || exit 1
 
 if [ "$declared" -gt 0 ]; then
   echo "Ensured chat exchanges: $declared"

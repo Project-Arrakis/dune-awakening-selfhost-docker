@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { actionForRoute } from "../src/actions.js";
-import { evaluate, loadPolicies, matchAction, resolveAllowedActions, setPolicies } from "../src/policy.js";
+import { DEFAULT_POLICIES, evaluate, getPolicyNotices, loadPolicies, matchAction, resolveAllowedActions, setPolicies } from "../src/policy.js";
 
 test("policy matching supports exact and namespace wildcards", () => {
   assert.equal(matchAction("players:read", "players:read"), true);
@@ -121,23 +121,148 @@ test("the container item delete route resolves to bases:delete-item without shad
   assert.equal(actionForRoute("/api/bases/5/containers/9", "GET"), "bases:read");
 });
 
+// Same argument as the container routes above: rbacParity only proves an
+// action exists, not that it is the right one. Without the explicit
+// ROUTE_ACTIONS entry this POST falls through the "POST /api/bases/" prefix
+// rule to bases:mutate, which would silently let every per-base-refill grant
+// retune the global automation policy.
+test("the auto-refill settings routes resolve to their own actions without shadowing their neighbours", () => {
+  assert.equal(actionForRoute("/api/bases/auto-refill/settings", "POST"), "bases:write-config");
+  assert.equal(actionForRoute("/api/bases/auto-refill/settings", "GET"), "bases:read");
+  // The per-base enrollment toggle keeps the shared mutate bucket, and the
+  // enrollment read keeps bases:read -- the new paths sit beside them.
+  assert.equal(actionForRoute("/api/bases/5/auto-refill", "POST"), "bases:mutate");
+  assert.equal(actionForRoute("/api/bases/5/auto-refill-water", "POST"), "bases:mutate");
+  assert.equal(actionForRoute("/api/bases/auto-refill", "GET"), "bases:read");
+  assert.equal(actionForRoute("/api/bases/auto-refill-water", "GET"), "bases:read");
+});
+
+test("bases:write-config is not carried by a bases:mutate grant", () => {
+  const policies = {
+    moderator: { version: 1, tier: "moderator", statements: [{ Effect: "Allow", Action: ["bases:read", "bases:mutate"] }] }
+  };
+  // A hand-authored policy that predates the settings surface must not gain it.
+  assert.equal(evaluate({ tier: "moderator" }, "bases:mutate", policies), true);
+  assert.equal(evaluate({ tier: "moderator" }, "bases:write-config", policies), false);
+  // The shipped tiers grant bases:*, so default access is unchanged.
+  assert.equal(evaluate({ tier: "admin" }, "bases:write-config"), true);
+  assert.equal(evaluate({ tier: "owner" }, "bases:write-config"), true);
+});
+
 test("vehicle permission routes resolve to their own read/mutate actions", () => {
   assert.equal(actionForRoute("/api/vehicles/5/permissions", "GET"), "vehicles:read");
   assert.equal(actionForRoute("/api/vehicles/5/permissions", "PUT"), "vehicles:mutate");
   assert.equal(actionForRoute("/api/vehicles/permission-candidates", "GET"), "vehicles:read");
   assert.equal(actionForRoute("/api/vehicles", "GET"), "vehicles:read");
+  // Reading a vehicle's cargo hold stays an ordinary vehicle read -- it
+  // resolves through the method-agnostic "/api/vehicles/" prefix rule rather
+  // than an entry of its own, which is exactly why it is pinned here.
+  assert.equal(actionForRoute("/api/vehicles/5/storage", "GET"), "vehicles:read");
+});
+
+test("vehicle cargo deletion resolves to its own actions, not vehicles:mutate", () => {
+  assert.equal(actionForRoute("/api/vehicles/5/storage/items/77", "DELETE"), "vehicles:delete-item");
+  assert.equal(actionForRoute("/api/vehicles/5/storage/items", "DELETE"), "vehicles:bulk-delete-items");
+  assert.equal(actionForRoute("/api/vehicles/5/storage/all-items", "DELETE"), "vehicles:bulk-delete-items");
+  // Reading the hold is unaffected by its new destructive siblings.
+  assert.equal(actionForRoute("/api/vehicles/5/storage", "GET"), "vehicles:read");
+  // And whole-vehicle delete still resolves to its own action.
+  assert.equal(actionForRoute("/api/vehicles/5", "DELETE"), "vehicles:delete");
+});
+
+test("vehicles:delete-item can be withheld independently of vehicles:mutate", () => {
+  const policies = {
+    moderator: {
+      version: 1,
+      tier: "moderator",
+      statements: [{ Effect: "Allow", Action: ["vehicles:read", "vehicles:mutate"] }]
+    }
+  };
+  // An operator who granted vehicles:mutate for roster edits and refuels never
+  // consented to destroying cargo.
+  assert.equal(evaluate({ tier: "moderator" }, "vehicles:mutate", policies), true);
+  assert.equal(evaluate({ tier: "moderator" }, "vehicles:delete-item", policies), false);
+  assert.equal(evaluate({ tier: "moderator" }, "vehicles:bulk-delete-items", policies), false);
+});
+
+test("granting single-item cargo delete carries neither bulk delete nor whole-vehicle delete", () => {
+  const policies = {
+    moderator: {
+      version: 1,
+      tier: "moderator",
+      statements: [{ Effect: "Allow", Action: ["vehicles:read", "vehicles:delete-item"] }]
+    }
+  };
+  assert.equal(evaluate({ tier: "moderator" }, "vehicles:delete-item", policies), true);
+  assert.equal(evaluate({ tier: "moderator" }, "vehicles:bulk-delete-items", policies), false);
+  // The dangerous direction: item deletion must never imply destroying the
+  // whole vehicle.
+  assert.equal(evaluate({ tier: "moderator" }, "vehicles:delete", policies), false);
+});
+
+test("the vehicle cargo actions share no prefix a -* wildcard could bridge", () => {
+  // Issue #351's lesson, mirrored: "vehicles:delete-item*" written to grant
+  // single-item delete must not silently grant bulk as well.
+  assert.equal(matchAction("vehicles:delete-item*", "vehicles:delete-item"), true);
+  assert.equal(matchAction("vehicles:delete-item*", "vehicles:bulk-delete-items"), false);
+  assert.equal(matchAction("vehicles:delete-*", "vehicles:delete-item"), true);
+  assert.equal(matchAction("vehicles:delete-*", "vehicles:bulk-delete-items"), false);
+  // Neither cargo action implies whole-vehicle delete, in either direction.
+  assert.equal(matchAction("vehicles:delete-item", "vehicles:delete"), false);
+  assert.equal(matchAction("vehicles:delete", "vehicles:delete-item"), false);
+  // The admin namespace grant still covers all three, as it must.
+  assert.equal(matchAction("vehicles:*", "vehicles:delete-item"), true);
+  assert.equal(matchAction("vehicles:*", "vehicles:bulk-delete-items"), true);
+});
+
+test("vehicles:stored-delete is not reachable from any vehicles:delete wildcard", () => {
+  for (const pattern of ["vehicles:delete", "vehicles:delete*", "vehicles:delete-*", "vehicles:delete-item*"]) {
+    assert.equal(matchAction(pattern, "vehicles:stored-delete"), false, pattern);
+  }
+  assert.equal(matchAction("vehicles:stored-delete", "vehicles:delete"), false);
+  assert.equal(matchAction("vehicles:*", "vehicles:stored-delete"), true);
+  // An infix wildcard names every delete on purpose, and does reach it. No
+  // action name could prevent that; it is documented in vehicle-deletion.md.
+  for (const pattern of ["vehicles:*delete*", "vehicles:*delete", "vehicles:*-delete"]) {
+    assert.equal(matchAction(pattern, "vehicles:stored-delete"), true, pattern);
+  }
+});
+
+// Denying vehicles:delete does not deny vehicles:stored-delete under a
+// vehicles:* allow, which is why the stored route requires both.
+test("a tier denied vehicles:delete cannot pass the stored route's two-action requirement", () => {
+  const policies = {
+    admin: {
+      version: 1,
+      tier: "admin",
+      statements: [
+        { Effect: "Deny", Action: ["vehicles:delete"] },
+        { Effect: "Allow", Action: ["vehicles:*"] }
+      ]
+    }
+  };
+  const session = { tier: "admin" };
+  assert.equal(evaluate(session, "vehicles:delete", policies), false);
+  const mayDeleteStored = ["vehicles:stored-delete", "vehicles:delete"].every((action) => evaluate(session, action, policies));
+  assert.equal(mayDeleteStored, false);
+  // And denying only the stored delete leaves ordinary deletes alone.
+  const narrower = { admin: { version: 1, tier: "admin", statements: [
+    { Effect: "Deny", Action: ["vehicles:stored-delete"] }, { Effect: "Allow", Action: ["vehicles:*"] }
+  ] } };
+  assert.equal(evaluate(session, "vehicles:delete", narrower), true);
+  assert.equal(evaluate(session, "vehicles:stored-delete", narrower), false);
 });
 
 test("a vehicles:read-only policy denies vehicles:mutate", () => {
   const policies = {
-    observer: {
+    player: {
       version: 1,
-      tier: "observer",
+      tier: "player",
       statements: [{ Effect: "Allow", Action: ["vehicles:read"] }]
     }
   };
-  assert.equal(evaluate({ tier: "observer" }, "vehicles:read", policies), true);
-  assert.equal(evaluate({ tier: "observer" }, "vehicles:mutate", policies), false);
+  assert.equal(evaluate({ tier: "player" }, "vehicles:read", policies), true);
+  assert.equal(evaluate({ tier: "player" }, "vehicles:mutate", policies), false);
 });
 
 test("persisting a refreshed buyback log requires market write permission", () => {
@@ -360,4 +485,217 @@ test("an uncompilable pattern is inert, and cannot be persisted", () => {
   });
   assert.equal(setPolicies(store("players:*")).ok, true, "a sane pattern still saves");
   loadPolicies();
+});
+
+// ---- Strict player tier; `observer` removed (issue #1125) ----
+import { normalizeTier, resolveSessionTier, getPolicy } from "../src/policy.js";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join as joinPath } from "node:path";
+
+test("DEFAULT_POLICIES has no observer tier and the player tier is only players:read + guilds:read", () => {
+  assert.equal(Object.hasOwn(DEFAULT_POLICIES, "observer"), false);
+  const actions = DEFAULT_POLICIES.player.statements.flatMap((s) => s.Action);
+  assert.deepEqual([...actions].sort(), ["guilds:read", "players:read"]);
+  for (const action of ["server:read", "maps:read", "bases:read", "storage:read", "vehicles:read", "blueprints:read", "exchange:read", "landsraad:read"]) {
+    assert.equal(evaluate({ tier: "player" }, action, DEFAULT_POLICIES), false, `player must not hold ${action}`);
+  }
+  assert.equal(evaluate({ tier: "player" }, "players:read", DEFAULT_POLICIES), true);
+});
+
+test("a legacy observer session resolves to the player tier and never to something broader", () => {
+  assert.equal(normalizeTier("observer"), "player");
+  assert.equal(resolveSessionTier({ tier: "observer" }), "player");
+  assert.equal(evaluate({ tier: "observer" }, "bases:read", DEFAULT_POLICIES), false);
+  assert.equal(evaluate({ tier: "observer" }, "players:read", DEFAULT_POLICIES), true);
+});
+
+test("a saved iam-policies.json that still has an observer key loads, drops it, and keeps other tiers", () => {
+  const root = mkdtempSync(joinPath(tmpdir(), "iam-observer-"));
+  mkdirSync(joinPath(root, "runtime/generated"), { recursive: true });
+  const custom = { version: 1, tier: "moderator", statements: [{ Effect: "Allow", Action: ["players:read", "logs:*"] }] };
+  writeFileSync(joinPath(root, "runtime/generated/iam-policies.json"), JSON.stringify({
+    owner: DEFAULT_POLICIES.owner,
+    moderator: custom,
+    observer: { version: 1, tier: "observer", statements: [{ Effect: "Allow", Action: ["bases:read"] }] }
+  }));
+  try {
+    const result = loadPolicies(root);
+    assert.equal(result.source, "file", "must not fall back to defaults because of the legacy key");
+    assert.deepEqual(getPolicy("moderator").statements, custom.statements, "operator customisation survives");
+    assert.equal(getPolicy("observer"), null);
+    assert.deepEqual(getPolicy("player").statements, DEFAULT_POLICIES.player.statements, "missing player is filled from the strict defaults");
+  } finally {
+    loadPolicies(null);
+  }
+});
+
+test("a saved player policy that predates the strict tier reports the grants the cap makes dead", async () => {
+  const { playerCappedActions } = await import("../src/policy.js");
+  const docs = { ...DEFAULT_POLICIES, player: { version: 1, tier: "player", statements: [{ Effect: "Allow", Action: ["players:read", "bases:read", "server:read"] }] } };
+  assert.deepEqual(playerCappedActions(docs).sort(), ["bases:read", "server:read"]);
+  assert.deepEqual(playerCappedActions(DEFAULT_POLICIES), []);
+});
+
+// A system backup is not a bigger database backup: the archive carries
+// runtime/secrets (the console's own admin password, the session secret,
+// api-keys.json) and runtime/generated/iam-policies.json, and a restore
+// overwrites both wholesale. The admin tier's "backups:*" allow silently
+// absorbed all five when these actions were added, handing admin a route to
+// every credential owner has -- past the settings:* and database:* denials in
+// its own policy.
+test("the admin tier cannot read back or write in a system backup archive", () => {
+  const admin = { tier: "admin" };
+  for (const action of ["backups:download-system", "backups:import-system", "backups:restore-system"]) {
+    assert.equal(evaluate(admin, action, DEFAULT_POLICIES), false, `admin must not hold ${action}`);
+  }
+  // The denial is specific, not a retreat from backups generally: taking and
+  // pruning archives is ordinary custodial work.
+  assert.equal(evaluate(admin, "backups:read", DEFAULT_POLICIES), true);
+  assert.equal(evaluate(admin, "backups:create", DEFAULT_POLICIES), true);
+  assert.equal(evaluate(admin, "backups:create-system", DEFAULT_POLICIES), true);
+  assert.equal(evaluate(admin, "backups:delete-system", DEFAULT_POLICIES), true);
+});
+
+test("the owner tier still holds every system backup action", () => {
+  const owner = { tier: "owner" };
+  for (const action of ["backups:create-system", "backups:download-system", "backups:import-system", "backups:restore-system", "backups:delete-system"]) {
+    assert.equal(evaluate(owner, action, DEFAULT_POLICIES), true, `owner must hold ${action}`);
+  }
+});
+
+// ---- Saved policies predating the system-backup actions (issue #1117) ----
+import { mkdtempSync as mkd, mkdirSync as mkdirp, readFileSync as readF, writeFileSync as writeF } from "node:fs";
+import { tmpdir as tmp } from "node:os";
+import { join as j } from "node:path";
+
+function loadSaved(adminStatements) {
+  const root = mkd(j(tmp(), "iam-denies-"));
+  mkdirp(j(root, "runtime/generated"), { recursive: true });
+  writeF(j(root, "runtime/generated/iam-policies.json"), JSON.stringify({
+    owner: DEFAULT_POLICIES.owner,
+    admin: { version: 1, tier: "admin", statements: adminStatements }
+  }));
+  return loadPolicies(root);
+}
+
+const SYSTEM_BACKUP = ["backups:download-system", "backups:import-system", "backups:restore-system"];
+
+test("a saved policy that predates the system-backup actions still denies them to admin", () => {
+  try {
+    const result = loadSaved([{ Effect: "Allow", Action: ["backups:*", "players:*"] }]);
+    assert.equal(result.source, "file");
+    assert.equal(result.addedDefaultDenies.length, 3);
+    for (const action of SYSTEM_BACKUP) assert.equal(evaluate({ tier: "admin" }, action), false, action);
+    assert.equal(evaluate({ tier: "admin" }, "backups:create"), true, "ordinary backup work is not withdrawn");
+    assert.equal(evaluate({ tier: "owner" }, "backups:restore-system"), true);
+  } finally { loadPolicies(null); }
+});
+
+test("a saved Deny already present is not duplicated, and an exact-name Allow is the operator's choice", () => {
+  try {
+    const denied = loadSaved([{ Effect: "Allow", Action: ["backups:*"] }, { Effect: "Deny", Action: SYSTEM_BACKUP }]);
+    assert.deepEqual(denied.addedDefaultDenies, []);
+    const allowed = loadSaved([{ Effect: "Allow", Action: ["backups:*", "backups:download-system"] }]);
+    assert.deepEqual(allowed.addedDefaultDenies.map((d) => d.action).sort(), ["backups:import-system", "backups:restore-system"]);
+    assert.equal(evaluate({ tier: "admin" }, "backups:download-system"), true, "explicit allow kept");
+    assert.equal(evaluate({ tier: "admin" }, "backups:import-system"), false);
+  } finally { loadPolicies(null); }
+});
+
+// ---- Telling the operator what the reconcile decided (issue #1160) ----
+
+test("the Settings page is told which Denies were added at load, and which exact Allows kept the Deny away", () => {
+  try {
+    loadSaved([{ Effect: "Allow", Action: ["backups:*"] }]);
+    assert.deepEqual(getPolicyNotices(), {
+      addedDefaultDenies: SYSTEM_BACKUP.map((action) => ({ tier: "admin", action })),
+      keptExactAllows: []
+    });
+
+    const result = loadSaved([{ Effect: "Allow", Action: ["backups:*", "backups:download-system"] }]);
+    assert.deepEqual(result.keptExactAllows, [{ tier: "admin", action: "backups:download-system" }]);
+    assert.deepEqual(getPolicyNotices().keptExactAllows, [{ tier: "admin", action: "backups:download-system" }]);
+    assert.deepEqual(getPolicyNotices().addedDefaultDenies.map((d) => d.action).sort(), ["backups:import-system", "backups:restore-system"]);
+
+    // A Deny that is already there is neither "added" nor a kept Allow, even next to an exact Allow.
+    loadSaved([{ Effect: "Allow", Action: ["backups:download-system"] }, { Effect: "Deny", Action: SYSTEM_BACKUP }]);
+    assert.deepEqual(getPolicyNotices(), { addedDefaultDenies: [], keptExactAllows: [] });
+  } finally { loadPolicies(null); }
+});
+
+test("notices are empty for defaults, and a save replaces them with what is now enforced", () => {
+  try {
+    loadPolicies(null);
+    assert.deepEqual(getPolicyNotices(), { addedDefaultDenies: [], keptExactAllows: [] });
+
+    loadSaved([{ Effect: "Allow", Action: ["backups:*"] }]);
+    assert.equal(getPolicyNotices().addedDefaultDenies.length, 3);
+
+    // Saving what the Settings page showed (the reconciled policy) clears "added".
+    const saved = setPolicies(getAllPoliciesForTest(), null);
+    assert.equal(saved.ok, true);
+    assert.deepEqual(getPolicyNotices().addedDefaultDenies, []);
+    assert.deepEqual(getPolicyNotices().keptExactAllows, []);
+
+    // Saving an exact-name Allow is the operator's choice, and stays visible.
+    const withAllow = { ...getAllPoliciesForTest(), admin: { version: 1, tier: "admin", statements: [{ Effect: "Allow", Action: ["backups:*", "backups:restore-system"] }] } };
+    assert.equal(setPolicies(withAllow, null).ok, true);
+    assert.deepEqual(getPolicyNotices().keptExactAllows, [{ tier: "admin", action: "backups:restore-system" }]);
+  } finally { loadPolicies(null); }
+});
+
+test("getPolicyNotices hands out copies, so a caller cannot rewrite what the next request sees", () => {
+  try {
+    loadSaved([{ Effect: "Allow", Action: ["backups:*"] }]);
+    getPolicyNotices().addedDefaultDenies.length = 0;
+    getPolicyNotices().addedDefaultDenies.push({ tier: "x", action: "y" });
+    assert.equal(getPolicyNotices().addedDefaultDenies.length, 3);
+  } finally { loadPolicies(null); }
+});
+
+import { getAllPolicies as getAllPoliciesForTest } from "../src/policy.js";
+
+test("removing the exact Allow that kept a shipped Deny away restores the Deny at once, not at the next restart", () => {
+  // The Settings page tells the operator "Remove the Allow to restore the Deny". The save must do that.
+  const root = mkd(j(tmp(), "iam-save-reconcile-"));
+  try {
+    mkdirp(j(root, "runtime/generated"), { recursive: true });
+    const loaded = loadSaved([{ Effect: "Allow", Action: ["backups:*", "backups:download-system"] }]);
+    assert.deepEqual(loaded.keptExactAllows, [{ tier: "admin", action: "backups:download-system" }]);
+    assert.equal(evaluate({ tier: "admin" }, "backups:download-system"), true, "kept as the operator's explicit choice");
+
+    const result = setPolicies({
+      ...getAllPoliciesForTest(),
+      admin: { version: 1, tier: "admin", statements: [{ Effect: "Allow", Action: ["backups:*"] }] }
+    }, root);
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.addedDefaultDenies.map((d) => d.action).sort(), SYSTEM_BACKUP);
+    for (const action of SYSTEM_BACKUP) assert.equal(evaluate({ tier: "admin" }, action), false, `${action} must be denied right after the save`);
+    assert.equal(evaluate({ tier: "admin" }, "backups:create"), true, "ordinary backup work is not withdrawn");
+    assert.deepEqual(getPolicyNotices(), { addedDefaultDenies: [], keptExactAllows: [] }, "no stale warning");
+    assert.deepEqual(result.notices, getPolicyNotices());
+
+    // What is on disk is what is enforced: a restart must not differ from the save.
+    const onDisk = JSON.parse(readF(j(root, "runtime/generated/iam-policies.json"), "utf8"));
+    assert.ok(onDisk.admin.statements.some((st) => st.Effect === "Deny" && SYSTEM_BACKUP.every((a) => st.Action.includes(a))));
+    const reloaded = loadPolicies(root);
+    assert.deepEqual(reloaded.addedDefaultDenies, [], "nothing left to add on the next start");
+    for (const action of SYSTEM_BACKUP) assert.equal(evaluate({ tier: "admin" }, action), false);
+  } finally { loadPolicies(null); }
+});
+
+test("a save that removes the shipped Deny without naming the action has it put back and says so", () => {
+  const root = mkd(j(tmp(), "iam-save-deny-"));
+  try {
+    mkdirp(j(root, "runtime/generated"), { recursive: true });
+    const result = setPolicies({
+      ...getAllPoliciesForTest(),
+      admin: { version: 1, tier: "admin", statements: [{ Effect: "Allow", Action: ["backups:*", "players:*"] }] }
+    }, root);
+    assert.equal(result.ok, true);
+    assert.equal(result.addedDefaultDenies.length, 3);
+    assert.equal(evaluate({ tier: "admin" }, "backups:restore-system"), false);
+    assert.equal(evaluate({ tier: "admin" }, "players:read"), true);
+  } finally { loadPolicies(null); }
 });

@@ -5,7 +5,16 @@ set -euo pipefail
 export PYTHONDONTWRITEBYTECODE="${PYTHONDONTWRITEBYTECODE:-1}"
 
 cd "$(dirname "$0")/../.."
+
+# POSTGRES_PORT and DUNE_PSQL_TRANSPORT from here configure the Postgres seam.
+# Exported because this script's queries run in embedded Python, which reads
+# them from its environment; a bare `. ./.env` would keep them invisible to any
+# child process.
+[ -f .env ] && . ./.env
+export POSTGRES_PORT DUNE_PSQL_TRANSPORT
 source runtime/scripts/host-file-ownership.sh
+# shellcheck source=runtime/scripts/lib/rabbitmq.sh
+source runtime/scripts/lib/rabbitmq.sh
 
 PID_FILE="runtime/generated/deepdesert-overrides.pid"
 LOG_FILE="runtime/generated/deepdesert-overrides.log"
@@ -19,11 +28,19 @@ STOP_RESTORE_TIMEOUT_SECONDS="${DUNE_DEEPDESERT_OVERRIDE_STOP_RESTORE_TIMEOUT_SE
 ROUTE_REFRESH_SECONDS="${DUNE_DEEPDESERT_OVERRIDE_ROUTE_REFRESH_SECONDS:-300}"
 SNAPSHOT_REFRESH_SECONDS="${DUNE_DEEPDESERT_OVERRIDE_SNAPSHOT_REFRESH_SECONDS:-10}"
 POLL_SECONDS="${DUNE_DEEPDESERT_OVERRIDE_POLL_SECONDS:-1}"
+LAYOUT_OVERRIDE_FILE="${DUNE_DEEPDESERT_OVERRIDE_FILE:-runtime/generated/director-deepdesert-dual.ini}"
 
 SOURCE_EXCHANGE="completions"
 SOURCE_ROUTING_KEY="server_state.DeepDesert_1"
 SINK_QUEUE="serverStateSink_DeepDesert_1"
 FILTER_EXCHANGE="deepdesertOverrideFilteredState"
+
+managed_multi_instance_layout() {
+  [ -f "$LAYOUT_OVERRIDE_FILE" ] || return 1
+  local count
+  count="$(sed -n 's/^; ManagedInstanceCount=\([0-9][0-9]*\)$/\1/p' "$LAYOUT_OVERRIDE_FILE" | tail -n1)"
+  [[ "$count" =~ ^[0-9]+$ ]] && [ "$count" -ge 2 ]
+}
 
 loop_pids() {
   ps -eo pid=,args= 2>/dev/null \
@@ -193,10 +210,27 @@ rmq_admin() {
     [ "${#rmq_creds[@]}" -ge 2 ] || return 1
     rmq_user="${rmq_creds[0]}"
     rmq_password="${rmq_creds[1]}"
-    if timeout --kill-after=2s "${RMQ_TIMEOUT_SECONDS}s" docker exec dune-rmq-admin rabbitmqadmin -q -u "$rmq_user" -p "$rmq_password" "$@"; then
+    # The verbs on the hot paths go straight to the management API that
+    # rabbitmqadmin would have called anyway; lib/rabbitmq.sh returns
+    # RMQ_HTTP_UNSUPPORTED for the rest, which falls through to the exec below.
+    # Either way a real failure retries once with freshly read credentials.
+    # rc is captured rather than left to propagate: under `set -e` a plain
+    # failure here -- a 401 from stale credentials, which is routine, since
+    # these are scraped from rotating director logs -- would kill the caller
+    # before either the credential refresh below or the exec fallback could
+    # run. publish_payload calls this bare from a `while read` loop, so that
+    # abort took the whole publisher down.
+    rc=0
+    dune_rmq_http_try "$rmq_user" "$rmq_password" "$@" || rc=$?
+    if [ "$rc" -ne "$RMQ_HTTP_UNSUPPORTED" ]; then
+      if [ "$rc" -eq 0 ]; then
+        return 0
+      fi
+    elif timeout --kill-after=2s "${RMQ_TIMEOUT_SECONDS}s" docker exec dune-rmq-admin rabbitmqadmin -q -u "$rmq_user" -p "$rmq_password" "$@"; then
       return 0
+    else
+      rc=$?
     fi
-    rc=$?
     rm -f "$RMQ_CREDS_FILE"
   done
   return "$rc"
@@ -256,6 +290,7 @@ import time
 
 sys.path.insert(0, "runtime/scripts")
 import usersettings  # noqa: E402
+import dune_psql  # noqa: E402
 
 query = """
 select wp.partition_id,
@@ -272,16 +307,7 @@ where wp.map = 'DeepDesert_1'
 order by wp.dimension_index, wp.partition_id;
 """
 
-result = subprocess.run(
-    [
-        "docker", "exec", "dune-postgres",
-        "psql", "-U", "postgres", "-d", "dune",
-        "-At", "-F", "\t", "-c", query,
-    ],
-    check=True,
-    text=True,
-    capture_output=True,
-)
+rows_raw = dune_psql.query_tsv(query)
 
 usersettings_config = usersettings.load_config()
 
@@ -358,7 +384,7 @@ def gameplay_settings_for_partition(partition_id: str, display_name: str) -> dic
     }
 
 
-for line in result.stdout.splitlines():
+for line in rows_raw.splitlines():
     if not line.strip():
         continue
     partition_id, server_id, game_addr, game_port, ready, alive, label = line.split("\t")
@@ -414,6 +440,13 @@ start_loop() {
 
 case "${1:-start}" in
   once)
+    if managed_multi_instance_layout; then
+      # Mixed layouts must use the game servers' native state. The synthetic
+      # warm-up payload has no field for a partition-specific PvP role and
+      # would make every Kanly entry appear PvE.
+      restore_route
+      exit 0
+    fi
     ensure_route
     rows="$(publish_snapshot_once || true)"
     while IFS= read -r payload; do
@@ -422,6 +455,11 @@ case "${1:-start}" in
     done <<< "$rows"
     ;;
   start)
+    if managed_multi_instance_layout; then
+      stop_loop_processes
+      restore_route
+      exit 0
+    fi
     clear_stale_pidfile
     if loop_running; then
       loop_pids | head -n 1 >"$PID_FILE"

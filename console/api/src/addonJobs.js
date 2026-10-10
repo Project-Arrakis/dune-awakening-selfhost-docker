@@ -24,6 +24,8 @@ import { runSql } from "./duneDb.js";
 import { writeJsonAtomic } from "./jsonStore.js";
 import { audit } from "./audit.js";
 import { redact } from "./redact.js";
+import { applyExchangeCategoryToSeedRow } from "./services/exchangeCategoryMask.js";
+import { marketBotSafetyBackupsEnabled, SAFETY_BACKUP_SKIPPED_NOTE } from "./services/marketBotSettings.js";
 import {
   readSeedSchedule,
   saveSeedSchedule,
@@ -103,6 +105,10 @@ export const BUYBACK_RESULT_CODES = {
   6: { label: "skipped locked", summary: "Eligible but locked by a concurrent sweep" }
 };
 
+// Sole sanitization boundary for exchangeId before it reaches raw SQL (see
+// requireScheduleExchangeId below, and the identical pattern in
+// addonSeedJob.js). A digit string that passes this can be interpolated
+// directly into SQL templates; that is intentional, not a gap.
 export function normalizeExchangeId(value) {
   const raw = String(value ?? "").trim();
   if (!EXCHANGE_ID_PATTERN.test(raw)) return null;
@@ -218,13 +224,20 @@ export function loadBuybackSeedPlan(config, addonId = EDA_EXCHANGE_BOT_ADDON_ID)
     if (!templateId || templateId.length > 200) throw new Error(`Addon market seed plan row ${index + 1} has an invalid template_id.`);
     const price = Number(row?.price);
     if (!Number.isFinite(price) || price <= 0) throw new Error(`Addon market seed plan row ${index + 1} has an invalid price.`);
+    const kind = String(row?.kind || "equippable").slice(0, 40);
+    const categorized = applyExchangeCategoryToSeedRow({
+      template_id: templateId,
+      category_mask: Math.trunc(Number(row?.category_mask) || 0),
+      category_depth: clampInteger(row?.category_depth, 1, 0, 4),
+      kind
+    });
     return {
       templateId,
       displayName: String(row?.display_name || "").trim(),
       price,
       qualityLevel: clampInteger(row?.quality_level, 0, 0, 5),
-      categoryMask: Math.trunc(Number(row?.category_mask) || 0),
-      kind: String(row?.kind || "equippable").slice(0, 40)
+      categoryMask: categorized.category_mask,
+      kind
     };
   });
   return { sourceMultiplier, rows };
@@ -246,6 +259,9 @@ const BUYBACK_ELIGIBLE_PREDICATE = `o.item_price > 0 AND ${BUYBACK_STACK_SQL} > 
 // use the closest seeded grade below the listing so the cap stays
 // conservative; only listings below every seeded grade fall up to the lowest
 // available row.
+// nosemgrep: utils.custom.sql-injection-template-literal -- BUYBACK_ORDER_GRADE_SQL
+// (both interpolations below) is the fixed constant defined above, not user
+// input; there is nothing here for an attacker to control.
 const BUYBACK_PLAN_LATERAL = `LEFT JOIN LATERAL (
         SELECT pp.template_id, pp.quality_level, pp.max_unit_price
         FROM market_buy_plan pp
@@ -355,6 +371,11 @@ ${valuesSql}
   }
   const threshold = schedule.buybackPercent;
   const aggregate = buybackLiveBasisAggregateSql(priceBasis);
+  // nosemgrep: utils.custom.sql-injection-template-literal -- exchangeId (the
+  // o.exchange_id filter below) is already validated by
+  // requireScheduleExchangeId()/normalizeExchangeId() above this function,
+  // which enforces /^[1-9][0-9]*$/ plus a BIGINT upper bound; see the comment
+  // on requireScheduleExchangeId for why direct interpolation here is safe.
   return `seed_buy_caps(template_id, quality_level, max_unit_price) AS (
     VALUES
 ${valuesSql}
@@ -403,6 +424,8 @@ ${valuesSql};`;
   const seedValues = valuesSql || "(NULL::text,NULL::bigint,NULL::bigint)";
   const threshold = schedule.buybackPercent;
   const aggregate = buybackLiveBasisAggregateSql(priceBasis);
+  // nosemgrep: utils.custom.sql-injection-template-literal -- exchangeId is
+  // already validated by requireScheduleExchangeId() above this function.
   return `INSERT INTO market_buy_plan (template_id, quality_level, max_unit_price)
 SELECT template_id, quality_level, max_unit_price FROM (
     WITH seed_buy_caps(template_id, quality_level, max_unit_price) AS (
@@ -445,6 +468,8 @@ ${seedValues}
 // player listing at or below the threshold.
 export function buildBuybackEligibilitySql(plan, schedule) {
   const exchangeId = requireScheduleExchangeId(schedule);
+  // nosemgrep: utils.custom.sql-injection-template-literal -- exchangeId is
+  // already validated by requireScheduleExchangeId() above this function.
   return `WITH ${buybackMarketPlanCteSql(plan, schedule)},
 bot AS (
     SELECT id AS owner_id FROM dune.actors WHERE class = 'Revy' LIMIT 1
@@ -475,6 +500,9 @@ function buybackClassifySelectSql() {
     ${BUYBACK_RESULT_DETAIL_SQL} AS detail`;
 }
 
+// exchangeId here is always the return value of requireScheduleExchangeId()
+// (see buildBuybackClassifySql, the only caller), never raw user input.
+// nosemgrep: utils.custom.sql-injection-template-literal
 function buybackClassifyFromSql(exchangeId) {
   return `FROM ${BUYBACK_ORDERS_JOIN_SQL}
 LEFT JOIN bot b ON TRUE
@@ -528,6 +556,8 @@ ORDER BY result_code::int ASC, item_price::bigint ASC, order_id::bigint ASC;`;
 // available when the other feature encounters a database compatibility issue.
 export function buildPlayerPortalExchangeOverviewSql(schedule) {
   const exchangeId = requireScheduleExchangeId(schedule);
+  // nosemgrep: utils.custom.sql-injection-template-literal -- exchangeId is
+  // already validated by requireScheduleExchangeId() above this function.
   return `SELECT COALESCE(o.template_id, '') AS template_id,
        (${BUYBACK_ORDER_GRADE_SQL})::text AS quality_level,
        COUNT(*)::text AS listing_count,
@@ -563,6 +593,9 @@ export function buildBuybackSql(plan, schedule) {
   const threshold = schedule.buybackPercent;
   const maxBuys = schedule.maxBuys;
   const planInsert = buybackPlanPopulateSql(plan, schedule);
+  // nosemgrep: utils.custom.sql-injection-template-literal -- every
+  // o.exchange_id = ${exchangeId} interpolation below reuses this same
+  // exchangeId, already validated by requireScheduleExchangeId() above.
   return `CREATE TEMP TABLE market_buy_plan (template_id TEXT NOT NULL, quality_level BIGINT NOT NULL, max_unit_price BIGINT NOT NULL, PRIMARY KEY (template_id, quality_level)) ON COMMIT DROP;
 CREATE TEMP TABLE market_buy_result (purchased INTEGER NOT NULL, total_units BIGINT NOT NULL, total_solari BIGINT NOT NULL, threshold_percent INTEGER NOT NULL, max_buys INTEGER NOT NULL) ON COMMIT DROP;
 CREATE TEMP TABLE market_buy_claim_snapshot (order_id BIGINT NOT NULL PRIMARY KEY) ON COMMIT DROP;
@@ -944,6 +977,7 @@ export function createAddonJobScheduler(config, options = {}) {
       nextAllowedAttemptAt = 0;
       auditJob("buyback", trigger, {
         status: outcome.status,
+        ...(outcome.backupSkipped ? { backupSkipped: true } : {}),
         eligible: outcome.eligible,
         purchased: outcome.purchased,
         totalUnits: outcome.totalUnits,
@@ -974,6 +1008,7 @@ export function createAddonJobScheduler(config, options = {}) {
       nextAllowedAttemptAt = 0;
       auditJob("seed", trigger, {
         status: outcome.status,
+        ...(outcome.backupSkipped ? { backupSkipped: true } : {}),
         listingCount: outcome.listingCount,
         exchangeId: schedule.exchangeId,
         ok: true
@@ -1008,6 +1043,7 @@ export function createAddonJobScheduler(config, options = {}) {
         const outcome = await executeUnseedRun(config, getDb(), targetExchangeId, { runDuneImpl, buildDuneArgs, runSql });
         auditJob("unseed", trigger, {
           status: outcome.status,
+          ...(outcome.backupSkipped ? { backupSkipped: true } : {}),
           removedListings: outcome.removedListings,
           exchangeId: targetExchangeId,
           ok: true
@@ -1031,6 +1067,7 @@ export function createAddonJobScheduler(config, options = {}) {
         persistSeedRunCompletion(config, now(), outcome.status, outcome.detail);
         auditJob("seed", trigger, {
           status: outcome.status,
+          ...(outcome.backupSkipped ? { backupSkipped: true } : {}),
           listingCount: outcome.listingCount,
           exchangeId: schedule.exchangeId,
           ok: true
@@ -1054,6 +1091,7 @@ export function createAddonJobScheduler(config, options = {}) {
       persistBuybackRunCompletion(now(), outcome.status, outcome.detail);
       auditJob("buyback", trigger, {
         status: outcome.status,
+        ...(outcome.backupSkipped ? { backupSkipped: true } : {}),
         eligible: outcome.eligible,
         purchased: outcome.purchased,
         totalUnits: outcome.totalUnits,
@@ -1097,7 +1135,8 @@ async function executeBuybackRun(config, db, schedule, { runDuneImpl, trigger = 
   if (typeof db?.transaction !== "function") {
     throw new Error("Exchange buyback requires database transaction support.");
   }
-  if (!config.mockMode) {
+  const backupSkipped = !marketBotSafetyBackupsEnabled(config);
+  if (!config.mockMode && !backupSkipped) {
     await runDuneImpl(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "market-bot-buyback" } });
   }
   // Keep the entire sweep on one checked-out client. createDb.transaction()
@@ -1111,14 +1150,15 @@ async function executeBuybackRun(config, db, schedule, { runDuneImpl, trigger = 
   const purchased = Number(row.purchased || 0);
   const totalUnits = decimalString(row.total_units);
   const totalSolari = decimalString(row.total_solari);
-  await persistSweepBuybackLog(config, db, plan, row, priced, names, source);
+  await persistSweepBuybackLog(config, db, plan, row, priced, names, source, { backupSkipped });
   return {
     status: "swept",
     eligible,
     purchased,
     totalUnits,
     totalSolari,
-    detail: `Bought ${purchased} listings (${totalUnits} units) for ${totalSolari} solari on exchange ${schedule.exchangeId} (${eligible} eligible).`
+    backupSkipped,
+    detail: `Bought ${purchased} listings (${totalUnits} units) for ${totalSolari} solari on exchange ${schedule.exchangeId} (${eligible} eligible).${backupSkipped ? SAFETY_BACKUP_SKIPPED_NOTE : ""}`
   };
 }
 
@@ -1155,7 +1195,7 @@ async function persistIdleBuybackLog(config, db, plan, schedule, names, source, 
   }
 }
 
-async function persistSweepBuybackLog(config, db, plan, row, schedule, names, source) {
+async function persistSweepBuybackLog(config, db, plan, row, schedule, names, source, { backupSkipped = false } = {}) {
   // The write transaction returns purchased rows and eligible rows that lost
   // the claim race/max-buys cutoff. It intentionally does not copy every
   // rejected listing into a transaction-local table. Classify the remaining
@@ -1181,7 +1221,10 @@ async function persistSweepBuybackLog(config, db, plan, row, schedule, names, so
       appendBuybackLogBatchUnlocked(config, entries, {
         source,
         exchangeId: schedule.exchangeId,
-        note: remainingRows.length ? "post-sweep read-only classification included" : "post-sweep classification unavailable or empty",
+        note: [
+          remainingRows.length ? "post-sweep read-only classification included" : "post-sweep classification unavailable or empty",
+          backupSkipped ? "safety backup skipped (disabled)" : ""
+        ].filter(Boolean).join(" — "),
         schedule
       });
     });
@@ -1195,6 +1238,13 @@ function decimalString(value) {
   return /^-?[0-9]+$/.test(text) ? text : "0";
 }
 
+// This is the sanitization boundary for every exchangeId that reaches raw SQL
+// in this file: normalizeExchangeId() has already rejected anything but
+// /^[1-9][0-9]*$/ within the PostgreSQL BIGINT range. Every SQL-builder below
+// calls this before building any query, so the ${exchangeId} interpolations
+// downstream are interpolating an already-validated digit string, not
+// attacker input — do not add another ad hoc validator at the interpolation
+// site to appease a scanner; fix or suppress the finding there instead.
 function requireScheduleExchangeId(schedule) {
   const exchangeId = normalizeExchangeId(schedule?.exchangeId);
   if (!exchangeId) throw new Error("Buyback schedule exchangeId is invalid.");

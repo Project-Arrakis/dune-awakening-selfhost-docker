@@ -2,9 +2,19 @@ import { useCallback, useEffect, useState, type Dispatch, type SetStateAction } 
 import { logsApi } from "../../api/logs";
 import { mapsApi } from "../../api/maps";
 import { LogViewer } from "../../components/LogViewer";
+import { browserTimeZone, convertUtcLogTimestamps } from "../../lib/logTime";
 import { friendlyServiceName } from "../../lib/serviceDisplay";
 
 type LogSietchRow = { partitionId: string; dimension: string; displayName: string };
+const LOCAL_TIME_STORAGE_KEY = "dune.logs.showLocalTime";
+
+function savedLocalTimePreference() {
+  try {
+    return window.localStorage.getItem(LOCAL_TIME_STORAGE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
 
 export function LogsPanel({ selectedService, setSelectedService, text, setText, onError }: { selectedService: string; setSelectedService: (service: string) => void; text: string; setText: Dispatch<SetStateAction<string>>; onError: (text: string) => void }) {
   const [services, setServices] = useState<string[]>([]);
@@ -12,6 +22,8 @@ export function LogsPanel({ selectedService, setSelectedService, text, setText, 
   const [streaming, setStreaming] = useState(false);
   const [paused, setPaused] = useState(false);
   const [filter, setFilter] = useState("");
+  const [showLocalTime, setShowLocalTime] = useState(savedLocalTimePreference);
+  const localTimeZone = browserTimeZone();
 
   const loadSelectedLogs = useCallback(async (service = selectedService) => {
     onError("");
@@ -54,7 +66,17 @@ export function LogsPanel({ selectedService, setSelectedService, text, setText, 
     return () => source.close();
   }, [streaming, paused, selectedService, setText]);
 
-  const shown = filter ? text.split(/\r?\n/).filter((line) => line.toLowerCase().includes(filter.toLowerCase())).join("\n") : text;
+  const displayText = showLocalTime ? convertUtcLogTimestamps(text, localTimeZone) : text;
+  const shown = filter ? displayText.split(/\r?\n/).filter((line) => line.toLowerCase().includes(filter.toLowerCase())).join("\n") : displayText;
+
+  function updateLocalTimePreference(enabled: boolean) {
+    setShowLocalTime(enabled);
+    try {
+      window.localStorage.setItem(LOCAL_TIME_STORAGE_KEY, String(enabled));
+    } catch {
+      // The viewer still works when browser storage is unavailable.
+    }
+  }
 
   return (
     <section className="panel">
@@ -67,6 +89,11 @@ export function LogsPanel({ selectedService, setSelectedService, text, setText, 
         <button onClick={() => setStreaming(!streaming)}>{streaming ? "Stop Stream" : "Live Stream"}</button>
         <button onClick={() => setPaused(!paused)}>{paused ? "Resume" : "Pause"}</button>
         <a className="button-link" href={logsApi.downloadUrl(selectedService)}>Download</a>
+        <label className={`switch-checkbox logs-timezone-toggle ${showLocalTime ? "enabled" : "disabled"}`} title={`Display recognized UTC timestamps in ${localTimeZone}. Downloads remain unchanged in UTC.`}>
+          <input type="checkbox" checked={showLocalTime} onChange={(event) => updateLocalTimePreference(event.target.checked)} />
+          <span className="switch-label">Local Time <small>{localTimeZone}</small></span>
+          <strong className="switch-state">{showLocalTime ? "ON" : "OFF"}</strong>
+        </label>
         <button className="logs-clear-button" onClick={() => setText("")}>Clear</button>
       </div>
       <input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Search Logs" />

@@ -1,5 +1,5 @@
-import { Fragment, Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
-import { Archive, Bug, Building2, Car, CircleArrowUp, CircleHelp, Database, ExternalLink, FileText, Gift, Heart, Home, Landmark, Map as MapIcon, Menu, MessageCircle, PackagePlus, RefreshCw, Server, Settings, Shield, Sparkles, Store, Users, X } from "lucide-react";
+import { Fragment, lazy, useCallback, useEffect, useRef, useState } from "react";
+import { Archive, Bug, Building2, Car, CircleArrowUp, CircleHelp, Database, Download, ExternalLink, FileText, Gift, Heart, Home, Landmark, Map as MapIcon, Menu, MessageCircle, PackagePlus, RefreshCw, Server, Settings, Shield, Sparkles, Store, Users, X } from "lucide-react";
 import { api, AUTH_SESSION_EXPIRED_EVENT, AUTH_SESSION_EXPIRED_MESSAGE, loginRequest, post, setCsrfToken } from "./api/client";
 import { TotpSetupScreen } from "./features/auth/TotpSetupScreen";
 import { setServerPorts, setAdminPort, type ServerPorts } from "./api/serverPorts";
@@ -11,6 +11,7 @@ import { setupApi, type Task } from "./api/setup";
 import { SetupWizard } from "./components/SetupWizard";
 import { TaskProgress } from "./components/TaskProgress";
 import { ConfirmDialog, type ConfirmDialogDetail, type ConfirmDialogOutcome, type ConfirmDialogRequest } from "./components/common/ConfirmDialog";
+import { LazyTabBoundary } from "./components/common/LazyTabBoundary";
 import type { RestartGateChoice } from "./features/server/restartQueueGuard";
 import { loadPinnedAddons, savePinnedAddons, type PinnedAddon } from "./features/addons/pinnedAddons";
 import { hasAddonUpdates } from "./features/addons/addonVersions";
@@ -33,10 +34,59 @@ import {
   type RestartLifecycleState
 } from "./features/server/ServerPanels";
 import { IamPolicyEditor } from "./features/settings/IamPolicyEditor";
-import { parseUpdateTask, stackVersionButtonLabel, stackVersionButtonTitle } from "./features/updates/updateUtils";
+import { parseUpdateTask, stackVersionButtonLabel, preferKnownVersions, stackVersionButtonTitle, withInstalledVersion } from "./features/updates/updateUtils";
 import { formatUiSentence, stripAnsi, summarizeCommandText, titleCase } from "./lib/display";
+import { useStaleBuildWatcher } from "./lib/staleBuildWatcher";
 
-type Tab = "Home" | "Server Control" | "Services" | "Players" | "Guilds" | "Bases" | "Vehicles" | "Exchange" | "Landsraad" | "Admin Tools" | "Live Map" | "Maps" | "Care Package" | "Addons" | "Database" | "Storage" | "Backups" | "Logs" | "Updates" | "Settings" | "Access Control";
+// The array is the source of truth (not just a type-level union) so restoring
+// a persisted tab (see loadPersistedTab below) can validate against the real,
+// current list at runtime instead of a hand-duplicated copy that could drift.
+// "Access Control" is a fork-only addition (the IAM policy editor tab) with
+// no upstream equivalent.
+export const ALL_TABS = ["Home", "Server Control", "Services", "Players", "Guilds", "Bases", "Vehicles", "Exchange", "Landsraad", "Admin Tools", "Live Map", "Maps", "Care Package", "Addons", "Database", "Storage", "Backups", "Logs", "Updates", "Settings", "Access Control"] as const;
+type Tab = typeof ALL_TABS[number];
+const ACTIVE_TAB_STORAGE_KEY = "dune-console:active-tab";
+
+// Persisted in sessionStorage, not localStorage: it should survive the
+// automatic reload LazyTabBoundary triggers after a stale chunk load (so the
+// user lands back on the tab they were opening, not Home), but should not
+// stick around and surprise someone who opens the console again days later
+// in a fresh tab.
+function isTab(value: string): value is Tab {
+  return (ALL_TABS as readonly string[]).includes(value);
+}
+
+export function loadPersistedTab(): Tab {
+  if (typeof window === "undefined") return "Home";
+  try {
+    const raw = window.sessionStorage.getItem(ACTIVE_TAB_STORAGE_KEY) || "";
+    return isTab(raw) ? raw : "Home";
+  } catch {
+    return "Home";
+  }
+}
+
+export function persistActiveTab(tab: Tab) {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(ACTIVE_TAB_STORAGE_KEY, tab);
+  } catch {
+    // The tab still switches in-memory if sessionStorage is unavailable.
+  }
+}
+
+// Persist before scheduling the render. LazyTabBoundary reloads from
+// componentDidCatch, which runs before passive effects, so writing from a
+// useEffect would still lose the destination tab during the exact recovery
+// path this state exists to support.
+export function useActiveTab() {
+  const [tab, setTabState] = useState<Tab>(() => loadPersistedTab());
+  const setTab = useCallback((nextTab: Tab) => {
+    persistActiveTab(nextTab);
+    setTabState(nextTab);
+  }, []);
+  return [tab, setTab] as const;
+}
 
 // IAM action namespace constants — mirrors server-side actions.js catalog.
 // These are used for navGroup requiredAction and for per-component gating.
@@ -107,7 +157,7 @@ let openConfirmDialog: ((request: ConfirmDialogRequest) => void) | null = null;
 
 const AddonsPanel = lazy(() => import("./features/addons/AddonsPanel").then((module) => ({ default: module.AddonsPanel })));
 const AdminToolsPanel = lazy(() => import("./features/adminTools/AdminToolsPanel").then((module) => ({ default: module.AdminToolsPanel })));
-const BasesPanel = lazy(() => import("./features/bases/BasesPanel").then((module) => ({ default: module.BasesPanel })));
+const BasesPage = lazy(() => import("./features/bases/BasesPage").then((module) => ({ default: module.BasesPage })));
 const BackupsPanel = lazy(() => import("./features/backups/BackupsPanel").then((module) => ({ default: module.BackupsPanel })));
 const CarePackagePanel = lazy(() => import("./features/carePackage/CarePackagePanel").then((module) => ({ default: module.CarePackagePanel })));
 const DatabasePanel = lazy(() => import("./features/database/DatabasePanel").then((module) => ({ default: module.DatabasePanel })));
@@ -167,6 +217,61 @@ function chooseBackupIdentity(meta: { backup: string; currentBattlegroupId: stri
         { label: "Backup ID", value: meta.backupBattlegroupId, tone: "success" }
       ],
       resolve: (outcome) => resolve(outcome === "confirm" ? "adopt-backup" : outcome === "tertiary" ? "keep-current" : "cancel")
+    });
+  });
+}
+
+type AuditLogChoice = "adopt-backup" | "keep-current" | "cancel";
+
+// Only ever asked when the archive and this host BOTH have their own admin
+// audit history -- restore_system() auto-adopts when only the archive has
+// one, and does nothing when neither does. Same shape as
+// chooseBackupIdentity: adopt is the primary action for a genuine migration,
+// keep-current is the safer default for a same-host rollback or an
+// intentional import into a different server.
+function chooseAuditLogAction(meta: { backup: string }): Promise<AuditLogChoice> {
+  return new Promise((resolve) => {
+    if (!openConfirmDialog) {
+      resolve("cancel");
+      return;
+    }
+    openConfirmDialog({
+      title: "Choose Admin Audit History",
+      message: "This archive and this host each have their own admin audit history. Adopt the backup's history when moving the same server to new hardware. Keep this host's own history when restoring into a different server or rolling back a mistake.",
+      confirmLabel: "Adopt Backup History",
+      tertiaryLabel: "Keep Current History",
+      cancelLabel: "Cancel Restore",
+      danger: true,
+      warning: "Whichever history is not kept is still saved to the pre-restore safety copy, not deleted -- but it stops being the live record.",
+      details: [
+        { label: "Backup", value: meta.backup, tone: "accent" }
+      ],
+      resolve: (outcome) => resolve(outcome === "confirm" ? "adopt-backup" : outcome === "tertiary" ? "keep-current" : "cancel")
+    });
+  });
+}
+
+type SystemImportConflictChoice = "overwrite" | "rename" | "cancel";
+
+// Rename is the confirm (primary) action and overwrite the tertiary: the safe
+// answer should be the one an operator reaches for without reading, because the
+// dangerous one destroys the only copy of the credentials already stored.
+function chooseImportConflict(existing: string): Promise<SystemImportConflictChoice> {
+  return new Promise((resolve) => {
+    if (!openConfirmDialog) {
+      resolve("cancel");
+      return;
+    }
+    openConfirmDialog({
+      title: "Backup Already Exists",
+      message: "A system backup with that name is already stored on this host. Keep both by storing the upload under a new name, or replace the stored one.",
+      confirmLabel: "Keep Both",
+      tertiaryLabel: "Overwrite",
+      cancelLabel: "Cancel Import",
+      danger: true,
+      warning: "Overwriting destroys the only copy of the credentials inside the stored archive. There is no undo and no other copy on this host.",
+      details: [{ label: "Already stored", value: existing, tone: "accent" }],
+      resolve: (outcome) => resolve(outcome === "confirm" ? "rename" : outcome === "tertiary" ? "overwrite" : "cancel")
     });
   });
 }
@@ -244,7 +349,7 @@ function restartGateChoice(meta: { label: string; enabled: boolean; playersOnlin
 // Queue/Restart Immediately/Cancel choice -- with players-online context --
 // when it's on. `target` scopes the online check to the map/partition this
 // save actually restarts; omit it for a stack-wide (all game services) save.
-async function confirmSettingsRestart(kind: "UserEngine" | "UserGame", target?: RestartQueueTarget): Promise<RestartGateChoice> {
+async function confirmSettingsRestart(kind: "UserEngine" | "UserGame" | "ServerSettings", target?: RestartQueueTarget): Promise<RestartGateChoice> {
   let status: Awaited<ReturnType<typeof serverApi.restartQueue>> | null = null;
   try {
     status = await serverApi.restartQueue(target);
@@ -258,7 +363,7 @@ async function confirmSettingsRestart(kind: "UserEngine" | "UserGame", target?: 
     ? target.map
     : target?.partitionId
       ? `partition ${target.partitionId}`
-      : kind === "UserEngine" ? "UserEngine settings" : "UserGame settings";
+      : kind === "UserEngine" ? "UserEngine settings" : kind === "ServerSettings" ? "Custom settings" : "UserGame settings";
   return restartGateChoice({
     label,
     enabled: status?.settings.enabled ?? false,
@@ -318,6 +423,8 @@ const navGroups: { title: string; items: { tab: Tab; icon: React.ReactNode; requ
 
 const COMMUNITY_CONTRIBUTORS_URL = "https://github.com/Red-Blink/dune-awakening-selfhost-docker/graphs/contributors";
 const DUNE_DOCKER_WEBSITE_URL = "https://dunedocker.app/";
+const DUNE_DOCKER_DOCS_URL = "https://docs.dunedocker.app/";
+const DUNE_DOCKER_BASE_BUILDER_URL = "https://blueprints.dunedocker.app/";
 
 function publicServerListingUrl(serverId: string) {
   return `${DUNE_DOCKER_WEBSITE_URL}server.html?id=${encodeURIComponent(serverId)}`;
@@ -332,7 +439,7 @@ export function SidebarNavIndicators({ item, onlinePlayerCount, addonUpdatesAvai
     return <span className="sidebar-nav-indicators"><span className="sidebar-nav-count sidebar-nav-count-online" title={label} aria-label={label}>{visibleOnlinePlayerCount}</span></span>;
   }
   if (item === "Addons" && addonUpdatesAvailable) {
-    return <span className="sidebar-nav-indicators"><span className="sidebar-nav-update-icon" title="Addon update available" aria-label="Addon update available"><CircleArrowUp size={14} aria-hidden="true" /></span></span>;
+    return <span className="sidebar-nav-indicators"><span className="sidebar-nav-update-icon" title="Addon Update Available" aria-label="Addon Update Available"><Download size={14} strokeWidth={2.4} aria-hidden="true" /></span></span>;
   }
   return null;
 }
@@ -359,18 +466,15 @@ function AppFooter() {
           <a href={COMMUNITY_CONTRIBUTORS_URL} target="_blank" rel="noreferrer">Community Contributors</a>
         </span>
       </div>
-      <a className="app-footer-directory" href={DUNE_DOCKER_WEBSITE_URL} target="_blank" rel="noreferrer">
-        <span>DuneDocker.app · Public Server Directory</span>
-        <ExternalLink size={14} aria-hidden="true" />
-      </a>
+      <div className="app-footer-directory">
+        <a href={DUNE_DOCKER_WEBSITE_URL} target="_blank" rel="noreferrer">Public Server Directory</a>
+        <span aria-hidden="true">·</span>
+        <a href={DUNE_DOCKER_BASE_BUILDER_URL} target="_blank" rel="noreferrer">Base Builder</a>
+        <span aria-hidden="true">·</span>
+        <a href={DUNE_DOCKER_DOCS_URL} target="_blank" rel="noreferrer">Documentation</a>
+      </div>
     </footer>
   );
-}
-
-function LazyTabBoundary({ children, label = "Loading Section" }: { children: React.ReactNode; label?: string }) {
-  return <Suspense fallback={<section className="panel loading-panel tab-loading-panel"><span className="spinner" aria-hidden="true" /><strong className="loading-dots">{label}</strong></section>}>
-    {children}
-  </Suspense>;
 }
 
 export function App() {
@@ -384,7 +488,11 @@ export function App() {
   const [recoveryAvailable, setRecoveryAvailable] = useState(false);
   const [useRecoveryCode, setUseRecoveryCode] = useState(false);
   const [setupMode, setSetupMode] = useState<"enroll" | "resetup" | null>(null);
-  const [tab, setTab] = useState<Tab>("Home");
+  const [tab, setTab] = useActiveTab();
+  // Bumped when a failure elsewhere (a restore that needs the game images)
+  // sends the operator to Updates to install them. A nonce rather than a
+  // boolean so a second failure re-triggers it after the first was handled.
+  const [installGameFilesRequest, setInstallGameFilesRequest] = useState(0);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [pinnedAddons, setPinnedAddons] = useState<PinnedAddon[]>(() => loadPinnedAddons());
   const [selectedPinnedAddonId, setSelectedPinnedAddonId] = useState("");
@@ -406,6 +514,8 @@ export function App() {
   const [homeRunningAction, setHomeRunningAction] = useState<"start" | "stop" | "restart" | "">("");
   const [homeRestartStarted, setHomeRestartStarted] = useState(false);
   const [stackVersionStatus, setStackVersionStatus] = useState<Record<string, string>>({ status: "Checking", current: "", latest: "" });
+  const [installedVersion, setInstalledVersion] = useState("");
+  const stackBadgeStatus = withInstalledVersion(stackVersionStatus, installedVersion);
   const stackActionStartedAt = useRef(0);
   const stackActionReadyPolls = useRef(0);
   const stackRestartLifecycle = useRef<RestartLifecycleState>(createRestartLifecycleState());
@@ -427,6 +537,12 @@ export function App() {
   useEffect(() => {
     preloadPlayerAdminIconRailAssets();
   }, []);
+
+  // /api/auth/state exposes the public build version without requiring a
+  // session. Keep watching through the logged-out state too: a Console
+  // rebuild clears the in-memory session, and disabling the watcher at that
+  // moment would let the old bundle survive through the next login.
+  useStaleBuildWatcher();
 
   useEffect(() => {
     const handleSessionExpired = () => {
@@ -458,12 +574,13 @@ export function App() {
   }, [pinnedAddons]);
 
   useEffect(() => {
-    api<{ authenticated: boolean; csrfToken: string | null; config?: { discordOAuthConfigured?: boolean; ports?: Partial<ServerPorts>; port?: number } }>("/api/auth/state").then((state) => {
+    api<{ authenticated: boolean; csrfToken: string | null; config?: { discordOAuthConfigured?: boolean; ports?: Partial<ServerPorts>; port?: number; version?: string } }>("/api/auth/state").then((state) => {
       setAuth(state.authenticated);
       setCsrfToken(state.csrfToken);
       setDiscordSignInAvailable(Boolean(state.config?.discordOAuthConfigured));
       setServerPorts(state.config?.ports);
       setAdminPort(state.config?.port);
+      setInstalledVersion(String(state.config?.version || ""));
     }).catch(() => undefined);
   }, []);
 
@@ -546,8 +663,11 @@ export function App() {
     };
   }, [auth]);
 
+  // The strict player tier only sees its own characters, so a server-wide online
+  // count is neither available nor meaningful to it; do not poll for it.
+  const isPlayerTier = me?.tier === "player" || me?.tier === "observer";
   useEffect(() => {
-    if (!auth) return;
+    if (!auth || isPlayerTier) return;
     let cancelled = false;
     async function refreshOnlinePlayers() {
       try {
@@ -563,7 +683,7 @@ export function App() {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [auth]);
+  }, [auth, isPlayerTier]);
 
   useEffect(() => {
     openConfirmDialog = (request) => setConfirmRequest(request);
@@ -748,9 +868,9 @@ export function App() {
     void (async () => {
       try {
         const final = await waitForTaskSilently((await updatesApi.checkStack()).task);
-        if (!cancelled) setStackVersionStatus(parseUpdateTask(final));
+        if (!cancelled) setStackVersionStatus((previous) => preferKnownVersions(previous, parseUpdateTask(final)));
       } catch {
-        if (!cancelled) setStackVersionStatus({ status: "Unavailable", current: "", latest: "" });
+        if (!cancelled) setStackVersionStatus((previous) => preferKnownVersions(previous, { status: "Unavailable", current: "", latest: "" }));
       }
     })();
     return () => { cancelled = true; };
@@ -828,7 +948,7 @@ export function App() {
       <main className="login-screen">
         <section className="login-panel">
           <h1>Dune Docker Console</h1>
-          <p className="loading-dots">Loading setup</p>
+          <p className="loading-dots">Loading Console</p>
         </section>
       </main>
     );
@@ -879,7 +999,7 @@ export function App() {
           <button className="sidebar-home-button" type="button" onClick={() => { setRedeploySetupOpen(false); setTab("Home"); closeMobileNav(); }} title="Open Home">
             <h1>Dune Docker Console</h1>
           </button>
-          <button className="stack-version-button" title={stackVersionButtonTitle(stackVersionStatus)} aria-label={stackVersionButtonTitle(stackVersionStatus)} onClick={() => { setRedeploySetupOpen(false); setTab("Updates"); closeMobileNav(); }}>{stackVersionButtonLabel(stackVersionStatus)}</button>
+          <button className="stack-version-button" title={stackVersionButtonTitle(stackBadgeStatus)} aria-label={stackVersionButtonTitle(stackBadgeStatus)} onClick={() => { setRedeploySetupOpen(false); setTab("Updates"); closeMobileNav(); }}>{stackVersionButtonLabel(stackBadgeStatus)}</button>
           <button
             className="sidebar-menu-toggle"
             type="button"
@@ -970,9 +1090,9 @@ export function App() {
           setRedeploySetupOpen(true);
         }} />}
         {!redeploySetupOpen && tab === "Services" && <LazyTabBoundary label="Loading Services"><ServicesPanel services={services} setServices={setServices} setTask={setTask} openLogs={(service) => { setRedeploySetupOpen(false); setSelectedLogService(service); setTab("Logs"); }} onError={setError} confirmAction={confirmDialog} restartGate={restartGateChoice} /></LazyTabBoundary>}
-        {!redeploySetupOpen && tab === "Players" && <LazyTabBoundary label="Loading Players"><PlayersPanel onError={setError} renderCharacterAdmin={(props) => <LazyTabBoundary label="Loading Player Details"><CharacterAdminUI {...props} onError={setError} confirmAction={confirmDialog} waitForTask={waitForTaskSilently} formatMutationResult={formatMutationResult} /></LazyTabBoundary>} /></LazyTabBoundary>}
+        {!redeploySetupOpen && tab === "Players" && <LazyTabBoundary label="Loading Players"><PlayersPanel onError={setError} confirmAction={confirmDialog} onOpenBase={(baseId) => { setBaseFocusRequest((current) => ({ baseId, nonce: current.nonce + 1 })); setTab("Bases"); }} renderCharacterAdmin={(props) => <LazyTabBoundary label="Loading Player Details"><CharacterAdminUI {...props} onError={setError} confirmAction={confirmDialog} waitForTask={waitForTaskSilently} formatMutationResult={formatMutationResult} restartGate={restartGateChoice} /></LazyTabBoundary>} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Guilds" && <LazyTabBoundary label="Loading Guilds"><GuildsPanel onError={setError} confirmAction={confirmDialog} /></LazyTabBoundary>}
-        {!redeploySetupOpen && tab === "Bases" && <LazyTabBoundary label="Loading Bases"><BasesPanel onError={setError} confirmAction={confirmDialog} restartGate={restartGateChoice} formatMutationResult={formatMutationResult} focusRequest={baseFocusRequest} /></LazyTabBoundary>}
+        {!redeploySetupOpen && tab === "Bases" && <LazyTabBoundary label="Loading Bases"><BasesPage onError={setError} confirmAction={confirmDialog} restartGate={restartGateChoice} formatMutationResult={formatMutationResult} focusRequest={baseFocusRequest} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Vehicles" && <LazyTabBoundary label="Loading Vehicles"><VehiclesPanel onError={setError} confirmAction={confirmDialog} formatMutationResult={formatMutationResult} focusRequest={vehicleFocusRequest} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Exchange" && <LazyTabBoundary label="Loading Market Board"><ExchangePanel onError={setError} confirmAction={confirmDialog} formatMutationResult={formatMutationResult} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Landsraad" && <LazyTabBoundary label="Loading Landsraad"><LandsraadPanel onError={setError} confirmAction={confirmDialog} restartGate={restartGateChoice} /></LazyTabBoundary>}
@@ -989,6 +1109,9 @@ export function App() {
             onError={setError}
             confirmAction={confirmDialog}
             chooseBackupIdentity={chooseBackupIdentity}
+            chooseAuditLogAction={chooseAuditLogAction}
+            onInstallGameFiles={() => { setInstallGameFilesRequest((current) => current + 1); setTab("Updates"); }}
+            chooseImportConflict={chooseImportConflict}
             waitForTask={waitForTaskSilently}
             waitForTaskWithUpdates={waitForTaskWithUpdates}
             withTimeout={withTimeout}
@@ -1001,6 +1124,10 @@ export function App() {
           /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Logs" && <LazyTabBoundary label="Loading Logs"><LogsPanel selectedService={selectedLogService} setSelectedService={setSelectedLogService} text={logs} setText={setLogs} onError={setError} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Updates" && <LazyTabBoundary label="Loading Updates"><UpdatesPanel
+            installGameFilesRequest={installGameFilesRequest}
+            onInstallGameFilesHandled={() => setInstallGameFilesRequest(0)}
+            onStackStatus={setStackVersionStatus}
+            installedConsoleVersion={installedVersion}
             confirmAction={confirmDialog}
             waitForTask={waitForTaskSilently}
             parseKeyValueText={parseKeyValueText}
@@ -1013,6 +1140,7 @@ export function App() {
         {!redeploySetupOpen && tab === "Settings" && <LazyTabBoundary label="Loading Settings"><SettingsPanel
           onPasswordChanged={logoutAfterPasswordChange}
           publicListingUrl={publicDirectoryStatus?.serverId ? publicServerListingUrl(publicDirectoryStatus.serverId) : undefined}
+          confirmAction={confirmDialog}
         /></LazyTabBoundary>}
         {!redeploySetupOpen && tab !== "Maps" && <TaskProgress task={task} onDismiss={() => setTask(null)} />}
         <AppFooter />

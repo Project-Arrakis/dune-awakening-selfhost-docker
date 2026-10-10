@@ -70,7 +70,8 @@ function serviceActionName(name: string, action: "logs" | "restart") {
     "dune-server-survival-1": "survival-1",
     "dune-server-overmap": "overmap",
     "dune-orchestrator": "orchestrator",
-    "dune-autoscaler": "autoscaler"
+    "dune-autoscaler": "autoscaler",
+    "dune-coriolis-coordinator": "coriolis"
   };
   const value = normalized[name] || name;
   if (action === "logs") return value;
