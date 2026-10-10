@@ -6,7 +6,7 @@ The Vehicles panel can edit who owns a vehicle and who it is shared with. The
 editor lives in the **Permissions** tab of an expanded vehicle row, alongside
 the existing **Components** tab. Both the global Vehicles panel and a player's
 own Vehicles tab expand through the same `VehicleTable` component, so the tab
-appears in either place once the schema supports it.
+appears in either place once the schema supports it. A player's own Vehicles tab lists the vehicles they own by default; its **Permission** dropdown (Owner / Co-owner / All levels) changes that, and a player's Bases tab works the same way (see the `?access` filter in the [API reference](API-REFERENCE.md)).
 
 Unlike generator refills, permission changes are **not** queued for a map
 restart — they reach a running map immediately. See

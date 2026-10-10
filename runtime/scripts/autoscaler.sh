@@ -114,6 +114,144 @@ SINCE="$(validate_log_window DUNE_AUTOSCALER_LOG_SINCE "$SINCE" 30s)"
 NAMED_DESTINATION_SINCE="$(validate_log_window DUNE_AUTOSCALER_NAMED_DESTINATION_LOG_SINCE "$NAMED_DESTINATION_SINCE" 10m)"
 SINCE_SECONDS="$(duration_to_seconds "$SINCE")"
 NAMED_DESTINATION_SINCE_SECONDS="$(duration_to_seconds "$NAMED_DESTINATION_SINCE")"
+
+# All production scanners share one stream. The unset branch also lets isolated
+# function harnesses supply their existing Docker fixtures without a daemon.
+director_logs() {
+  if [ -n "${DIRECTOR_LOG_CACHE_FILE:-}" ]; then
+    python3 runtime/scripts/director-log-cache.py read "$DIRECTOR_LOG_CACHE_FILE" "$@"
+  else
+    docker logs "$@" dune-director
+  fi
+}
+
+director_logs_available() {
+  [ -z "${DIRECTOR_LOG_CACHE_FILE:-}" ] || director_logs --since 1s >/dev/null 2>&1
+}
+
+# For a log-reading scan that has already passed director_heal_due: with the log follower down or
+# stale, defer instead of reading an empty log, and give the scan interval back so the next pass
+# retries at once instead of after a full interval. (The follower replays the retention window when
+# it reconnects, but a scan only looks back SINCE; an interval spent on an empty read is an interval
+# of events that is never looked at.) Usage: director_logs_or_defer <scan key> || return 0
+director_logs_or_defer() {
+  director_logs_available && return 0
+  director_heal_clear "scan:$1" 2>/dev/null || true
+  return 1
+}
+
+# The EXIT trap removes this process's cache directory, but a SIGKILL, an OOM kill
+# or a crash loop skips it and leaves up to ~10 minutes of Director log lines on
+# disk (0700/0600, still log data) with nothing to remove them (#1164). A live
+# follower writes its heartbeat about once a second, so a directory with no file
+# touched for 30 minutes belongs to a process that is gone.
+sweep_orphan_director_log_caches() {
+  local dir recent find_status minutes=30
+  for dir in runtime/generated/director-log-cache.*; do
+    [ -d "$dir" ] && [ ! -L "$dir" ] || continue
+    [ "$dir" != "${DIRECTOR_LOG_CACHE_DIR:-}" ] || continue
+    # Best effort, never fatal: this runs at startup under `set -e`, and a leftover this user
+    # cannot read or delete (for example a root-owned one from a manual run) must not turn into
+    # an autoscaler that exits and restart-loops. A directory that cannot be inspected is left
+    # alone rather than assumed stale.
+    find_status=0
+    recent="$(find "$dir" -mmin "-$minutes" -print -quit 2>/dev/null)" || find_status=$?
+    [ "$find_status" = 0 ] || continue
+    [ -z "$recent" ] || continue
+    echo "Removing orphaned Director log cache $dir (untouched for ${minutes}m)"
+    rm -rf -- "$dir" 2>/dev/null || echo "WARN could not remove $dir; leaving it in place" >&2
+  done
+}
+
+start_director_log_cache() {
+  sweep_orphan_director_log_caches
+  DIRECTOR_LOG_CACHE_DIR="$(mktemp -d runtime/generated/director-log-cache.XXXXXX)"
+  DIRECTOR_LOG_CACHE_FILE="$DIRECTOR_LOG_CACHE_DIR/recent.sqlite"
+  SURVIVAL_TARGET_FILE="$DIRECTOR_LOG_CACHE_DIR/survival-target.json"
+  ensure_director_log_cache
+  refresh_survival_target_file
+  trap 'stop_director_log_cache' EXIT
+  trap 'exit 143' TERM
+  trap 'exit 130' INT
+}
+
+ensure_director_log_cache() {
+  [ -z "${DIRECTOR_LOG_CACHE_PID:-}" ] || ! kill -0 "$DIRECTOR_LOG_CACHE_PID" 2>/dev/null || return 0
+  local retention="$NAMED_DESTINATION_SINCE_SECONDS"
+  [ "$retention" -ge "$SINCE_SECONDS" ] || retention="$SINCE_SECONDS"
+  [ "$retention" -ge 600 ] || retention=600
+  python3 runtime/scripts/director-log-cache.py follow "$DIRECTOR_LOG_CACHE_FILE" \
+    --retention "$retention" --parent "$$" &
+  DIRECTOR_LOG_CACHE_PID=$!
+}
+
+# Keeps the Survival_1 target (partition, port, IP of the first ready server) that
+# follow_director_hagga_handoffs hands to players current. Written by follow_survival_target
+# on its own cadence (SURVIVAL_TARGET_REFRESH_SECONDS), not once per pass of the serial main
+# loop, so how stale a grant can be is bounded no matter how long a pass takes.
+#   - the query ran and found a ready Survival_1: write it (atomically);
+#   - the query ran and found none (status 2): remove the file, so the consumer skips events
+#     instead of answering with an endpoint that is gone;
+#   - the query itself failed (database blip): keep the last good file for up to
+#     SURVIVAL_TARGET_MAX_STALE_SECONDS (60) so a short outage does not drop every handoff, then
+#     remove it;
+#   - a failed write is reported, never fatal: this file is read by one consumer, it is not
+#     worth ending the autoscaler (`set -e`) for.
+refresh_survival_target_file() {
+  local json tmp status=0 age
+  [ -n "${SURVIVAL_TARGET_FILE:-}" ] || return 0
+  # Bounded: without a timeout a hung query would block this loop before the age check below ever ran,
+  # leaving the last target on disk indefinitely (review #1197). A timeout is status 1, a failed query.
+  json="$(DUNE_PSQL_TIMEOUT_SECONDS="${SURVIVAL_TARGET_QUERY_TIMEOUT_SECONDS:-10}" survival_partition_target_json 2>/dev/null)" || status=$?
+  if [ "$status" = 0 ] && [ -n "$json" ]; then
+    tmp="$SURVIVAL_TARGET_FILE.tmp"
+    if ! { printf '%s\n' "$json" >"$tmp" && mv -f "$tmp" "$SURVIVAL_TARGET_FILE"; } 2>/dev/null; then
+      rm -f "$tmp" 2>/dev/null || true
+      echo "WARN could not write $SURVIVAL_TARGET_FILE; keeping the previous Survival_1 target" >&2
+    fi
+    return 0
+  fi
+  if [ "$status" = 2 ]; then
+    rm -f "$SURVIVAL_TARGET_FILE" 2>/dev/null || true
+    return 0
+  fi
+  if [ -e "$SURVIVAL_TARGET_FILE" ]; then
+    age=$(( $(date +%s) - $(stat -c %Y "$SURVIVAL_TARGET_FILE" 2>/dev/null || echo 0) ))
+    if [ "$age" -gt "${SURVIVAL_TARGET_MAX_STALE_SECONDS:-60}" ]; then
+      rm -f "$SURVIVAL_TARGET_FILE" 2>/dev/null || true
+    fi
+  fi
+  return 0
+}
+
+follow_survival_target() {
+  while kill -0 "$$" 2>/dev/null; do
+    refresh_survival_target_file || echo "WARN Survival_1 target refresh failed; retrying"
+    sleep "${SURVIVAL_TARGET_REFRESH_SECONDS:-5}"
+  done
+}
+
+stop_director_log_cache() {
+  # Stop the Survival_1 target refresher FIRST: it rewrites survival-target.json every few seconds,
+  # and a write after the files are removed would make the rmdir below fail silently and leave a
+  # directory holding Survival_1 endpoint data behind (#1186).
+  if [ -n "${SURVIVAL_TARGET_PID:-}" ]; then
+    kill "$SURVIVAL_TARGET_PID" 2>/dev/null || true
+    wait "$SURVIVAL_TARGET_PID" 2>/dev/null || true
+  fi
+  kill "$DIRECTOR_LOG_CACHE_PID" 2>/dev/null || true
+  wait "$DIRECTOR_LOG_CACHE_PID" 2>/dev/null || true
+  # Killing the refresher stops its loop, but a `mv` it had already started can finish a moment
+  # later and recreate the file after the removal below, so retry briefly instead of trusting one
+  # pass (a hot-writer test hit this in 2 of 25 runs).
+  for _ in 1 2 3; do
+    rm -f "$DIRECTOR_LOG_CACHE_FILE" "$DIRECTOR_LOG_CACHE_FILE-wal" "$DIRECTOR_LOG_CACHE_FILE-shm" \
+      "${SURVIVAL_TARGET_FILE:-$DIRECTOR_LOG_CACHE_DIR/survival-target.json}" \
+      "${SURVIVAL_TARGET_FILE:-$DIRECTOR_LOG_CACHE_DIR/survival-target.json}.tmp"
+    rmdir "$DIRECTOR_LOG_CACHE_DIR" 2>/dev/null && break
+    sleep 0.1
+  done
+}
 PROACTIVE_HAGGA_SCAN_SECONDS="$(validate_scan_seconds DUNE_AUTOSCALER_PROACTIVE_HAGGA_SCAN_SECONDS "${DUNE_AUTOSCALER_PROACTIVE_HAGGA_SCAN_SECONDS:-15}" 15 "$SINCE_SECONDS")"
 DEEPDESERT_LOADING_SCAN_SECONDS="$(validate_scan_seconds DUNE_AUTOSCALER_DEEPDESERT_LOADING_SCAN_SECONDS "${DUNE_AUTOSCALER_DEEPDESERT_LOADING_SCAN_SECONDS:-15}" 15 "$SINCE_SECONDS")"
 NAMED_DESTINATION_SCAN_SECONDS="$(validate_scan_seconds DUNE_AUTOSCALER_NAMED_DESTINATION_SCAN_SECONDS "${DUNE_AUTOSCALER_NAMED_DESTINATION_SCAN_SECONDS:-60}" 60 "$NAMED_DESTINATION_SINCE_SECONDS")"
@@ -131,6 +269,11 @@ if [ "$STORY_RETURN_RECOVERY_SCAN_SECONDS" -gt 2 ]; then
   echo "DUNE_AUTOSCALER_STORY_RETURN_RECOVERY_SCAN_SECONDS=${STORY_RETURN_RECOVERY_SCAN_SECONDS} exceeds the safe credits-return window; clamping to 2s." >&2
   STORY_RETURN_RECOVERY_SCAN_SECONDS=2
 fi
+# The Survival_1 target refresher (#1163). A zero or non-numeric value would make its loop spin on the
+# database or never expire a stale target, so these are validated like the scan intervals (review #1197).
+SURVIVAL_TARGET_REFRESH_SECONDS="$(validate_scan_seconds SURVIVAL_TARGET_REFRESH_SECONDS "${SURVIVAL_TARGET_REFRESH_SECONDS:-5}" 5 0)"
+SURVIVAL_TARGET_MAX_STALE_SECONDS="$(validate_scan_seconds SURVIVAL_TARGET_MAX_STALE_SECONDS "${SURVIVAL_TARGET_MAX_STALE_SECONDS:-60}" 60 0)"
+SURVIVAL_TARGET_QUERY_TIMEOUT_SECONDS="$(validate_scan_seconds SURVIVAL_TARGET_QUERY_TIMEOUT_SECONDS "${SURVIVAL_TARGET_QUERY_TIMEOUT_SECONDS:-10}" 10 0)"
 AUTOSCALER_STARTED_AT="$(date +%s)"
 
 mkdir -p "$(dirname "$STATE_FILE")"
@@ -251,7 +394,7 @@ replay_hagga_travel_handoff() {
   [ -n "$origin_server_id" ] || return 0
 
   director_log_file="$(mktemp)"
-  docker logs --since "$NAMED_DESTINATION_SINCE" dune-director > "$director_log_file" 2>&1 || true
+  director_logs --since "$NAMED_DESTINATION_SINCE" > "$director_log_file" 2>/dev/null || true
   replay_rows="$(FLOW_ID="$flow_id" LOG_FILE="$director_log_file" python3 - <<'PY'
 import base64
 import json
@@ -931,7 +1074,8 @@ where wp.map = 'Survival_1'
 order by wp.partition_id
 limit 1;
 ")" || return 1
-  [ -n "$row" ] || return 1
+  # 2 = the query ran and found no ready Survival_1; 1 = the query itself failed.
+  [ -n "$row" ] || return 2
 
   DUNE_SURVIVAL_TARGET_ROW="$row" python3 - <<'PY'
 import json
@@ -952,12 +1096,13 @@ scan_proactive_hagga_handoffs() {
   local director_log_file proactive_rows target_json
 
   director_heal_due proactive_hagga "$PROACTIVE_HAGGA_SCAN_SECONDS" || return 0
+  director_logs_or_defer proactive_hagga || return 0
 
   target_json="$(survival_partition_target_json 2>/dev/null || true)"
   [ -n "$target_json" ] || return 0
 
   director_log_file="$(mktemp)"
-  docker logs --since "$SINCE" dune-director > "$director_log_file" 2>&1 || true
+  director_logs --since "$SINCE" > "$director_log_file" 2>/dev/null || true
   proactive_rows="$(TARGET_JSON="$target_json" LOG_FILE="$director_log_file" python3 - <<'PY'
 import json
 import os
@@ -1049,18 +1194,39 @@ PY
 
 follow_director_hagga_handoffs() {
   while true; do
-    docker logs -f --since 0s dune-director 2>&1 | TARGET_JSON="$(survival_partition_target_json 2>/dev/null || true)" python3 -u - <<'PY' | while IFS='|' read -r flow_id origin_id payload_json; do
+    python3 runtime/scripts/director-log-cache.py stream "$DIRECTOR_LOG_CACHE_FILE" --parent "$$" 2>/dev/null | TARGET_FILE="${SURVIVAL_TARGET_FILE:-}" TARGET_MAX_STALE_SECONDS="${SURVIVAL_TARGET_MAX_STALE_SECONDS:-60}" python3 -u /dev/fd/3 3<<'PY' | while IFS='|' read -r flow_id origin_id payload_json; do
 import json
 import os
 import re
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 
 target_json = os.environ.get("TARGET_JSON", "")
-if not target_json:
+target_file = os.environ.get("TARGET_FILE", "")
+if not target_json and not target_file:
     raise SystemExit(0)
 
-target = json.loads(target_json)
+
+def current_target():
+    # The stream outlives Director restarts (unlike the `docker logs -f` pipe it
+    # replaced), and a Director restart also restarts Survival_1, so the target
+    # is re-read for every event instead of once at start (#1163). A missing or
+    # unreadable file means there is no ready Survival_1 right now: skip the
+    # event rather than hand a player a stale endpoint.
+    if target_file:
+        try:
+            # The refresher rewrites this every few seconds. An older file means the refresher is not
+            # running or is stuck, so the endpoint may be gone: skip rather than hand it to a player.
+            max_stale = int(os.environ.get("TARGET_MAX_STALE_SECONDS", "60") or 60)
+            if time.time() - os.stat(target_file).st_mtime > max_stale:
+                return None
+            with open(target_file, encoding="utf-8") as handle:
+                return json.loads(handle.read())
+        except (OSError, ValueError):
+            return None
+    return json.loads(target_json)
+
 response_re = re.compile(r'Notified player\(s\) "([^"]+)" of travel response (SH_Arrakeen3|SH_HarkoVillage4|Overmap2): (\{.*\})')
 
 for line in sys.stdin:
@@ -1079,6 +1245,9 @@ for line in sys.stdin:
         continue
     flow_id = payload.get("RequestID") or ""
     if not flow_id:
+        continue
+    target = current_target()
+    if not target:
         continue
     response_payload = dict(payload)
     response_payload["MapName"] = "HaggaBasin"
@@ -1141,9 +1310,10 @@ scan_deepdesert_loading_responses() {
   local director_log_file pending_rows now
 
   director_heal_due deepdesert_loading "$DEEPDESERT_LOADING_SCAN_SECONDS" || return 0
+  director_logs_or_defer deepdesert_loading || return 0
 
   director_log_file="$(mktemp)"
-  docker logs --since "$SINCE" dune-director > "$director_log_file" 2>&1 || true
+  director_logs --since "$SINCE" > "$director_log_file" 2>/dev/null || true
   pending_rows="$(LOG_FILE="$director_log_file" python3 - <<'PY'
 import json
 import os
@@ -2234,9 +2404,16 @@ scan_rejected_story_returns() {
   local director_log_file rejected_rows completed_rows
 
   director_heal_due rejected_story_returns "$STORY_RETURN_RECOVERY_SCAN_SECONDS" || return 0
+  # Only the login-request half of this scan reads the Director log. The completed-credits recovery
+  # further down is database-only and must keep running while the follower is down (#1190), so
+  # skip just the read instead of returning early.
+  local logs_available=1
+  director_logs_available || logs_available=0
 
   director_log_file="$(mktemp)"
-  docker logs --timestamps --since "$NAMED_DESTINATION_SINCE" dune-director > "$director_log_file" 2>&1 || true
+  if [ "$logs_available" = 1 ]; then
+    director_logs --timestamps --since "$NAMED_DESTINATION_SINCE" > "$director_log_file" 2>/dev/null || true
+  fi
   rejected_rows="$(LOG_FILE="$director_log_file" python3 - <<'PY'
 import os
 import re
@@ -2752,10 +2929,14 @@ scan_live_player_partition_alignment() {
 scan_travel_demand() {
   local demand_rows
 
+  # No follower, no evidence: defer quietly (the caller's `|| echo WARN` would otherwise print every
+  # DEMAND_INTERVAL for the whole outage, and this must not depend on that `||` to survive set -e).
+  director_logs_available || return 0
+
   demand_rows="$(
     # Timestamps make otherwise identical player requests distinct while
     # keeping the same log occurrence stable across overlapping scan windows.
-    docker logs --timestamps --since "$SINCE" dune-director 2>&1 | python3 -c '
+    director_logs --timestamps --since "$SINCE" 2>/dev/null | python3 -c '
 import hashlib
 import re
 import sys
@@ -2829,7 +3010,7 @@ for line in sys.stdin:
     source = "queue" if classical_pattern.search(line) else "request"
     print(f"{event_id}|{map_name}|{num}|{source}|{instancing_mode}")
 '
-  )"
+  )" || true
 
   while IFS='|' read -r event_id map num demand_source instancing_mode; do
     [ -n "${map:-}" ] || continue
@@ -2854,10 +3035,15 @@ scan_igwo_unavailable_maps() {
   local rows now map event_id last_seen assigned running
 
   director_heal_due igwo_unavailable "$IGWO_UNAVAILABLE_SCAN_SECONDS" || return 0
+  # Missing log evidence is not evidence of a problem. A down, reconnecting or
+  # stale follower must defer this scan, never end the autoscaler: this file
+  # runs under `set -euo pipefail`, so an unguarded failing reader inside a
+  # command substitution would exit the whole process (#1156).
+  director_logs_or_defer igwo_unavailable || return 0
   now="$(date +%s)"
 
   rows="$(
-    docker logs --since "$NAMED_DESTINATION_SINCE" dune-director 2>&1 | python3 -c '
+    director_logs --since "$NAMED_DESTINATION_SINCE" 2>/dev/null | python3 -c '
 import hashlib
 import re
 import sys
@@ -2877,7 +3063,7 @@ for line in sys.stdin:
     seen.add(key)
     print(f"{event_id}|{map_name}")
 '
-  )"
+  )" || true
 
   while IFS='|' read -r event_id map; do
     [ -n "${map:-}" ] || continue
@@ -2960,10 +3146,15 @@ scan_stale_server_state() {
   local rows now event_id partition_id map last_seen
 
   director_heal_due stale_server_state "$STALE_SERVER_STATE_SCAN_SECONDS" || return 0
+  # Missing log evidence is not evidence of a problem. A down, reconnecting or
+  # stale follower must defer this scan, never end the autoscaler: this file
+  # runs under `set -euo pipefail`, so an unguarded failing reader inside a
+  # command substitution would exit the whole process (#1156).
+  director_logs_or_defer stale_server_state || return 0
   now="$(date +%s)"
 
   rows="$(
-    docker logs --since "$SINCE" dune-director 2>&1 | python3 -c '
+    director_logs --since "$SINCE" 2>/dev/null | python3 -c '
 import hashlib
 import re
 import sys
@@ -2986,7 +3177,7 @@ for line in sys.stdin:
             print(f"{event_id}|{pending_partition}")
         pending_partition = None
 '
-  )"
+  )" || true
 
   while IFS='|' read -r event_id partition_id; do
     [ -n "${partition_id:-}" ] || continue
@@ -3011,17 +3202,22 @@ scan_unscoped_stale_server_state() {
   local count now last_seen map
 
   director_heal_due unscoped_stale_server_state "$STALE_SERVER_STATE_SCAN_SECONDS" || return 0
+  # Missing log evidence is not evidence of a problem. A down, reconnecting or
+  # stale follower must defer this scan, never end the autoscaler: this file
+  # runs under `set -euo pipefail`, so an unguarded failing reader inside a
+  # command substitution would exit the whole process (#1156).
+  director_logs_or_defer unscoped_stale_server_state || return 0
   now="$(date +%s)"
 
   count="$(
-    docker logs --since "$SINCE" dune-director 2>&1 | python3 -c '
+    director_logs --since "$SINCE" 2>/dev/null | python3 -c '
 import re
 import sys
 
 stale_pattern = re.compile(r"The last server state.s reportTimestamp is older than 60 seconds!")
 print(sum(1 for line in sys.stdin if stale_pattern.search(line)))
 '
-  )"
+  )" || true
 
   [ "${count:-0}" -gt 0 ] || return 0
 
@@ -3050,7 +3246,7 @@ director_live_server_rows() {
 }
 
 director_latest_capacity() {
-  docker logs --since 10m dune-director 2>&1 \
+  director_logs --since 10m 2>/dev/null \
     | python3 -c '
 import json
 import re
@@ -3083,7 +3279,7 @@ director_logs_contain_live_ids() {
   # (for example, "+" becomes "\\u002B"). Normalize those escapes before
   # comparing log text with the literal IDs stored in farm_state.
   logs="$(
-    docker logs --since 10m dune-director 2>&1 \
+    director_logs --since 10m 2>/dev/null \
       | python3 runtime/scripts/decode-log-unicode-escapes.py \
       || true
   )"
@@ -3125,6 +3321,15 @@ scan_director_browser_state() {
   local republish_at republish_age online_players restart_deferred
 
   director_heal_due browser_state "$DIRECTOR_BROWSER_SCAN_SECONDS" || return 0
+
+  # Missing log evidence is not proof of stale publication. In particular,
+  # never let a failed/reconnecting follower trigger a disruptive farm heal.
+  if ! director_logs_available; then
+    director_heal_clear stale_since
+    director_heal_clear browser_republish_at
+    director_heal_clear browser_restart_deferred
+    return 0
+  fi
 
   # Capacity can legitimately remain zero while the core maps are still
   # registering during stack startup or after a controlled Director refresh.
@@ -3257,7 +3462,10 @@ scan_director_browser_state() {
   director_heal_clear browser_restart_deferred
 }
 
+start_director_log_cache
 follow_director_hagga_handoffs &
+follow_survival_target &
+SURVIVAL_TARGET_PID=$!
 follow_director_travel_demand &
 follow_fresh_process_lifecycle &
 supervise_sietch_override_publisher &
@@ -3265,6 +3473,7 @@ reconcile_always_on_maps
 repair_chat_exchanges_due
 
 while true; do
+  ensure_director_log_cache
   reconcile_always_on_maps
   scan_deepdesert_loading_responses
   ensure_overmap_travel_maps_prewarmed

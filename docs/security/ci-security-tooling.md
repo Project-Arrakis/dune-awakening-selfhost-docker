@@ -2,6 +2,9 @@
 
 Every security scanner this repo runs, what it catches, where it runs (local pre-commit vs. CI), and why it exists. Added 2026-08-20 alongside four new CI gates (`govulncheck`, `hadolint`, `osv-scanner`, `trivy-image-scan`) that closed real, previously-undetected gaps -- see "What Each Gate Has Actually Caught" below for the concrete findings that justified each one, not just the theoretical case for it.
 
+The `security-checks` job (gitleaks, trivy, shellcheck, whitespace), its scan modes and how to accept a finding are
+described in [CI security checks](ci-security-checks.md); this page is the inventory of everything else.
+
 ## The Full Tool Inventory
 
 | Tool | Catches | Runs |
