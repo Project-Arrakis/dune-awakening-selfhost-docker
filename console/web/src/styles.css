@@ -6819,7 +6819,8 @@ td .inline-action-result-wrap { flex: 1 0 100%; justify-content: flex-start; min
 }
 .character-transfer-row > span:first-child { color: #ead8b8; font-weight: 400; }
 .character-transfer-row strong { color: #fff1d4; font-weight: 400; text-align: right; }
-.character-transfer-row input[type="checkbox"] { width: 20px; height: 20px; justify-self: end; accent-color: var(--success); }
+.character-transfer-row.character-transfer-boolean-row { grid-template-columns: minmax(0, 1fr) max-content 32px; }
+.character-transfer-row input[type="checkbox"] { width: 20px; height: 20px; margin: 0; padding: 0; justify-self: center; accent-color: var(--success); }
 .character-transfer-row input:not([type="checkbox"]), .character-transfer-row select { width: 100%; }
 .character-transfer-spacer { width: 20px; height: 20px; }
 .settings-list-wrap { overflow: auto; border: 1px solid rgba(214, 185, 140, .16); border-radius: 8px; background: rgba(0,0,0,.12); }
@@ -7379,6 +7380,7 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
   .catalog-search-tools button, .modifier-search-tools button { width: 100%; }
   .auto-update-settings-row,
   .character-transfer-row { grid-template-columns: minmax(0, 1fr) 32px; }
+  .character-transfer-row.character-transfer-boolean-row { grid-template-columns: minmax(0, 1fr) 32px; }
   .auto-update-settings-row > :nth-child(2),
   .character-transfer-row > :nth-child(2) { grid-column: 1 / -1; grid-row: 2; text-align: left; }
   .auto-update-settings-row > :last-child,
