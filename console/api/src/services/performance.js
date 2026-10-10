@@ -4,10 +4,14 @@ import { join } from "node:path";
 let previousCpuSample = null;
 const DEFAULT_HWMON_ROOT = "/sys/class/hwmon";
 const DEFAULT_BLOCK_ROOT = "/sys/class/block";
+const DEFAULT_NETWORK_ROOT = "/sys/class/net";
 const MAX_HWMON_DEVICES = 64;
 const MAX_STORAGE_DEVICES = 64;
 const MAX_TEMPERATURE_SENSORS = 128;
+const MAX_FAN_SENSORS = 128;
+const MAX_NETWORK_INTERFACES = 32;
 const MAX_SENSOR_TEXT_BYTES = 256;
+const HARDWARE_SNAPSHOT_CACHE_MS = 5000;
 const CPU_HWMON_NAMES = new Set(["coretemp", "k10temp", "zenpower", "cpu_thermal"]);
 
 export async function performanceSnapshot(repoRoot) {
@@ -29,26 +33,62 @@ export async function performanceSnapshot(repoRoot) {
 // is implemented in Console core: addon packages never provide or execute a
 // host-side script. Fixed proc/sys roots, strict numeric parsing, byte bounds,
 // and sensor-count caps keep the bridge response small and predictable.
+export function createHardwareStatusProvider(options = {}) {
+  const now = options.now || Date.now;
+  const cacheMs = Math.max(HARDWARE_SNAPSHOT_CACHE_MS, Number(options.cacheMs) || HARDWARE_SNAPSHOT_CACHE_MS);
+  const sampleState = {};
+  let cached = null;
+  let cachedAt = Number.NEGATIVE_INFINITY;
+  let inFlight = null;
+
+  return async function getHardwareStatus() {
+    const requestedAt = Number(now());
+    if (cached && Number.isFinite(requestedAt) && requestedAt - cachedAt < cacheMs) return cached;
+    if (inFlight) return inFlight;
+    inFlight = (async () => {
+      const snapshot = await hardwareStatusSnapshot({ ...options, now, sampleState });
+      cached = snapshot;
+      cachedAt = Number(now());
+      return snapshot;
+    })();
+    try {
+      return await inFlight;
+    } finally {
+      inFlight = null;
+    }
+  };
+}
+
 export async function hardwareStatusSnapshot(options = {}) {
   const readFile = options.readFileSync || readFileSync;
   const readDir = options.readdirSync || readdirSync;
   const realpath = options.realpathSync || realpathSync;
+  const statfs = options.statfsSync || statfsSync;
   const hwmonRoot = options.hwmonRoot || DEFAULT_HWMON_ROOT;
   const blockRoot = options.blockRoot || DEFAULT_BLOCK_ROOT;
+  const networkRoot = options.networkRoot || DEFAULT_NETWORK_ROOT;
+  const filesystemPath = options.filesystemPath || options.repoRoot || ".";
+  const sampledAtMs = Number((options.now || Date.now)());
   const meminfo = safeReadText("/proc/meminfo", readFile, 256 * 1024);
   const memoryRows = parseMeminfo(meminfo);
   const memory = memorySnapshotKb(memoryRows);
   const swap = swapSnapshotKb(memoryRows);
   const load = loadSnapshot(safeReadText("/proc/loadavg", readFile, 4096));
   const uptimeSeconds = uptimeSnapshotSeconds(safeReadText("/proc/uptime", readFile, 4096));
-  const cpu = cpuSnapshot(safeReadText("/proc/cpuinfo", readFile, 256 * 1024));
+  const cpuUsage = cpuUsageSnapshot(safeReadText("/proc/stat", readFile, 4096), options.sampleState);
+  const cpu = cpuSnapshot(safeReadText("/proc/cpuinfo", readFile, 256 * 1024), cpuUsage);
   const storage = storageSnapshot(blockRoot, readFile, readDir, realpath);
+  const sensors = sensorSnapshot(hwmonRoot, readFile, readDir, realpath, storage, cpu);
 
   return {
-    version: 2,
-    temperatures: temperatureSnapshot(hwmonRoot, readFile, readDir, realpath, storage, cpu),
+    version: 3,
+    sampled_at: new Date(Number.isFinite(sampledAtMs) ? sampledAtMs : Date.now()).toISOString(),
+    temperatures: sensors.temperatures,
+    fans: sensors.fans,
     cpu,
     storage: storage.map(({ devicePath: _devicePath, ...device }) => device),
+    filesystems: filesystemSnapshot(filesystemPath, statfs),
+    network: networkSnapshot(networkRoot, readFile, readDir),
     memory,
     swap,
     load,
@@ -56,15 +96,16 @@ export async function hardwareStatusSnapshot(options = {}) {
   };
 }
 
-function temperatureSnapshot(root, readFile, readDir, realpath, storage, cpu) {
+function sensorSnapshot(root, readFile, readDir, realpath, storage, cpu) {
   const temperatures = [];
+  const fans = [];
   const devices = safeReadDir(root, readDir)
     .filter((name) => /^hwmon\d+$/.test(name))
     .sort(naturalNameCompare)
     .slice(0, MAX_HWMON_DEVICES);
 
   for (const device of devices) {
-    if (temperatures.length >= MAX_TEMPERATURE_SENSORS) break;
+    if (temperatures.length >= MAX_TEMPERATURE_SENSORS && fans.length >= MAX_FAN_SENSORS) break;
     const deviceRoot = join(root, device);
     const devicePath = safeRealpath(join(deviceRoot, "device"), realpath) || safeRealpath(deviceRoot, realpath);
     const storageDevice = storage.find((candidate) => relatedDevicePaths(devicePath, candidate.devicePath));
@@ -89,22 +130,60 @@ function temperatureSnapshot(root, readFile, readDir, realpath, storage, cpu) {
       if (deviceId) sensor.device_id = deviceId;
       temperatures.push(sensor);
     }
+
+    const fanInputs = safeReadDir(deviceRoot, readDir)
+      .filter((name) => /^fan\d+_input$/.test(name))
+      .sort(naturalNameCompare);
+    for (const input of fanInputs) {
+      if (fans.length >= MAX_FAN_SENSORS) break;
+      const rpm = strictNumber(safeReadText(join(deviceRoot, input), readFile, MAX_SENSOR_TEXT_BYTES));
+      if (rpm === null || rpm < 0 || rpm > 10000000) continue;
+      const stem = input.slice(0, -"_input".length);
+      const explicitLabel = sensorLabel(safeReadText(join(deviceRoot, `${stem}_label`), readFile, MAX_SENSOR_TEXT_BYTES));
+      const fallback = stem.replace(/^fan/, "Fan ");
+      const name = explicitLabel
+        ? (chipName ? `${chipName} ${explicitLabel}` : explicitLabel)
+        : (chipName ? `${chipName} ${fallback}` : fallback);
+      const sensor = { name: name.slice(0, 160), rpm: Math.round(rpm) };
+      if (deviceId) sensor.device_id = deviceId;
+      fans.push(sensor);
+    }
   }
-  return temperatures;
+  return { temperatures, fans };
 }
 
-function cpuSnapshot(text) {
+function cpuSnapshot(text, usagePercent = null) {
   const rows = {};
+  const physicalCores = new Set();
+  let logicalThreads = 0;
+  let physicalId = "";
   for (const line of text.split(/\r?\n/)) {
+    if (!line.trim()) {
+      physicalId = "";
+      continue;
+    }
     const match = line.match(/^([^:]+):\s*(.*)$/);
     if (!match) continue;
     const key = match[1].trim().toLowerCase();
-    if (!Object.hasOwn(rows, key)) rows[key] = hardwareLabel(match[2]);
+    const value = hardwareLabel(match[2]);
+    if (!Object.hasOwn(rows, key)) rows[key] = value;
+    if (key === "processor" && /^\d+$/.test(value)) logicalThreads += 1;
+    if (key === "physical id") physicalId = value;
+    if (key === "core id" && value) physicalCores.add(`${physicalId || "0"}:${value}`);
   }
   const manufacturer = rows.vendor_id || rows.vendor || rows.cpu_implementer || "";
   const model = rows["model name"] || rows.hardware || rows["cpu model"] || rows.processor || "";
+  const declaredCores = integerInRange(rows["cpu cores"], 1, 1048576);
+  const physicalCoreCount = physicalCores.size || declaredCores || 0;
   const details = optionalFields({ manufacturer, model });
-  return Object.keys(details).length ? { id: "cpu:0", ...details } : {};
+  if (!Object.keys(details).length && !logicalThreads && !physicalCoreCount && usagePercent === null) return {};
+  return {
+    id: "cpu:0",
+    ...details,
+    usage_percent: usagePercent,
+    logical_threads: logicalThreads,
+    physical_cores: physicalCoreCount
+  };
 }
 
 function storageSnapshot(root, readFile, readDir, realpath) {
@@ -127,6 +206,8 @@ function storageSnapshot(root, readFile, readDir, realpath) {
     const devicePath = safeRealpath(join(deviceRoot, "device"), realpath) || safeRealpath(deviceRoot, realpath);
     const subsystemPath = safeRealpath(join(deviceRoot, "device/subsystem"), realpath);
     const bus = storageBus(name, protocol, devicePath, subsystemPath);
+    const sectors = strictNumber(safeReadText(join(deviceRoot, "size"), readFile, 64));
+    const sizeBytes = sectors !== null && sectors >= 0 ? safeByteCount(sectors * 512) : 0;
     // Virtual block devices and partitions generally expose none of these.
     // Omitting them avoids noisy loop, device-mapper, and RAM entries.
     if (!model && !manufacturer && !bus) continue;
@@ -134,10 +215,80 @@ function storageSnapshot(root, readFile, readDir, realpath) {
       id: `block:${name}`,
       name,
       ...optionalFields({ manufacturer, model, bus }),
+      ...(sizeBytes > 0 ? { size_bytes: sizeBytes } : {}),
       devicePath
     });
   }
   return devices;
+}
+
+function cpuUsageSnapshot(text, sampleState) {
+  const line = String(text || "").split(/\r?\n/).find((row) => /^cpu\s/.test(row));
+  if (!line) return null;
+  const values = line.trim().split(/\s+/).slice(1).map(strictNumber);
+  if (!values.length || values.some((value) => value === null || value < 0)) return null;
+  const idle = (values[3] || 0) + (values[4] || 0);
+  const total = values.reduce((sum, value) => sum + value, 0);
+  if (!sampleState || typeof sampleState !== "object") return null;
+  const previous = sampleState.previousCpuSample;
+  sampleState.previousCpuSample = { idle, total };
+  if (!previous || total <= previous.total) return null;
+  const totalDelta = total - previous.total;
+  const idleDelta = idle - previous.idle;
+  return percent(Math.max(0, totalDelta - Math.max(0, idleDelta)), totalDelta);
+}
+
+function filesystemSnapshot(path, statfs) {
+  try {
+    const stats = statfs(path);
+    const blockSize = Number(stats.bsize);
+    const total = safeByteCount(Number(stats.blocks) * blockSize);
+    const free = safeByteCount(Number(stats.bavail) * blockSize);
+    const used = Math.max(0, total - free);
+    return [{
+      id: "dune-data",
+      name: "Dune Docker Data",
+      total_bytes: total,
+      free_bytes: Math.min(total, free),
+      used_bytes: used,
+      percent: percent(used, total)
+    }];
+  } catch {
+    return [];
+  }
+}
+
+function networkSnapshot(root, readFile, readDir) {
+  const counters = parseNetworkCounters(safeReadText("/proc/net/dev", readFile, 256 * 1024));
+  return safeReadDir(root, readDir)
+    .filter((name) => name !== "lo" && /^[A-Za-z0-9._:-]+$/.test(name))
+    .sort(naturalNameCompare)
+    .slice(0, MAX_NETWORK_INTERFACES)
+    .map((name) => {
+      const traffic = counters.get(name) || { rxBytes: 0, txBytes: 0 };
+      const rawStatus = safeReadText(join(root, name, "operstate"), readFile, 32).toLowerCase();
+      const status = /^(?:up|down|unknown|dormant|lowerlayerdown|notpresent|testing)$/.test(rawStatus) ? rawStatus : "unknown";
+      const speed = integerInRange(safeReadText(join(root, name, "speed"), readFile, 32), 0, 10000000);
+      return {
+        name,
+        status,
+        rx_bytes: safeByteCount(traffic.rxBytes),
+        tx_bytes: safeByteCount(traffic.txBytes),
+        ...(speed !== null ? { speed_mbps: speed } : {})
+      };
+    });
+}
+
+function parseNetworkCounters(text) {
+  const counters = new Map();
+  for (const line of String(text || "").split(/\r?\n/)) {
+    const match = line.match(/^\s*([A-Za-z0-9._:-]+):\s*(.*)$/);
+    if (!match) continue;
+    const values = match[2].trim().split(/\s+/).map(strictNumber);
+    if (values.length < 9 || values[0] === null || values[8] === null) continue;
+    counters.set(match[1], { rxBytes: values[0], txBytes: values[8] });
+  }
+  return counters;
 }
 
 function storageBus(name, protocol, devicePath, subsystemPath) {
@@ -243,6 +394,17 @@ function strictNumber(value) {
   if (!/^-?(?:\d+\.?\d*|\.\d+)$/.test(text)) return null;
   const number = Number(text);
   return Number.isFinite(number) ? number : null;
+}
+
+function integerInRange(value, minimum, maximum) {
+  const number = strictNumber(value);
+  if (number === null || !Number.isInteger(number) || number < minimum || number > maximum) return null;
+  return number;
+}
+
+function safeByteCount(value) {
+  if (!Number.isFinite(value) || value < 0) return 0;
+  return Math.min(Math.floor(value), Number.MAX_SAFE_INTEGER);
 }
 
 function nonnegativeNumber(value) {

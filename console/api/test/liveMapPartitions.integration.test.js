@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { liveMapPartitions } from "../src/duneDb.js";
+import { liveMapPartitionRuntimeState, liveMapPartitions } from "../src/duneDb.js";
 import { pgTransactionalDb, withIsolatedDatabase } from "../test-support/pgIntegrationDb.js";
 
 // Real schema/naming pulled from dune2's live database -- notably
@@ -25,6 +25,11 @@ const SCHEMA = `
     partition_id bigint,
     transform jsonb
   );
+  create table dune.farm_state (
+    server_id text primary key,
+    alive boolean not null default false,
+    ready boolean not null default false
+  );
 `;
 
 test("real PostgreSQL: a freshly registered partition with zero actors still appears", async (t) => {
@@ -42,6 +47,10 @@ test("real PostgreSQL: a freshly registered partition with zero actors still app
         (1, 'abbir-server-id', 'Survival_1', 0, 'Abbir'),
         (60, 'alraab-server-id', 'Survival_1', 1, 'Alraab'),
         (8, 'deepdesert-pvp-id', 'DeepDesert_1', 0, 'PvP'),
+        -- A stopped dynamic map keeps its world-partition record but has no
+        -- active server id. It must remain selectable so saved map data can
+        -- be inspected without pretending that the map is running.
+        (61, '', 'DeepDesert_1', 1, 'PvE'),
         -- Confirmed live: dungeon/story sub-instances carry a real,
         -- non-null server_id too (they are genuinely running server
         -- processes) -- a null-server_id check alone does not exclude
@@ -51,6 +60,11 @@ test("real PostgreSQL: a freshly registered partition with zero actors still app
       insert into dune.actors (id, map, partition_id, transform) values
         (1, 'HaggaBasin', 1, '{}'),
         (2, 'HaggaBasin', 1, '{}');
+
+      insert into dune.farm_state (server_id, alive, ready) values
+        ('abbir-server-id', true, true),
+        ('alraab-server-id', true, false),
+        ('deepdesert-pvp-id', true, true);
     `);
 
     const db = pgTransactionalDb(pool);
@@ -60,6 +74,8 @@ test("real PostgreSQL: a freshly registered partition with zero actors still app
     assert.equal(byPartitionId[1].map, "HaggaBasin");
     assert.equal(byPartitionId[1].name, "Abbir");
     assert.equal(byPartitionId[1].marker_count, 2);
+    assert.equal(byPartitionId[1].alive, true);
+    assert.equal(byPartitionId[1].ready, true);
 
     // The real bug: partition 60 has zero actors, but is a real, running
     // partition -- must still show up, not be silently dropped.
@@ -67,8 +83,17 @@ test("real PostgreSQL: a freshly registered partition with zero actors still app
     assert.equal(byPartitionId[60].map, "HaggaBasin");
     assert.equal(byPartitionId[60].name, "Alraab");
     assert.equal(byPartitionId[60].marker_count, 0);
+    assert.equal(byPartitionId[60].alive, true);
+    assert.equal(byPartitionId[60].ready, false);
 
     assert.equal(byPartitionId[8].map, "DeepDesert");
+    assert.equal(byPartitionId[61].map, "DeepDesert");
+    assert.equal(byPartitionId[61].alive, false);
+    assert.equal(byPartitionId[61].ready, false);
+
+    assert.deepEqual(await liveMapPartitionRuntimeState(db, 1), { known: true, exists: true, alive: true, ready: true });
+    assert.deepEqual(await liveMapPartitionRuntimeState(db, 61), { known: true, exists: true, alive: false, ready: false });
+    assert.deepEqual(await liveMapPartitionRuntimeState(db, 999), { known: true, exists: false, alive: false, ready: false });
 
     assert.equal(byPartitionId[5], undefined, "dungeon sub-instances must be excluded even though they carry a real server_id");
   });
@@ -99,5 +124,7 @@ test("real PostgreSQL: falls back to actor-derived partitions when world_partiti
     assert.equal(result.rows[0].map, "HaggaBasin");
     assert.equal(result.rows[0].partition_id, 1);
     assert.equal(result.rows[0].marker_count, 1);
+    assert.equal(result.rows[0].alive, null);
+    assert.equal(result.rows[0].ready, null);
   });
 });

@@ -56,6 +56,97 @@ const FIXTURE_SCHEMA = `
   reset search_path;
 `;
 
+// A later Funcom Steam release folded dune.actor_state into a plain
+// dune.actors.state column and rewrote delete_actors_and_respawns_on_server
+// to read that column directly (a.state <> 'X'), with no join and no alias
+// "s" at all. Confirmed live (dune-awakening-selfhost-docker#963): that
+// rewrite already excludes 'BaseBackup' natively, so the bug this patch
+// exists to work around is already fixed upstream on hosts running this
+// schema -- but the patch's own shape-detection only recognized the old
+// join-based "s.state IS DISTINCT FROM 'BaseBackup'" text as "already
+// applied", so it fell through to its fail-closed "shape is not recognized"
+// exception on every host running the new schema, turning a harmless no-op
+// into a fatal error on the last step of every database update.
+const NATIVE_PROTECTION_FIXTURE_SCHEMA = `
+  create schema dune;
+  create type dune.serverinfo as (map text);
+  create type dune.actorstate as enum ('Ordinary', 'Travel', 'VehicleBackup', 'VehicleRecovery', 'BaseBackup');
+  create table dune.actors (
+    id bigint primary key,
+    owner_account_id bigint,
+    on_target_server boolean not null default true,
+    state dune.actorstate not null default 'Ordinary'
+  );
+  create function dune.server_info_match(in_actor dune.actors, in_server_info dune.serverinfo)
+  returns boolean language sql immutable as 'select in_actor.on_target_server';
+  set search_path to dune, public;
+  create function dune.delete_actors_and_respawns_on_server(
+    in_server_info dune.serverinfo,
+    in_vehicle_classes_spawned_on_map text[],
+    in_allow_vehicle_recovery boolean
+  ) returns void language plpgsql as $fixture$
+  begin
+    delete from actors a
+    where owner_account_id is null
+      and a.state <> 'Travel'
+      and a.state <> 'VehicleBackup'
+      and a.state <> 'VehicleRecovery'
+      and a.state <> 'BaseBackup'
+      and server_info_match(a, in_server_info);
+  end
+  $fixture$;
+  reset search_path;
+`;
+
+test("real PostgreSQL: Coriolis patch recognizes Funcom's native BaseBackup protection (actors.state, no join) and exits cleanly", async (t) => {
+  await withIsolatedDatabase(t, {
+    namePrefix: "dune_coriolis_native_protection",
+    unavailableLabel: "the Coriolis base-backup native-protection patch integration test"
+  }, async (pool) => {
+    await pool.query(NATIVE_PROTECTION_FIXTURE_SCHEMA);
+
+    const before = await pool.query(`
+      select pg_get_functiondef(
+        'dune.delete_actors_and_respawns_on_server(dune.serverinfo,text[],boolean)'::regprocedure
+      ) as definition`);
+
+    // Must not throw "Funcom function shape is not recognized" -- this is
+    // the exact regression #963 found: the old-shape-only detection fell
+    // through to that exception on this schema, which propagates fatally
+    // through update-db.sh's set -euo pipefail / psql -v ON_ERROR_STOP=1.
+    await pool.query(patchSql);
+
+    const after = await pool.query(`
+      select pg_get_functiondef(
+        'dune.delete_actors_and_respawns_on_server(dune.serverinfo,text[],boolean)'::regprocedure
+      ) as definition`);
+    assert.equal(after.rows[0].definition, before.rows[0].definition,
+      "no patch is needed when Funcom's own function already natively excludes BaseBackup actors -- the function must be left untouched");
+
+    // Reapplying must remain a clean no-op too (idempotent).
+    await pool.query(patchSql);
+
+    await pool.query(`
+      set search_path to dune, public;
+      insert into dune.actors (id, owner_account_id, state) values
+        (1, null, 'BaseBackup'),
+        (2, null, 'VehicleBackup'),
+        (3, null, 'Ordinary'),
+        (4, 99, 'Ordinary'),
+        (5, null, 'Travel');
+      select dune.delete_actors_and_respawns_on_server(
+        row('DeepDesert')::dune.serverinfo,
+        null,
+        true
+      );
+      reset search_path;
+    `);
+    const remaining = await pool.query("select id::int from dune.actors order by id");
+    assert.deepEqual(remaining.rows.map((row) => row.id), [1, 2, 4, 5],
+      "Funcom's native protection (unmodified by this patch) still preserves BaseBackup actors, existing protected states, and owned actors while removing an ordinary ownerless actor");
+  });
+});
+
 test("real PostgreSQL: Coriolis cleanup preserves BaseBackup actors after an idempotent patch", async (t) => {
   await withIsolatedDatabase(t, {
     namePrefix: "dune_coriolis_base_backup",
@@ -105,6 +196,38 @@ test("real PostgreSQL: Coriolis cleanup preserves BaseBackup actors after an ide
     const remaining = await pool.query("select id::int from dune.actors order by id");
     assert.deepEqual(remaining.rows.map((row) => row.id), [1, 2, 4, 5],
       "BaseBackup, existing protected states, and owned actors survive while an ordinary ownerless actor is removed");
+
+    await pool.query(`
+      alter table dune.actors add column state text;
+      set search_path to dune, public;
+      create or replace function dune.delete_actors_and_respawns_on_server(
+        in_server_info dune.serverinfo,
+        in_vehicle_classes_spawned_on_map text[],
+        in_allow_vehicle_recovery boolean
+      ) returns void language plpgsql as $updated$
+      begin
+        with actors_to_delete as (
+          select a.id
+          from actors a
+          where owner_account_id is null
+            and a.state <> 'Travel'
+            and a.state <> 'VehicleBackup'
+            and a.state <> 'VehicleRecovery'
+            and server_info_match(a, in_server_info)
+        )
+        delete from actors a
+        where a.id = any(select id from actors_to_delete);
+      end
+      $updated$;
+      reset search_path;
+    `);
+    await pool.query(patchSql);
+    const updatedShape = await pool.query(`
+      select pg_get_functiondef(
+        'dune.delete_actors_and_respawns_on_server(dune.serverinfo,text[],boolean)'::regprocedure
+      ) as definition`);
+    assert.equal((updatedShape.rows[0].definition.match(/a[.]state <> 'BaseBackup'/gi) || []).length, 1,
+      "the current Funcom actor-state predicate must be patched without changing its operator or alias");
 
     await pool.query(`
       set search_path to dune, public;

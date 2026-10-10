@@ -29,7 +29,9 @@ from __future__ import annotations
 import io
 import json
 import sys
+import tempfile
 import unittest
+from base64 import b64encode
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -40,6 +42,10 @@ import usersettings  # noqa: E402
 MAP_NAME = "Survival_1"
 PARTITION_ID = "3"
 OTHER_PARTITION_ID = "7"
+
+
+def _encode_bulk_save_payload(values: dict) -> str:
+    return b64encode(json.dumps(values).encode("utf-8")).decode("ascii")
 
 
 class ProfilePathTestCase(unittest.TestCase):
@@ -125,6 +131,181 @@ class GameFieldOverridePrecedenceTests(ProfilePathTestCase):
         self.assertIn(f"{key}=3.0", compiled_sibling_partition)
         self.assertNotIn(f"{key}=4.0", compiled_sibling_partition)
 
+    def test_materialize_writes_native_building_restriction_setting_after_patch_1_5(self):
+        section, key, _default = usersettings.SERVER_CUSTOM_FIELDS["building_restriction_limits_enabled"]
+        profile = usersettings.empty_profile()
+        usersettings.profile_set_key(profile, "server_custom_global", section, key, "False")
+
+        with tempfile.TemporaryDirectory() as directory:
+            saved_dir = Path(directory) / "Saved"
+            custom_path = saved_dir / "Config" / "LinuxServer" / "ServerCustomSettings.ini"
+            custom_path.parent.mkdir(parents=True)
+            custom_path.write_text(
+                f"[{usersettings.SERVER_CUSTOM_SETTINGS_SECTION}]\n"
+                "DifficultyLevel=Medium\n"
+                "GatheringAmount=2.000000\n"
+                "bIsBuildingRestrictionsEnabled=True\n",
+                encoding="utf-8",
+            )
+
+            usersettings.write_server_custom_settings(saved_dir, profile, MAP_NAME, PARTITION_ID)
+            rendered = custom_path.read_text(encoding="utf-8")
+
+        self.assertIn("DifficultyLevel=Custom", rendered)
+        self.assertIn("bIsBuildingRestrictionsEnabled=False", rendered)
+        self.assertIn("GatheringAmount=2.000000", rendered)
+        self.assertNotIn("DifficultyLevel=Medium", rendered)
+
+    def test_server_custom_settings_are_not_written_to_server_usergame(self):
+        section, key, _default = usersettings.SERVER_CUSTOM_FIELDS["gathering_amount"]
+        profile = usersettings.empty_profile()
+        usersettings.profile_set_key(profile, "server_custom_global", section, key, "2.500000")
+        self.assertNotIn(key, usersettings.compiled_usergame_ini(profile, MAP_NAME, PARTITION_ID))
+
+    def test_server_custom_bulk_save_uses_dedicated_profile_scope(self):
+        self.assertEqual(usersettings.bulk_save("serverCustomPartition", MAP_NAME, PARTITION_ID, _encode_bulk_save_payload({"gathering_amount": "2.500000"})), 0)
+        saved = usersettings.PROFILE_PATH.read_text(encoding="utf-8")
+        self.assertIn(f"[ServerCustomPartition:{MAP_NAME}:{PARTITION_ID}:{usersettings.SERVER_CUSTOM_SETTINGS_SECTION}]", saved)
+        self.assertIn("GatheringAmount=2.500000", saved)
+        self.assertNotIn("GatheringAmount", usersettings.profile_game_text())
+
+    def test_server_custom_materialization_preserves_unmanaged_values(self):
+        profile = usersettings.empty_profile()
+        section, managed_key, _default = usersettings.SERVER_CUSTOM_FIELDS["gathering_amount"]
+        usersettings.profile_set_key(profile, "server_custom_partition", section, managed_key, "3.000000", MAP_NAME, PARTITION_ID)
+        with tempfile.TemporaryDirectory() as directory:
+            saved_dir = Path(directory) / "Saved"
+            custom_path = saved_dir / "Config" / "LinuxServer" / "ServerCustomSettings.ini"
+            custom_path.parent.mkdir(parents=True)
+            custom_path.write_text(f"[{section}]\nGatheringAmount=1.000000\nFutureFuncomSetting=keep\n", encoding="utf-8")
+            usersettings.write_server_custom_settings(saved_dir, profile, MAP_NAME, PARTITION_ID)
+            rendered = custom_path.read_text(encoding="utf-8")
+        self.assertIn("GatheringAmount=3.000000", rendered)
+        self.assertIn("FutureFuncomSetting=keep", rendered)
+
+    def test_server_custom_schema_matches_funcom_1_5_3_1_template(self):
+        official_defaults = {
+            "PVPMode": "Limited",
+            "GatheringAmount": "1.000000",
+            "CraftingCost": "1.000000",
+            "WaterExtractionRate": "1.000000",
+            "CraftingTimeMultiplier": "1.000000",
+            "LootRespawnSpeed": "1.000000",
+            "BuildingCostMultiplier": "1.000000",
+            "ResourceRespawnSpeed": "1.000000",
+            "FuelBurnTimeMultiplier": "1.000000",
+            "InventoryVolumeMultiplier": "1.000000",
+            "PlayerDamageToPlayer": "1.000000",
+            "PlayerDamageToNPC": "1.000000",
+            "PlayerDamageToVehicle": "1.000000",
+            "NPCHealth": "1.000000",
+            "NPCDamageToPlayer": "1.000000",
+            "NPCDamageToNPC": "1.000000",
+            "NPCRespawnMultiplier": "1.000000",
+            "PVPDamageStructures": "1.000000",
+            "GlobalXpMultiplier": "1.000000",
+            "CombatXp": "1.000000",
+            "GatheringXp": "1.000000",
+            "MissionXp": "1.000000",
+            "ItemDurabilityDrainMultiplier": "1.000000",
+            "bEnableItemMaxDurabilityLoss": "True",
+            "PlayerStaminaDrain": "1.000000",
+            "IntelPointsGainMultiplier": "1.000000",
+            "PlayerShieldDamageAbsorptionMultiplier": "1.000000",
+            "NPCShieldDamageAbsorptionMultiplier": "1.000000",
+            "HeatBuildupRate": "1.000000",
+            "ThirstMultiplier": "1.000000",
+            "DropEquipmentOnDeath": "Default",
+            "bAllowDynamicBuildingDamage": "True",
+            "bAllowSandstorms": "True",
+            "bAllowSandworms": "True",
+            "SandwormConsequences": "All",
+            "PlayerDeathLootRule": "DependsOnSecurityZone",
+            "bIsBuildingRestrictionsEnabled": "True",
+            "LandsraadContributionMultiplier": "1.000000",
+            "LandsraadSpecializationXpMultiplier": "1.000000",
+            "LandsraadFactionStandingMultiplier": "1.000000",
+            "bLandsraadDisableDecreeRerollLimit": "False",
+            "FiefdomLimit": "3",
+            "BuildingPieceLimitMultiplier": "1.000000",
+            "bBuildingInfiniteStability": "False",
+            "BaseBackupToolTimeRestriction": "16.000000",
+        }
+        project_defaults = {
+            key: str(default)
+            for _field_id, (_section, key, default) in usersettings.SERVER_CUSTOM_FIELDS.items()
+        }
+        self.assertEqual(project_defaults, official_defaults)
+
+    def test_server_custom_metadata_exposes_funcom_choices_and_bounds(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(usersettings.metadata(), 0)
+        fields = {field["id"]: field for field in json.loads(output.getvalue())["serverCustom"]}
+
+        self.assertEqual(fields["pvp_mode"]["options"], ["NoPVP", "Limited", "FullPVP"])
+        self.assertEqual(fields["drop_equipment_on_death"]["options"], ["All", "Backpack", "Default", "None"])
+        self.assertEqual((fields["gathering_amount"]["minimum"], fields["gathering_amount"]["maximum"]), (0.1, 10.0))
+        self.assertEqual((fields["crafting_time_multiplier"]["minimum"], fields["crafting_time_multiplier"]["maximum"]), (0.0, 5.0))
+        self.assertEqual(fields["fiefdom_limit"]["type"], "integer")
+        self.assertEqual((fields["fiefdom_limit"]["minimum"], fields["fiefdom_limit"]["maximum"]), (0, 10))
+        self.assertEqual(
+            (fields["building_piece_limit_multiplier"]["minimum"], fields["building_piece_limit_multiplier"]["maximum"]),
+            (0.1, None),
+        )
+        self.assertEqual(
+            (
+                fields["building_piece_limit_multiplier"]["recommendedMinimum"],
+                fields["building_piece_limit_multiplier"]["recommendedMaximum"],
+            ),
+            (0.1, 10.0),
+        )
+
+    def test_server_custom_bulk_save_validates_and_canonicalizes_values(self):
+        payload = {
+            "pvp_mode": "fullpvp",
+            "gathering_amount": "0.1",
+            "crafting_time_multiplier": "5",
+            "fiefdom_limit": "10",
+            "building_piece_limit_multiplier": "20",
+            "allow_dynamic_building_damage": "false",
+        }
+        self.assertEqual(usersettings.bulk_save("serverCustomMap", MAP_NAME, "", _encode_bulk_save_payload(payload)), 0)
+        saved = usersettings.PROFILE_PATH.read_text(encoding="utf-8")
+        self.assertIn("PVPMode=FullPVP", saved)
+        self.assertIn("GatheringAmount=0.1", saved)
+        self.assertIn("CraftingTimeMultiplier=5", saved)
+        self.assertIn("FiefdomLimit=10", saved)
+        self.assertIn("BuildingPieceLimitMultiplier=20", saved)
+        self.assertIn("bAllowDynamicBuildingDamage=False", saved)
+
+    def test_invalid_server_custom_values_are_rejected_before_profile_write(self):
+        usersettings.bulk_save(
+            "serverCustomMap",
+            MAP_NAME,
+            "",
+            _encode_bulk_save_payload({"gathering_amount": "2.0"}),
+        )
+        original = usersettings.PROFILE_PATH.read_bytes()
+        invalid_values = {
+            "pvp_mode": "Sometimes",
+            "gathering_amount": "0.09",
+            "building_piece_limit_multiplier": "0.09",
+            "crafting_time_multiplier": "5.1",
+            "fiefdom_limit": "3.5",
+            "allow_dynamic_building_damage": "maybe",
+            "base_backup_tool_time_restriction": "NaN",
+        }
+        for field_id, value in invalid_values.items():
+            with self.subTest(field_id=field_id), self.assertRaises(SystemExit):
+                usersettings.bulk_save(
+                    "serverCustomMap",
+                    MAP_NAME,
+                    "",
+                    _encode_bulk_save_payload({field_id: value}),
+                )
+            self.assertEqual(usersettings.PROFILE_PATH.read_bytes(), original)
+
 
 class RetiredModifierAndCoriolisMetadataTests(ProfilePathTestCase):
     RETIRED_IDS = {
@@ -134,6 +315,7 @@ class RetiredModifierAndCoriolisMetadataTests(ProfilePathTestCase):
         "global_harvest_health_multiplier",
         "cutteray_hem_multiplier_per_node_tier_table",
         "global_damage_to_npcs_multiplier",
+        "base_backup_tool_time_restriction_seconds",
     }
 
     def test_retired_controls_are_absent_from_schema_and_generated_ini(self):
@@ -163,14 +345,100 @@ class RetiredModifierAndCoriolisMetadataTests(ProfilePathTestCase):
         self.assertNotIn("m_GlobalFameMultiplier", saved)
         self.assertIn("m_DefaultReconnectGracePeriodSeconds=600", saved)
 
+    def test_legacy_base_backup_cooldown_is_migrated_to_native_hours(self):
+        profile = usersettings.parse_profile_text(
+            f"[Global:{usersettings.BUILDING_SETTINGS_SECTION}]\n"
+            "m_BaseBackupToolTimeRestrictionInSeconds=7200\n"
+        )
+
+        usersettings.migrate_legacy_base_backup_cooldown(profile)
+        values = usersettings.server_custom_values(profile, MAP_NAME, include_materialized=False)
+        self.assertEqual(values["base_backup_tool_time_restriction"], "2")
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=7200", usersettings.compiled_usergame_ini(profile, MAP_NAME))
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=7200", usersettings.client_game_ini(profile, MAP_NAME))
+
+        usersettings.write_profile(profile)
+        saved = usersettings.PROFILE_PATH.read_text(encoding="utf-8")
+        self.assertNotIn("m_BaseBackupToolTimeRestrictionInSeconds", saved)
+        self.assertIn("BaseBackupToolTimeRestriction=2", saved)
+
+    def test_legacy_base_backup_cooldown_is_clamped_to_the_game_minimum(self):
+        profile = usersettings.parse_profile_text(
+            f"[Global:{usersettings.BUILDING_SETTINGS_SECTION}]\n"
+            "m_BaseBackupToolTimeRestrictionInSeconds=60\n"
+        )
+
+        usersettings.migrate_legacy_base_backup_cooldown(profile)
+        values = usersettings.server_custom_values(profile, MAP_NAME, include_materialized=False)
+        self.assertEqual(values["base_backup_tool_time_restriction"], "0.2")
+
+    def test_explicit_native_base_backup_cooldown_wins_over_legacy_value(self):
+        profile = usersettings.parse_profile_text(
+            f"[Global:{usersettings.BUILDING_SETTINGS_SECTION}]\n"
+            "m_BaseBackupToolTimeRestrictionInSeconds=7200\n"
+            f"\n[ServerCustomGlobal:{usersettings.SERVER_CUSTOM_SETTINGS_SECTION}]\n"
+            "BaseBackupToolTimeRestriction=3\n"
+        )
+
+        usersettings.migrate_legacy_base_backup_cooldown(profile)
+        values = usersettings.server_custom_values(profile, MAP_NAME, include_materialized=False)
+        self.assertEqual(values["base_backup_tool_time_restriction"], "3")
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=10800", usersettings.compiled_usergame_ini(profile, MAP_NAME))
+
+    def test_native_base_backup_cooldown_mirrors_only_explicit_scoped_values(self):
+        profile = usersettings.empty_profile()
+        self.assertNotIn("m_BaseBackupToolTimeRestrictionInSeconds", usersettings.compiled_usergame_ini(profile, MAP_NAME))
+        self.assertNotIn("m_BaseBackupToolTimeRestrictionInSeconds", usersettings.client_game_ini(profile, MAP_NAME))
+
+        section = usersettings.SERVER_CUSTOM_SETTINGS_SECTION
+        usersettings.profile_set_key(profile, "server_custom_global", section, "BaseBackupToolTimeRestriction", "0.2")
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=720", usersettings.compiled_usergame_ini(profile, MAP_NAME))
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=720", usersettings.client_game_ini(profile, MAP_NAME))
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=720", usersettings.client_game_ini(profile, ""))
+
+        usersettings.profile_set_key(profile, "server_custom_map", section, "BaseBackupToolTimeRestriction", "2", MAP_NAME)
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=7200", usersettings.compiled_usergame_ini(profile, MAP_NAME))
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=7200", usersettings.client_game_ini(profile, MAP_NAME))
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=720", usersettings.client_game_ini(profile, ""))
+
+        usersettings.profile_set_key(profile, "server_custom_partition", section, "BaseBackupToolTimeRestriction", "0.5", MAP_NAME, "3")
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=1800", usersettings.compiled_usergame_ini(profile, MAP_NAME, "3"))
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=1800", usersettings.client_game_ini(profile, MAP_NAME, "3"))
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=7200", usersettings.client_game_ini(profile, MAP_NAME, "4"))
+
+    def test_native_base_backup_cooldown_metadata_exposes_hours_and_minimum(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(usersettings.metadata(), 0)
+        payload = json.loads(output.getvalue())
+        game_ids = {row["id"] for row in payload["game"]}
+        field = next(row for row in payload["serverCustom"] if row["id"] == "base_backup_tool_time_restriction")
+
+        self.assertNotIn("base_backup_tool_time_restriction_seconds", game_ids)
+        self.assertEqual(field["label"], "Base Reconstruction Cooldown (Hours)")
+        self.assertEqual((field["minimum"], field["maximum"]), (0.2, None))
+        self.assertEqual(field["clientFile"], "Game.ini")
+        self.assertIn("12 minutes", field["description"])
+
+    def test_native_base_backup_cooldown_rejects_values_below_game_minimum(self):
+        with self.assertRaises(SystemExit):
+            usersettings.bulk_save(
+                "serverCustomGlobal",
+                "",
+                "",
+                _encode_bulk_save_payload({"base_backup_tool_time_restriction": "0"}),
+            )
+        self.assertFalse(usersettings.PROFILE_PATH.exists())
+
     def test_coriolis_restart_metadata_names_its_map_process_scope(self):
         output = io.StringIO()
         with redirect_stdout(output):
             self.assertEqual(usersettings.metadata(), 0)
         payload = json.loads(output.getvalue())
         field = next(row for row in payload["game"] if row["id"] == "restart_server_on_coriolis_cycle_end")
-        self.assertEqual(field["label"], "Restart Map Process At Coriolis Cycle End")
-        self.assertIn("does not queue a Console battlegroup restart", field["description"])
+        self.assertEqual(field["label"], "Restart Game Farm At Coriolis Cycle End")
+        self.assertIn("all processes load the same new cycle seed", field["description"])
+        self.assertIn("PostgreSQL", field["description"])
 
     def test_coriolis_cycle_start_fields_are_exposed_with_bounds_and_context(self):
         output = io.StringIO()
@@ -181,7 +449,7 @@ class RetiredModifierAndCoriolisMetadataTests(ProfilePathTestCase):
         expected = {
             "coriolis_cycle_start_year": ("m_CycleStartYear", "2024", 1, 9999),
             "coriolis_cycle_start_month": ("m_CycleStartMonth", "12", 1, 12),
-            "coriolis_cycle_start_day": ("m_CycleStartDay", "3", 1, 7),
+            "coriolis_cycle_start_day": ("m_CycleStartDay", "3", 1, 31),
             "coriolis_cycle_start_hour": ("m_CycleStartHour", "5", 0, 23),
             "coriolis_cycle_start_minute": ("m_CycleStartMinute", "0", 0, 59),
         }
@@ -194,17 +462,64 @@ class RetiredModifierAndCoriolisMetadataTests(ProfilePathTestCase):
                 self.assertEqual(field["type"], "integer")
                 self.assertEqual(field["minimum"], minimum)
                 self.assertEqual(field["maximum"], maximum)
-        self.assertIn("1=Sunday", fields["coriolis_cycle_start_day"]["description"])
+        self.assertIn("calendar day of the month", fields["coriolis_cycle_start_day"]["description"])
         self.assertIn("UTC hour", fields["coriolis_cycle_start_hour"]["description"])
         self.assertEqual(fields["coriolis_cycle_start_seed_index"]["key"], "m_CycleStartSeedIndex")
         self.assertEqual(fields["coriolis_cycle_start_seed_index"]["type"], "integer")
+
+    def test_coriolis_region_hours_match_field_description(self):
+        # CORIOLIS_REGION_HOURS is the authoritative table (used by
+        # migrate_coriolis_region_fields); the field's own description is the text an
+        # admin actually reads. Parse the description independently of the dict's own
+        # construction, so a typo in either place is a real test failure instead of the
+        # same mistake checking itself.
+        description = usersettings.FIELD_DESCRIPTIONS["coriolis_cycle_start_hour"]
+        segment = description.split(":", 1)[1].strip().rstrip(".")
+        described = {}
+        for chunk in segment.split(","):
+            chunk = chunk.strip()
+            if chunk.startswith("and "):
+                chunk = chunk[4:]
+            region, hour = chunk.rsplit(" ", 1)
+            described[region] = int(hour)
+        self.assertEqual(described, usersettings.CORIOLIS_REGION_HOURS)
+
+    def test_coriolis_region_hours_match_the_console_frontend_table(self):
+        # console/web/src/features/maps/MapsPanel.tsx keeps its own copy (documented as
+        # such at CORIOLIS_REGION_HOURS's definition here) because the toggle's
+        # inference renders without a round trip; only the migration write is
+        # server-side. Parse the frontend's literal object directly so the two tables
+        # cannot drift without a test noticing.
+        import re
+        frontend_path = Path(__file__).resolve().parents[2] / "console" / "web" / "src" / "features" / "maps" / "MapsPanel.tsx"
+        text = frontend_path.read_text(encoding="utf-8")
+        match = re.search(r"CORIOLIS_REGION_HOURS: Record<string, number> = \{(.*?)\};", text, re.DOTALL)
+        self.assertIsNotNone(match, "CORIOLIS_REGION_HOURS literal not found in MapsPanel.tsx -- update this test's pattern if it was reshaped")
+        frontend_table = {region: int(hour) for region, hour in re.findall(r'"([^"]+)":\s*(\d+)', match.group(1))}
+        self.assertEqual(frontend_table, usersettings.CORIOLIS_REGION_HOURS)
+
+    def test_coriolis_region_days_match_field_description(self):
+        # Keep the user-facing description honest about the two regional anchor
+        # dates. Table parity with the frontend is checked independently below.
+        description = usersettings.FIELD_DESCRIPTIONS["coriolis_cycle_start_day"]
+        self.assertIn("Europe, North America, and South America use day 3", description)
+        self.assertIn("Asia and Oceania use day 2", description)
+
+    def test_coriolis_region_days_match_the_console_frontend_table(self):
+        import re
+        frontend_path = Path(__file__).resolve().parents[2] / "console" / "web" / "src" / "features" / "maps" / "MapsPanel.tsx"
+        text = frontend_path.read_text(encoding="utf-8")
+        match = re.search(r"CORIOLIS_REGION_DAYS: Record<string, number> = \{(.*?)\};", text, re.DOTALL)
+        self.assertIsNotNone(match, "CORIOLIS_REGION_DAYS literal not found in MapsPanel.tsx -- update this test's pattern if it was reshaped")
+        frontend_table = {region: int(day) for region, day in re.findall(r'"([^"]+)":\s*(\d+)', match.group(1))}
+        self.assertEqual(frontend_table, usersettings.CORIOLIS_REGION_DAYS)
 
     def test_coriolis_cycle_start_components_are_validated(self):
         profile = usersettings.empty_profile()
         for field_id, value in (
             ("coriolis_cycle_start_year", "0"),
             ("coriolis_cycle_start_month", "13"),
-            ("coriolis_cycle_start_day", "8"),
+            ("coriolis_cycle_start_day", "32"),
             ("coriolis_cycle_start_hour", "24"),
             ("coriolis_cycle_start_minute", "60"),
             ("coriolis_cycle_start_minute", "1.5"),
@@ -239,8 +554,179 @@ class RetiredModifierAndCoriolisMetadataTests(ProfilePathTestCase):
         self.assertEqual(len(data_lines), 1)
         self.assertIn("m_VotingPeriodStartBeforeCoriolisCycleInSec=122400", data_lines[0])
 
+    def test_legacy_dunegamemode_cycle_and_wipe_fields_are_hidden_behind_coriolis(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(usersettings.metadata(), 0)
+        payload = json.loads(output.getvalue())
+        ids = {row["id"] for row in payload["game"]}
+        self.assertNotIn("cycle_duration_in_days", ids)
+        self.assertNotIn("db_wipe_enabled", ids)
+        fields = {row["id"]: row for row in payload["game"]}
+        self.assertEqual(fields["coriolis_cycle_duration_days"]["label"], "Cycle Duration Days")
+        self.assertEqual(fields["coriolis_db_wipe_enabled"]["label"], "Db Wipe Enabled")
+
+    def test_saving_the_canonical_coriolis_field_compiles_into_both_sections(self):
+        # cycle_duration_in_days (legacy DuneGameMode) is hidden from the editor,
+        # but compiled_usergame_ini still writes it alongside the canonical
+        # CoriolisSubsystem key -- via sync_legacy_values() backfilling
+        # profile_map_values(), not by mirroring the raw saved profile -- so any
+        # code path still reading the legacy key keeps seeing the new value.
+        profile = usersettings.empty_profile()
+        usersettings.set_profile_field(profile, "global", "", "", "coriolis_cycle_duration_days", "3")
+        rendered = usersettings.compiled_usergame_ini(profile, MAP_NAME)
+        self.assertIn(f"[{usersettings.CORIOLIS_SUBSYSTEM_SECTION}]\nm_CycleDurationInDays=3", rendered)
+        self.assertIn("[/Script/DuneSandbox.DuneGameMode]\nm_CycleDurationInDays=3", rendered)
+
+    def test_an_existing_legacy_only_value_still_surfaces_through_the_canonical_field(self):
+        legacy_section, legacy_key, _default = usersettings.MAP_FIELDS["db_wipe_enabled"]
+        profile = usersettings.parse_profile_text(
+            f"[Global:{legacy_section}]\n{legacy_key}=False\n"
+        )
+        values = usersettings.profile_map_values(profile, MAP_NAME)
+        self.assertEqual(values["coriolis_db_wipe_enabled"], "False")
+
+    def _assert_explicit_canonical_save_wins_over_stale_legacy(self, legacy_field, canonical_field, stale_legacy_value):
+        # Presence, not a value-vs-default comparison, must decide the winner: a stale
+        # legacy value must never outrank a canonical value the admin explicitly saved,
+        # even when that explicit save happens to equal the canonical schema default --
+        # sync_legacy_values() used to read that case as "canonical was never touched"
+        # and let the legacy value silently win.
+        legacy_section, legacy_key, legacy_default = usersettings.MAP_FIELDS[legacy_field]
+        _canonical_section, _canonical_key, canonical_default = usersettings.MAP_FIELDS[canonical_field]
+        self.assertNotEqual(stale_legacy_value, legacy_default, "the injected legacy value must be non-default to represent a real explicit legacy override")
+        profile = usersettings.parse_profile_text(f"[Global:{legacy_section}]\n{legacy_key}={stale_legacy_value}\n")
+        usersettings.set_profile_field(profile, "global", "", "", canonical_field, canonical_default)
+        values = usersettings.profile_global_values(profile)
+        self.assertEqual(values[canonical_field], canonical_default)
+        rendered = usersettings.compiled_usergame_ini(profile, MAP_NAME)
+        self.assertNotIn(f"{legacy_key}={stale_legacy_value}", rendered)
+
+    def test_explicit_canonical_save_wins_over_stale_legacy_coriolis_value(self):
+        # db_wipe_enabled's canonical default is "True"; give the profile a stale
+        # explicit legacy value ("False") and an explicit canonical save that equals
+        # the canonical default ("True") -- the exact production shape from the PR
+        # review's H5 repro.
+        self._assert_explicit_canonical_save_wins_over_stale_legacy("db_wipe_enabled", "coriolis_db_wipe_enabled", "False")
+
+    def test_explicit_canonical_save_wins_over_stale_legacy_guild_value(self):
+        # Same bug, pre-existing on the guild aliases before this branch touched them --
+        # see the PR callout: a deployment with a stale legacy guild cap silently
+        # overriding an explicit canonical save sees its effective cap change once this
+        # lands, and that is the intended fix, not a regression.
+        self._assert_explicit_canonical_save_wins_over_stale_legacy("max_guild_members_allowed", "guild_settings_max_guild_members_allowed", "20")
+
+    def test_conflicting_legacy_and_canonical_values_both_present_resolve_to_canonical_and_warn(self):
+        legacy_section, legacy_key, _legacy_default = usersettings.MAP_FIELDS["cycle_duration_in_days"]
+        profile = usersettings.parse_profile_text(f"[Global:{legacy_section}]\n{legacy_key}=3\n")
+        usersettings.set_profile_field(profile, "global", "", "", "coriolis_cycle_duration_days", "14")
+        values = usersettings.profile_global_values(profile)
+        self.assertEqual(values["coriolis_cycle_duration_days"], "14")
+        rendered = usersettings.compiled_usergame_ini(profile, MAP_NAME)
+        self.assertIn(f"{legacy_key}=14", rendered)
+        self.assertNotIn(f"{legacy_key}=3\n", rendered)
+        warnings = usersettings.legacy_alias_conflict_warnings(profile, "global")
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("m_CycleDurationInDays=3", warnings[0])
+        self.assertIn("m_CycleDurationInDays=14", warnings[0])
+        # Both sides share the same ini key name -- the section is what actually tells an
+        # admin which block to go edit; without it "m_CycleDurationInDays=3" vs "=14" reads
+        # as two values for the same setting with no way to tell them apart.
+        self.assertIn(legacy_section, warnings[0])
+        self.assertIn(usersettings.CORIOLIS_SUBSYSTEM_SECTION, warnings[0])
+
+    def test_raw_editor_legacy_conflict_warning_names_both_sections(self):
+        # _advanced_editor_legacy_field_warnings is the raw/Advanced-editor counterpart to
+        # legacy_alias_conflict_warnings above -- previously only run manually via
+        # profile_selftest(), not CI. Both sides share the same ini key name (the whole
+        # reason they're aliased), so the section is what actually tells an admin which
+        # block to go edit; pin that it's present, not just the key/value pair.
+        sections = usersettings.parse_profile_text(
+            "[Global:/Script/DuneSandbox.DuneGameMode]\nm_MaxGuildMembersAllowed=5\n"
+            "[Global:/Script/DuneSandbox.GuildSettings]\nm_MaxGuildMembersAllowed=32\n"
+        ).get("sections", [])
+        warnings = usersettings._advanced_editor_legacy_field_warnings(sections)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("m_MaxGuildMembersAllowed=5", warnings[0])
+        self.assertIn("m_MaxGuildMembersAllowed=32", warnings[0])
+        self.assertIn("/Script/DuneSandbox.DuneGameMode", warnings[0])
+        self.assertIn("/Script/DuneSandbox.GuildSettings", warnings[0])
+
+    def test_bulk_save_prints_a_warning_for_a_legacy_canonical_conflict(self):
+        legacy_section, legacy_key, _legacy_default = usersettings.MAP_FIELDS["cycle_duration_in_days"]
+        usersettings.write_profile(usersettings.parse_profile_text(f"[Global:{legacy_section}]\n{legacy_key}=3\n"))
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(usersettings.bulk_save("global", MAP_NAME, "", _encode_bulk_save_payload({"coriolis_cycle_duration_days": "14"})), 0)
+        self.assertIn("USERSETTINGS_WARNING:", output.getvalue())
+        self.assertIn("m_CycleDurationInDays", output.getvalue())
+
+    def test_bulk_save_prints_no_warning_when_only_the_canonical_field_is_saved(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(usersettings.bulk_save("global", MAP_NAME, "", _encode_bulk_save_payload({"coriolis_cycle_duration_days": "14"})), 0)
+        self.assertNotIn("USERSETTINGS_WARNING:", output.getvalue())
+
+    def test_migrate_coriolis_region_fields_is_a_noop_for_an_unmapped_region(self):
+        self.assertEqual(usersettings.migrate_coriolis_region_fields("Atlantis"), "skip:unmapped-region")
+        values = usersettings.profile_global_values(usersettings.read_profile())
+        self.assertEqual(values["coriolis_cycle_start_hour"], usersettings.MAP_FIELDS["coriolis_cycle_start_hour"][2])
+        self.assertEqual(values["coriolis_cycle_start_day"], usersettings.MAP_FIELDS["coriolis_cycle_start_day"][2])
+
+    def test_migrate_coriolis_region_fields_migrates_both_fields_once(self):
+        self.assertEqual(usersettings.migrate_coriolis_region_fields("North America"), "migrated:coriolis_cycle_start_hour=10,coriolis_cycle_start_day=3")
+        values = usersettings.profile_global_values(usersettings.read_profile())
+        self.assertEqual(values["coriolis_cycle_start_hour"], "10")
+        self.assertEqual(values["coriolis_cycle_start_day"], "3")
+        # Idempotent by presence, not value -- a second call must be a true
+        # no-op regardless of what either field now holds.
+        self.assertEqual(usersettings.migrate_coriolis_region_fields("North America"), "skip:already-present")
+
+    def test_migrate_coriolis_region_fields_never_loops_when_the_regions_day_equals_its_default(self):
+        # coriolis_cycle_start_day's schema default is "3", which is ALSO the
+        # region value for Europe, North America, and South America -- three of
+        # the five regions, not a one-region edge case like the hour's Europe
+        # (whose region value, 5, also equals the hour default). This is the
+        # direct regression guard for the "value equals default" bug class the
+        # server-side migration exists to make structurally impossible: presence,
+        # not value, must be what stops it, or this majority case would still
+        # write on every single startup.
+        for region in ("Europe", "North America", "South America"):
+            with self.subTest(region=region):
+                usersettings.write_profile(usersettings.empty_profile())
+                first = usersettings.migrate_coriolis_region_fields(region)
+                self.assertTrue(first.startswith("migrated:"), f"{region} did not migrate on first call: {first}")
+                for attempt in range(3):
+                    with self.subTest(attempt=attempt):
+                        self.assertEqual(usersettings.migrate_coriolis_region_fields(region), "skip:already-present")
+                values = usersettings.profile_global_values(usersettings.read_profile())
+                self.assertEqual(values["coriolis_cycle_start_day"], "3")
+
+    def test_migrate_coriolis_region_fields_only_writes_the_field_not_already_present(self):
+        # An admin who already saved the hour explicitly (to any value, even a
+        # non-region one) must keep it untouched -- only the still-unset day
+        # field should be written, and in the same profile pass as the presence
+        # check, not a second read-modify-write cycle that could race it.
+        profile = usersettings.empty_profile()
+        # 11 was the former North America preset. Its presence must still be
+        # respected after the regional default changes to 10; an upgrade must
+        # never silently rewrite a value already saved by an administrator.
+        usersettings.set_profile_field(profile, "global", "", "", "coriolis_cycle_start_hour", "11")
+        usersettings.write_profile(profile)
+        self.assertEqual(usersettings.migrate_coriolis_region_fields("North America"), "migrated:coriolis_cycle_start_day=3")
+        values = usersettings.profile_global_values(usersettings.read_profile())
+        self.assertEqual(values["coriolis_cycle_start_hour"], "11")
+        self.assertEqual(values["coriolis_cycle_start_day"], "3")
+
 
 class ClientGameIniAllowlistTests(ProfilePathTestCase):
+    def test_engine_export_targets_retail_windows_config(self):
+        profile = usersettings.empty_profile()
+        rendered = usersettings.client_engine_ini(profile)
+
+        self.assertIn("Saved/Config/Windows/Engine.ini", rendered)
+        self.assertNotIn("Saved/Config/WindowsClient/Engine.ini", rendered)
+
     def test_exports_only_nondefault_client_required_fields(self):
         profile = usersettings.parse_profile_text(
             "[Global:/Script/DuneSandbox.DuneGameMode]\n"
@@ -260,10 +746,12 @@ class ClientGameIniAllowlistTests(ProfilePathTestCase):
 
         rendered = usersettings.client_game_ini(profile, MAP_NAME)
 
+        self.assertIn("Saved/Config/Windows/Game.ini", rendered)
+        self.assertNotIn("Saved/Config/WindowsClient/Game.ini", rendered)
         self.assertIn("m_WaterConsumptionRate=2.0", rendered)
         self.assertIn("m_MaxNumLandclaimSegments=20", rendered)
         self.assertIn("m_bBuildingRestrictionLimitsEnabled=False", rendered)
-        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=60", rendered)
+        self.assertNotIn("m_BaseBackupToolTimeRestrictionInSeconds", rendered)
         self.assertNotIn("m_DefaultReconnectGracePeriodSeconds", rendered)
         self.assertNotIn("UnknownCommunitySetting", rendered)
         self.assertNotIn(usersettings.LANDSRAAD_SETTINGS_SECTION, rendered)
@@ -287,7 +775,12 @@ class ClientGameIniAllowlistTests(ProfilePathTestCase):
         for field_id, filename in usersettings.CLIENT_FILE_REQUIRED.items():
             if filename != "Game.ini":
                 continue
-            _section, key, _default = usersettings.MAP_FIELDS[field_id]
+            if field_id == "building_restriction_limits_enabled":
+                key = "m_bBuildingRestrictionLimitsEnabled"
+            elif field_id == "base_backup_tool_time_restriction":
+                key = "m_BaseBackupToolTimeRestrictionInSeconds"
+            else:
+                _section, key, _default = usersettings.MAP_FIELDS[field_id]
             self.assertNotIn(f"{key}=", rendered)
 
 
@@ -494,6 +987,136 @@ class PartitionEngineValuesManyCommandTests(ProfilePathTestCase):
 
         result = self._run_command(MAP_NAME, [PARTITION_ID])
         self.assertEqual(result[PARTITION_ID][self.FIELD_ID], "The Kulon Show")
+
+
+class ProfileBlankLineHygieneTests(ProfilePathTestCase):
+    """Blank lines inside a profile block must never accumulate.
+
+    parse_profile_text() attributes the blank line separating a block from the
+    next one to that block's own lines. profile_set_key() used to append new
+    keys after it, so serialize_profile() wrote a fresh separator and the old
+    one stayed trapped inside the block; profile_remove_key() then dropped only
+    the key line, leaving the blank behind. Every add/remove cycle on an array
+    entry (the PvP/PvE partition selectors, the Deep Desert matchmaker
+    override) therefore grew its block by one permanent blank line, and those
+    orphans rode through append_profile_unknown_lines() into the deployed INI.
+    """
+
+    PVP_SECTION = "/Script/DuneSandbox.PvpPveSettings"
+    STORM_SECTION = "/Script/DuneSandbox.SandStormConfig"
+
+    def _save_global(self, values: dict) -> None:
+        usersettings.bulk_save("global", MAP_NAME, "", _encode_bulk_save_payload(values))
+
+    def _block_lines(self, scope: str, section: str) -> list[str]:
+        """A block's lines with any trailing blank dropped.
+
+        Reading back from disk re-attributes the separator blank before the next
+        [Header] to this block, so one trailing blank is normal parse output
+        rather than accumulation -- write_profile() strips it again on the next
+        write. Accumulation shows up as blanks *between* content lines, which is
+        what these assertions pin down.
+        """
+        block = usersettings.find_profile_section(usersettings.read_profile(), scope, section)
+        lines = list(block["lines"]) if block else []
+        while lines and not lines[-1].strip():
+            lines.pop()
+        return lines
+
+    def _global_block_lines(self, section: str) -> list[str]:
+        return self._block_lines("global", section)
+
+    def test_appending_a_key_does_not_trap_the_block_separator_blank(self):
+        # A block that sorts AFTER this one is what gives it a trailing separator
+        # to trip over -- the last block in the file has nothing to trap. Save it
+        # first so the separator is already there by the second write.
+        self._save_global({"outlaw_criminal_score": "9"})
+        self._save_global({"sandstorm_damage_frames_per_overlap_interval": "16"})
+        self._save_global({"sandstorm_auto_spawn_enabled": "False"})
+
+        self.assertEqual(self._global_block_lines(self.STORM_SECTION), [
+            "m_DamageFramesPerOverlapInterval=16",
+            "m_bAutoSpawnEnabled=False",
+        ])
+
+    def test_repeated_array_add_and_remove_does_not_grow_the_block(self):
+        self._save_global({"guild_creation_cost": "500"})
+        self._save_global({"sandstorm_auto_spawn_enabled": "False"})
+        self._save_global({"global_pvp_enabled_partition_add": "60"})
+        settled = self._global_block_lines(self.PVP_SECTION)
+
+        for _ in range(6):
+            self._save_global({"global_pvp_enabled_partition_add": "8"})
+            self._save_global({"global_pvp_enabled_partition_remove": "8"})
+            # Back to exactly the pre-cycle content, not that content plus a blank.
+            self.assertEqual(self._global_block_lines(self.PVP_SECTION), settled)
+
+        self._save_global({"global_pvp_enabled_partition_add": "8"})
+        self.assertEqual(self._global_block_lines(self.PVP_SECTION), [
+            "+m_PvpEnabledPartitions=60",
+            "+m_PvpEnabledPartitions=8",
+        ])
+
+    def test_orphan_blank_runs_from_older_releases_are_collapsed_on_write(self):
+        # What profiles written before the fix actually look like on disk.
+        usersettings.write_profile_text("\n".join([
+            "; UserGame.ini managed by Docker.",
+            "",
+            f"[Global:{self.PVP_SECTION}]",
+            "",
+            "",
+            "+m_PvpEnabledPartitions=60",
+            "",
+            "",
+            "",
+            "+m_PvpEnabledPartitions=8",
+            "",
+            "",
+            f"[Global:{self.STORM_SECTION}]",
+            "m_bAutoSpawnEnabled=False",
+            "",
+        ]) + "\n")
+
+        usersettings.write_profile(usersettings.read_profile())
+
+        # The run collapses to the single blank an admin could legitimately have
+        # typed there -- normalize_profile_blank_lines() deliberately stops short
+        # of removing that last one (see its docstring); what matters is that it
+        # can no longer grow, which the add/remove test above covers.
+        self.assertEqual(self._global_block_lines(self.PVP_SECTION), [
+            "+m_PvpEnabledPartitions=60",
+            "",
+            "+m_PvpEnabledPartitions=8",
+        ])
+        self.assertEqual(self._global_block_lines(self.STORM_SECTION), ["m_bAutoSpawnEnabled=False"])
+        # Values are untouched: only blank lines were ever removed.
+        self.assertEqual(
+            usersettings.profile_global_values(usersettings.read_profile())["sandstorm_auto_spawn_enabled"],
+            "False",
+        )
+
+    def test_a_single_blank_between_comment_paragraphs_survives(self):
+        # The UserEngine Advanced tab renders comment paragraphs separated by one
+        # blank line; collapsing runs must not flatten that deliberate grouping.
+        usersettings.write_profile_text("\n".join([
+            "[Engine:ConsoleVariables]",
+            "; Mining multipliers",
+            "Dune.GlobalMiningOutputMultiplier=2.4",
+            "",
+            "; Durability damage multiplier for vehicles",
+            "dw.VehicleDurabilityDamageMultiplier=0.5",
+        ]) + "\n")
+
+        usersettings.write_profile(usersettings.read_profile())
+
+        block = usersettings.find_profile_section(usersettings.read_profile(), "engine", "ConsoleVariables")
+        self.assertEqual(block["lines"], [
+            "; Mining multipliers",
+            "Dune.GlobalMiningOutputMultiplier=2.4",
+            "",
+            "; Durability damage multiplier for vehicles",
+            "dw.VehicleDurabilityDamageMultiplier=0.5",
+        ])
 
 
 if __name__ == "__main__":

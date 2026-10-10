@@ -12,7 +12,9 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { readMarketItemOverrides, mergeMarketSeedPlanWithOverrides, readUnsafeTemplateIds } from "./services/marketItemOverrides.js";
+import { applyExchangeCategoryToSeedRow } from "./services/exchangeCategoryMask.js";
 import { resolveActiveMarketSeedPlanPath, resolveShippedMarketSeedPlanPath } from "./services/marketSeedPlans.js";
+import { marketBotSafetyBackupsEnabled, SAFETY_BACKUP_SKIPPED_NOTE } from "./services/marketBotSettings.js";
 
 // Keep identity helpers local so this module does not circular-import addonJobs.js.
 export const EDA_EXCHANGE_BOT_ADDON_ID = "eda-exchange-bot";
@@ -295,8 +297,14 @@ export function loadMarketSeedPlan(config, addonId = EDA_EXCHANGE_BOT_ADDON_ID) 
     const kind = String(row?.kind || "equippable").slice(0, 40);
     const stackSize = Math.max(1, Math.trunc(Number(row?.stack_size) || 1));
     const listings = Math.max(1, Math.trunc(Number(row?.listings) || 1));
-    const categoryMask = Math.trunc(Number(row?.category_mask) || 0);
-    const categoryDepth = clampInteger(row?.category_depth, 1, 0, 4);
+    const categorized = applyExchangeCategoryToSeedRow({
+      template_id: templateId,
+      category_mask: Math.trunc(Number(row?.category_mask) || 0),
+      category_depth: clampInteger(row?.category_depth, 1, 0, 4),
+      kind
+    });
+    const categoryMask = categorized.category_mask;
+    const categoryDepth = categorized.category_depth;
     const qualityLevel = clampInteger(row?.quality_level, 0, 0, 5);
     const durMax = clampInteger(row?.durability_max ?? row?.durability_cur ?? 100, 100, 100, 200);
     const durCur = Math.min(clampInteger(row?.durability_cur ?? durMax, durMax, 100, 200), durMax);
@@ -497,7 +505,8 @@ export async function executeSeedRun(config, db, schedule, { runDuneImpl, buildD
   if (typeof db?.transaction !== "function") {
     throw new Error("Exchange seed requires database transaction support.");
   }
-  if (!config.mockMode) {
+  const backupSkipped = !marketBotSafetyBackupsEnabled(config);
+  if (!config.mockMode && !backupSkipped) {
     await runDuneImpl(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "market-bot-seed" } });
   }
   const result = await db.transaction((tx) => runSql(tx, buildMarketSeedSql(plan, schedule), true));
@@ -511,7 +520,8 @@ export async function executeSeedRun(config, db, schedule, { runDuneImpl, buildD
     resourceListings: decimalString(row.resource_listings),
     priceMultiplier: schedule.priceMultiplier,
     exchangeId: schedule.exchangeId,
-    detail: `Seeded ${listingCount} listings on exchange ${schedule.exchangeId} at ${schedule.priceMultiplier}x${describeCategoryMultipliers(schedule)}${describeCommodityStacks(schedule)} (bot listings cleared first).`
+    backupSkipped,
+    detail: `Seeded ${listingCount} listings on exchange ${schedule.exchangeId} at ${schedule.priceMultiplier}x${describeCategoryMultipliers(schedule)}${describeCommodityStacks(schedule)} (bot listings cleared first).${backupSkipped ? SAFETY_BACKUP_SKIPPED_NOTE : ""}`
   };
 }
 
@@ -534,7 +544,8 @@ export async function executeUnseedRun(config, db, exchangeId, { runDuneImpl, bu
       detail: `No bot listings on exchange ${id}; nothing removed and no backup was taken.`
     };
   }
-  if (!config.mockMode) {
+  const backupSkipped = !marketBotSafetyBackupsEnabled(config);
+  if (!config.mockMode && !backupSkipped) {
     await runDuneImpl(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "market-bot-unseed" } });
   }
   const result = await db.transaction((tx) => runSql(tx, buildMarketUnseedSql(id), true));
@@ -545,7 +556,8 @@ export async function executeUnseedRun(config, db, exchangeId, { runDuneImpl, bu
     removedListings,
     removedItems: decimalString(row.removed_items),
     exchangeId: id,
-    detail: `Removed ${removedListings} bot listing(s) from exchange ${id}. Player listings and pending seller payments were not touched.`
+    backupSkipped,
+    detail: `Removed ${removedListings} bot listing(s) from exchange ${id}. Player listings and pending seller payments were not touched.${backupSkipped ? SAFETY_BACKUP_SKIPPED_NOTE : ""}`
   };
 }
 

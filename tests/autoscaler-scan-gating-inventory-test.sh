@@ -30,6 +30,13 @@ script="runtime/scripts/autoscaler.sh"
 #   scan_reconnect_demand           is comparatively cheap (indexed SQL, not
 #   scan_live_player_partition_      docker-logs+python3-regex over a large
 #     alignment                     window); tracked as a separate follow-up.
+#
+# scan_rejected_story_returns is deliberately NOT in this list: it is gated,
+# via its own dedicated STORY_RETURN_RECOVERY_SCAN_SECONDS interval (default
+# and maximum 2s) rather than sharing NAMED_DESTINATION_SCAN_SECONDS. The 2s
+# ceiling preserves the proven fast-follower recovery window. Recovery stays
+# exclusively in that follower, immediately before its travel-demand scan, so
+# the slower main loop cannot consume the recovery window.
 KNOWN_UNGATED_SCANS="scan_travel_demand scan_idle_servers scan_reconnect_demand scan_live_player_partition_alignment"
 
 python3 - "$script" "$KNOWN_UNGATED_SCANS" <<'PY'

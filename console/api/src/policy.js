@@ -8,18 +8,25 @@
 // Policy document format (per tier):
 //   { "version": 1, "tier": "moderator",
 //     "statements": [
-//       { "Effect": "Deny",  "Action": ["players:reset-progression"] },
-//       { "Effect": "Allow", "Action": ["players:*", "server:read"] }
+//       { "Effect": "Deny",  "Action": ["bases:delete"] },
+//       { "Effect": "Allow", "Action": ["bases:*", "server:read"] }
 //     ]}
+//
+// Every Action must be a REAL action, or a wildcard matching at least one; a
+// name matching nothing denies nothing while reading like a restriction.
+// setPolicies refuses those (unknownActions). A name the catalog USED to have
+// is a separate case: REMOVED_ACTION_ALIASES keeps its old meaning at
+// evaluation time, and setPolicies refuses it on save so the operator migrates.
 //
 // Evaluation: for each statement in order,
 //   if action matches statement AND Effect=Deny  → DENY immediately
 //   if action matches statement AND Effect=Allow → mark ALLOWED
 //   if no statement matched                        → DENY (default)
 
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { ROUTE_ACTIONS, REGEX_ACTIONS, REGEX_ACTIONS_BY_METHOD, REGEX_ACTIONS_BY_METHOD_PATTERN } from "./actions.js";
+import { ROUTE_ACTIONS, REGEX_ACTIONS, REGEX_ACTIONS_BY_METHOD, REGEX_ACTIONS_BY_METHOD_PATTERN, CONTENT_CONDITIONAL_ACTIONS, REMOVED_ACTION_ALIASES } from "./actions.js";
 import { writeJsonAtomic } from "./jsonStore.js";
 
 // ---- Policy evaluation ----
@@ -41,6 +48,11 @@ export function matchAction(pattern, action) {
   if (pattern.includes("*")) {
     return wildcardRegex(pattern).test(action);
   }
+  // A name this catalog used to have. Checked LAST so it can never shadow a
+  // live action. See REMOVED_ACTION_ALIASES in actions.js for why a split
+  // cannot simply delete the old name.
+  const successors = REMOVED_ACTION_ALIASES[pattern];
+  if (successors) return successors.includes(action);
   return false;
 }
 
@@ -77,6 +89,22 @@ export function wildcardRegex(pattern) {
   return cached;
 }
 
+// Patterns naming an action the catalog used to have. Unlike unknownActions
+// these still mean something, but a save should name the successors explicitly.
+export function deprecatedActions(docs) {
+  const found = [];
+  for (const [tier, document] of Object.entries(docs || {})) {
+    for (const statement of document?.statements || []) {
+      const patterns = Array.isArray(statement.Action) ? statement.Action : [statement.Action];
+      for (const pattern of patterns) {
+        if (typeof pattern !== "string") continue;
+        if (REMOVED_ACTION_ALIASES[pattern]) found.push({ tier, pattern, successors: [...REMOVED_ACTION_ALIASES[pattern]] });
+      }
+    }
+  }
+  return found;
+}
+
 export function evaluate(session, action, policies = null) {
   // No action to check — public route
   if (!action) return true;
@@ -104,11 +132,87 @@ export function evaluate(session, action, policies = null) {
   return allowed;
 }
 
+// `observer` was the pre-rename name of the (now stricter) `player` tier. It is
+// aliased, never honoured as a tier of its own: a stale session, a signed handoff
+// from an older bot, or a saved policy that still says "observer" must land on
+// the strict tier, not on a broader one or on nothing.
+export function normalizeTier(tier) {
+  return tier === "observer" ? "player" : tier;
+}
+
+// Actions a saved `player` document grants that the player tier can never use,
+// because playerTierGate caps the tier at players:read + guilds:read. Reported so an
+// operator whose stored policy predates the strict tier is told why a grant does nothing.
+export function playerCappedActions(docs) {
+  const player = docs && docs.player;
+  if (!player) return [];
+  const capped = [];
+  for (const action of allKnownActions()) {
+    if (action === "players:read" || action === "guilds:read") continue;
+    if (evaluate({ tier: "player" }, action, docs)) capped.push(action);
+  }
+  return capped;
+}
+
+// Security denials the shipped defaults carry for actions added AFTER an operator may
+// have saved iam-policies.json. A saved file replaces the defaults wholesale, so without
+// this an upgraded install keeps admin's "backups:*" allow and silently gains these
+// actions (issue #1117). Added on load only when the saved tier neither denies the action
+// nor names it in an Allow (an explicit, exact-name Allow is the operator's choice and wins).
+const SHIPPED_DEFAULT_DENIES = Object.freeze({
+  admin: ["backups:download-system", "backups:import-system", "backups:restore-system"],
+});
+
+function reconcileShippedDenies(store) {
+  const added = [];
+  const kept = [];
+  let next = store;
+  for (const [tier, actions] of Object.entries(SHIPPED_DEFAULT_DENIES)) {
+    const document = store[tier];
+    if (!document) continue;
+    const patternsOf = (statement) => (Array.isArray(statement.Action) ? statement.Action : [statement.Action]);
+    const denied = (action) => document.statements.some((statement) => statement.Effect === "Deny"
+      && patternsOf(statement).some((pattern) => matchAction(pattern, action)));
+    const namedInAllow = (action) => document.statements.some((statement) => statement.Effect === "Allow"
+      && patternsOf(statement).includes(action));
+    // An exact-name Allow is the operator's choice and wins, but it must not be silent:
+    // these actions let that tier read every credential on the host (system backups).
+    kept.push(...actions.filter((action) => !denied(action) && namedInAllow(action)).map((action) => ({ tier, action })));
+    const missing = actions.filter((action) => !denied(action) && !namedInAllow(action));
+    if (missing.length === 0) continue;
+    next = { ...next, [tier]: { ...document, statements: [...document.statements, { Effect: "Deny", Action: missing }] } };
+    added.push(...missing.map((action) => ({ tier, action })));
+  }
+  return { store: next, added, kept };
+}
+
+// What the last load or save decided about the shipped Denies, for the Settings page: an operator
+// whose admin tier silently lost (or deliberately kept) a system-backup action should not have to
+// read container logs to find out why (issue #1160).
+const emptyNotices = () => ({ addedDefaultDenies: [], keptExactAllows: [] });
+let _notices = emptyNotices();
+
+export function getPolicyNotices() {
+  return { addedDefaultDenies: [..._notices.addedDefaultDenies], keptExactAllows: [..._notices.keptExactAllows] };
+}
+
 export function resolveSessionTier(session) {
   if (!session) return "";
-  const tier = typeof session.tier === "string" ? session.tier : "";
-  const VALID_TIERS = new Set(["owner", "admin", "moderator", "player", "observer"]);
+  const tier = typeof session.tier === "string" ? normalizeTier(session.tier) : "";
+  const VALID_TIERS = new Set(["owner", "admin", "moderator", "player"]);
   return VALID_TIERS.has(tier) ? tier : "";
+}
+
+// A saved iam-policies.json written before the rename may carry an `observer`
+// document. validPolicyStore rejects unknown tiers wholesale, which would drop
+// the operator's owner/admin/moderator customisation back to defaults, so the
+// legacy key is removed first and a missing `player` is filled from the
+// defaults (the strict ones; an operator's explicit `player` document is kept).
+function sanitizePolicyStore(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  if (!Object.hasOwn(value, "observer")) return value;
+  const { observer: _legacy, ...rest } = value;
+  return Object.hasOwn(rest, "player") ? rest : { ...rest, player: DEFAULT_POLICIES.player };
 }
 
 // ---- Policy store ----
@@ -120,21 +224,41 @@ export function loadPolicies(repoRoot = null) {
     ? resolve(repoRoot, "runtime/generated/iam-policies.json")
     : resolve(process.cwd(), "../..", "runtime/generated/iam-policies.json");
 
+  _allowedActions = {};
+  _notices = emptyNotices();
+
   if (existsSync(filePath)) {
     try {
       const raw = readFileSync(filePath, "utf8");
-      const parsed = JSON.parse(raw);
+      const parsed = sanitizePolicyStore(JSON.parse(raw));
       if (validPolicyStore(parsed)) {
-        _policies = parsed;
-        return;
+        const reconciled = reconcileShippedDenies(parsed);
+        // The same invariant setPolicies enforces on save. A hand-edited file whose owner cannot write
+        // settings would leave nobody able to open the policy editor to fix it; the defaults are the
+        // recoverable state, and the startup warning names the file so the operator can correct it.
+        if (!evaluate({ tier: "owner" }, "settings:write", reconciled.store)) {
+          _policies = DEFAULT_POLICIES;
+          return { source: "defaults", path: filePath, invalid: true, reason: "the owner policy does not allow settings:write", unknownActions: [], deprecatedActions: [] };
+        }
+        _policies = reconciled.store;
+        _notices = { addedDefaultDenies: reconciled.added, keptExactAllows: reconciled.kept };
+        // Reported, not rejected: discarding the document would silently
+        // revert the operator's whole policy to defaults, a bigger surprise
+        // than the dead pattern. setPolicies refuses these on save, so a stored
+        // file can only acquire one by hand-editing. The caller logs this.
+        return { source: "file", path: filePath, unknownActions: unknownActions(parsed), deprecatedActions: deprecatedActions(parsed), playerCappedActions: playerCappedActions(reconciled.store), addedDefaultDenies: reconciled.added, keptExactAllows: reconciled.kept };
       }
+      _policies = DEFAULT_POLICIES;
+      return { source: "defaults", path: filePath, invalid: true, unknownActions: [], deprecatedActions: [] };
     } catch {
-      // Fall through to defaults
+      _policies = DEFAULT_POLICIES;
+      return { source: "defaults", path: filePath, invalid: true, unknownActions: [], deprecatedActions: [] };
     }
   }
 
   // Hardcoded fallback defaults
   _policies = DEFAULT_POLICIES;
+  return { source: "defaults", unknownActions: [], deprecatedActions: [] };
 }
 
 let _allowedActions = {};
@@ -144,11 +268,16 @@ let _allowedActions = {};
 // other tiers instead (see actions.js). bases:delete is the reason this
 // enumerates all four: it exists only in REGEX_ACTIONS_BY_METHOD_PATTERN, so
 // a version of this that only read ROUTE_ACTIONS would never surface it.
-function allKnownActions() {
+//
+// CONTENT_CONDITIONAL_ACTIONS is the fifth source and the only one no route
+// resolves to: those actions are decided from the request body inside the
+// handler, so nothing in the four route tables above mentions them.
+export function allKnownActions() {
   const actions = new Set(Object.values(ROUTE_ACTIONS));
   for (const [, action] of REGEX_ACTIONS) actions.add(action);
   for (const action of Object.values(REGEX_ACTIONS_BY_METHOD)) actions.add(action);
   for (const { action } of REGEX_ACTIONS_BY_METHOD_PATTERN) actions.add(action);
+  for (const action of CONTENT_CONDITIONAL_ACTIONS) actions.add(action);
   return actions;
 }
 
@@ -180,23 +309,140 @@ export function getAllPolicies(policies = null) {
   return { ...store };
 }
 
-export function setPolicies(docs, repoRoot = null) {
+// Key order must not change the revision, or a hand-edited file would look like someone else's save.
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    // JSON.stringify drops undefined properties; the hash must too, or it would differ from the saved file.
+    const keys = Object.keys(value).filter((key) => value[key] !== undefined).sort();
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+// Identifies the policy store the console is enforcing right now (issue #1193). The Settings page
+// sends the revision it loaded with a save; setPolicies refuses the save if the store has changed
+// since, so two admins cannot silently overwrite each other.
+export function policyRevision(policies = null) {
+  return createHash("sha256").update(canonicalJson(getAllPolicies(policies))).digest("hex");
+}
+
+// Every Action pattern that matches NO action in the catalog, as
+// [{ tier, pattern }]. Dead weight in an Allow; a silent lie in a Deny.
+// "Deny players:reset-progression" is the shape -- no route resolves to it
+// (players:reset does), so it withholds nothing while the policy reads as safe.
+//
+// Removed names are NOT reported here: matchAction still honours them, so they
+// are not dead. deprecatedActions() reports those, since the fix is migration
+// rather than a typo.
+//
+// The test is "does this pattern match at least one real action", not "is this
+// string in the catalog", so wildcards stay legal -- and it runs through the
+// same matchAction the engine uses, so validation and runtime cannot disagree.
+export function unknownActions(docs) {
+  const known = [...allKnownActions()];
+  const dead = [];
+  for (const [tier, document] of Object.entries(docs || {})) {
+    for (const statement of document?.statements || []) {
+      const patterns = Array.isArray(statement.Action) ? statement.Action : [statement.Action];
+      for (const pattern of patterns) {
+        if (typeof pattern !== "string") continue;
+        if (!known.some((action) => matchAction(pattern, action))) dead.push({ tier, pattern });
+      }
+    }
+  }
+  return dead;
+}
+
+// options.baseRevision (optional): the revision the caller last read. When given and it no longer
+// matches, nothing is written and the result is { ok: false, conflict: true } with the current store,
+// so the caller can show what changed. Omitted keeps the old replace-the-store behaviour for
+// scripts and clients that predate revisions.
+export function setPolicies(inputDocs, repoRoot = null, options = {}) {
+  const baseRevision = options?.baseRevision;
+  const currentRevision = policyRevision();
+  if (baseRevision != null && baseRevision !== currentRevision) {
+    return {
+      ok: false,
+      conflict: true,
+      error: "The policies changed since you loaded them. Review the current policies and save again.",
+      policies: getAllPolicies(),
+      notices: getPolicyNotices(),
+      revision: currentRevision
+    };
+  }
+  const docs = sanitizePolicyStore(inputDocs);
   if (!validPolicyStore(docs)) {
     return { ok: false, error: "Policies must contain valid tier documents and Allow/Deny statements." };
   }
   if (!evaluate({ tier: "owner" }, "settings:write", docs)) {
     return { ok: false, error: "The owner policy must retain settings:write access." };
   }
-  _policies = docs;
+  // Both checks REFUSE rather than warn. A save that "succeeded with warnings"
+  // is how an operator ends up believing a restriction is in force when it is
+  // not.
+  //
+  // Deprecated names are refused on save even though matchAction still honours
+  // them at evaluation time. That asymmetry is deliberate: a stored document
+  // keeps its meaning through an upgrade, and the operator migrates on their
+  // next edit instead of the console refusing to start. The message names the
+  // successors so the edit is mechanical.
+  const deprecated = deprecatedActions(docs);
+  if (deprecated.length) {
+    const listed = deprecated
+      .map(({ tier, pattern, successors }) => `${tier}: ${pattern} (now ${successors.join(", ")})`)
+      .join("; ");
+    return {
+      ok: false,
+      error: `These actions were split and no longer exist. Name the actions you actually want instead: ${listed}.`,
+      deprecatedActions: deprecated
+    };
+  }
+
+  const dead = unknownActions(docs);
+  if (dead.length) {
+    const listed = dead.map(({ tier, pattern }) => `${tier}: ${pattern}`).join(", ");
+    return {
+      ok: false,
+      error: `These actions do not exist and would have no effect: ${listed}. Check GET /api/settings/iam/policies for the full list of valid actions.`,
+      unknownActions: dead
+    };
+  }
+  // The same reconcile as a load, so a save cannot leave the tier less restricted than the next
+  // restart would make it. Without this, removing the exact-name Allow that kept a shipped Deny
+  // away (which the Settings page tells the operator to do) left the Deny out until a restart,
+  // while the warning disappeared (review of PR #1174).
+  const reconciled = reconcileShippedDenies(docs);
+  // Write before enforcing: if the disk write fails, the policy in force must stay the one that is
+  // saved, not a loosened one that silently reverts at the next restart (review #1197).
+  if (repoRoot) {
+    try {
+      writeJsonAtomic(resolve(repoRoot, "runtime/generated/iam-policies.json"), reconciled.store, 0o600);
+    } catch {
+      return { ok: false, persistFailed: true, error: "The policy could not be written to disk, so nothing was changed." };
+    }
+  }
+  _policies = reconciled.store;
   _allowedActions = {};
-  if (repoRoot) writeJsonAtomic(resolve(repoRoot, "runtime/generated/iam-policies.json"), docs, 0o600);
-  return { ok: true, policies: getAllPolicies() };
+  // What is saved now carries the Denies, so "added" is empty; a kept exact-name Allow stays visible.
+  _notices = { addedDefaultDenies: [], keptExactAllows: reconciled.kept };
+  // A grant beyond players:read/guilds:read on `player` is accepted but inert (playerTierGate
+  // caps it); say so, as loadPolicies does at startup, so the save does not look effective.
+  // addedDefaultDenies is what THIS save added, so the caller can tell the operator.
+  return {
+    ok: true,
+    policies: getAllPolicies(),
+    playerCappedActions: playerCappedActions(reconciled.store),
+    addedDefaultDenies: reconciled.added,
+    notices: getPolicyNotices(),
+    revision: policyRevision()
+  };
 }
 
 function validPolicyStore(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const tiers = Object.keys(value);
-  if (!tiers.length || tiers.some((tier) => !["owner", "admin", "moderator", "player", "observer"].includes(tier))) return false;
+  if (!tiers.length || tiers.some((tier) => !["owner", "admin", "moderator", "player"].includes(tier))) return false;
   return tiers.every((tier) => {
     const document = value[tier];
     if (!document || document.tier !== tier || !Array.isArray(document.statements)) return false;
@@ -216,7 +462,10 @@ function validPolicyStore(value) {
 
 // ---- Default policies (mirror the CAPABILITY_BY_TIER ladder) ----
 
-const DEFAULT_POLICIES = {
+// Exported so a test can assert what the tier ladder SHIPS, independently of
+// whatever a previous test left in the mutable store -- setPolicies(null) is
+// rejected rather than a reset, so an assertion that relies on it is vacuous.
+export const DEFAULT_POLICIES = {
   owner: {
     version: 1,
     tier: "owner",
@@ -269,6 +518,34 @@ const DEFAULT_POLICIES = {
         "carepackage:clear-history",  // destroys care-package audit evidence
         "admin:history:clear",     // destroys admin-command audit evidence
         "carepackage:grant-all",   // server-wide economy injection in one call
+        // The write half of POST /api/database/query, without which the two
+        // denials above are decorative: database:query is granted just above
+        // and that route takes UPDATE/DELETE/DROP as readily as SELECT.
+        //
+        // Redundant today -- the Allow list names database:read/query/export
+        // individually, so default-deny already refuses this. It is here for
+        // the plausible tidy-up that widens the Allow to database:*, which
+        // would otherwise hand the write half back. Pinned by "the deny
+        // survives a widened allow list" in databaseQueryAuthz.test.js.
+        "database:execute",
+        // A system backup is not a bigger database backup. The archive holds
+        // runtime/secrets (the console's own admin password, the session
+        // secret, api-keys.json) and runtime/generated/iam-policies.json, and
+        // a restore overwrites both wholesale. Without these three, "backups:*"
+        // above quietly hands admin every credential owner has:
+        //   download-system  -- create with a passphrase you chose, download,
+        //                       decrypt at leisure.
+        //   import-system    -- upload an archive with a rewritten
+        //   restore-system      iam-policies.json, then apply it.
+        // That defeats the settings:* and database:* denials in this very
+        // list, so it has to be denied here rather than left to the wildcard.
+        //
+        // create-system and delete-system stay with admin: taking and pruning
+        // archives is ordinary custodial work, and neither reads an archive
+        // back nor writes one into the host.
+        "backups:download-system",
+        "backups:import-system",
+        "backups:restore-system",
       ]}
     ]
   },
@@ -296,43 +573,19 @@ const DEFAULT_POLICIES = {
       ]},
     ]
   },
+  // Strict, own-record-scoped read tier (replaces the former `observer`, which
+  // held the same server-wide read grants). Everything a player may read is
+  // narrowed to their own characters/items and guild by playerTierGate.js and
+  // listPlayers/listGuilds scoping; only actions that have such scoping are
+  // granted. Further reads (bases, storage, vehicles, ...) stay off until each
+  // has its own ownership scoping.
   player: {
     version: 1,
     tier: "player",
     statements: [
       { Effect: "Allow", Action: [
-        "server:read",
-        "maps:read",
-        "sietches:read",
-        "deepdesert:read",
         "players:read",
         "guilds:read",
-        "bases:read",
-        "storage:read",
-        "blueprints:read",
-        "vehicles:read",
-        "exchange:read",
-        "landsraad:read",
-      ]},
-    ]
-  },
-  observer: {
-    version: 1,
-    tier: "observer",
-    statements: [
-      { Effect: "Allow", Action: [
-        "server:read",
-        "maps:read",
-        "sietches:read",
-        "deepdesert:read",
-        "players:read",
-        "guilds:read",
-        "bases:read",
-        "storage:read",
-        "blueprints:read",
-        "vehicles:read",
-        "exchange:read",
-        "landsraad:read",
       ]},
     ]
   },

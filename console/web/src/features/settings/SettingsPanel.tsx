@@ -6,6 +6,8 @@ import { InfoTooltip, KeyValueGrid, StatusPill } from "../../components/common/D
 import { RecoveryCodesPanel } from "../auth/RecoveryCodesPanel";
 import { DiscordBotSection } from "./DiscordBotSection";
 import { firstDefined, formatUiSentence, friendlyColumnName } from "../../lib/display";
+import { ApiKeysSection } from "./ApiKeysSection";
+import { ExperimentalFeatures } from "./ExperimentalFeatures";
 
 // Authenticator apps display codes as "123 456" and the server strips whitespace
 // (auth/totp.js) precisely so a paste of that form validates. The inputs used to
@@ -26,13 +28,25 @@ type PublicDirectorySettings = {
   error?: string | null;
   probeError?: string | null;
 };
+type ServerStartupSettings = {
+  settings?: { autoStartBattlegroup?: boolean };
+  defaults?: { autoStartBattlegroup?: boolean };
+  source?: string;
+};
+
+type ConfirmAction = (
+  message: string,
+  options?: { title?: string; confirmLabel?: string; cancelLabel?: string; danger?: boolean }
+) => Promise<boolean>;
 
 type SettingsPanelProps = {
   onPasswordChanged: () => Promise<void>;
   publicListingUrl?: string;
+  // Needed by the API Keys section, which confirms before revoking a key.
+  confirmAction: ConfirmAction;
 };
 
-export function SettingsPanel({ onPasswordChanged, publicListingUrl }: SettingsPanelProps) {
+export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmAction }: SettingsPanelProps) {
   const [settings, setSettings] = useState<Record<string, unknown> | null>(null);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -101,6 +115,10 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl }: SettingsP
       setSecondFactorUnavailable(true);
     }
   }
+  const [apiKeysOpen, setApiKeysOpen] = useState(false);
+  const [serverStartupOpen, setServerStartupOpen] = useState(false);
+  const [serverStartupSaving, setServerStartupSaving] = useState(false);
+  const [serverStartupResult, setServerStartupResult] = useState<SettingsTaskResult | null>(null);
   async function refresh() {
     await refreshCredentialState();
     const nextSettings = await api<Record<string, unknown>>("/api/settings");
@@ -150,6 +168,11 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl }: SettingsP
     const id = window.setTimeout(() => setPublicProfileResult(null), 7000);
     return () => window.clearTimeout(id);
   }, [publicProfileResult]);
+  useEffect(() => {
+    if (!serverStartupResult || serverStartupResult.status === "running") return;
+    const id = window.setTimeout(() => setServerStartupResult(null), 5400);
+    return () => window.clearTimeout(id);
+  }, [serverStartupResult]);
   useEffect(() => {
     if (!webPortRedirectUrl || webPortRedirectCountdown === null) return;
     if (webPortRedirectCountdown <= 0) {
@@ -289,6 +312,25 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl }: SettingsP
       setAnonymousCountSaving(false);
     }
   }
+  async function changeServerStartup(autoStartBattlegroup: boolean) {
+    setServerStartupSaving(true);
+    setServerStartupResult({ status: "running", title: "Saving Server Startup..." });
+    try {
+      const result = await post<{ ok: boolean } & ServerStartupSettings>("/api/settings/server-startup", { autoStartBattlegroup });
+      setSettings((current) => current ? { ...current, serverStartup: result } : current);
+      setServerStartupResult({
+        status: "succeeded",
+        title: "Server Startup Saved",
+        message: autoStartBattlegroup
+          ? "The Battlegroup will start automatically after the Linux host boots."
+          : "The Console will start after the Linux host boots, but the Battlegroup will remain stopped until you start it."
+      });
+    } catch (error) {
+      setServerStartupResult({ status: "failed", title: "Server Startup Save Failed", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setServerStartupSaving(false);
+    }
+  }
   async function verifyListingClaim() {
     setPublicProfileSaving(true);
     setPublicProfileResult({ status: "running", title: "Verifying Listing Claim..." });
@@ -343,6 +385,8 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl }: SettingsP
   const serverListingVisible = settings !== null && publicDirectory.available === true;
   const serverListingEnabled = publicDirectory.enabled === true;
   const anonymousCountEnabled = publicDirectory.anonymousCountEnabled !== false;
+  const serverStartup = (settings?.serverStartup as ServerStartupSettings | undefined) || {};
+  const autoStartBattlegroup = serverStartup.settings?.autoStartBattlegroup !== false;
   const passwordEnvManaged = Boolean(config.adminPasswordEnvManaged);
   const currentPort = String(config.port || "8088");
   return <section className="panel">
@@ -406,7 +450,34 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl }: SettingsP
           </div>
         </div>}
       </div>}
+      <div className={`playerAdmin_toggle settings-server-startup-toggle ${serverStartupOpen ? "open" : ""}`}>
+        <button className="playerAdmin_toggleHeader" aria-label={serverStartupOpen ? "Collapse Server Startup" : "Expand Server Startup"} onClick={() => setServerStartupOpen(!serverStartupOpen)}>
+          {serverStartupOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+          <span>Server Startup</span>
+        </button>
+        {serverStartupOpen && <div className="playerAdmin_toggleBody settings-server-startup-body">
+          <div className="settings-server-startup-copy">
+            <strong>Start Battlegroup Automatically</strong>
+            <p className="muted">The Console always starts with Docker. When this is disabled, the Battlegroup remains stopped after the Linux host boots until you start it manually.</p>
+          </div>
+          <label className={`switch-checkbox settings-server-startup-control ${autoStartBattlegroup ? "enabled" : "disabled"}`}>
+            <input
+              type="checkbox"
+              disabled={serverStartupSaving || settings === null}
+              checked={autoStartBattlegroup}
+              onChange={(event) => { void changeServerStartup(event.target.checked); }}
+            />
+            <span className="switch-label">Automatic Startup:</span>
+            <strong className="switch-state">{serverStartupSaving ? "Saving" : autoStartBattlegroup ? "Enabled" : "Disabled"}</strong>
+          </label>
+          {serverStartupResult && <span className={`inline-task-result settings-server-startup-result result-${serverStartupResult.status === "succeeded" ? "ok" : serverStartupResult.status === "failed" ? "fail" : "running"}`}>
+            <strong className={serverStartupResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(serverStartupResult.title, serverStartupResult.status === "running")}</strong>
+            {serverStartupResult.message && <span className="inline-task-message">{formatResultMessage(serverStartupResult.message)}</span>}
+          </span>}
+        </div>}
+      </div>
       <RuntimeSettingsSummary settings={settings} />
+      <ExperimentalFeatures confirmAction={confirmAction} />
       <div className={`playerAdmin_toggle settings-web-port-toggle ${webPortOpen ? "open" : ""}`}>
         <button className="playerAdmin_toggleHeader" aria-label={webPortOpen ? "Collapse Web Console Port" : "Expand Web Console Port"} onClick={() => setWebPortOpen(!webPortOpen)}>{webPortOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Web Console Port</span></button>
         {webPortOpen && <div className="playerAdmin_toggleBody">
@@ -546,6 +617,10 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl }: SettingsP
       <div className={`playerAdmin_toggle ${discordBotOpen ? "open" : ""}`}>
         <button className="playerAdmin_toggleHeader" aria-label={discordBotOpen ? "Collapse Discord Bot" : "Expand Discord Bot"} onClick={() => setDiscordBotOpen(!discordBotOpen)}>{discordBotOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Discord Bot</span></button>
         {discordBotOpen && <DiscordBotSection />}
+      </div>
+      <div className={`playerAdmin_toggle settings-api-keys-toggle ${apiKeysOpen ? "open" : ""}`}>
+        <button className="playerAdmin_toggleHeader" aria-label={apiKeysOpen ? "Collapse API Keys" : "Expand API Keys"} onClick={() => setApiKeysOpen(!apiKeysOpen)}>{apiKeysOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>API Keys</span></button>
+        {apiKeysOpen && <div className="playerAdmin_toggleBody"><ApiKeysSection confirmAction={confirmAction} /></div>}
       </div>
     </div>
   </section>;

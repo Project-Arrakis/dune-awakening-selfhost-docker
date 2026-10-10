@@ -15,8 +15,8 @@ describe("vehiclesApi.list", () => {
   });
 
   it("serializes every provided param into the query string in order", () => {
-    vehiclesApi.list({ q: "worm", page: 2, pageSize: 100, sortColumn: "owner", sortDirection: "desc" });
-    expect(api).toHaveBeenCalledWith("/api/vehicles?q=worm&page=2&pageSize=100&sortColumn=owner&sortDirection=desc");
+    vehiclesApi.list({ q: "worm", page: 2, pageSize: 100, sortColumn: "owner", sortDirection: "desc", status: "backup" });
+    expect(api).toHaveBeenCalledWith("/api/vehicles?q=worm&page=2&pageSize=100&sortColumn=owner&sortDirection=desc&status=backup");
   });
 
   it("omits an empty search term and a falsy page (0)", () => {
@@ -32,6 +32,74 @@ describe("vehiclesApi.list", () => {
   it("requests a player's vehicles with an encoded player id", () => {
     vehiclesApi.forPlayer("player/42");
     expect(api).toHaveBeenCalledWith("/api/players/player%2F42/vehicles");
+  });
+});
+
+describe("vehiclesApi.storage", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("reads a vehicle's cargo hold with an encoded vehicle id", () => {
+    vehiclesApi.storage("vehicle/1");
+    expect(api).toHaveBeenCalledWith("/api/vehicles/vehicle%2F1/storage");
+  });
+
+  it("omits count entirely for a whole-stack delete", () => {
+    vehiclesApi.deleteStorageItem("2008", "501", "DELETE ITEM");
+    // Not `count: undefined` and not `count: null` -- the server reads an
+    // absent count as "the whole slot" and a present one as an exact request
+    // it will refuse to widen, so the two must not be conflated on the wire.
+    expect(api).toHaveBeenCalledWith("/api/vehicles/2008/storage/items/501", {
+      method: "DELETE",
+      body: JSON.stringify({ confirmation: "DELETE ITEM" })
+    });
+  });
+
+  it("sends count for a partial removal", () => {
+    vehiclesApi.deleteStorageItem("2008", "501", "DELETE ITEM", 100);
+    expect(api).toHaveBeenCalledWith("/api/vehicles/2008/storage/items/501", {
+      method: "DELETE",
+      body: JSON.stringify({ confirmation: "DELETE ITEM", count: 100 })
+    });
+  });
+
+  it("encodes both ids on a single-item delete", () => {
+    vehiclesApi.deleteStorageItem("vehicle/1", "item/2", "DELETE ITEM");
+    expect(api).toHaveBeenCalledWith("/api/vehicles/vehicle%2F1/storage/items/item%2F2", {
+      method: "DELETE",
+      body: JSON.stringify({ confirmation: "DELETE ITEM" })
+    });
+  });
+
+  it("sends the id list for a bulk delete", () => {
+    vehiclesApi.deleteStorageItems("2008", ["501", "503"], "DELETE ITEMS");
+    expect(api).toHaveBeenCalledWith("/api/vehicles/2008/storage/items", {
+      method: "DELETE",
+      body: JSON.stringify({ confirmation: "DELETE ITEMS", itemIds: ["501", "503"] })
+    });
+  });
+
+  it("sends only the confirmation for a delete-all", () => {
+    vehiclesApi.deleteAllStorageItems("2008", "DELETE ALL ITEMS");
+    expect(api).toHaveBeenCalledWith("/api/vehicles/2008/storage/all-items", {
+      method: "DELETE",
+      body: JSON.stringify({ confirmation: "DELETE ALL ITEMS" })
+    });
+  });
+});
+
+describe("vehiclesApi.deleteStoredVehicle", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("uses the stored route with its own confirmation phrase", () => {
+    vehiclesApi.deleteStoredVehicle("vehicle/1");
+    expect(api).toHaveBeenCalledWith("/api/vehicles/vehicle%2F1/stored", {
+      method: "DELETE",
+      body: JSON.stringify({ confirmation: "DELETE STORED VEHICLE" })
+    });
   });
 });
 

@@ -5,12 +5,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   autoRefillPublicState,
+  clampAutoRefillNextRun,
   createAutoRefillScheduler,
   isAutoRefillEnabled,
   readAutoRefillState,
   setBaseAutoRefill,
   writeAutoRefillState
 } from "../src/services/autoRefill.js";
+import { saveAutoRefillSettings } from "../src/services/autoRefillSettings.js";
 import { listQueuedBaseDeletes, listQueuedGeneratorRefills, queueGeneratorRefill } from "../src/duneDb.js";
 
 // Must await fn: without it the finally deletes the directory at the callback's
@@ -57,6 +59,8 @@ const TEST_ENV = {};
 function fakeDuneDb({
   levels = {},
   missingBases = [],
+  // Bases picked up into a backup; an Error value makes the check itself fail.
+  backedUpBases = [],
   // Distinct from missingBases: the real baseMapLocation throws a different
   // message for a base whose owner-entity link is broken (still exists) vs
   // one that's genuinely gone. Only the latter should un-enroll -- collapsing
@@ -67,15 +71,35 @@ function fakeDuneDb({
   calls = []
 } = {}) {
   const missing = new Set(missingBases.map(Number));
+  const backedUp = new Set(backedUpBases.filter((entry) => !(entry instanceof Error)).map(Number));
+  const backupCheckError = backedUpBases.find((entry) => entry instanceof Error);
   const orphaned = new Set(orphanedBases.map(Number));
   return {
     calls,
+    baseIsBackedUp: async (_db, baseId) => {
+      calls.push({ fn: "baseIsBackedUp", baseId });
+      if (backupCheckError) throw backupCheckError;
+      return backedUp.has(Number(baseId));
+    },
     baseGeneratorFuelLevels: async (_db, _repoRoot, baseId) => {
       calls.push({ fn: "baseGeneratorFuelLevels", baseId });
       const entry = levels[baseId];
       if (entry instanceof Error) throw entry;
-      if (!entry) return { baseId, deviceCount: 0, devices: [], lowestPercent: null };
-      return { baseId, deviceCount: entry.deviceCount ?? 1, devices: [], lowestPercent: entry.lowestPercent };
+      if (!entry) {
+        return { baseId, deviceCount: 0, devices: [], lowestPercent: null, lowestGeneratorPercent: null, lowestWindtrapPercent: null };
+      }
+      // A plain `lowestPercent` fixture is a generator-only base.
+      const generator = entry.lowestGeneratorPercent !== undefined ? entry.lowestGeneratorPercent : entry.lowestPercent;
+      const windtrap = entry.lowestWindtrapPercent ?? null;
+      const present = [generator, windtrap].filter((value) => value != null);
+      return {
+        baseId,
+        deviceCount: entry.deviceCount ?? 1,
+        devices: [],
+        lowestPercent: present.length ? Math.min(...present) : null,
+        lowestGeneratorPercent: generator ?? null,
+        lowestWindtrapPercent: windtrap
+      };
     },
     baseMapLocation: async (_db, baseId) => {
       calls.push({ fn: "baseMapLocation", baseId });
@@ -676,5 +700,176 @@ test("the enrollment file is written atomically with owner-only permissions", as
     // Pretty-printed and newline-terminated, matching the pending refill queue.
     assert.equal(raw.endsWith("}\n"), true);
     assert.equal(JSON.parse(raw).schemaVersion, 1);
+  });
+});
+
+// --- Settings layering and interval re-arm ---
+
+test("a persisted threshold overrides the env var for the scanner itself", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    saveAutoRefillSettings(repoRoot, { thresholdPercent: 80 });
+    // 60% is healthy against the env/default 50 but starved against the saved
+    // 80, so this only queues if run() reads the settings file.
+    const clock = makeClock();
+    const duneDb = fakeDuneDb({ levels: { 482: { lowestPercent: 60, deviceCount: 2 } } });
+    const { scheduler } = makeScheduler(repoRoot, duneDb, clock, {});
+    setBaseAutoRefill(repoRoot, 482, true, { now: clock.now, env: TEST_ENV });
+    // The first tick only arms the schedule; a scan needs a primed scheduler.
+    await primeScheduler(scheduler, repoRoot, clock);
+    forceDue(repoRoot, clock);
+    await scheduler.tick();
+
+    assert.equal(listQueuedGeneratorRefills(repoRoot).length, 1, "queued against the saved threshold");
+  });
+});
+
+test("windtraps are judged against their own threshold, not the generator one", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    const clock = makeClock();
+    for (const baseId of [482, 517, 601, 702]) setBaseAutoRefill(repoRoot, baseId, true, { now: clock.now, env: TEST_ENV });
+    writeAutoRefillState(repoRoot, { ...readAutoRefillState(repoRoot), nextRunAt: new Date(START).toISOString() });
+    const duneDb = fakeDuneDb({
+      levels: {
+        // 2 of 5 filters: under the generator default of 50, but exactly at
+        // the windtrap default of 40, so it must not queue.
+        482: { lowestGeneratorPercent: 90, lowestWindtrapPercent: 40 },
+        // 1 of 5 filters: under 40, so the base is queued.
+        517: { lowestGeneratorPercent: 90, lowestWindtrapPercent: 20 },
+        // Generators low, windtraps full: the generator threshold still applies.
+        601: { lowestGeneratorPercent: 45, lowestWindtrapPercent: 100 },
+        // A windtrap-only base.
+        702: { lowestGeneratorPercent: null, lowestWindtrapPercent: 0 }
+      }
+    });
+    const { scheduler, audits } = makeScheduler(repoRoot, duneDb, clock);
+
+    await scheduler.tick();
+    clock.advance(2000);
+    await scheduler.tick();
+
+    assert.deepEqual(listQueuedGeneratorRefills(repoRoot).map((entry) => entry.baseId).sort((a, b) => a - b), [517, 601, 702]);
+    const queued = audits.find((entry) => entry.action === "bases.auto-refill-queued" && entry.detail.baseId === 517);
+    assert.equal(queued.detail.windtrapThresholdPercent, 40);
+    assert.equal(queued.detail.lowestWindtrapPercent, 20);
+  });
+});
+
+test("a persisted windtrap threshold overrides the default for the scanner", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    saveAutoRefillSettings(repoRoot, { windtrapThresholdPercent: 70 });
+    const clock = makeClock();
+    // 60% is healthy against the default 40 but starved against the saved 70.
+    const duneDb = fakeDuneDb({ levels: { 482: { lowestGeneratorPercent: 100, lowestWindtrapPercent: 60 } } });
+    const { scheduler } = makeScheduler(repoRoot, duneDb, clock, {});
+    setBaseAutoRefill(repoRoot, 482, true, { now: clock.now, env: TEST_ENV });
+    await primeScheduler(scheduler, repoRoot, clock);
+    forceDue(repoRoot, clock);
+    await scheduler.tick();
+
+    assert.equal(listQueuedGeneratorRefills(repoRoot).length, 1);
+    assert.equal(autoRefillPublicState(repoRoot, { env: {} }).windtrapThresholdPercent, 70);
+  });
+});
+
+test("the public state reports the persisted threshold and interval", async () => {
+  await withTempRepoRoot((repoRoot) => {
+    saveAutoRefillSettings(repoRoot, { thresholdPercent: 35, intervalHours: 6 });
+    const state = autoRefillPublicState(repoRoot, { env: { ADMIN_AUTO_REFILL_THRESHOLD_PERCENT: "70" } });
+    assert.equal(state.thresholdPercent, 35);
+    assert.equal(state.intervalHours, 6);
+  });
+});
+
+// Without this, shortening the interval looks like it did nothing until the
+// already-armed run fires -- up to a week away at the maximum interval.
+test("shortening the interval pulls an already-armed scan in", async () => {
+  await withTempRepoRoot((repoRoot) => {
+    const clock = makeClock();
+    setBaseAutoRefill(repoRoot, 482, true, { now: clock.now, env: TEST_ENV });
+    const armed = Date.parse(readAutoRefillState(repoRoot).nextRunAt);
+    assert.equal(armed, clock.at() + 24 * HOUR_MS, "armed a default interval out");
+
+    saveAutoRefillSettings(repoRoot, { intervalHours: 2 });
+    const next = clampAutoRefillNextRun(repoRoot, { now: clock.now, env: TEST_ENV });
+    assert.equal(Date.parse(next), clock.at() + 2 * HOUR_MS);
+    assert.equal(Date.parse(readAutoRefillState(repoRoot).nextRunAt), clock.at() + 2 * HOUR_MS, "persisted, not just returned");
+  });
+});
+
+test("lengthening the interval leaves the armed scan where it is", async () => {
+  await withTempRepoRoot((repoRoot) => {
+    const clock = makeClock();
+    setBaseAutoRefill(repoRoot, 482, true, { now: clock.now, env: TEST_ENV });
+    const armed = readAutoRefillState(repoRoot).nextRunAt;
+
+    saveAutoRefillSettings(repoRoot, { intervalHours: 168 });
+    assert.equal(clampAutoRefillNextRun(repoRoot, { now: clock.now, env: TEST_ENV }), armed);
+    assert.equal(readAutoRefillState(repoRoot).nextRunAt, armed, "no write at all");
+  });
+});
+
+test("the re-arm no-ops with nothing enrolled and with no armed run", async () => {
+  await withTempRepoRoot((repoRoot) => {
+    const clock = makeClock();
+    // Nothing enrolled: nextRunAt is "" and must stay that way.
+    assert.equal(clampAutoRefillNextRun(repoRoot, { now: clock.now, env: TEST_ENV }), "");
+
+    setBaseAutoRefill(repoRoot, 482, true, { now: clock.now, env: TEST_ENV });
+    setBaseAutoRefill(repoRoot, 482, false, { now: clock.now, env: TEST_ENV });
+    assert.equal(clampAutoRefillNextRun(repoRoot, { now: clock.now, env: TEST_ENV }), "");
+  });
+});
+
+test("a threshold-only save never rewrites the enrollment file", async () => {
+  await withTempRepoRoot((repoRoot) => {
+    const clock = makeClock();
+    setBaseAutoRefill(repoRoot, 482, true, { now: clock.now, env: TEST_ENV });
+    const before = readFileSync(statePath(repoRoot), "utf8");
+
+    saveAutoRefillSettings(repoRoot, { thresholdPercent: 40 });
+    clampAutoRefillNextRun(repoRoot, { now: clock.now, env: TEST_ENV });
+    assert.equal(readFileSync(statePath(repoRoot), "utf8"), before);
+  });
+});
+
+// A base picked up into a backup resolves to partition 0, which every queue
+// treats as write-safe, so a refill queued for it would be applied at once.
+test("a backed-up base is skipped: its fuel is never read, nothing is queued, and it stays enrolled", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    const clock = makeClock();
+    for (const baseId of [482, 517]) setBaseAutoRefill(repoRoot, baseId, true, { now: clock.now, env: TEST_ENV });
+    const duneDb = fakeDuneDb({ levels: { 482: { lowestPercent: 5 }, 517: { lowestPercent: 5 } }, backedUpBases: [482] });
+    const { scheduler, audits } = makeScheduler(repoRoot, duneDb, clock);
+    await primeScheduler(scheduler, repoRoot, clock);
+
+    const result = await scheduler.tick();
+
+    assert.equal(result.backedUp, 1);
+    assert.equal(result.queued, 1);
+    assert.deepEqual(listQueuedGeneratorRefills(repoRoot).map((entry) => entry.baseId), [517]);
+    assert.equal(duneDb.calls.some((call) => call.fn === "baseGeneratorFuelLevels" && call.baseId === 482), false);
+    assert.equal(audits.some((entry) => entry.action === "bases.auto-refill-queued" && entry.detail.baseId === 482), false);
+    // Kept, and untouched, so a redeployed base resumes where it left off.
+    const entry = readAutoRefillState(repoRoot).bases["482"];
+    assert.ok(entry);
+    assert.equal(entry.lastCheckedAt, "");
+    assert.equal(entry.consecutiveQueues, 0);
+  });
+});
+
+test("a backup check that fails is a scan failure, never a refill", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    const clock = makeClock();
+    setBaseAutoRefill(repoRoot, 482, true, { now: clock.now, env: TEST_ENV });
+    const duneDb = fakeDuneDb({ levels: { 482: { lowestPercent: 5 } }, backedUpBases: [new Error("Connection terminated unexpectedly")] });
+    const { scheduler } = makeScheduler(repoRoot, duneDb, clock);
+    await primeScheduler(scheduler, repoRoot, clock);
+
+    const result = await scheduler.tick();
+
+    assert.equal(result.failures, 1);
+    assert.equal(result.queued, 0);
+    assert.deepEqual(listQueuedGeneratorRefills(repoRoot), []);
+    assert.ok(readAutoRefillState(repoRoot).bases["482"]);
   });
 });

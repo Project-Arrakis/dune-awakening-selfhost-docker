@@ -4,6 +4,7 @@ COPY console/web/package.json ./
 COPY console/web/package-lock.json ./
 RUN npm ci
 COPY runtime/data/augment-compatibility.json /runtime/data/augment-compatibility.json
+COPY runtime/data/admin-skill-modules.json /runtime/data/admin-skill-modules.json
 COPY console/web ./
 RUN npm run build
 
@@ -15,11 +16,32 @@ ENV NODE_ENV=production
 # Runtime tools required by RedBlink dune scripts when the web admin runs in a container.
 # We install small OS tools through apt, then install Docker CLI + Compose plugin
 # as standalone binaries to avoid pulling the heavy docker.io Debian package.
+# Both are checked against a pinned sha256 per architecture, and fetched https-only (review #1197).
+# Compose's hashes are the ones in its release's checksums.txt. Docker publishes no checksums for its
+# static CLI, so those two were computed from download.docker.com over TLS when the version was bumped:
+# they stop a later change at the source, not a compromise at the time of the bump. Update the hashes
+# with the version.
+# The psql client is what decides how the console's publisher loops reach the
+# database. runtime/scripts/lib/postgres.sh and runtime/scripts/dune_psql.py
+# prefer a TCP connection to the port start-postgres.sh publishes on loopback
+# and fall back to `docker exec dune-postgres psql` when no client is installed
+# -- and this image had none, so every query from here took the fallback.
+# publish-deepdesert-overrides.sh alone re-queries every ten seconds and fans
+# out over every partition, and each exec spawns a conmon pair that lingers for
+# the engine's exit delay. The container runs with network_mode: host (see
+# docker-compose.web.yml), so 127.0.0.1 here really is the host's loopback and
+# really does reach the published port.
 # gnupg (gpg) is required by `dune db backup-system`'s authenticated
 # (AEAD/OCB) archive encryption when the backup is triggered from the
-# Web Console rather than a host shell -- confirmed this was NOT already
-# present in this image, which would make that command fail here even
-# though it worked on a real host with gnupg installed via install.sh.
+# Web Console rather than a host shell. The VERSION is what matters, not
+# just the package: --aead-algo landed in GnuPG 2.3, and bookworm caps at
+# 2.2.40, which rejects the flag outright -- so this image could install
+# gnupg and still fail every system backup, after dumping the whole
+# database. bookworm-backports carries the same 2.2.40, so the base is
+# trixie (Debian 13), whose gnupg 2.4.7 supports it. db.sh preflights the
+# capability and refuses to downgrade to an unauthenticated cipher, so an
+# older base fails loudly rather than silently weakening the archive.
+#
 # python3 must be installed EXPLICITLY, not inherited. It used to arrive for
 # free: the previous base was node:20-bookworm, whose full Debian image ships
 # python3-minimal. Commit c248780e (2026-08-20, issue #54's Trivy-driven base
@@ -59,22 +81,32 @@ RUN apt-get update \
         netcat-openbsd \
         gnupg \
         python3 \
+        postgresql-client \
     && rm -rf /var/lib/apt/lists/* \
     && arch="$(dpkg --print-architecture)" \
     && case "$arch" in \
-        amd64) docker_arch="x86_64"; compose_arch="x86_64" ;; \
-        arm64) docker_arch="aarch64"; compose_arch="aarch64" ;; \
+        amd64) docker_arch="x86_64"; compose_arch="x86_64"; \
+               docker_sha="33e1ab8b63d14bca449f7a3d30d7f6aa669daa544e60a86b17fec87f61afe2b4"; \
+               compose_sha="db1889184726840f75c4f9c001048430d4f25b3be3cb084d3ddd762bc0aed576" ;; \
+        arm64) docker_arch="aarch64"; compose_arch="aarch64"; \
+               docker_sha="811f6eee271678fc98dbe5c4d896c00fc5fe2daa4f7a37069c17abc036eab85b"; \
+               compose_sha="732e3a84c1a0f67256ce80bc2598a24546b10ca05f9faa97efceb1171ece2ef7" ;; \
         *) echo "Unsupported architecture for Docker CLI: $arch" >&2; exit 1 ;; \
        esac \
-    && curl -fsSL "https://download.docker.com/linux/static/stable/${docker_arch}/docker-29.7.2.tgz" -o /tmp/docker.tgz \
+    && curl -fsSL --proto '=https' --proto-redir '=https' "https://download.docker.com/linux/static/stable/${docker_arch}/docker-29.9.0.tgz" -o /tmp/docker.tgz \
+    && printf '%s  %s\n' "${docker_sha}" /tmp/docker.tgz >/tmp/docker.sha256 \
+    && sha256sum -c /tmp/docker.sha256 \
     && tar -xzf /tmp/docker.tgz -C /tmp \
     && mv /tmp/docker/docker /usr/local/bin/docker \
     && chmod +x /usr/local/bin/docker \
-    && rm -rf /tmp/docker /tmp/docker.tgz \
+    && rm -rf /tmp/docker /tmp/docker.tgz /tmp/docker.sha256 \
     && mkdir -p /usr/local/lib/docker/cli-plugins \
-    && curl -fsSL "https://github.com/docker/compose/releases/download/v5.5.1/docker-compose-linux-${compose_arch}" \
+    && curl -fsSL --proto '=https' --proto-redir '=https' "https://github.com/docker/compose/releases/download/v5.5.1/docker-compose-linux-${compose_arch}" \
         -o /usr/local/lib/docker/cli-plugins/docker-compose \
+    && printf '%s  %s\n' "${compose_sha}" /usr/local/lib/docker/cli-plugins/docker-compose >/tmp/compose.sha256 \
+    && sha256sum -c /tmp/compose.sha256 \
     && chmod +x /usr/local/lib/docker/cli-plugins/docker-compose \
+    && rm -f /tmp/compose.sha256 \
     && docker --version \
     && docker compose version
 
@@ -88,6 +120,10 @@ RUN chmod +x /usr/local/bin/entrypoint.sh \
     && useradd -m -s /bin/bash dune \
     && mkdir -p /repo /app \
     && chmod 755 /app /repo
+# The runtime image only ever runs `node /app/src/server.js`; npm/npx are build-time
+# tools. Their bundled packages (brace-expansion, undici, ...) are scanned by
+# trivy-image-scan and re-flag every time the Node base image lags an advisory.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 ENV HOME=/tmp/dune-console-home
 ENV DOCKER_CONFIG=/tmp/dune-console-home/.docker
 USER dune

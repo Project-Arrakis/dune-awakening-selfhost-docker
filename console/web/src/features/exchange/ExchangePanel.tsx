@@ -7,6 +7,7 @@ import { ExchangeTable } from "./ExchangeTable";
 import { ExchangeConfigOverlay } from "./ExchangeConfigOverlay";
 import { MarketBotOverlay } from "./MarketBotOverlay";
 import { BotItemsTab } from "./BotItemsTab";
+import { ExchangeTransactionsTab } from "./ExchangeTransactionsTab";
 import { exchangeDisplayLabel } from "./display";
 
 type ExchangePanelProps = {
@@ -75,7 +76,7 @@ export function ExchangePanel({ onError, confirmAction }: ExchangePanelProps) {
   const [loading, setLoading] = useState(() => exchangeCache === null);
   const [configOpen, setConfigOpen] = useState(false);
   const [marketBotOpen, setMarketBotOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<"exchange" | "bot-items">("exchange");
+  const [activeTab, setActiveTab] = useState<"exchange" | "bot-items" | "transactions">("exchange");
   const [botItemsDirty, setBotItemsDirty] = useState(false);
   // The Market Bot button only appears when the status endpoint answers, so
   // viewers without the exchange:market action never see a control they
@@ -211,7 +212,7 @@ export function ExchangePanel({ onError, confirmAction }: ExchangePanelProps) {
     setCategory("");
   }
 
-  async function changeActiveTab(nextTab: "exchange" | "bot-items") {
+  async function changeActiveTab(nextTab: "exchange" | "bot-items" | "transactions") {
     if (nextTab === activeTab) return;
     if (activeTab === "bot-items" && botItemsDirty) {
       const confirmed = await confirmAction(
@@ -262,6 +263,7 @@ export function ExchangePanel({ onError, confirmAction }: ExchangePanelProps) {
       <div className="bases-expanded-tablist" role="tablist">
         <button type="button" role="tab" aria-selected={activeTab === "exchange"} className={`bases-expanded-tab${activeTab === "exchange" ? " active" : ""}`} onClick={() => void changeActiveTab("exchange")}>Exchange</button>
         <button type="button" role="tab" aria-selected={activeTab === "bot-items"} className={`bases-expanded-tab${activeTab === "bot-items" ? " active" : ""}`} onClick={() => void changeActiveTab("bot-items")}>Bot Items</button>
+        <button type="button" role="tab" aria-selected={activeTab === "transactions"} className={`bases-expanded-tab${activeTab === "transactions" ? " active" : ""}`} onClick={() => void changeActiveTab("transactions")}>Transactions</button>
       </div>
       {activeTab === "exchange" && <>
         {supported
@@ -319,6 +321,7 @@ export function ExchangePanel({ onError, confirmAction }: ExchangePanelProps) {
         </>}
       </>}
       {activeTab === "bot-items" && <BotItemsTab onError={onError} onDirtyChange={setBotItemsDirty} />}
+      {activeTab === "transactions" && <ExchangeTransactionsTab onError={onError} />}
       {configOpen && (
         <ExchangeConfigOverlay
           onClose={() => setConfigOpen(false)}

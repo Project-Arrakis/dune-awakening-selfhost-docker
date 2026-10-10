@@ -3,6 +3,12 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
+# POSTGRES_PORT and DUNE_PSQL_TRANSPORT from here configure the Postgres seam.
+[ -f .env ] && . ./.env
+
+# shellcheck source=runtime/scripts/lib/postgres.sh
+source runtime/scripts/lib/postgres.sh
+
 PID_FILE="runtime/generated/network-server-state-overrides.pid"
 LOG_FILE="runtime/generated/network-server-state-overrides.log"
 LOG_POINTER_FILE="runtime/generated/network-server-state-overrides-current.log"
@@ -190,7 +196,7 @@ io:format(\"~p~n\", [rabbit_db_binding:delete(Binding, DeleteCallback)]).
 }
 
 server_state_maps() {
-  docker exec dune-postgres psql -U postgres -d dune -Atc "
+  dune_psql -Atc "
     select distinct map
     from (
       select map
@@ -209,7 +215,13 @@ server_state_maps() {
 
 configured_always_on_maps() {
   [ -s "$MAP_MODES_FILE" ] || return 0
-  python3 - "$MAP_MODES_FILE" <<'PY'
+  local map_name
+  while IFS= read -r map_name; do
+    [ -n "$map_name" ] || continue
+    if DUNE_MAP_MODES_FILE="$MAP_MODES_FILE" runtime/scripts/map-modes.sh is-always-on "$map_name" >/dev/null 2>&1; then
+      printf '%s\n' "$map_name"
+    fi
+  done < <(python3 - "$MAP_MODES_FILE" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -223,6 +235,7 @@ for map_name, config in sorted(data.get("maps", {}).items()):
     if isinstance(config, dict) and config.get("mode") == "always-on":
         print(map_name)
 PY
+  )
 }
 
 priority_maps() {
@@ -322,7 +335,7 @@ snapshot_payloads_for_map() {
   local map_name="$1"
   local rows
 
-  rows="$(docker exec dune-postgres psql -U postgres -d dune -At -F $'\t' -c "
+  rows="$(dune_psql -At -F $'\t' -c "
     select wp.partition_id,
            fs.server_id,
            coalesce(host(fs.game_addr), ''),
@@ -418,7 +431,7 @@ forward_batch_for_map() {
   [[ "$messages" == \[* ]] || return 1
   [ "$messages" != "[]" ] || return 1
 
-  endpoint_rows="$(docker exec dune-postgres psql -U postgres -d dune -At -F $'\t' -c "
+  endpoint_rows="$(dune_psql -At -F $'\t' -c "
     select coalesce(wp.partition_id::text, ''),
            fs.server_id,
            coalesce(host(fs.game_addr), ''),

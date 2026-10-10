@@ -3,7 +3,17 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
+# shellcheck source=runtime/scripts/lib/igw-socket-health.sh
+source runtime/scripts/lib/igw-socket-health.sh
+
+# shellcheck source=runtime/scripts/lib/postgres.sh
+source runtime/scripts/lib/postgres.sh
+
 INTERVAL="${DUNE_AUTOSCALER_INTERVAL:-5}"
+if ! [[ "$INTERVAL" =~ ^[1-9][0-9]*$ ]]; then
+  echo "Invalid DUNE_AUTOSCALER_INTERVAL; using 5 seconds." >&2
+  INTERVAL=5
+fi
 DEMAND_INTERVAL="${DUNE_AUTOSCALER_DEMAND_INTERVAL:-2}"
 if ! [[ "$DEMAND_INTERVAL" =~ ^[1-9][0-9]*$ ]]; then
   echo "Invalid DUNE_AUTOSCALER_DEMAND_INTERVAL; using 2 seconds." >&2
@@ -19,6 +29,11 @@ SERVER_ID_MAP_FILE="${DUNE_AUTOSCALER_SERVER_ID_MAP_FILE:-runtime/generated/auto
 DEMAND_FILE="${DUNE_AUTOSCALER_DEMAND_FILE:-runtime/generated/autoscaler-demand.tsv}"
 DEMAND_EVENT_FILE="${DUNE_AUTOSCALER_DEMAND_EVENT_FILE:-runtime/generated/autoscaler-demand-events.tsv}"
 HUB_TRAVEL_FILE="${DUNE_AUTOSCALER_HUB_TRAVEL_FILE:-runtime/generated/autoscaler-hub-travel.tsv}"
+HUB_TRAVEL_RETENTION_SECONDS="${DUNE_AUTOSCALER_HUB_TRAVEL_RETENTION_SECONDS:-86400}"
+if ! [[ "$HUB_TRAVEL_RETENTION_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "Invalid DUNE_AUTOSCALER_HUB_TRAVEL_RETENTION_SECONDS; using 86400 seconds." >&2
+  HUB_TRAVEL_RETENTION_SECONDS=86400
+fi
 DEEPDESERT_TRAVEL_FILE="${DUNE_AUTOSCALER_DEEPDESERT_TRAVEL_FILE:-runtime/generated/autoscaler-deepdesert-travel.tsv}"
 DIRECTOR_HEAL_FILE="${DUNE_AUTOSCALER_DIRECTOR_HEAL_FILE:-runtime/generated/autoscaler-director-heal.tsv}"
 SIETCH_TOPOLOGY_MAINTENANCE_FILE="${DUNE_SIETCH_TOPOLOGY_MAINTENANCE_FILE:-runtime/generated/sietch-topology-maintenance}"
@@ -38,21 +53,39 @@ IGWO_UNAVAILABLE_COOLDOWN_SECONDS="${DUNE_AUTOSCALER_IGWO_UNAVAILABLE_COOLDOWN_S
 STALE_SERVER_STATE_SCAN_SECONDS="${DUNE_AUTOSCALER_STALE_SERVER_STATE_SCAN_SECONDS:-15}"
 STALE_SERVER_STATE_COOLDOWN_SECONDS="${DUNE_AUTOSCALER_STALE_SERVER_STATE_COOLDOWN_SECONDS:-45}"
 IGW_SOCKET_HEALTH_SCAN_SECONDS="${DUNE_AUTOSCALER_IGW_SOCKET_HEALTH_SCAN_SECONDS:-10}"
-IGW_SOCKET_STALL_SECONDS="${DUNE_AUTOSCALER_IGW_SOCKET_STALL_SECONDS:-30}"
+IGW_SOCKET_STALL_SECONDS="${DUNE_AUTOSCALER_IGW_SOCKET_STALL_SECONDS:-120}"
 IGW_SOCKET_RX_QUEUE_THRESHOLD="${DUNE_AUTOSCALER_IGW_SOCKET_RX_QUEUE_THRESHOLD:-1048576}"
+IGW_SOCKET_DROP_GRACE_SECONDS="${DUNE_AUTOSCALER_IGW_SOCKET_DROP_GRACE_SECONDS:-30}"
 IGW_SOCKET_RECOVERY_COOLDOWN_SECONDS="${DUNE_AUTOSCALER_IGW_SOCKET_RECOVERY_COOLDOWN_SECONDS:-600}"
+IGW_SOCKET_EVIDENCE_LOG="${DUNE_AUTOSCALER_IGW_SOCKET_EVIDENCE_LOG:-runtime/logs/igw-socket-watchdog.log}"
 
 # Convert a docker-logs-style duration ("30s", "10m", "1h", or a bare integer
 # already in seconds) into whole seconds, so a scan's interval can be checked
 # against the log window it reads.
 duration_to_seconds() {
   local value="$1"
+  local amount
+
+  [[ "$value" =~ ^([1-9][0-9]*)([smh]?)$ ]] || return 1
+  amount="${BASH_REMATCH[1]}"
   case "$value" in
-    *h) echo $(( ${value%h} * 3600 )) ;;
-    *m) echo $(( ${value%m} * 60 )) ;;
-    *s) echo "${value%s}" ;;
-    *) echo "$value" ;;
+    *h) echo $((amount * 3600)) ;;
+    *m) echo $((amount * 60)) ;;
+    *) echo "$amount" ;;
   esac
+}
+
+validate_log_window() {
+  local var_name="$1"
+  local value="$2"
+  local default_value="$3"
+  local seconds
+
+  if ! seconds="$(duration_to_seconds "$value")" || [ "$seconds" -le 1 ]; then
+    echo "Invalid ${var_name}; using ${default_value}." >&2
+    value="$default_value"
+  fi
+  echo "$value"
 }
 
 # Validate a *_SCAN_SECONDS override: fall back to the default on a
@@ -77,11 +110,170 @@ validate_scan_seconds() {
   echo "$value"
 }
 
+SINCE="$(validate_log_window DUNE_AUTOSCALER_LOG_SINCE "$SINCE" 30s)"
+NAMED_DESTINATION_SINCE="$(validate_log_window DUNE_AUTOSCALER_NAMED_DESTINATION_LOG_SINCE "$NAMED_DESTINATION_SINCE" 10m)"
 SINCE_SECONDS="$(duration_to_seconds "$SINCE")"
 NAMED_DESTINATION_SINCE_SECONDS="$(duration_to_seconds "$NAMED_DESTINATION_SINCE")"
+
+# All production scanners share one stream. The unset branch also lets isolated
+# function harnesses supply their existing Docker fixtures without a daemon.
+director_logs() {
+  if [ -n "${DIRECTOR_LOG_CACHE_FILE:-}" ]; then
+    python3 runtime/scripts/director-log-cache.py read "$DIRECTOR_LOG_CACHE_FILE" "$@"
+  else
+    docker logs "$@" dune-director
+  fi
+}
+
+director_logs_available() {
+  [ -z "${DIRECTOR_LOG_CACHE_FILE:-}" ] || director_logs --since 1s >/dev/null 2>&1
+}
+
+# For a log-reading scan that has already passed director_heal_due: with the log follower down or
+# stale, defer instead of reading an empty log, and give the scan interval back so the next pass
+# retries at once instead of after a full interval. (The follower replays the retention window when
+# it reconnects, but a scan only looks back SINCE; an interval spent on an empty read is an interval
+# of events that is never looked at.) Usage: director_logs_or_defer <scan key> || return 0
+director_logs_or_defer() {
+  director_logs_available && return 0
+  director_heal_clear "scan:$1" 2>/dev/null || true
+  return 1
+}
+
+# The EXIT trap removes this process's cache directory, but a SIGKILL, an OOM kill
+# or a crash loop skips it and leaves up to ~10 minutes of Director log lines on
+# disk (0700/0600, still log data) with nothing to remove them (#1164). A live
+# follower writes its heartbeat about once a second, so a directory with no file
+# touched for 30 minutes belongs to a process that is gone.
+sweep_orphan_director_log_caches() {
+  local dir recent find_status minutes=30
+  for dir in runtime/generated/director-log-cache.*; do
+    [ -d "$dir" ] && [ ! -L "$dir" ] || continue
+    [ "$dir" != "${DIRECTOR_LOG_CACHE_DIR:-}" ] || continue
+    # Best effort, never fatal: this runs at startup under `set -e`, and a leftover this user
+    # cannot read or delete (for example a root-owned one from a manual run) must not turn into
+    # an autoscaler that exits and restart-loops. A directory that cannot be inspected is left
+    # alone rather than assumed stale.
+    find_status=0
+    recent="$(find "$dir" -mmin "-$minutes" -print -quit 2>/dev/null)" || find_status=$?
+    [ "$find_status" = 0 ] || continue
+    [ -z "$recent" ] || continue
+    echo "Removing orphaned Director log cache $dir (untouched for ${minutes}m)"
+    rm -rf -- "$dir" 2>/dev/null || echo "WARN could not remove $dir; leaving it in place" >&2
+  done
+}
+
+start_director_log_cache() {
+  sweep_orphan_director_log_caches
+  DIRECTOR_LOG_CACHE_DIR="$(mktemp -d runtime/generated/director-log-cache.XXXXXX)"
+  DIRECTOR_LOG_CACHE_FILE="$DIRECTOR_LOG_CACHE_DIR/recent.sqlite"
+  SURVIVAL_TARGET_FILE="$DIRECTOR_LOG_CACHE_DIR/survival-target.json"
+  ensure_director_log_cache
+  refresh_survival_target_file
+  trap 'stop_director_log_cache' EXIT
+  trap 'exit 143' TERM
+  trap 'exit 130' INT
+}
+
+ensure_director_log_cache() {
+  [ -z "${DIRECTOR_LOG_CACHE_PID:-}" ] || ! kill -0 "$DIRECTOR_LOG_CACHE_PID" 2>/dev/null || return 0
+  local retention="$NAMED_DESTINATION_SINCE_SECONDS"
+  [ "$retention" -ge "$SINCE_SECONDS" ] || retention="$SINCE_SECONDS"
+  [ "$retention" -ge 600 ] || retention=600
+  python3 runtime/scripts/director-log-cache.py follow "$DIRECTOR_LOG_CACHE_FILE" \
+    --retention "$retention" --parent "$$" &
+  DIRECTOR_LOG_CACHE_PID=$!
+}
+
+# Keeps the Survival_1 target (partition, port, IP of the first ready server) that
+# follow_director_hagga_handoffs hands to players current. Written by follow_survival_target
+# on its own cadence (SURVIVAL_TARGET_REFRESH_SECONDS), not once per pass of the serial main
+# loop, so how stale a grant can be is bounded no matter how long a pass takes.
+#   - the query ran and found a ready Survival_1: write it (atomically);
+#   - the query ran and found none (status 2): remove the file, so the consumer skips events
+#     instead of answering with an endpoint that is gone;
+#   - the query itself failed (database blip): keep the last good file for up to
+#     SURVIVAL_TARGET_MAX_STALE_SECONDS (60) so a short outage does not drop every handoff, then
+#     remove it;
+#   - a failed write is reported, never fatal: this file is read by one consumer, it is not
+#     worth ending the autoscaler (`set -e`) for.
+refresh_survival_target_file() {
+  local json tmp status=0 age
+  [ -n "${SURVIVAL_TARGET_FILE:-}" ] || return 0
+  # Bounded: without a timeout a hung query would block this loop before the age check below ever ran,
+  # leaving the last target on disk indefinitely (review #1197). A timeout is status 1, a failed query.
+  json="$(DUNE_PSQL_TIMEOUT_SECONDS="${SURVIVAL_TARGET_QUERY_TIMEOUT_SECONDS:-10}" survival_partition_target_json 2>/dev/null)" || status=$?
+  if [ "$status" = 0 ] && [ -n "$json" ]; then
+    tmp="$SURVIVAL_TARGET_FILE.tmp"
+    if ! { printf '%s\n' "$json" >"$tmp" && mv -f "$tmp" "$SURVIVAL_TARGET_FILE"; } 2>/dev/null; then
+      rm -f "$tmp" 2>/dev/null || true
+      echo "WARN could not write $SURVIVAL_TARGET_FILE; keeping the previous Survival_1 target" >&2
+    fi
+    return 0
+  fi
+  if [ "$status" = 2 ]; then
+    rm -f "$SURVIVAL_TARGET_FILE" 2>/dev/null || true
+    return 0
+  fi
+  if [ -e "$SURVIVAL_TARGET_FILE" ]; then
+    age=$(( $(date +%s) - $(stat -c %Y "$SURVIVAL_TARGET_FILE" 2>/dev/null || echo 0) ))
+    if [ "$age" -gt "${SURVIVAL_TARGET_MAX_STALE_SECONDS:-60}" ]; then
+      rm -f "$SURVIVAL_TARGET_FILE" 2>/dev/null || true
+    fi
+  fi
+  return 0
+}
+
+follow_survival_target() {
+  while kill -0 "$$" 2>/dev/null; do
+    refresh_survival_target_file || echo "WARN Survival_1 target refresh failed; retrying"
+    sleep "${SURVIVAL_TARGET_REFRESH_SECONDS:-5}"
+  done
+}
+
+stop_director_log_cache() {
+  # Stop the Survival_1 target refresher FIRST: it rewrites survival-target.json every few seconds,
+  # and a write after the files are removed would make the rmdir below fail silently and leave a
+  # directory holding Survival_1 endpoint data behind (#1186).
+  if [ -n "${SURVIVAL_TARGET_PID:-}" ]; then
+    kill "$SURVIVAL_TARGET_PID" 2>/dev/null || true
+    wait "$SURVIVAL_TARGET_PID" 2>/dev/null || true
+  fi
+  kill "$DIRECTOR_LOG_CACHE_PID" 2>/dev/null || true
+  wait "$DIRECTOR_LOG_CACHE_PID" 2>/dev/null || true
+  # Killing the refresher stops its loop, but a `mv` it had already started can finish a moment
+  # later and recreate the file after the removal below, so retry briefly instead of trusting one
+  # pass (a hot-writer test hit this in 2 of 25 runs).
+  for _ in 1 2 3; do
+    rm -f "$DIRECTOR_LOG_CACHE_FILE" "$DIRECTOR_LOG_CACHE_FILE-wal" "$DIRECTOR_LOG_CACHE_FILE-shm" \
+      "${SURVIVAL_TARGET_FILE:-$DIRECTOR_LOG_CACHE_DIR/survival-target.json}" \
+      "${SURVIVAL_TARGET_FILE:-$DIRECTOR_LOG_CACHE_DIR/survival-target.json}.tmp"
+    rmdir "$DIRECTOR_LOG_CACHE_DIR" 2>/dev/null && break
+    sleep 0.1
+  done
+}
 PROACTIVE_HAGGA_SCAN_SECONDS="$(validate_scan_seconds DUNE_AUTOSCALER_PROACTIVE_HAGGA_SCAN_SECONDS "${DUNE_AUTOSCALER_PROACTIVE_HAGGA_SCAN_SECONDS:-15}" 15 "$SINCE_SECONDS")"
 DEEPDESERT_LOADING_SCAN_SECONDS="$(validate_scan_seconds DUNE_AUTOSCALER_DEEPDESERT_LOADING_SCAN_SECONDS "${DUNE_AUTOSCALER_DEEPDESERT_LOADING_SCAN_SECONDS:-15}" 15 "$SINCE_SECONDS")"
 NAMED_DESTINATION_SCAN_SECONDS="$(validate_scan_seconds DUNE_AUTOSCALER_NAMED_DESTINATION_SCAN_SECONDS "${DUNE_AUTOSCALER_NAMED_DESTINATION_SCAN_SECONDS:-60}" 60 "$NAMED_DESTINATION_SINCE_SECONDS")"
+# Deliberately its own interval, not a share of NAMED_DESTINATION_SCAN_SECONDS
+# (used by the unrelated scan_named_destination_failures): a player waiting on
+# a rejected story return to recover feels every second of this gate. Keep the
+# default at the existing fast-follower cadence: the live credits-loop fix
+# depends on recovery running before the paired synthetic story demand, so a
+# longer gate can reintroduce that race. Recovery runs only in the dedicated
+# fast follower, immediately before its paired travel-demand scan; the atomic
+# gate prevents duplicate invocations without letting the slower main loop
+# consume the recovery window.
+STORY_RETURN_RECOVERY_SCAN_SECONDS="$(validate_scan_seconds DUNE_AUTOSCALER_STORY_RETURN_RECOVERY_SCAN_SECONDS "${DUNE_AUTOSCALER_STORY_RETURN_RECOVERY_SCAN_SECONDS:-2}" 2 "$NAMED_DESTINATION_SINCE_SECONDS")"
+if [ "$STORY_RETURN_RECOVERY_SCAN_SECONDS" -gt 2 ]; then
+  echo "DUNE_AUTOSCALER_STORY_RETURN_RECOVERY_SCAN_SECONDS=${STORY_RETURN_RECOVERY_SCAN_SECONDS} exceeds the safe credits-return window; clamping to 2s." >&2
+  STORY_RETURN_RECOVERY_SCAN_SECONDS=2
+fi
+# The Survival_1 target refresher (#1163). A zero or non-numeric value would make its loop spin on the
+# database or never expire a stale target, so these are validated like the scan intervals (review #1197).
+SURVIVAL_TARGET_REFRESH_SECONDS="$(validate_scan_seconds SURVIVAL_TARGET_REFRESH_SECONDS "${SURVIVAL_TARGET_REFRESH_SECONDS:-5}" 5 0)"
+SURVIVAL_TARGET_MAX_STALE_SECONDS="$(validate_scan_seconds SURVIVAL_TARGET_MAX_STALE_SECONDS "${SURVIVAL_TARGET_MAX_STALE_SECONDS:-60}" 60 0)"
+SURVIVAL_TARGET_QUERY_TIMEOUT_SECONDS="$(validate_scan_seconds SURVIVAL_TARGET_QUERY_TIMEOUT_SECONDS "${SURVIVAL_TARGET_QUERY_TIMEOUT_SECONDS:-10}" 10 0)"
 AUTOSCALER_STARTED_AT="$(date +%s)"
 
 mkdir -p "$(dirname "$STATE_FILE")"
@@ -112,6 +304,7 @@ echo "IGW socket health scan: ${IGW_SOCKET_HEALTH_SCAN_SECONDS}s"
 echo "Proactive Hagga handoff scan: ${PROACTIVE_HAGGA_SCAN_SECONDS}s"
 echo "Deep Desert loading response scan: ${DEEPDESERT_LOADING_SCAN_SECONDS}s"
 echo "Named destination failure scan: ${NAMED_DESTINATION_SCAN_SECONDS}s"
+echo "Story return recovery scan: ${STORY_RETURN_RECOVERY_SCAN_SECONDS}s"
 echo "State file: ${STATE_FILE}"
 echo
 
@@ -124,10 +317,6 @@ if ! docker ps --format '{{.Names}}' | grep -qx dune-postgres; then
   echo "dune-postgres is not running."
   exit 1
 fi
-
-psql_value() {
-  docker exec dune-postgres psql -U postgres -d dune -Atc "$1"
-}
 
 hub_origin_id_for_map() {
   case "$1" in
@@ -193,30 +382,26 @@ publish_rmq_json() {
 
 replay_hagga_travel_handoff() {
   local flow_id="$1"
-  local source_map="$2"
-  local destination_name="$3"
-  local director_log_file origin_id origin_server_id replay_rows
+  local destination_name="$2"
+  local origin_server_id="$3"
+  local director_log_file replay_rows
 
   case "$destination_name" in
     Travel_To_HaggaBasin_*|Travel_To_Hagga_Basin_*) ;;
     *) return 0 ;;
   esac
 
-  origin_id="$(hub_origin_id_for_map "$source_map" 2>/dev/null || true)"
-  [ -n "$origin_id" ] || return 0
-  origin_server_id="$(origin_server_id_for_origin_id "$origin_id" 2>/dev/null || true)"
   [ -n "$origin_server_id" ] || return 0
 
   director_log_file="$(mktemp)"
-  docker logs --since "$NAMED_DESTINATION_SINCE" dune-director > "$director_log_file" 2>&1 || true
-  replay_rows="$(FLOW_ID="$flow_id" ORIGIN_ID="$origin_id" LOG_FILE="$director_log_file" python3 - <<'PY'
+  director_logs --since "$NAMED_DESTINATION_SINCE" > "$director_log_file" 2>/dev/null || true
+  replay_rows="$(FLOW_ID="$flow_id" LOG_FILE="$director_log_file" python3 - <<'PY'
 import base64
 import json
 import os
 import re
 
 flow_id = os.environ.get("FLOW_ID", "")
-origin_id = os.environ.get("ORIGIN_ID", "")
 log_file = os.environ.get("LOG_FILE", "")
 response_re = re.compile(r'Notified player\(s\) of travel response (\S+): (\{.*\})')
 grant_re = re.compile(r'Notified player of travel grant (\S+): (\{.*\})')
@@ -233,8 +418,6 @@ with open(log_file, encoding="utf-8", errors="replace") as f:
         ):
             match = regex.search(line)
             if not match:
-                continue
-            if match.group(1) != origin_id:
                 continue
             try:
                 payload = json.loads(match.group(2))
@@ -295,6 +478,37 @@ print("0")
 PY
 }
 
+director_map_max_parties() {
+  local map="$1"
+  local config_path="${DUNE_DIRECTOR_CONFIG_FILE:-runtime/director/config/director_config.ini}"
+
+  [ -r "$config_path" ] || return 1
+  awk -v target="$map" '
+    /^[[:space:]]*\[[^]]+\][[:space:]]*$/ {
+      section = $0
+      sub(/^[[:space:]]*\[/, "", section)
+      sub(/\][[:space:]]*$/, "", section)
+      next
+    }
+    section == target && /^[[:space:]]*MaxParties[[:space:]]*=/ {
+      value = $0
+      sub(/^[^=]*=[[:space:]]*/, "", value)
+      sub(/[[:space:]]*[;#].*$/, "", value)
+      sub(/[[:space:]]*$/, "", value)
+      print value
+      found = 1
+      exit
+    }
+    END { if (!found) exit 1 }
+  ' "$config_path"
+}
+
+map_requires_isolated_party_dimension() {
+  local max_parties
+  max_parties="$(director_map_max_parties "$1" 2>/dev/null)" || return 1
+  [ "$max_parties" = "1" ]
+}
+
 map_exists() {
   local map="$1"
   local safe
@@ -313,6 +527,61 @@ map_assigned_count() {
     from dune.world_partition
     where lower(map) = lower('$safe')
       and coalesce(server_id, '') <> '';
+  "
+}
+
+occupied_dimensions_for_map() {
+  local map="$1"
+  local safe
+  safe="${map//\'/\'\'}"
+
+  psql_value "
+    select count(distinct fs.server_id)
+    from dune.farm_state fs
+    join dune.world_partition wp
+      on wp.server_id = fs.server_id
+     and lower(wp.map) = lower('$safe')
+    where fs.map = '$safe'
+      and coalesce(fs.server_id, '') <> ''
+      and (
+        -- The world server's live connection count is authoritative. Story
+        -- activity player_state rows can remain Offline or point at Overmap
+        -- while the player is already active inside the instance.
+        coalesce(fs.connected_players, 0) > 0
+        or exists (
+          select 1
+          from dune.player_state ps
+          left join dune.actors pawn
+            on pawn.id = ps.player_pawn_id
+          left join dune.farm_state player_fs
+            on player_fs.server_id = ps.server_id
+          left join dune.world_partition previous_wp
+            on previous_wp.partition_id = ps.previous_server_partition_id
+          where (
+            ps.server_id = fs.server_id
+            or pawn.partition_id = wp.partition_id
+            or (
+              previous_wp.server_id = fs.server_id
+              and (
+                coalesce(ps.server_id, '') = ''
+                or player_fs.server_id is null
+                or ps.server_id <> fs.server_id
+              )
+            )
+          )
+            and (
+              ps.online_status <> 'Offline'
+              or (
+                ps.reconnect_grace_period_end is not null
+                and ps.reconnect_grace_period_end > (current_timestamp at time zone 'UTC')
+              )
+              or (
+                ps.last_avatar_activity is not null
+                and ps.last_avatar_activity > (current_timestamp - make_interval(secs => ${IDLE_SECONDS}))
+              )
+            )
+        )
+      );
   "
 }
 
@@ -349,11 +618,26 @@ PY
     return 0
   fi
 
+  if [ "$(map_uses_dedicated_scaling "$map")" = "1" ]; then
+    local dynamic_default="${DUNE_DYNAMIC_INSTANCE_MAX_DIMENSIONS:-5}"
+    [[ "$dynamic_default" =~ ^[1-9][0-9]*$ ]] || dynamic_default=5
+    echo "$dynamic_default"
+    return 0
+  fi
+
   psql_value "
     select count(*)
     from dune.world_partition
     where lower(map) = lower('${map//\'/\'\'}');
   "
+}
+
+ensure_dynamic_instance_partitions() {
+  local map="$1"
+  local wanted="$2"
+
+  [[ "$wanted" =~ ^[1-9][0-9]*$ ]] || return 1
+  timeout 20 runtime/scripts/sietches.sh ensure-pool "$map" "$wanted" >/dev/null 2>&1
 }
 
 active_dimensions_for_map() {
@@ -424,33 +708,52 @@ director_heal_set() {
   local key="$1"
   local value="$2"
   local tmp
-  tmp="$(mktemp)"
 
-  awk -F '\t' -v key="$key" '$1 != key { print }' "$DIRECTOR_HEAL_FILE" > "$tmp"
-  printf '%s\t%s\n' "$key" "$value" >> "$tmp"
-  mv "$tmp" "$DIRECTOR_HEAL_FILE"
+  (
+    flock -x 9
+    tmp="$(mktemp)"
+    awk -F '\t' -v key="$key" '$1 != key { print }' "$DIRECTOR_HEAL_FILE" > "$tmp"
+    printf '%s\t%s\n' "$key" "$value" >> "$tmp"
+    mv "$tmp" "$DIRECTOR_HEAL_FILE"
+  ) 9>"${DIRECTOR_HEAL_FILE}.lock"
 }
 
 director_heal_clear() {
   local key="$1"
   local tmp
-  tmp="$(mktemp)"
 
-  awk -F '\t' -v key="$key" '$1 != key { print }' "$DIRECTOR_HEAL_FILE" > "$tmp"
-  mv "$tmp" "$DIRECTOR_HEAL_FILE"
+  (
+    flock -x 9
+    tmp="$(mktemp)"
+    awk -F '\t' -v key="$key" '$1 != key { print }' "$DIRECTOR_HEAL_FILE" > "$tmp"
+    mv "$tmp" "$DIRECTOR_HEAL_FILE"
+  ) 9>"${DIRECTOR_HEAL_FILE}.lock"
 }
 
+# director_heal_due inlines its own set (rather than calling director_heal_set)
+# because both take the same flock -- a nested flock attempt on the same lock
+# file from within an already-held lock would deadlock. The check-then-set
+# sequence itself must be one atomic critical section, not two separate
+# locked operations. The state file is shared by the main loop and background
+# followers, so concurrent callers for any key must not both read the same
+# stale timestamp and claim the same due scan.
 director_heal_due() {
   local key="$1"
   local interval="$2"
-  local now last
+  local now last tmp
 
-  now="$(date +%s)"
-  last="$(director_heal_get "scan:${key}" 2>/dev/null || true)"
-  if [ -n "$last" ] && [ $((now - last)) -lt "$interval" ]; then
-    return 1
-  fi
-  director_heal_set "scan:${key}" "$now"
+  (
+    flock -x 9
+    now="$(date +%s)"
+    last="$(director_heal_get "scan:${key}" 2>/dev/null || true)"
+    if [ -n "$last" ] && [ $((now - last)) -lt "$interval" ]; then
+      exit 1
+    fi
+    tmp="$(mktemp)"
+    awk -F '\t' -v key="scan:${key}" '$1 != key { print }' "$DIRECTOR_HEAL_FILE" > "$tmp"
+    printf '%s\t%s\n' "scan:${key}" "$now" >> "$tmp"
+    mv "$tmp" "$DIRECTOR_HEAL_FILE"
+  ) 9>"${DIRECTOR_HEAL_FILE}.lock"
 }
 
 repair_chat_exchanges_due() {
@@ -618,18 +921,45 @@ remember_demand_event() {
   ) 9>"${DEMAND_EVENT_FILE}.lock"
 }
 
-hub_container_for_map() {
-  case "$1" in
-    SH_Arrakeen) echo "dune-server-sh-arrakeen-3" ;;
-    SH_HarkoVillage) echo "dune-server-sh-harkovillage-4" ;;
-    Story_ProcesVerbal) echo "dune-server-story-procesverbal-9" ;;
-    *) return 1 ;;
-  esac
+named_destination_source_maps() {
+  printf '%s\n' \
+    SH_Arrakeen \
+    SH_HarkoVillage \
+    Story_ProcesVerbal \
+    CB_Story_DestroyedZanovar \
+    CB_Story_OrbitalMonitor
+}
+
+named_destination_source_rows() {
+  local map_list rows map_name partition_id server_id container
+
+  map_list="$(named_destination_source_maps | sed "s/'/''/g; s/.*/'&'/" | paste -sd, -)"
+  rows="$(psql_value "
+    select wp.map || '|' || wp.partition_id || '|' || coalesce(wp.server_id, '')
+    from dune.world_partition wp
+    join dune.farm_state fs on fs.server_id = wp.server_id
+    where wp.map in (${map_list})
+      and coalesce(wp.server_id, '') <> ''
+      and coalesce(fs.alive, false) = true
+    order by wp.map, wp.partition_id;
+  ")"
+
+  while IFS='|' read -r map_name partition_id server_id; do
+    [ -n "${map_name:-}" ] || continue
+    [ -n "${partition_id:-}" ] || continue
+    [ -n "${server_id:-}" ] || continue
+    container="$(dynamic_container_name_for_partition "$partition_id" 2>/dev/null || true)"
+    [ -n "$container" ] || continue
+    printf '%s|%s|%s\n' "$map_name" "$container" "$server_id"
+  done <<< "$rows"
 }
 
 hub_travel_seen() {
   local flow_id="$1"
-  awk -F '\t' -v flow="$flow_id" '$1 == flow { found=1; exit } END { exit(found ? 0 : 1) }' "$HUB_TRAVEL_FILE"
+  (
+    flock -s 9
+    awk -F '\t' -v flow="$flow_id" '$1 == flow { found=1; exit } END { exit(found ? 0 : 1) }' "$HUB_TRAVEL_FILE"
+  ) 9>"${HUB_TRAVEL_FILE}.lock"
 }
 
 remember_hub_travel() {
@@ -638,12 +968,17 @@ remember_hub_travel() {
   local source_map="$3"
   local destination_map="$4"
   local ts="$5"
-  local tmp
+  local tmp cutoff
 
-  tmp="$(mktemp)"
-  awk -F '\t' -v flow="$flow_id" '$1 != flow { print }' "$HUB_TRAVEL_FILE" > "$tmp"
-  printf '%s\t%s\t%s\t%s\t%s\n' "$flow_id" "$account_id" "$source_map" "$destination_map" "$ts" >> "$tmp"
-  mv "$tmp" "$HUB_TRAVEL_FILE"
+  cutoff=$((ts - HUB_TRAVEL_RETENTION_SECONDS))
+  (
+    flock -x 9
+    tmp="$(mktemp)"
+    awk -F '\t' -v flow="$flow_id" -v cutoff="$cutoff" \
+      '$1 != flow && $5 ~ /^[0-9]+$/ && $5 >= cutoff { print }' "$HUB_TRAVEL_FILE" > "$tmp"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$flow_id" "$account_id" "$source_map" "$destination_map" "$ts" >> "$tmp"
+    mv "$tmp" "$HUB_TRAVEL_FILE"
+  ) 9>"${HUB_TRAVEL_FILE}.lock"
 }
 
 deepdesert_travel_seen() {
@@ -676,80 +1011,17 @@ forget_deepdesert_travel() {
   mv "$tmp" "$DEEPDESERT_TRAVEL_FILE"
 }
 
-prepare_deepdesert_travel_actors() {
-  local player_id="$1" target_partition="$2"
-  local player_sql partition_sql prepared
-
-  [ -n "$player_id" ] || return 0
-  [ -n "$target_partition" ] || return 0
-  printf '%s' "$target_partition" | grep -Eq '^[0-9]+$' || return 0
-
-  player_sql="${player_id//\'/\'\'}"
-  partition_sql="$target_partition"
-
-  prepared="$(psql_value "
-    with matched_player as (
-      select ps.player_pawn_id
-      from dune.player_state ps
-      left join dune.accounts ac on ac.id = ps.account_id
-      left join dune.encrypted_accounts ea on ea.id = ps.account_id
-      where ps.character_state::text = 'Active'
-        and (
-          ac.\"user\" = '${player_sql}'
-          or ac.funcom_id = '${player_sql}'
-          or convert_from(ea.encrypted_funcom_id, 'UTF8') = '${player_sql}'
-          or coalesce(ea.\"user\"::text, '') = '${player_sql}'
-        )
-      order by ps.online_status::text = 'Online' desc, ps.last_login_time desc nulls last
-      limit 1
-    ),
-    linked_vehicle as (
-      select mp.player_pawn_id, op.vehicle_id
-      from matched_player mp
-      join dune.overmap_players op on op.player_id = mp.player_pawn_id
-      join dune.actors vehicle_actor on vehicle_actor.id = op.vehicle_id
-      join dune.vehicles v on v.id = op.vehicle_id
-      where vehicle_actor.map = 'DeepDesert'
-        and vehicle_actor.partition_id = ${partition_sql}
-        and vehicle_actor.transform is not null
-      limit 1
-    ),
-    actor_ids as (
-      select player_pawn_id as actor_id from linked_vehicle
-      union
-      select vehicle_id as actor_id from linked_vehicle
-    ),
-    inserted as (
-      insert into dune.actor_state(actor_id, state)
-      select actor_id, 'Travel'::dune.actorstate
-      from actor_ids
-      on conflict (actor_id) do nothing
-      returning actor_id
-    )
-    select count(*) from inserted;
-  " 2>/dev/null | tr -d '\r[:space:]' || true)"
-
-  if [ -n "$prepared" ] && [ "$prepared" != "0" ]; then
-    echo "DEEPDESERT-ACTORS-PREPARED player=${player_id:0:4}... partition=$target_partition actor_state_rows=$prepared"
-  fi
-}
-
 deepdesert_target_json() {
   local target_partition="${1:-}"
-  DUNE_DEEPDESERT_TARGET_PARTITION="$target_partition" python3 - <<'PY'
-import json
-import os
-import subprocess
+  local partition_clause=""
+  local row
 
-target_partition = os.environ.get("DUNE_DEEPDESERT_TARGET_PARTITION", "").strip()
-partition_clause = ""
-if target_partition:
-    try:
-        partition_clause = f"  and wp.partition_id = {int(target_partition)}\n"
-    except ValueError:
-        raise SystemExit(1)
+  if [ -n "$target_partition" ]; then
+    [[ "$target_partition" =~ ^[0-9]+$ ]] || return 1
+    partition_clause="  and wp.partition_id = $target_partition"
+  fi
 
-sql = f"""
+  row="$(dune_psql -AtF '|' -c "
 select
   wp.partition_id,
   coalesce(wp.dimension_index, 0),
@@ -761,20 +1033,18 @@ select
 from dune.world_partition wp
 join dune.farm_state fs on fs.server_id = wp.server_id
 where wp.map = 'DeepDesert_1'
-{partition_clause}\
+$partition_clause
 order by wp.dimension_index, wp.partition_id
 limit 1;
-"""
-proc = subprocess.run(
-    ["docker", "exec", "dune-postgres", "psql", "-U", "postgres", "-d", "dune", "-AtF", "|", "-c", sql],
-    capture_output=True,
-    text=True,
-    check=False,
-)
-row = proc.stdout.strip()
-if not row:
-    raise SystemExit(1)
-partition_id, dimension, port, ip, ready, alive, server_id = row.split("|", 6)
+")" || return 1
+  [ -n "$row" ] || return 1
+
+  DUNE_DEEPDESERT_TARGET_ROW="$row" python3 - <<'PY'
+import json
+import os
+
+partition_id, dimension, port, ip, ready, alive, server_id = \
+    os.environ["DUNE_DEEPDESERT_TARGET_ROW"].strip().split("|", 6)
 print(json.dumps({
     "partition_id": int(partition_id),
     "dimension": int(dimension),
@@ -788,11 +1058,9 @@ PY
 }
 
 survival_partition_target_json() {
-  python3 - <<'PY'
-import json
-import subprocess
+  local row
 
-sql = """
+  row="$(dune_psql -AtF '|' -c "
 select
   wp.partition_id,
   coalesce(wp.dimension_index, 0),
@@ -805,17 +1073,16 @@ where wp.map = 'Survival_1'
   and fs.alive = true
 order by wp.partition_id
 limit 1;
-"""
-proc = subprocess.run(
-    ["docker", "exec", "dune-postgres", "psql", "-U", "postgres", "-d", "dune", "-AtF", "|", "-c", sql],
-    capture_output=True,
-    text=True,
-    check=False,
-)
-row = proc.stdout.strip()
-if not row:
-    raise SystemExit(1)
-partition_id, dimension, port, ip = row.split("|", 3)
+")" || return 1
+  # 2 = the query ran and found no ready Survival_1; 1 = the query itself failed.
+  [ -n "$row" ] || return 2
+
+  DUNE_SURVIVAL_TARGET_ROW="$row" python3 - <<'PY'
+import json
+import os
+
+partition_id, dimension, port, ip = \
+    os.environ["DUNE_SURVIVAL_TARGET_ROW"].strip().split("|", 3)
 print(json.dumps({
     "partition_id": int(partition_id),
     "dimension": int(dimension),
@@ -829,12 +1096,13 @@ scan_proactive_hagga_handoffs() {
   local director_log_file proactive_rows target_json
 
   director_heal_due proactive_hagga "$PROACTIVE_HAGGA_SCAN_SECONDS" || return 0
+  director_logs_or_defer proactive_hagga || return 0
 
   target_json="$(survival_partition_target_json 2>/dev/null || true)"
   [ -n "$target_json" ] || return 0
 
   director_log_file="$(mktemp)"
-  docker logs --since "$SINCE" dune-director > "$director_log_file" 2>&1 || true
+  director_logs --since "$SINCE" > "$director_log_file" 2>/dev/null || true
   proactive_rows="$(TARGET_JSON="$target_json" LOG_FILE="$director_log_file" python3 - <<'PY'
 import json
 import os
@@ -926,18 +1194,39 @@ PY
 
 follow_director_hagga_handoffs() {
   while true; do
-    docker logs -f --since 0s dune-director 2>&1 | TARGET_JSON="$(survival_partition_target_json 2>/dev/null || true)" python3 -u - <<'PY' | while IFS='|' read -r flow_id origin_id payload_json; do
+    python3 runtime/scripts/director-log-cache.py stream "$DIRECTOR_LOG_CACHE_FILE" --parent "$$" 2>/dev/null | TARGET_FILE="${SURVIVAL_TARGET_FILE:-}" TARGET_MAX_STALE_SECONDS="${SURVIVAL_TARGET_MAX_STALE_SECONDS:-60}" python3 -u /dev/fd/3 3<<'PY' | while IFS='|' read -r flow_id origin_id payload_json; do
 import json
 import os
 import re
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 
 target_json = os.environ.get("TARGET_JSON", "")
-if not target_json:
+target_file = os.environ.get("TARGET_FILE", "")
+if not target_json and not target_file:
     raise SystemExit(0)
 
-target = json.loads(target_json)
+
+def current_target():
+    # The stream outlives Director restarts (unlike the `docker logs -f` pipe it
+    # replaced), and a Director restart also restarts Survival_1, so the target
+    # is re-read for every event instead of once at start (#1163). A missing or
+    # unreadable file means there is no ready Survival_1 right now: skip the
+    # event rather than hand a player a stale endpoint.
+    if target_file:
+        try:
+            # The refresher rewrites this every few seconds. An older file means the refresher is not
+            # running or is stuck, so the endpoint may be gone: skip rather than hand it to a player.
+            max_stale = int(os.environ.get("TARGET_MAX_STALE_SECONDS", "60") or 60)
+            if time.time() - os.stat(target_file).st_mtime > max_stale:
+                return None
+            with open(target_file, encoding="utf-8") as handle:
+                return json.loads(handle.read())
+        except (OSError, ValueError):
+            return None
+    return json.loads(target_json)
+
 response_re = re.compile(r'Notified player\(s\) "([^"]+)" of travel response (SH_Arrakeen3|SH_HarkoVillage4|Overmap2): (\{.*\})')
 
 for line in sys.stdin:
@@ -956,6 +1245,9 @@ for line in sys.stdin:
         continue
     flow_id = payload.get("RequestID") or ""
     if not flow_id:
+        continue
+    target = current_target()
+    if not target:
         continue
     response_payload = dict(payload)
     response_payload["MapName"] = "HaggaBasin"
@@ -1018,9 +1310,10 @@ scan_deepdesert_loading_responses() {
   local director_log_file pending_rows now
 
   director_heal_due deepdesert_loading "$DEEPDESERT_LOADING_SCAN_SECONDS" || return 0
+  director_logs_or_defer deepdesert_loading || return 0
 
   director_log_file="$(mktemp)"
-  docker logs --since "$SINCE" dune-director > "$director_log_file" 2>&1 || true
+  director_logs --since "$SINCE" > "$director_log_file" 2>/dev/null || true
   pending_rows="$(LOG_FILE="$director_log_file" python3 - <<'PY'
 import json
 import os
@@ -1070,6 +1363,7 @@ PY
     local origin_server_id target_json response_json
     origin_server_id="$(origin_server_id_for_origin_id "$origin_id" 2>/dev/null || true)"
     [ -n "$origin_server_id" ] || continue
+    map_is_disabled "DeepDesert_1" && continue
     if [ -n "${target_partition:-}" ]; then
       target_json="$(deepdesert_target_json "$target_partition" 2>/dev/null || true)"
     else
@@ -1084,6 +1378,9 @@ PY
       target_json="$(deepdesert_target_json "$target_partition" 2>/dev/null || true)"
     fi
     if [ -z "$target_json" ] && [ -z "${target_partition:-}" ]; then
+      # Older responses omit the destination. Only this response handler may
+      # choose a fallback; generic map demand cannot identify the right dimension.
+      runtime/scripts/spawn-server.sh DeepDesert_1 || continue
       target_json="$(deepdesert_target_json 2>/dev/null || true)"
     fi
     [ -n "$target_json" ] || continue
@@ -1198,12 +1495,6 @@ from pathlib import Path
 print(json.dumps(json.loads(Path("/tmp/deepdesert-progress.json").read_text())["grant"], separators=(",", ":"), ensure_ascii=False))
 PY
 )"
-      prepare_deepdesert_travel_actors "$player_id" "$(TARGET_JSON="$target_json" python3 - <<'PY'
-import json
-import os
-print(json.loads(os.environ["TARGET_JSON"])["partition_id"])
-PY
-)"
       publish_rmq_json "heartbeats" "$origin_server_id" "$grant_json" "travel-grant-dd-${flow_id}" || true
       echo "DEEPDESERT-GRANT flow=$flow_id origin=$origin_id server=$origin_server_id"
       forget_deepdesert_travel "$flow_id"
@@ -1289,152 +1580,185 @@ map_has_active_presence() {
   [ "$(map_effective_player_count "$map" | tr -d '[:space:]')" != "0" ]
 }
 
-igw_receive_queue_bytes() {
+igw_socket_sample() {
   local container="$1"
   local port="$2"
-  local port_hex rx_hex total=0
+  local port_hex rx_hex drop_count total_queue=0 total_drops=0
 
   [[ "$port" =~ ^[0-9]+$ ]] || return 1
   port_hex="$(printf '%04X' "$port")"
 
-  while IFS= read -r rx_hex; do
+  while IFS='|' read -r rx_hex drop_count; do
     [ -n "$rx_hex" ] || continue
     rx_hex="${rx_hex^^}"
     [[ "$rx_hex" =~ ^[0-9A-F]+$ ]] || continue
-    total=$((total + 16#$rx_hex))
+    [[ "$drop_count" =~ ^[0-9]+$ ]] || drop_count=0
+    total_queue=$((total_queue + 16#$rx_hex))
+    total_drops=$((total_drops + drop_count))
   done < <(
-    timeout --kill-after=1s 5s docker exec "$container" sh -c \
-      'cat /proc/net/udp /proc/net/udp6 2>/dev/null' 2>/dev/null \
+    igw_socket_table "$container" \
       | awk -v port="$port_hex" '
           $2 ~ (":" port "$") {
             split($5, queue, ":")
-            print queue[2]
+            print queue[2] "|" $NF
           }
         '
   )
 
-  printf '%s\n' "$total"
+  printf '%s|%s\n' "$total_queue" "$total_drops"
 }
 
-core_map_igw_port() {
-  local map="$1"
-  local safe="${map//\'/\'\'}"
+core_container_igw_port() {
+  local container="$1"
 
-  psql_value "
-    select coalesce(igw_port::text, '')
-    from dune.farm_state
-    where map = '$safe'
-      and coalesce(alive, false) = true
-      and igw_port is not null
-    order by ready desc, server_id
-    limit 1;
-  " | tr -d '\r[:space:]'
+  docker inspect -f '{{range .Config.Cmd}}{{println .}}{{end}}' "$container" 2>/dev/null \
+    | sed -n 's/^-ini:engine:\[URL\]:IGWPort=//p' \
+    | tail -1 \
+    | tr -d '\r[:space:]'
 }
 
 core_map_is_reported_ready() {
   local map="$1"
+  local port="$2"
   local safe="${map//\'/\'\'}"
 
   [ "$(psql_value "
     select count(*)
     from dune.farm_state
     where map = '$safe'
+      and igw_port = $port
       and coalesce(alive, false) = true
       and coalesce(ready, false) = true;
   " | tr -d '\r[:space:]')" != "0" ]
 }
 
-recover_deadlocked_core_map() {
+clear_igw_socket_observation() {
   local map="$1"
-  local container partition
+  local key
 
-  case "$map" in
-    Survival_1)
-      container="dune-server-survival-1"
-      partition="1"
-      runtime/scripts/start-server-survival-1.sh >/dev/null 2>&1
-      ;;
-    Overmap)
-      container="dune-server-overmap"
-      partition="2"
-      runtime/scripts/start-server-overmap.sh >/dev/null 2>&1
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-
-  wait_for_core_map_ready "$container" "$partition" || return 1
-  publish_state_for_map "$map"
+  for key in \
+    "igw-stall:${map}" \
+    "igw-last-drop:${map}" \
+    "igw-queue:${map}" \
+    "igw-drops:${map}" \
+    "igw-generation:${map}"; do
+    director_heal_clear "$key"
+  done
 }
 
-wait_for_core_map_ready() {
-  local container="$1"
-  local partition="$2"
-  local started_at attempt logs
+record_igw_socket_evidence() {
+  local level="$1"
+  local map="$2"
+  local container="$3"
+  local generation="$4"
+  local port="$5"
+  local queue="$6"
+  local drops="$7"
+  local first_seen="$8"
+  local last_drop="$9"
+  local message
 
-  started_at="$(docker inspect -f '{{.State.StartedAt}}' "$container" 2>/dev/null || true)"
-  [ -n "$started_at" ] || return 1
-
-  for attempt in $(seq 1 90); do
-    logs="$(timeout --kill-after=1s 8s docker logs --since "$started_at" --tail 5000 "$container" 2>&1 || true)"
-    if grep -Eq "Server farm is READY .*partition ${partition}([,[:space:]]|$)" <<<"$logs"; then
-      return 0
-    fi
-    if ! docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null | grep -qx true; then
-      return 1
-    fi
-    sleep 2
-  done
-
-  return 1
+  mkdir -p "$(dirname "$IGW_SOCKET_EVIDENCE_LOG")"
+  message="$(date -u +%Y-%m-%dT%H:%M:%SZ) level=$level map=$map container=$container generation=$generation port=$port rx_queue_bytes=$queue drops=$drops first_blocked_at=${first_seen:-none} last_drop_at=${last_drop:-none}"
+  printf '%s\n' "$message" >>"$IGW_SOCKET_EVIDENCE_LOG"
+  printf '%s\n' "$message"
 }
 
 scan_core_igw_socket_health() {
-  local now container map port queue first_seen age last_recovery players
-  local first_key recovery_key
+  local now container map port sample queue drops generation saved_generation
+  local first_seen last_drop previous_queue previous_drops decision age last_recovery players
+  local first_key last_drop_key queue_key drops_key generation_key recovery_key deferred_key
 
   director_heal_due igw_socket_health "$IGW_SOCKET_HEALTH_SCAN_SECONDS" || return 0
   now="$(date +%s)"
 
   while IFS='|' read -r container map; do
     first_key="igw-stall:${map}"
+    last_drop_key="igw-last-drop:${map}"
+    queue_key="igw-queue:${map}"
+    drops_key="igw-drops:${map}"
+    generation_key="igw-generation:${map}"
     recovery_key="igw-recovery:${map}"
+    deferred_key="igw-recovery-deferred:${map}"
 
     if ! docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null | grep -qx true; then
-      director_heal_clear "$first_key"
+      clear_igw_socket_observation "$map"
+      continue
+    fi
+
+    generation="$(docker inspect -f '{{.State.StartedAt}}' "$container" 2>/dev/null || true)"
+    saved_generation="$(director_heal_get "$generation_key" 2>/dev/null || true)"
+    if [ -z "$generation" ] || [ "$generation" != "$saved_generation" ]; then
+      clear_igw_socket_observation "$map"
+      [ -n "$generation" ] && director_heal_set "$generation_key" "$generation"
+    fi
+
+    port="$(core_container_igw_port "$container" 2>/dev/null || true)"
+    if ! [[ "$port" =~ ^[0-9]+$ ]]; then
+      clear_igw_socket_observation "$map"
       continue
     fi
 
     # A large queue is expected while a core map is still loading and cannot
     # consume normal S2S traffic yet. Only a map that has already advertised
     # itself as ready can regress into the deadlock this watchdog repairs.
-    if ! core_map_is_reported_ready "$map"; then
-      director_heal_clear "$first_key"
+    if ! core_map_is_reported_ready "$map" "$port"; then
+      clear_igw_socket_observation "$map"
       continue
     fi
 
-    port="$(core_map_igw_port "$map" 2>/dev/null || true)"
-    if ! [[ "$port" =~ ^[0-9]+$ ]]; then
-      director_heal_clear "$first_key"
-      continue
-    fi
-
-    queue="$(igw_receive_queue_bytes "$container" "$port" 2>/dev/null || true)"
-    if ! [[ "$queue" =~ ^[0-9]+$ ]] || [ "$queue" -lt "$IGW_SOCKET_RX_QUEUE_THRESHOLD" ]; then
-      director_heal_clear "$first_key"
+    sample="$(igw_socket_sample "$container" "$port" 2>/dev/null || true)"
+    IFS='|' read -r queue drops <<<"$sample"
+    if ! [[ "$queue" =~ ^[0-9]+$ && "$drops" =~ ^[0-9]+$ ]]; then
+      clear_igw_socket_observation "$map"
       continue
     fi
 
     first_seen="$(director_heal_get "$first_key" 2>/dev/null || true)"
-    if ! [[ "$first_seen" =~ ^[0-9]+$ ]]; then
-      echo "WARN IGW receive queue stalled map=$map port=$port bytes=$queue action=confirm"
-      director_heal_set "$first_key" "$now"
+    last_drop="$(director_heal_get "$last_drop_key" 2>/dev/null || true)"
+    previous_queue="$(director_heal_get "$queue_key" 2>/dev/null || true)"
+    previous_drops="$(director_heal_get "$drops_key" 2>/dev/null || true)"
+    IFS='|' read -r decision first_seen last_drop < <(
+      igw_socket_evidence_decision \
+        "$IGW_SOCKET_RX_QUEUE_THRESHOLD" \
+        "$IGW_SOCKET_STALL_SECONDS" \
+        "$IGW_SOCKET_DROP_GRACE_SECONDS" \
+        "$now" \
+        "$first_seen" \
+        "$last_drop" \
+        "$previous_queue" \
+        "$previous_drops" \
+        "$queue" \
+        "$drops"
+    )
+
+    if [ "$decision" = "clear" ]; then
+      clear_igw_socket_observation "$map"
+      director_heal_clear "$deferred_key"
+      continue
+    fi
+
+    director_heal_set "$generation_key" "$generation"
+    director_heal_set "$queue_key" "$queue"
+    director_heal_set "$drops_key" "$drops"
+    if [[ "$first_seen" =~ ^[0-9]+$ ]]; then
+      director_heal_set "$first_key" "$first_seen"
+    else
+      director_heal_clear "$first_key"
+    fi
+    if [[ "$last_drop" =~ ^[0-9]+$ ]]; then
+      director_heal_set "$last_drop_key" "$last_drop"
+    else
+      director_heal_clear "$last_drop_key"
+    fi
+
+    if [ "$decision" = "draining" ] || [ "$decision" = "baseline" ]; then
+      director_heal_clear "$deferred_key"
       continue
     fi
 
     age=$((now - first_seen))
-    if [ "$age" -lt "$IGW_SOCKET_STALL_SECONDS" ]; then
+    if [ "$decision" != "recover" ]; then
       continue
     fi
 
@@ -1443,14 +1767,38 @@ scan_core_igw_socket_health() {
       continue
     fi
 
-    players="$(map_effective_player_count "$map" 2>/dev/null | tr -d '[:space:]' || true)"
+    players="$(battlegroup_effective_player_count 2>/dev/null | tr -d '[:space:]' || true)"
     [[ "$players" =~ ^[0-9]+$ ]] || players="unknown"
-    echo "HEAL deadlocked core map=$map port=$port rx_queue_bytes=$queue stalled_seconds=$age players=$players action=map-restart"
-    director_heal_set "$recovery_key" "$now"
-    director_heal_clear "$first_key"
-    if ! recover_deadlocked_core_map "$map"; then
-      echo "ERROR failed to recover deadlocked core map=$map"
+    if [ "$players" = "unknown" ] || [ "$players" -gt 0 ]; then
+      if ! director_heal_get "$deferred_key" >/dev/null 2>&1; then
+        record_igw_socket_evidence DEFERRED "$map" "$container" "$generation" "$port" "$queue" "$drops" "$first_seen" "$last_drop"
+        echo "DEFER confirmed IGW socket deadlock map=$map port=$port rx_queue_bytes=$queue drops=$drops stalled_seconds=$age online_players=$players action=coordinated-game-farm-restart"
+        director_heal_set "$deferred_key" "$now"
+      fi
+      continue
     fi
+
+    # Never replace one core map beneath a live farm. Funcom peers can retain
+    # the old topology, then crash in DuneWorldPartitioner when leadership is
+    # recalculated. The separate coordinator survives the Autoscaler shutdown
+    # performed by restart-game-farm.sh and rebuilds every world map against
+    # one consistent Director/farm generation.
+    if ! docker inspect -f '{{.State.Running}}' dune-coriolis-coordinator 2>/dev/null | grep -qx true; then
+      record_igw_socket_evidence BLOCKED "$map" "$container" "$generation" "$port" "$queue" "$drops" "$first_seen" "$last_drop"
+      echo "ERROR deadlocked core map=$map action=coordinated-game-farm-restart coordinator=unavailable"
+      continue
+    fi
+    record_igw_socket_evidence RECOVERING "$map" "$container" "$generation" "$port" "$queue" "$drops" "$first_seen" "$last_drop"
+    echo "HEAL confirmed IGW socket deadlock map=$map port=$port rx_queue_bytes=$queue drops=$drops stalled_seconds=$age online_players=0 action=coordinated-game-farm-restart"
+    if ! docker exec -d dune-coriolis-coordinator bash -lc \
+      'mkdir -p runtime/logs && runtime/scripts/restart-game-farm.sh igw-socket-deadlock >> runtime/logs/igw-socket-recovery.log 2>&1'; then
+      echo "ERROR deadlocked core map=$map action=coordinated-game-farm-restart request=failed"
+      continue
+    fi
+    director_heal_set "$recovery_key" "$now"
+    clear_igw_socket_observation "$map"
+    director_heal_clear "$deferred_key"
+    return 0
   done <<'EOF'
 dune-server-survival-1|Survival_1
 dune-server-overmap|Overmap
@@ -1635,6 +1983,8 @@ handle_demand() {
   local map="$1"
   local num="$2"
   local event_id="${3:-}"
+  local demand_source="${4:-request}"
+  local instancing_mode="${5:-}"
   local dedicated_scaling
   local now
 
@@ -1671,25 +2021,10 @@ handle_demand() {
   running="$(container_count_for_map "$map")"
 
   if [ "$map" = "DeepDesert_1" ]; then
-    local desired_active current_active
-    desired_active="$(active_dimensions_for_map "$map" | tr -d '[:space:]')"
-    [ -n "$desired_active" ] || desired_active=1
-    current_active="$assigned"
-    if [ "${running:-0}" -gt "${current_active:-0}" ] 2>/dev/null; then
-      current_active="$running"
-    fi
-    if [ "$current_active" -gt 0 ] 2>/dev/null; then
-      echo "OK   demand map=$map num=$num target=existing assigned=$assigned containers=$running"
-      remember_demand_event "$event_id" "$map" "$now"
-      return 0
-    fi
-
-    echo "SPAWN demand map=$map num=$num target=single assigned=$assigned containers=$running"
-
-    runtime/scripts/spawn-server.sh "$map" || {
-      echo "ERROR failed to spawn $map"
-      return 0
-    }
+    # A Dimension request may target any configured Deep Desert partition.
+    # Spawning by map here races the response handler and starts the first
+    # unassigned dimension even when the player requested a different one.
+    echo "WAIT demand map=$map num=$num target=travel-response"
     remember_demand_event "$event_id" "$map" "$now"
     return 0
   fi
@@ -1701,6 +2036,43 @@ handle_demand() {
   dedicated_scaling="$(map_uses_dedicated_scaling "$map")"
 
   if [ "$dedicated_scaling" = "1" ]; then
+    # ClassicalInstancing is the Director's authoritative indication that
+    # each queued party needs separate capacity. Keep the configured policy
+    # fallback for recovery paths that do not originate from a travel event.
+    if [ "$instancing_mode" = "ClassicalInstancing" ] || map_requires_isolated_party_dimension "$map"; then
+      local occupied max_dimensions desired capacity
+      occupied="$(occupied_dimensions_for_map "$map")"
+      max_dimensions="$(max_dimensions_for_map "$map")"
+      [[ "$occupied" =~ ^[0-9]+$ ]] || occupied=0
+      [[ "$max_dimensions" =~ ^[1-9][0-9]*$ ]] || max_dimensions=1
+
+      # Party-isolated activity maps admit one party per dimension. A new
+      # request needs one dimension in addition to those already occupied;
+      # a queue summary reports every solo player still waiting. Count warming
+      # containers as capacity so repeated summaries cannot fill every
+      # configured dimension while the requested server is starting.
+      desired=$((occupied + num))
+      [ "$desired" -le "$max_dimensions" ] || desired="$max_dimensions"
+      if ! ensure_dynamic_instance_partitions "$map" "$desired"; then
+        echo "ERROR failed to prepare instance dimensions map=$map desired=$desired"
+        return 0
+      fi
+      capacity="$assigned"
+      [ "$running" -le "$capacity" ] || capacity="$running"
+
+      if [ "$capacity" -ge "$desired" ]; then
+        echo "OK   demand map=$map num=$num source=$demand_source capacity=$capacity desired=$desired occupied=$occupied"
+        return 0
+      fi
+
+      echo "SPAWN demand map=$map num=$num source=$demand_source capacity=$capacity desired=$desired occupied=$occupied"
+      runtime/scripts/spawn-server.sh "$map" || {
+        echo "ERROR failed to spawn $map"
+        return 0
+      }
+      return 0
+    fi
+
     if [ "$assigned" != "0" ] || [ "$running" != "0" ]; then
       echo "OK   demand map=$map num=$num already running/assigned assigned=$assigned containers=$running"
       return 0
@@ -1736,11 +2108,12 @@ handle_demand() {
 
 handle_idle_row() {
   local map="$1"
-  local server_id="$2"
-  local connected_players="$3"
-  local effective_players="$4"
-  local ready="$5"
-  local alive="$6"
+  local partition_id="$2"
+  local server_id="$3"
+  local connected_players="$4"
+  local effective_players="$5"
+  local ready="$6"
+  local alive="$7"
 
   case "$map" in
     Survival_1|Overmap)
@@ -1751,6 +2124,14 @@ handle_idle_row() {
   local key idle_seconds
   key="$(state_key "$map" "$server_id")"
   idle_seconds="$(idle_seconds_for_map "$map")"
+
+  # Always On maps are owned by the reconciler, not the idle lifecycle.  The
+  # old path allowed the idle scanner to tear down empty Always On dimensions
+  # after the grace period while the reconciler tried to put them back.
+  if ! map_is_dynamic "$map" && ! map_is_overmap_active "$map"; then
+    clear_idle_since "$key"
+    return 0
+  fi
 
   if [ "$connected_players" != "0" ] || [ "$effective_players" != "0" ] || ! [[ "${ready,,}" =~ ^(t|true|1|yes|y)$ ]] || ! [[ "${alive,,}" =~ ^(t|true|1|yes|y)$ ]]; then
     # Once the destination has observed its player, the inbound allocation
@@ -1769,11 +2150,20 @@ handle_idle_row() {
     return 0
   fi
 
+  local now since age
+  now="$(date +%s)"
+
   if ! map_requires_fresh_process "$map"; then
-    local remaining
+    local remaining mode_elapsed
     remaining="$(map_dynamic_grace_remaining "$map" | tr -d '[:space:]')"
     if [ "${remaining:-0}" -gt 0 ] 2>/dev/null; then
-      clear_idle_since "$key"
+      # Count an already-empty map's idle time from the mode change.  Clearing
+      # this state here made an Always On -> Dynamic transition wait the mode
+      # grace and then a second full idle grace before it could despawn.
+      if ! get_idle_since "$key" >/dev/null 2>&1; then
+        mode_elapsed=$((DESPAWN_GRACE_SECONDS - remaining))
+        set_idle_since "$key" $((now - mode_elapsed))
+      fi
       return 0
     fi
   fi
@@ -1782,9 +2172,6 @@ handle_idle_row() {
     clear_idle_since "$key"
     return 0
   fi
-
-  local now since age
-  now="$(date +%s)"
 
   if since="$(get_idle_since "$key" 2>/dev/null)"; then
     age=$((now - since))
@@ -1797,7 +2184,7 @@ handle_idle_row() {
 
   if [ "$age" -ge "$idle_seconds" ]; then
     echo "DESPAWN idle map=$map server=$server_id idle=${age}s"
-    runtime/scripts/despawn-server.sh "$map" || true
+    runtime/scripts/despawn-server.sh "$partition_id" || true
     clear_idle_since "$key"
   fi
 }
@@ -1847,16 +2234,14 @@ ensure_overmap_travel_maps_prewarmed() {
 }
 
 scan_named_destination_failures() {
-  local source_map container log_file handoff_rows running_containers
+  local source_map container source_server_id log_file handoff_rows
 
   director_heal_due named_destination_failures "$NAMED_DESTINATION_SCAN_SECONDS" || return 0
 
-  running_containers="$(docker ps --format '{{.Names}}')"
-
-  for source_map in SH_Arrakeen SH_HarkoVillage Story_ProcesVerbal; do
-    container="$(hub_container_for_map "$source_map" 2>/dev/null || true)"
-    [ -n "$container" ] || continue
-    printf '%s\n' "$running_containers" | grep -qx "$container" || continue
+  while IFS='|' read -r source_map container source_server_id; do
+    [ -n "${source_map:-}" ] || continue
+    [ -n "${container:-}" ] || continue
+    [ -n "${source_server_id:-}" ] || continue
 
     log_file="$(mktemp)"
     docker logs --since "$NAMED_DESTINATION_SINCE" "$container" > "$log_file" 2>&1 || true
@@ -1976,14 +2361,6 @@ PY
           return_dimension_index = $target_dimension
         where account_id = $account_id;
 
-        delete from dune.travel_return_info
-        where player_controller_id in (
-          select id
-          from dune.actors
-          where owner_account_id = $account_id
-            and class = '/Game/Dune/Characters/Player/BP_DunePlayerController.BP_DunePlayerController_C'
-        );
-
         do \$\$
         declare
           respawn_identity_column text;
@@ -2015,12 +2392,331 @@ PY
       " >/dev/null
 
       timeout 20 runtime/scripts/publish-network-server-state-overrides.sh map "$target_map" >/dev/null 2>&1 || true
-      replay_hagga_travel_handoff "$flow_id" "$source_map" "$destination_name"
+      replay_hagga_travel_handoff "$flow_id" "$destination_name" "$source_server_id"
 
       remember_hub_travel "$flow_id" "$account_id" "$source_map" "$target_map" "$(date +%s)"
       echo "NAMED-TRAVEL account=$account_id flow=$flow_id destination=$destination_name from=$source_map to=$target_map current_map=$current_map server=$target_server_id cleaned_respawns=$target_respawn_map"
     done <<< "$handoff_rows"
-  done
+  done < <(named_destination_source_rows)
+}
+
+scan_rejected_story_returns() {
+  local director_log_file rejected_rows completed_rows
+
+  director_heal_due rejected_story_returns "$STORY_RETURN_RECOVERY_SCAN_SECONDS" || return 0
+  # Only the login-request half of this scan reads the Director log. The completed-credits recovery
+  # further down is database-only and must keep running while the follower is down (#1190), so
+  # skip just the read instead of returning early.
+  local logs_available=1
+  director_logs_available || logs_available=0
+
+  director_log_file="$(mktemp)"
+  if [ "$logs_available" = 1 ]; then
+    director_logs --timestamps --since "$NAMED_DESTINATION_SINCE" > "$director_log_file" 2>/dev/null || true
+  fi
+  rejected_rows="$(LOG_FILE="$director_log_file" python3 - <<'PY'
+import os
+import re
+
+log_file = os.environ["LOG_FILE"]
+login_re = re.compile(
+    r'Handling LoginRequest request in LoginRequest \{ RequestID = ([A-F0-9]+), '
+    r'Player = Player \{ Id = ([A-F0-9]+), TargetDimension = ([0-9]+) \}'
+)
+refusal_re = re.compile(
+    r'Player ([A-F0-9]+) requested WorldPartition \{ '
+    r'PartitionId = ([0-9]+), ServerId = ([A-Za-z0-9_+\-/]+), Map = (Survival_1|Overmap), .*?'
+    r'DimensionIndex = ([0-9]+), .*?\}\. Teleport not allowed, returning to WorldPartition \{ '
+    r'PartitionId = ([0-9]+), ServerId = ([A-Za-z0-9_+\-/]*), '
+    r'Map = (CB_Story_(?:DestroyedZanovar|OrbitalMonitor)), .*?'
+    r'DimensionIndex = ([0-9]+), .*?\}, setting return dimension to ([0-9]+)\.'
+)
+
+pending_logins = {}
+
+with open(log_file, encoding="utf-8", errors="replace") as f:
+    for line in f:
+        login = login_re.search(line)
+        if login:
+            request_id, player_id, target_dimension = login.groups()
+            pending_logins[player_id] = (request_id, target_dimension)
+            continue
+
+        refusal = refusal_re.search(line)
+        if not refusal:
+            continue
+
+        (
+            player_id,
+            target_partition,
+            target_server,
+            target_map,
+            target_dimension,
+            source_partition,
+            source_server,
+            source_map,
+            source_dimension,
+            return_dimension,
+        ) = refusal.groups()
+        login = pending_logins.get(player_id)
+        if not login or login[1] != target_dimension or return_dimension != target_dimension:
+            continue
+
+        print("|".join((
+            login[0],
+            player_id,
+            target_partition,
+            target_server,
+            target_map,
+            target_dimension,
+            source_partition,
+            source_server,
+            source_map,
+            source_dimension,
+        )))
+PY
+  )"
+  rm -f "$director_log_file"
+
+  # Completed credits maps mark the player offline before the client submits
+  # its next LoginRequest. Recover during that window so the Director sees the
+  # pawn in the game-owned return destination on the first request; otherwise
+  # suppressing the synthetic story demand correctly prevents the loop but
+  # leaves the client waiting on a queue it must cancel manually.
+  #
+  # The normal final-scene flow returns through Overland before the player
+  # continues to Hagga. travel_return_info is authoritative when present. A
+  # legacy player can be missing that row, but overmap_players still preserves
+  # the exact Overland position; use that rather than inventing Survival_1 and
+  # skipping the game's normal vehicle-aware Overland handoff.
+  completed_rows="$(psql_value "
+    select
+      'COMPLETED-' || ps.account_id || '-' || source_wp.partition_id || '|' ||
+      a.\"user\" || '|' ||
+      target_wp.partition_id || '|' ||
+      target_wp.server_id || '|' ||
+      target_wp.map || '|' ||
+      coalesce(target_wp.dimension_index, 0) || '|' ||
+      source_wp.partition_id || '|' ||
+      source_wp.server_id || '|' ||
+      source_wp.map || '|' ||
+      coalesce(source_wp.dimension_index, 0)
+    from dune.accounts a
+    join dune.player_state ps on ps.account_id = a.id
+    join dune.actors pawn on pawn.id = ps.player_pawn_id
+    join dune.world_partition source_wp
+      on source_wp.partition_id = pawn.partition_id
+     and source_wp.map in ('CB_Story_DestroyedZanovar', 'CB_Story_OrbitalMonitor')
+     and coalesce(source_wp.server_id, '') <> ''
+    join dune.farm_state source_fs
+      on source_fs.server_id = source_wp.server_id
+     and source_fs.ready = true
+     and source_fs.alive = true
+    join dune.journey_story_node completed_story
+      on completed_story.character_id = ps.id
+     and completed_story.story_node_id = case source_wp.map
+       when 'CB_Story_DestroyedZanovar' then 'DA_MQ_TheGreatConventionPt3.DestroyedZanovar'
+       when 'CB_Story_OrbitalMonitor' then 'DA_MQ_TheGreatConventionPt3.FourtyFears'
+     end
+     and completed_story.complete_condition_state = 'true'::jsonb
+    left join dune.travel_return_info tri
+      on tri.player_controller_id = ps.player_controller_id
+    left join dune.overmap_players op
+      on op.player_id = ps.player_pawn_id
+    join dune.world_partition target_wp
+      on dune.upgrade_map_name(target_wp.map) = dune.upgrade_map_name(
+        case
+          when op.player_id is not null then 'Overmap'
+          else tri.map
+        end
+      )
+     and coalesce(target_wp.dimension_index, 0) = case
+       when op.player_id is not null then 0
+       else coalesce(ps.return_dimension_index, 0)
+     end
+     and coalesce(target_wp.server_id, '') <> ''
+    join dune.farm_state target_fs
+      on target_fs.server_id = target_wp.server_id
+     and target_fs.ready = true
+     and target_fs.alive = true
+    where ps.online_status = 'Offline';
+  ")"
+  if [ -n "$completed_rows" ]; then
+    rejected_rows="${completed_rows}${rejected_rows:+$'\n'}${rejected_rows}"
+  fi
+
+  while IFS='|' read -r request_id funcom_id target_partition target_server target_map target_dimension source_partition source_server source_map _source_dimension; do
+    [ -n "${request_id:-}" ] || continue
+    hub_travel_seen "$request_id" && continue
+
+    local account_id source_server_predicate initial_source_predicate official_overmap_row
+    source_server_predicate="false"
+    initial_source_predicate="ps.previous_server_partition_id = $source_partition"
+    if [ -n "$source_server" ]; then
+      source_server_predicate="ps.server_id = '$source_server'"
+      initial_source_predicate="($source_server_predicate or $initial_source_predicate)"
+    fi
+
+    # A post-credits login can still name the player's last Survival target
+    # even though the completed mission's normal continuation is Overland.
+    # Prefer Overmap only when the exact story completion, pawn source, saved
+    # Overland position, and ready destination all agree. This preserves the
+    # game's Overland -> Hagga vehicle flow instead of skipping it.
+    official_overmap_row="$(psql_value "
+      select
+        target_wp.partition_id || '|' ||
+        target_wp.server_id || '|' ||
+        target_wp.map || '|' ||
+        coalesce(target_wp.dimension_index, 0)
+      from dune.accounts a
+      join dune.player_state ps on ps.account_id = a.id
+      join dune.actors pawn
+        on pawn.id = ps.player_pawn_id
+       and pawn.partition_id = $source_partition
+      join dune.world_partition source_wp
+        on source_wp.partition_id = pawn.partition_id
+       and source_wp.map = '$source_map'
+      join dune.journey_story_node completed_story
+        on completed_story.character_id = ps.id
+       and completed_story.story_node_id = case source_wp.map
+         when 'CB_Story_DestroyedZanovar' then 'DA_MQ_TheGreatConventionPt3.DestroyedZanovar'
+         when 'CB_Story_OrbitalMonitor' then 'DA_MQ_TheGreatConventionPt3.FourtyFears'
+       end
+       and completed_story.complete_condition_state = 'true'::jsonb
+      join dune.overmap_players op on op.player_id = ps.player_pawn_id
+      join dune.world_partition target_wp on target_wp.map = 'Overmap'
+      join dune.farm_state target_fs
+        on target_fs.server_id = target_wp.server_id
+       and target_fs.ready = true
+       and target_fs.alive = true
+      where a.\"user\" = '$funcom_id'
+      order by target_wp.partition_id
+      limit 1;
+    ")"
+    if [ -n "$official_overmap_row" ]; then
+      IFS='|' read -r target_partition target_server target_map target_dimension <<< "$official_overmap_row"
+    fi
+
+    account_id="$(psql_value "
+      select a.id
+      from dune.accounts a
+      join dune.player_state ps on ps.account_id = a.id
+      join dune.world_partition target_wp
+        on target_wp.partition_id = $target_partition
+       and target_wp.server_id = '$target_server'
+       and target_wp.map = '$target_map'
+       and coalesce(target_wp.dimension_index, 0) = $target_dimension
+      join dune.farm_state target_fs
+        on target_fs.server_id = target_wp.server_id
+       and target_fs.ready = true
+       and target_fs.alive = true
+      where a.\"user\" = '$funcom_id'
+        and (ps.server_id = '$target_server' or $initial_source_predicate)
+      limit 1;
+    ")"
+    [ -n "$account_id" ] || continue
+
+    local recovery_result moved_row moved_account_id recovery_source traveling_actor_count traveling_vehicle_count moved_partition
+    recovery_result="$(psql_value "
+      set search_path to dune, public;
+      with eligible as (
+        select
+          ps.account_id,
+          ps.player_pawn_id,
+          case
+            when target_wp.map = 'Overmap' and op.player_id is not null then row(
+              op.overmap_location,
+              (pawn.transform).rotation
+            )::dune.transform
+            when tri.player_controller_id is not null then tri.transform
+          end as return_transform,
+          case
+            when target_wp.map = 'Overmap' and op.player_id is not null then 'saved-overmap'
+            when tri.player_controller_id is not null then 'saved-return'
+          end as recovery_source,
+          coalesce(op.has_polar_psu, false) as has_polar_psu,
+          (
+            select count(*)
+            from dune.get_traveling_actor_ids(ps.player_pawn_id)
+          ) as traveling_actor_count,
+          (
+            select count(*)
+            from dune.get_traveling_actor_ids(ps.player_pawn_id) traveling(id, is_instigator, level)
+            join dune.vehicles vehicle on vehicle.id = traveling.id
+          ) as traveling_vehicle_count
+        from dune.player_state ps
+        join dune.actors pawn on pawn.id = ps.player_pawn_id
+        left join dune.travel_return_info tri on tri.player_controller_id = ps.player_controller_id
+        left join dune.overmap_players op on op.player_id = ps.player_pawn_id
+        join dune.world_partition target_wp
+          on target_wp.partition_id = $target_partition
+         and target_wp.server_id = '$target_server'
+         and target_wp.map = '$target_map'
+         and coalesce(target_wp.dimension_index, 0) = $target_dimension
+        join dune.farm_state target_fs
+          on target_fs.server_id = target_wp.server_id
+         and target_fs.ready = true
+         and target_fs.alive = true
+        where ps.account_id = $account_id
+          and pawn.partition_id = $source_partition
+          and (
+            (
+              target_wp.map = 'Overmap'
+              and op.overmap_location is not null
+            )
+            or
+            (
+              tri.player_controller_id is not null
+              and dune.upgrade_map_name(tri.map) = dune.upgrade_map_name(target_wp.map)
+            )
+          )
+          and dune.is_player_offline('$funcom_id')
+      )
+      select eligible.account_id || '|' || eligible.recovery_source || '|' ||
+        eligible.traveling_actor_count || '|' || eligible.traveling_vehicle_count || '|' ||
+        coalesce(length(overmap_saved.saved::text), 0)
+      from eligible
+      cross join lateral (
+        select coalesce(
+          array_agg(moved_actor.out_id::text || ':' || moved_actor.out_actor_state),
+          array[]::text[]
+        ) as invalid_states
+        from dune.update_traveling_actor_tree(
+          eligible.player_pawn_id,
+          eligible.return_transform,
+          dune.upgrade_map_name('$target_map'),
+          $target_dimension,
+          $target_partition
+        ) moved_actor
+      ) travel_move
+      cross join lateral (
+        select case
+          when '$target_map' = 'Overmap' then dune.overmap_save_player_survival_data(
+            eligible.player_pawn_id,
+            eligible.has_polar_psu,
+            (eligible.return_transform).location
+          )
+          else null
+        end as saved
+      ) overmap_saved
+      where cardinality(travel_move.invalid_states) = 0;
+    ")"
+    moved_row="$(tail -n 1 <<< "$recovery_result")"
+    IFS='|' read -r moved_account_id recovery_source traveling_actor_count traveling_vehicle_count _overmap_saved <<< "$moved_row"
+    [ "$moved_account_id" = "$account_id" ] || continue
+
+    moved_partition="$(psql_value "
+      select pawn.partition_id
+      from dune.player_state ps
+      join dune.actors pawn on pawn.id = ps.player_pawn_id
+      where ps.account_id = $account_id
+      limit 1;
+    ")"
+    [ "$moved_partition" = "$target_partition" ] || continue
+
+    remember_hub_travel "$request_id" "$account_id" "$source_map" "$target_map" "$(date +%s)"
+    echo "STORY-RETURN account=$account_id request=$request_id action=moved-travel-tree location=$recovery_source traveling_actors=${traveling_actor_count:-0} traveling_vehicles=${traveling_vehicle_count:-0} from=$source_map partition=$source_partition to=$target_map partition=$target_partition dimension=$target_dimension"
+  done <<< "$rejected_rows"
 }
 
 scan_idle_servers() {
@@ -2028,14 +2724,15 @@ scan_idle_servers() {
   local map_filter
 
   case "$scope" in
-    fresh-process) map_filter="and fs.map = 'CB_Overland_S_06'" ;;
-    standard) map_filter="and fs.map <> 'CB_Overland_S_06'" ;;
+    fresh-process) map_filter="and fs.map in ('CB_Overland_S_06', 'CB_Story_DestroyedZanovar', 'CB_Story_OrbitalMonitor')" ;;
+    standard) map_filter="and fs.map not in ('CB_Overland_S_06', 'CB_Story_DestroyedZanovar', 'CB_Story_OrbitalMonitor')" ;;
     *) echo "WARN invalid idle scan scope: $scope" >&2; return 1 ;;
   esac
 
-  docker exec dune-postgres psql -U postgres -d dune -At -F '|' -c "
+  dune_psql -At -F '|' -c "
     select
       fs.map,
+      wp.partition_id,
       fs.server_id,
       fs.connected_players,
       coalesce(ep.effective_players, 0) as effective_players,
@@ -2046,9 +2743,14 @@ scan_idle_servers() {
     left join lateral (
       select count(*) as effective_players
       from dune.player_state ps
+      left join dune.actors pawn on pawn.id = ps.player_pawn_id
       left join dune.farm_state pfs on pfs.server_id = ps.server_id
       where (
         ps.server_id = fs.server_id
+        or (
+          wp.partition_id is not null
+          and pawn.partition_id = wp.partition_id
+        )
         or (
           wp.partition_id is not null
           and ps.previous_server_partition_id = wp.partition_id
@@ -2075,10 +2777,11 @@ scan_idle_servers() {
       $map_filter
       and coalesce(fs.server_id, '') <> ''
     order by map;
-  " | while IFS='|' read -r map server_id connected_players effective_players ready alive; do
+  " | while IFS='|' read -r map partition_id server_id connected_players effective_players ready alive; do
     [ -z "${map:-}" ] && continue
+    [ -z "${partition_id:-}" ] && continue
     remember_server_id_map "$map" "$server_id"
-    handle_idle_row "$map" "$server_id" "$connected_players" "$effective_players" "$ready" "$alive"
+    handle_idle_row "$map" "$partition_id" "$server_id" "$connected_players" "$effective_players" "$ready" "$alive"
   done
 }
 
@@ -2093,7 +2796,7 @@ follow_fresh_process_lifecycle() {
 }
 
 scan_reconnect_demand() {
-  docker exec dune-postgres psql -U postgres -d dune -At -F '|' -c "
+  dune_psql -At -F '|' -c "
     select
       ps.account_id,
       coalesce(ps.server_id, ''),
@@ -2181,7 +2884,7 @@ scan_reconnect_demand() {
 }
 
 scan_live_player_partition_alignment() {
-  docker exec dune-postgres psql -U postgres -d dune -At -F '|' -c "
+  dune_psql -At -F '|' -c "
     select
       ps.account_id,
       ps.server_id,
@@ -2190,8 +2893,12 @@ scan_live_player_partition_alignment() {
       coalesce(ps.previous_server_partition_id::text, '')
     from dune.player_state ps
     join dune.world_partition wp on wp.server_id = ps.server_id
+    join dune.actors pawn
+      on pawn.id = ps.player_pawn_id
+     and pawn.partition_id = wp.partition_id
     where ps.online_status <> 'Offline'
       and coalesce(ps.server_id, '') <> ''
+      and wp.map not in ('CB_Story_DestroyedZanovar', 'CB_Story_OrbitalMonitor')
       and (
         ps.previous_server_partition_id is distinct from wp.partition_id
         or ps.return_dimension_index is distinct from wp.dimension_index
@@ -2222,11 +2929,22 @@ scan_live_player_partition_alignment() {
 scan_travel_demand() {
   local demand_rows
 
+  # No follower, no evidence: defer quietly (the caller's `|| echo WARN` would otherwise print every
+  # DEMAND_INTERVAL for the whole outage, and this must not depend on that `||` to survive set -e).
+  director_logs_available || return 0
+
   demand_rows="$(
-    docker logs --since "$SINCE" dune-director 2>&1 | python3 -c '
+    # Timestamps make otherwise identical player requests distinct while
+    # keeping the same log occurrence stable across overlapping scan windows.
+    director_logs --timestamps --since "$SINCE" 2>/dev/null | python3 -c '
 import hashlib
 import re
 import sys
+
+story_return_refusal_pattern = re.compile(
+    r"Teleport not allowed, returning to WorldPartition \{ .*?"
+    r"Map = (CB_Story_(?:DestroyedZanovar|OrbitalMonitor)),"
+)
 
 classical_pattern = re.compile(
     r"Processing travel queue for ClassicalInstancing group ([A-Za-z0-9_]+) "
@@ -2234,22 +2952,34 @@ classical_pattern = re.compile(
 )
 request_pattern = re.compile(
     r"Received travel request for ([0-9]+) player\(s\) to ([A-Za-z0-9_]+) "
-    r"\(instancingMode=(?:ClassicalInstancing|Dimension)\)"
+    r"\(instancingMode=(ClassicalInstancing|Dimension)\)"
 )
 
 seen = set()
+rejected_story_demands = {}
 
 for line in sys.stdin:
+    refusal = story_return_refusal_pattern.search(line)
+    if refusal:
+        map_name = refusal.group(1)
+        rejected_story_demands[map_name] = rejected_story_demands.get(map_name, 0) + 1
+        continue
+
     match = classical_pattern.search(line)
     if match:
         map_name = match.group(1)
         num = int(match.group(2))
+        instancing_mode = "ClassicalInstancing"
         if map_name == "DeepDesert_1":
             continue
-        # Smugglers Run is handled from its original request below. Repeated
-        # queue summaries can arrive after the player is already connected and
-        # must not recreate a completed inbound-travel hold.
-        if map_name == "CB_Overland_S_06":
+        # Fresh-process maps are handled from their original request below.
+        # Repeated queue summaries can arrive after the player is already
+        # connected and must not recreate a completed inbound-travel hold.
+        if map_name in {
+            "CB_Overland_S_06",
+            "CB_Story_DestroyedZanovar",
+            "CB_Story_OrbitalMonitor",
+        }:
             continue
     else:
         match = request_pattern.search(line)
@@ -2257,6 +2987,16 @@ for line in sys.stdin:
             continue
         num = int(match.group(1))
         map_name = match.group(2)
+        instancing_mode = match.group(3)
+
+        # A login refusal for a pawn left in either credits story map is
+        # immediately followed by a generic Director demand for that same
+        # map. It is return traffic, not legitimate inbound story demand.
+        # Starting capacity for it races the offline recovery and lets the
+        # stale story grant move the pawn back after recovery reached Hagga.
+        if rejected_story_demands.get(map_name, 0) > 0:
+            rejected_story_demands[map_name] -= 1
+            continue
 
     if num <= 0:
         continue
@@ -2267,13 +3007,14 @@ for line in sys.stdin:
         continue
 
     seen.add(key)
-    print(f"{event_id}|{map_name}|{num}")
+    source = "queue" if classical_pattern.search(line) else "request"
+    print(f"{event_id}|{map_name}|{num}|{source}|{instancing_mode}")
 '
-  )"
+  )" || true
 
-  while IFS='|' read -r event_id map num; do
+  while IFS='|' read -r event_id map num demand_source instancing_mode; do
     [ -n "${map:-}" ] || continue
-    handle_demand "$map" "$num" "$event_id"
+    handle_demand "$map" "$num" "$event_id" "$demand_source" "$instancing_mode"
   done <<< "$demand_rows"
 }
 
@@ -2282,6 +3023,9 @@ for line in sys.stdin:
 # allocator watching this queue; keep the Docker equivalent independent too.
 follow_director_travel_demand() {
   while true; do
+    # Recover exact credits-return refusals before considering the generic
+    # map demand emitted by the Director for the same login attempt.
+    scan_rejected_story_returns || echo "WARN story return scan failed; retrying"
     scan_travel_demand || echo "WARN travel demand scan failed; retrying"
     sleep "$DEMAND_INTERVAL"
   done
@@ -2291,10 +3035,15 @@ scan_igwo_unavailable_maps() {
   local rows now map event_id last_seen assigned running
 
   director_heal_due igwo_unavailable "$IGWO_UNAVAILABLE_SCAN_SECONDS" || return 0
+  # Missing log evidence is not evidence of a problem. A down, reconnecting or
+  # stale follower must defer this scan, never end the autoscaler: this file
+  # runs under `set -euo pipefail`, so an unguarded failing reader inside a
+  # command substitution would exit the whole process (#1156).
+  director_logs_or_defer igwo_unavailable || return 0
   now="$(date +%s)"
 
   rows="$(
-    docker logs --since "$NAMED_DESTINATION_SINCE" dune-director 2>&1 | python3 -c '
+    director_logs --since "$NAMED_DESTINATION_SINCE" 2>/dev/null | python3 -c '
 import hashlib
 import re
 import sys
@@ -2314,7 +3063,7 @@ for line in sys.stdin:
     seen.add(key)
     print(f"{event_id}|{map_name}")
 '
-  )"
+  )" || true
 
   while IFS='|' read -r event_id map; do
     [ -n "${map:-}" ] || continue
@@ -2382,14 +3131,30 @@ publish_state_for_map() {
   esac
 }
 
+supervise_sietch_override_publisher() {
+  while true; do
+    # Keep the filtered Survival_1 stream in the Autoscaler's PID namespace so
+    # an unexpected publisher exit is noticed and restarted immediately. The
+    # publisher's EXIT cleanup restores the native route during the short gap.
+    runtime/scripts/publish-sietch-overrides.sh loop || true
+    echo "HEAL sietch-state-publisher action=restart"
+    sleep 2
+  done
+}
+
 scan_stale_server_state() {
   local rows now event_id partition_id map last_seen
 
   director_heal_due stale_server_state "$STALE_SERVER_STATE_SCAN_SECONDS" || return 0
+  # Missing log evidence is not evidence of a problem. A down, reconnecting or
+  # stale follower must defer this scan, never end the autoscaler: this file
+  # runs under `set -euo pipefail`, so an unguarded failing reader inside a
+  # command substitution would exit the whole process (#1156).
+  director_logs_or_defer stale_server_state || return 0
   now="$(date +%s)"
 
   rows="$(
-    docker logs --since "$SINCE" dune-director 2>&1 | python3 -c '
+    director_logs --since "$SINCE" 2>/dev/null | python3 -c '
 import hashlib
 import re
 import sys
@@ -2412,7 +3177,7 @@ for line in sys.stdin:
             print(f"{event_id}|{pending_partition}")
         pending_partition = None
 '
-  )"
+  )" || true
 
   while IFS='|' read -r event_id partition_id; do
     [ -n "${partition_id:-}" ] || continue
@@ -2437,17 +3202,22 @@ scan_unscoped_stale_server_state() {
   local count now last_seen map
 
   director_heal_due unscoped_stale_server_state "$STALE_SERVER_STATE_SCAN_SECONDS" || return 0
+  # Missing log evidence is not evidence of a problem. A down, reconnecting or
+  # stale follower must defer this scan, never end the autoscaler: this file
+  # runs under `set -euo pipefail`, so an unguarded failing reader inside a
+  # command substitution would exit the whole process (#1156).
+  director_logs_or_defer unscoped_stale_server_state || return 0
   now="$(date +%s)"
 
   count="$(
-    docker logs --since "$SINCE" dune-director 2>&1 | python3 -c '
+    director_logs --since "$SINCE" 2>/dev/null | python3 -c '
 import re
 import sys
 
 stale_pattern = re.compile(r"The last server state.s reportTimestamp is older than 60 seconds!")
 print(sum(1 for line in sys.stdin if stale_pattern.search(line)))
 '
-  )"
+  )" || true
 
   [ "${count:-0}" -gt 0 ] || return 0
 
@@ -2464,7 +3234,7 @@ print(sum(1 for line in sys.stdin if stale_pattern.search(line)))
 }
 
 director_live_server_rows() {
-  docker exec dune-postgres psql -U postgres -d dune -At -F '|' -c "
+  dune_psql -At -F '|' -c "
     select map, server_id
     from dune.farm_state
     where map in ('Survival_1', 'Overmap', 'DeepDesert_1')
@@ -2476,7 +3246,7 @@ director_live_server_rows() {
 }
 
 director_latest_capacity() {
-  docker logs --since 10m dune-director 2>&1 \
+  director_logs --since 10m 2>/dev/null \
     | python3 -c '
 import json
 import re
@@ -2509,7 +3279,7 @@ director_logs_contain_live_ids() {
   # (for example, "+" becomes "\\u002B"). Normalize those escapes before
   # comparing log text with the literal IDs stored in farm_state.
   logs="$(
-    docker logs --since 10m dune-director 2>&1 \
+    director_logs --since 10m 2>/dev/null \
       | python3 runtime/scripts/decode-log-unicode-escapes.py \
       || true
   )"
@@ -2548,9 +3318,18 @@ EOF
 
 scan_director_browser_state() {
   local rows ready_count capacity now first_seen core_ready_since last_restart age since_restart
-  local republish_at republish_age online_players restart_deferred restart_pending
+  local republish_at republish_age online_players restart_deferred
 
   director_heal_due browser_state "$DIRECTOR_BROWSER_SCAN_SECONDS" || return 0
+
+  # Missing log evidence is not proof of stale publication. In particular,
+  # never let a failed/reconnecting follower trigger a disruptive farm heal.
+  if ! director_logs_available; then
+    director_heal_clear stale_since
+    director_heal_clear browser_republish_at
+    director_heal_clear browser_restart_deferred
+    return 0
+  fi
 
   # Capacity can legitimately remain zero while the core maps are still
   # registering during stack startup or after a controlled Director refresh.
@@ -2655,25 +3434,21 @@ scan_director_browser_state() {
     fi
   fi
 
-  # One automatic restart is enough while people are connected. If that
-  # restart did not restore publication, preserve their sessions and leave a
-  # clear diagnostic instead of repeatedly recycling Survival_1. Track this
-  # recovery incident separately from the general restart cooldown so an old,
-  # successful recovery never prevents the first restart of a new incident.
-  restart_pending="$(director_heal_get browser_restart_pending 2>/dev/null || true)"
-  if [ -n "$restart_pending" ]; then
-    online_players="$(battlegroup_effective_player_count 2>/dev/null | tr -d '[:space:]' || true)"
-    if ! [[ "$online_players" =~ ^[0-9]+$ ]]; then
-      online_players="unknown"
+  # Restarting Director also replaces Survival_1. Never run that disruptive
+  # recovery while a player is active (or while occupancy cannot be proved).
+  # Republishing above remains safe to perform while players are connected;
+  # the restart will be retried automatically after the battlegroup is empty.
+  online_players="$(battlegroup_effective_player_count 2>/dev/null | tr -d '[:space:]' || true)"
+  if ! [[ "$online_players" =~ ^[0-9]+$ ]]; then
+    online_players="unknown"
+  fi
+  if [ "$online_players" = "unknown" ] || [ "$online_players" -gt 0 ]; then
+    restart_deferred="$(director_heal_get browser_restart_deferred 2>/dev/null || true)"
+    if [ -z "$restart_deferred" ]; then
+      echo "DEFER director stale browser state action=restart online_players=$online_players"
+      director_heal_set browser_restart_deferred "$now"
     fi
-    if [ "$online_players" = "unknown" ] || [ "$online_players" -gt 0 ]; then
-      restart_deferred="$(director_heal_get browser_restart_deferred 2>/dev/null || true)"
-      if [ -z "$restart_deferred" ]; then
-        echo "DEFER director stale browser state action=restart online_players=$online_players previous_restart_at=$restart_pending"
-        director_heal_set browser_restart_deferred "$now"
-      fi
-      return 0
-    fi
+    return 0
   fi
 
   echo "HEAL director stale browser state action=restart capacity=${capacity:-unknown} ready_maps=$ready_count republish_age=$republish_age"
@@ -2682,19 +3457,23 @@ scan_director_browser_state() {
     return 0
   }
   director_heal_set last_restart "$now"
-  director_heal_set browser_restart_pending "$now"
   director_heal_clear stale_since
   director_heal_clear browser_republish_at
   director_heal_clear browser_restart_deferred
 }
 
+start_director_log_cache
 follow_director_hagga_handoffs &
+follow_survival_target &
+SURVIVAL_TARGET_PID=$!
 follow_director_travel_demand &
 follow_fresh_process_lifecycle &
+supervise_sietch_override_publisher &
 reconcile_always_on_maps
 repair_chat_exchanges_due
 
 while true; do
+  ensure_director_log_cache
   reconcile_always_on_maps
   scan_deepdesert_loading_responses
   ensure_overmap_travel_maps_prewarmed

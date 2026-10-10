@@ -1,8 +1,9 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useEffect } from "react";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { Task } from "../../api/setup";
 import { liveMapApi } from "../../api/liveMap";
-import { LiveMapPanel, mergeLiveMapRows } from "./LiveMapPanel";
+import { LiveMapPanel, liveMapMarkerMatchesSearch, mergeLiveMapRows } from "./LiveMapPanel";
 
 function fakeTask(status: Task["status"]): Task {
   return {
@@ -19,6 +20,39 @@ function fakeTask(status: Task["status"]): Task {
     errorMessage: null
   };
 }
+
+// The real component needs WebGL2, which jsdom has not got, so it would always
+// fall back. `ready` is controllable because the panel now keeps the flat image
+// up until the canvas reports it has something to paint.
+//
+// It also hands the panel a fake 3D API: a settable pick and flat sand.
+const terrain = vi.hoisted(() => ({
+  signalsReady: true,
+  picked: null as { x: number; y: number; z: number } | null,
+  pickCalls: [] as number[][],
+  sandHeight: 1000,
+  // Height above which the fake terrain "hides" a point: nothing, unless a test sets it.
+  hidesBelow: -Infinity,
+  props: [] as { tilt?: number; yaw?: number; sectorGrid?: boolean }[]
+}));
+vi.mock("./terrain/DeepDesertTerrain", () => ({
+  default: ({ onReady, onTerrainApi, tilt, yaw, sectorGrid }: { onReady?: () => void; onTerrainApi?: (api: unknown) => void; tilt?: number; yaw?: number; sectorGrid?: boolean }) => {
+    terrain.props.push({ tilt, yaw, sectorGrid });
+    useEffect(() => {
+      if (!terrain.signalsReady) return undefined;
+      onTerrainApi?.({
+        pick: (sx: number, sy: number) => { terrain.pickCalls.push([sx, sy]); return terrain.picked; },
+        heightAt: () => terrain.sandHeight,
+        pivotZ: terrain.sandHeight,
+        topZ: 140000,
+        occluded: (_x: number, _y: number, z: number) => z < terrain.hidesBelow
+      });
+      onReady?.();
+      return () => onTerrainApi?.(null);
+    }, [onReady, onTerrainApi]);
+    return <canvas className="live-map-terrain" />;
+  }
+}));
 
 vi.mock("../../api/liveMap", () => ({
   liveMapApi: {
@@ -44,11 +78,16 @@ const map = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  terrain.signalsReady = true;
+  terrain.picked = null;
+  terrain.hidesBelow = -Infinity;
+  terrain.pickCalls.length = 0;
+  terrain.props.length = 0;
   vi.mocked(liveMapApi.markers).mockResolvedValue({
     rows: [
       { id: 31573, type: "base", name: "Desert Home", base_type: "Sub-Fief", owner_name: "Chani", map: "HaggaBasin", partition_id: 1, x: 500, y: 500, z: 20 },
       { id: 31574, type: "base", name: "Second Base", base_type: "Sub-Fief", owner_name: "Paul", map: "HaggaBasin", partition_id: 1, x: 600, y: 600, z: 20 },
-      { id: 500, type: "player", name: "Liet", online_status: "online", map: "HaggaBasin", partition_id: 1, x: 10, y: 10 },
+      { id: 500, action_player_id: "FLS500", type: "player", name: "Liet", online_status: "online", map: "HaggaBasin", partition_id: 1, x: 10, y: 10 },
       { id: 501, type: "player", name: "Duncan", online_status: "offline", map: "HaggaBasin", partition_id: 1, x: 20, y: 20 },
       { id: 502, type: "player", name: "Farok", online_status: "online", map: "HaggaBasin", partition_id: 2, x: 30, y: 30 },
       { id: 700, type: "spice_active", name: "Active Small Spice", map: "HaggaBasin", x: 300, y: 300 },
@@ -76,7 +115,57 @@ it("retains static markers during live-only refreshes without carrying them acro
   expect(mergeLiveMapRows(previous, incoming, true, "HaggaBasin")).toEqual(incoming);
 });
 
-it("clears coordinates selected from the map", async () => {
+it("matches players by name and bases or vehicles by owner", () => {
+  expect(liveMapMarkerMatchesSearch({ id: 1, type: "player", name: "Liet Kynes" }, "kynes")).toBe(true);
+  expect(liveMapMarkerMatchesSearch({ id: 2, type: "base", name: "Desert Home", owner_name: "Chani" }, "chani")).toBe(true);
+  expect(liveMapMarkerMatchesSearch({ id: 3, type: "vehicle", name: "BP_Sandbike_C", owner_name: "Stilgar" }, "stilgar")).toBe(true);
+  expect(liveMapMarkerMatchesSearch({ id: 3, type: "vehicle", name: "BP_Sandbike_C", owner_name: "Stilgar" }, "duncan")).toBe(false);
+});
+
+it("filters map markers by player, marker, and owner names", async () => {
+  render(<LiveMapPanel
+    onError={vi.fn()}
+    confirmAction={vi.fn().mockResolvedValue(true)}
+    waitForTask={vi.fn()}
+    taskTechnicalDetails={vi.fn().mockReturnValue("")}
+    onOpenBase={vi.fn()}
+    onOpenVehicle={vi.fn()}
+  />);
+
+  const search = await screen.findByRole("searchbox", { name: "Search Map" });
+  fireEvent.change(search, { target: { value: "Chani" } });
+  expect(screen.getByRole("button", { name: "Base: Desert Home" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Base: Second Base" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Vehicle: Sandbike" })).not.toBeInTheDocument();
+
+  fireEvent.change(search, { target: { value: "Stilgar" } });
+  expect(screen.getByRole("button", { name: "Vehicle: Sandbike" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Base: Desert Home" })).not.toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+  expect(screen.getByRole("button", { name: "Player: Liet" })).toBeInTheDocument();
+});
+
+it("splits the Player layer into Online and Offline child layers", async () => {
+  render(<LiveMapPanel
+    onError={vi.fn()}
+    confirmAction={vi.fn().mockResolvedValue(true)}
+    waitForTask={vi.fn()}
+    taskTechnicalDetails={vi.fn().mockReturnValue("")}
+    onOpenBase={vi.fn()}
+    onOpenVehicle={vi.fn()}
+  />);
+
+  await screen.findByRole("button", { name: "Player: Liet" });
+  fireEvent.click(screen.getByRole("button", { name: "Expand Player" }));
+  const offline = screen.getByRole("checkbox", { name: /Offline/ });
+  expect(offline).toBeChecked();
+  fireEvent.click(offline);
+  expect(screen.queryByRole("button", { name: "Player: Duncan" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Player: Liet" })).toBeInTheDocument();
+});
+
+it("opens an overlay on the picked point, with its coordinates and a teleport action", async () => {
   const { container } = render(<LiveMapPanel
     onError={vi.fn()}
     confirmAction={vi.fn().mockResolvedValue(true)}
@@ -87,15 +176,21 @@ it("clears coordinates selected from the map", async () => {
   />);
 
   await screen.findByRole("button", { name: "Base: Desert Home" });
+  expect(container.querySelector(".live-map-target")).toBeNull();
+
   const frame = container.querySelector(".live-map-frame");
-  expect(frame).not.toBeNull();
   fireEvent.doubleClick(frame!, { clientX: 100, clientY: 100 });
 
-  const clear = screen.getByRole("button", { name: "Clear" });
-  expect(clear).toBeEnabled();
-  fireEvent.click(clear);
-  expect(clear).toBeDisabled();
-  expect(screen.getByText("Double-click the map to pick world coordinates.")).toBeInTheDocument();
+  // The same overlay a marker gets, not a readout in the sidebar.
+  const overlay = screen.getByRole("dialog", { name: "Picked location" });
+  expect(overlay).toBeInTheDocument();
+  expect(overlay.textContent).toContain("Picked Location");
+  expect(overlay.querySelector(".live-map-marker-overlay-facts")?.textContent).toContain("X");
+  expect(screen.getByRole("button", { name: "Teleport" })).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: "Close" }));
+  expect(screen.queryByRole("dialog", { name: "Picked location" })).toBeNull();
+  expect(container.querySelector(".live-map-target")).toBeNull();
 });
 
 it("shows a base owner and opens that exact base from the marker drawer", async () => {
@@ -135,6 +230,34 @@ it("hovering a marker previews the overlay, and leaving without clicking closes 
 
   fireEvent.mouseLeave(marker);
   expect(screen.queryByText("Chani")).not.toBeInTheDocument();
+});
+
+it("shows player status beside the player name with distinct online and offline tones", async () => {
+  render(<LiveMapPanel
+    onError={vi.fn()}
+    confirmAction={vi.fn().mockResolvedValue(true)}
+    waitForTask={vi.fn()}
+    taskTechnicalDetails={vi.fn().mockReturnValue("")}
+    onOpenBase={vi.fn()}
+    onOpenVehicle={vi.fn()}
+  />);
+
+  const onlineMarker = await screen.findByRole("button", { name: "Player: Liet" });
+  fireEvent.mouseEnter(onlineMarker);
+  const onlineDialog = screen.getByRole("dialog", { name: "Player: Liet" });
+  const onlineHeader = onlineDialog.querySelector(".live-map-marker-overlay-header");
+  expect(onlineHeader?.querySelector("strong")?.textContent).toBe("Liet");
+  expect(onlineHeader?.querySelector(".live-map-player-status.online")?.textContent).toBe("Online");
+  expect(onlineDialog.querySelector(".live-map-marker-overlay-subtitle")).toBeNull();
+  fireEvent.mouseLeave(onlineMarker);
+
+  const offlineMarker = screen.getByRole("button", { name: "Player: Duncan" });
+  fireEvent.mouseEnter(offlineMarker);
+  const offlineDialog = screen.getByRole("dialog", { name: "Player: Duncan" });
+  const offlineHeader = offlineDialog.querySelector(".live-map-marker-overlay-header");
+  expect(offlineHeader?.querySelector("strong")?.textContent).toBe("Duncan");
+  expect(offlineHeader?.querySelector(".live-map-player-status.offline")?.textContent).toBe("Offline");
+  expect(offlineDialog.querySelector(".live-map-marker-overlay-subtitle")).toBeNull();
 });
 
 it("clicking pins the overlay open even after the mouse leaves, until a click lands outside every marker", async () => {
@@ -222,7 +345,7 @@ it("a static-pool marker with no partition of its own falls back to the partitio
     onOpenVehicle={vi.fn()}
   />);
 
-  fireEvent.click(await screen.findByRole("button", { name: "Active Spice Blows: Active Small Spice" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Active Spice Fields: Active Small Spice" }));
   fireEvent.click(screen.getByRole("button", { name: "Teleport" }));
 
   expect(screen.getByRole("option", { name: "Liet" })).toBeInTheDocument();
@@ -267,7 +390,7 @@ it("a vehicle overlay shows its Owner like a base does, and Open in Vehicles ope
   expect(onOpenVehicle).toHaveBeenCalledWith("900");
 });
 
-it("clicking Teleport with no online players on the map/partition shows an inline error instead of a picker", async () => {
+it("disables Teleport when no online player is inside the running map partition", async () => {
   vi.mocked(liveMapApi.markers).mockResolvedValue({
     rows: [
       { id: 31573, type: "base", name: "Desert Home", base_type: "Sub-Fief", owner_name: "Chani", map: "HaggaBasin", partition_id: 1, x: 500, y: 500, z: 20 },
@@ -290,9 +413,9 @@ it("clicking Teleport with no online players on the map/partition shows an inlin
   />);
 
   fireEvent.click(await screen.findByRole("button", { name: "Base: Desert Home" }));
-  fireEvent.click(screen.getByRole("button", { name: "Teleport" }));
-
-  expect(screen.getByText("Error: No online players.")).toBeInTheDocument();
+  const teleport = screen.getByRole("button", { name: "Teleport" });
+  expect(teleport).toBeDisabled();
+  expect(teleport).toHaveAttribute("title", expect.stringMatching(/online player is already inside/i));
   expect(screen.queryByRole("combobox", { name: "Teleport destination player" })).not.toBeInTheDocument();
 });
 
@@ -318,7 +441,7 @@ it("confirming a Teleport sends the picked player to the overlay marker's coordi
   expect(confirmAction.mock.calls[0][0]).toMatch(/Teleport Liet to Desert Home/);
 
   await waitFor(() => expect(liveMapApi.teleportPlayer).toHaveBeenCalledWith({
-    playerId: "500",
+    playerId: "FLS500",
     x: 500,
     y: 500,
     z: 20,
@@ -328,4 +451,579 @@ it("confirming a Teleport sends the picked player to the overlay marker's coordi
   }));
   await waitFor(() => expect(waitForTask).toHaveBeenCalledWith(fakeTask("running")));
   expect(await screen.findByText(/Liet was teleported to Desert Home/)).toBeInTheDocument();
+});
+
+function renderPanel() {
+  return render(<LiveMapPanel
+    onError={vi.fn()}
+    confirmAction={vi.fn().mockResolvedValue(true)}
+    waitForTask={vi.fn()}
+    taskTechnicalDetails={vi.fn().mockReturnValue("")}
+    onOpenBase={vi.fn()}
+    onOpenVehicle={vi.fn()}
+  />);
+}
+
+function partitionSelect(container: HTMLElement) {
+  return [...container.querySelectorAll("select")]
+    .find((select) => [...select.options].some((option) => /Partition|Sietch/i.test(option.textContent || "")))!;
+}
+
+it("offers no All Partitions choice -- a real partition is always selected", async () => {
+  const { container } = renderPanel();
+  await screen.findByRole("button", { name: "Base: Desert Home" });
+
+  const select = partitionSelect(container);
+  const labels = [...select.options].map((option) => option.textContent);
+  expect(labels.some((label) => /all partitions/i.test(label || ""))).toBe(false);
+  expect(select.value).toBe("1");
+  // and the value shown is a real option, not an unmatched blank
+  expect([...select.options].map((option) => option.value)).toContain(select.value);
+});
+
+it("falls back to an available partition when the map's default is not one of them", async () => {
+  // The invariant that matters now that there is no neutral "All Partitions"
+  // entry: whatever the select shows must be one of the options, never an
+  // unmatched value that leaves it blank while the markers filter by something
+  // else. Here the map asks for partition 1 and the farm only serves 7.
+  const moved = { ...map, defaultPartitionId: 1 };
+  vi.mocked(liveMapApi.markers).mockResolvedValue({
+    rows: [{ id: 31573, type: "base", name: "Desert Home", base_type: "Sub-Fief", owner_name: "Chani", map: "HaggaBasin", partition_id: 7, x: 500, y: 500, z: 20 }],
+    overlays: {},
+    capabilities: { bases: true },
+    map: moved,
+    maps: { HaggaBasin: moved },
+    defaultMap: "HaggaBasin",
+    partitions: [{ map: "HaggaBasin", partition_id: 7, name: "Sietch Tabr", marker_count: 1 }]
+  } as never);
+
+  const { container } = renderPanel();
+  await screen.findByRole("button", { name: "Base: Desert Home" });
+
+  await waitFor(() => {
+    const select = partitionSelect(container);
+    expect(select.value).toBe("7");
+    expect([...select.options].map((option) => option.value)).toContain(select.value);
+  });
+});
+
+it("keeps supported ore filters visible before rediscovery and uses player-facing names", async () => {
+  vi.mocked(liveMapApi.markers).mockResolvedValue({
+    rows: [],
+    overlays: {},
+    capabilities: { ore: true },
+    knownSubtypes: { ore: ["AzuriteOre", "JasmiumOre", "StravidiumOre", "TitaniumOre"] },
+    subtypeLabels: { ore: { AzuriteOre: "Copper", JasmiumOre: "Jasmium", StravidiumOre: "Stravidium", TitaniumOre: "Titanium" } },
+    map,
+    maps: { HaggaBasin: map },
+    defaultMap: "HaggaBasin",
+    partitions: [{ map: "HaggaBasin", partition_id: 1, name: "Sietch New", marker_count: 0 }]
+  });
+  const { container } = renderPanel();
+  const label = await screen.findByText("Ores & Metals");
+  expect(label.parentElement?.textContent).toContain("0");
+  fireEvent.click(label.parentElement!.querySelector("button")!);
+  const oreGroup = screen.getByText("Ore");
+  fireEvent.click(oreGroup.parentElement!.querySelector("button")!);
+  expect(screen.getByText("Copper")).toBeInTheDocument();
+  expect(screen.getByText("Jasmium")).toBeInTheDocument();
+  expect(screen.getByText("Stravidium")).toBeInTheDocument();
+  expect(screen.getByText("Titanium")).toBeInTheDocument();
+  expect(container.querySelectorAll(".live-map-layer-sub").length).toBe(4);
+});
+
+// jsdom has no ResizeObserver, and the sector-grid label effect observes the
+// map frame with one. No Hagga Basin test reaches that effect, so nothing here
+// needed it before.
+if (!("ResizeObserver" in globalThis)) {
+  (globalThis as unknown as Record<string, unknown>).ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  };
+}
+
+// Every fixture above is Hagga Basin, so the Deep Desert half of this panel --
+// the sector grid, its toggle, the terrain gate and the Terrain readout -- had
+// no panel-level coverage at all.
+const deepDesert = {
+  key: "DeepDesert",
+  label: "The Deep Desert",
+  actorMap: "DeepDesert",
+  image: "/images/maps/deep-desert.png",
+  width: 4096,
+  height: 4096,
+  minX: -1268450,
+  maxX: 1158400,
+  minY: -1261434,
+  maxY: 1165416,
+  flipY: false,
+  defaultPartitionId: 8
+};
+
+function useDeepDesert(extra: Record<string, unknown> = {}) {
+  vi.mocked(liveMapApi.markers).mockResolvedValue({
+    rows: [
+      { id: 4242, type: "base", name: "Sietch Tabr", base_type: "Sub-Fief", owner_name: "Stilgar", map: "DeepDesert", partition_id: 8, x: -52656, y: -52066, z: 30 }
+    ],
+    overlays: {},
+    capabilities: { bases: true },
+    map: deepDesert,
+    maps: { DeepDesert: deepDesert },
+    defaultMap: "DeepDesert",
+    partitions: [{ map: "DeepDesert", partition_id: 8, name: "PvP", marker_count: 1 }],
+    ...extra
+  } as never);
+}
+
+it("labels an offline dynamic Deep Desert as saved data and keeps teleport unavailable", async () => {
+  useDeepDesert({
+    partitions: [{ map: "DeepDesert", partition_id: 8, name: "PvP", marker_count: 1, alive: false, ready: false }]
+  });
+  renderPanel();
+
+  fireEvent.click(await screen.findByRole("button", { name: "Base: Sietch Tabr" }));
+  expect(screen.getByText("Partition Status")).toBeInTheDocument();
+  expect(screen.getByText("Offline")).toBeInTheDocument();
+  expect(screen.getByText("Saved Map Data")).toBeInTheDocument();
+  expect(screen.getByText(/normal in-game travel starts the partition/i)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Teleport" })).toBeDisabled();
+});
+
+it("draws the sector grid on the Deep Desert, with a full 9x9 of labels", async () => {
+  useDeepDesert({ coriolisLayout: 3 });
+  const { container } = renderPanel();
+  await screen.findByRole("button", { name: "Base: Sietch Tabr" });
+
+  const grid = container.querySelector("svg.live-map-sector-grid");
+  expect(grid).not.toBeNull();
+  // 10 lines each way, and a label per cell.
+  expect(grid!.querySelectorAll("line")).toHaveLength(20);
+  expect(grid!.querySelectorAll("text")).toHaveLength(81);
+  // The corners the game's own map art carries, the letter running up the screen.
+  const labels = [...grid!.querySelectorAll("text")].map((node) => node.textContent);
+  expect(labels).toContain("A1");
+  expect(labels).toContain("I9");
+});
+
+it("hides the grid when the Sector Grid toggle is switched off", async () => {
+  useDeepDesert({ coriolisLayout: 3 });
+  const { container } = renderPanel();
+  await screen.findByRole("button", { name: "Base: Sietch Tabr" });
+
+  const toggle = screen.getByRole("checkbox", { name: "Sector Grid" });
+  // On by default: the terrain carries no grid of its own.
+  expect(toggle).toBeChecked();
+  fireEvent.click(toggle);
+  expect(toggle).not.toBeChecked();
+  expect(container.querySelector("svg.live-map-sector-grid")).toBeNull();
+});
+
+it("offers no sector grid on Hagga Basin, which has no lettered sectors", async () => {
+  const { container } = renderPanel();
+  await screen.findByRole("button", { name: "Base: Desert Home" });
+  expect(screen.queryByRole("checkbox", { name: "Sector Grid" })).toBeNull();
+  expect(container.querySelector("svg.live-map-sector-grid")).toBeNull();
+});
+
+it("falls back to the flat image and says so when the layout is unknown", async () => {
+  useDeepDesert({ coriolisLayout: null });
+  const { container } = renderPanel();
+  await screen.findByRole("button", { name: "Base: Sietch Tabr" });
+
+  expect(container.querySelector("img.live-map-image")).not.toBeNull();
+  expect(screen.getByText("Flat Map (Layout Unknown)")).toBeInTheDocument();
+});
+
+it("capitalizes the stale Coriolis seed status", async () => {
+  useDeepDesert({ coriolisSeed: null, coriolisSeedStaleSince: "2026-09-01T05:00:00.000Z" });
+  renderPanel();
+  await screen.findByRole("button", { name: "Base: Sietch Tabr" });
+
+  expect(screen.getByText("Awaiting Restart")).toBeInTheDocument();
+});
+
+it("reports the layout once one is known", async () => {
+  useDeepDesert({ coriolisLayout: 3 });
+  const { container } = renderPanel();
+  await screen.findByRole("button", { name: "Base: Sietch Tabr" });
+  // The canvas mounts before its asynchronously loaded terrain is ready. Wait
+  // for the readiness signal reflected by removal of the temporary flat image,
+  // rather than merely observing the canvas element and racing onReady().
+  await waitFor(() => expect(container.querySelector("img.live-map-image")).toBeNull());
+  expect(container.querySelector("canvas.live-map-terrain")).not.toBeNull();
+  expect(screen.getByText("Layout 3")).toBeInTheDocument();
+});
+
+// Finding 9: the API caps the layout at 63 so a future Layout_12 is reported
+// truthfully rather than nulled, but only 0-11 ship meshes. The render gate and
+// the readout used to decide separately, so an unshipped layout drew the flat
+// image while the strip announced it as rendered.
+it("says a layout it cannot draw is not shipped, rather than claiming it rendered", async () => {
+  useDeepDesert({ coriolisLayout: 12 });
+  const { container } = renderPanel();
+  await screen.findByRole("button", { name: "Base: Sietch Tabr" });
+
+  expect(container.querySelector("img.live-map-image")).not.toBeNull();
+  expect(container.querySelector("canvas.live-map-terrain")).toBeNull();
+  expect(screen.getByText("Flat Map (Layout 12 Not Shipped)")).toBeInTheDocument();
+  expect(screen.queryByText("layout 12")).toBeNull();
+});
+
+// Finding 8 was that the overlay drew a second 9x9 grid about a third of a cell
+// off the one burned into the flat PNG. That was the bounds being ~8% too wide,
+// not the overlay: with the rect corrected to the square the image covers, the
+// two coincide and the overlay is welcome on the fallback again -- it carries
+// crisp, zoom-stable labels the picture cannot.
+it("still draws the grid over the flat image, now that the two agree", async () => {
+  useDeepDesert({ coriolisLayout: null });
+  const { container } = renderPanel();
+  await screen.findByRole("button", { name: "Base: Sietch Tabr" });
+
+  expect(container.querySelector("img.live-map-image")).not.toBeNull();
+  expect(container.querySelector("svg.live-map-sector-grid")).not.toBeNull();
+  expect(screen.getByRole("checkbox", { name: "Sector Grid" })).toBeInTheDocument();
+});
+
+// Elevation Lines is a shader effect, so it is offered only with the rendered
+// terrain; Sector Grid draws over either. Both sit in one group above the legend.
+it("groups Elevation Lines with Sector Grid, above the marker legend", async () => {
+  useDeepDesert({ coriolisLayout: 3 });
+  const { container } = renderPanel();
+  await screen.findByRole("button", { name: "Base: Sietch Tabr" });
+
+  const grid = screen.getByRole("checkbox", { name: "Sector Grid" }).closest(".live-map-overlay-group");
+  const elevation = screen.getByRole("checkbox", { name: "Elevation Lines" }).closest(".live-map-overlay-group");
+  expect(grid).not.toBeNull();
+  expect(elevation).toBe(grid);
+
+  // ...and a marker layer is outside that group, so the divider separates them.
+  const group = container.querySelector(".live-map-overlay-group");
+  const markerRows = [...container.querySelectorAll(".live-map-layer")].filter((row) => !group?.contains(row));
+  expect(markerRows.length).toBeGreaterThan(0);
+});
+
+it("offers Elevation Lines only while the terrain canvas is the one drawing", async () => {
+  useDeepDesert({ coriolisLayout: 3 });
+  renderPanel();
+  await screen.findByRole("button", { name: "Base: Sietch Tabr" });
+  const toggle = screen.getByRole("checkbox", { name: "Elevation Lines" });
+  expect(toggle).toBeInTheDocument();
+  expect(toggle).not.toBeChecked();
+});
+
+it("hides Elevation Lines when the map has fallen back to the flat image", async () => {
+  useDeepDesert({ coriolisLayout: null });
+  renderPanel();
+  await screen.findByRole("button", { name: "Base: Sietch Tabr" });
+
+  expect(screen.queryByRole("checkbox", { name: "Elevation Lines" })).toBeNull();
+  // ...while the grid, which is drawn over either, stays available.
+  expect(screen.getByRole("checkbox", { name: "Sector Grid" })).toBeInTheDocument();
+});
+
+// Finding 5 of the branch review: the grid geometry was rebuilt on every render
+// and is a dependency of the label-placement effect, so the scroll listener and
+// the ResizeObserver were torn down and re-added on every marker hover and
+// every five-second poll.
+it("does not re-subscribe the grid's scroll listener on an unrelated re-render", async () => {
+  useDeepDesert({ coriolisLayout: 3 });
+  const { container } = renderPanel();
+  const marker = await screen.findByRole("button", { name: "Base: Sietch Tabr" });
+  const frame = container.querySelector(".live-map-frame") as HTMLDivElement;
+  expect(frame).not.toBeNull();
+
+  // Watch this one element rather than HTMLDivElement.prototype, and watch it
+  // only once mounting has settled. Counting every div's scroll listeners from
+  // a snapshot taken mid-mount made this flaky: anything subscribing later, for
+  // any reason, looked like the grid re-subscribing.
+  //
+  // Removals are the assertion because a re-subscription cannot avoid one --
+  // React tears an effect down before running it again -- so a removal means
+  // churn and nothing else can fake it.
+  const removed: string[] = [];
+  const realRemove = frame.removeEventListener.bind(frame);
+  frame.removeEventListener = ((type: string, ...rest: unknown[]) => {
+    if (type === "scroll") removed.push(type);
+    return (realRemove as (...args: unknown[]) => void)(type, ...rest);
+  }) as typeof frame.removeEventListener;
+
+  try {
+    // Re-renders that have nothing to do with the map, the zoom or the grid.
+    fireEvent.mouseEnter(marker);
+    fireEvent.mouseLeave(marker);
+    fireEvent.mouseEnter(marker);
+    fireEvent.mouseLeave(marker);
+
+    expect(removed).toEqual([]);
+  } finally {
+    delete (frame as Partial<HTMLDivElement>).removeEventListener;
+  }
+});
+
+// Finding 7: the canvas is mounted well before it can paint -- the shared
+// library alone is 6.4 MB -- so dropping the flat image when the lazy chunk
+// resolved left a window with neither, markers floating over bare background.
+it("keeps the flat image up until the terrain reports it can paint", async () => {
+  terrain.signalsReady = false;
+  useDeepDesert({ coriolisLayout: 3 });
+  const { container } = renderPanel();
+  await screen.findByRole("button", { name: "Base: Sietch Tabr" });
+
+  // Canvas mounted, but nothing on it yet -- the image is still carrying the map.
+  expect(container.querySelector("canvas.live-map-terrain")).not.toBeNull();
+  expect(container.querySelector("img.live-map-image")).not.toBeNull();
+});
+
+it("drops the flat image once the terrain has painted", async () => {
+  useDeepDesert({ coriolisLayout: 3 });
+  const { container } = renderPanel();
+  await screen.findByRole("button", { name: "Base: Sietch Tabr" });
+
+  await waitFor(() => expect(container.querySelector("img.live-map-image")).toBeNull());
+  expect(container.querySelector("canvas.live-map-terrain")).not.toBeNull();
+});
+
+// ---- 3D: tilt, rotation, and markers placed by projection --------------------
+
+/** jsdom lays nothing out, so the frame has no size until it is given one. */
+function sizeFrame(container: HTMLElement, width = 800, height = 600) {
+  const frame = container.querySelector(".live-map-frame") as HTMLDivElement;
+  Object.defineProperty(frame, "clientWidth", { configurable: true, value: width });
+  Object.defineProperty(frame, "clientHeight", { configurable: true, value: height });
+  return frame;
+}
+
+function useTwoHeights() {
+  useDeepDesert({
+    coriolisLayout: 3,
+    rows: [
+      { id: 1, type: "base", name: "Low", base_type: "Sub-Fief", owner_name: "A", map: "DeepDesert", partition_id: 8, x: -52656, y: -52066, z: 200 },
+      { id: 2, type: "base", name: "High", base_type: "Sub-Fief", owner_name: "B", map: "DeepDesert", partition_id: 8, x: -52656, y: -52066, z: 20000 }
+    ]
+  });
+}
+
+it("offers tilt only while the rendered terrain is drawing", async () => {
+  // Hagga Basin: a flat image, which cannot tilt.
+  const hagga = renderPanel();
+  await screen.findByRole("button", { name: "Base: Desert Home" });
+  expect(screen.queryByRole("slider", { name: "Tilt" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Top-Down" })).toBeNull();
+  hagga.unmount();
+
+  // Deep Desert, terrain mounted but not painting yet.
+  terrain.signalsReady = false;
+  useDeepDesert({ coriolisLayout: 3 });
+  const waiting = renderPanel();
+  await screen.findByRole("button", { name: "Base: Sietch Tabr" });
+  expect(screen.queryByRole("slider", { name: "Tilt" })).toBeNull();
+  waiting.unmount();
+
+  terrain.signalsReady = true;
+  renderPanel();
+  expect(await screen.findByRole("slider", { name: "Tilt" })).toHaveValue("0");
+  // Nothing to reset while the view is already top-down.
+  expect(screen.getByRole("button", { name: "Top-Down" })).toBeDisabled();
+});
+
+it("places markers by height once tilted, and exactly as before while top-down", async () => {
+  useTwoHeights();
+  const { container } = renderPanel();
+  const low = await screen.findByRole("button", { name: "Base: Low" });
+  const high = screen.getByRole("button", { name: "Base: High" });
+  const slider = await screen.findByRole("slider", { name: "Tilt" });
+  sizeFrame(container);
+
+  // Top-down: two markers over the same ground sit on the same pixel, whatever their height.
+  expect(low.style.top).toBe(high.style.top);
+  expect(low.style.left).toBe(high.style.left);
+  const flatTop = parseFloat(low.style.top);
+
+  fireEvent.change(slider, { target: { value: "45" } });
+  // Tilted: the higher one is drawn further up the screen, by its height.
+  expect(parseFloat(high.style.top)).toBeLessThan(parseFloat(low.style.top) - 1);
+  expect(terrain.props.at(-1)!.tilt).toBeCloseTo(Math.PI / 4, 9);
+
+  // Back to top-down: back to the very same position.
+  fireEvent.click(screen.getByRole("button", { name: "Top-Down" }));
+  expect(parseFloat(low.style.top)).toBe(flatTop);
+  expect(high.style.top).toBe(low.style.top);
+  expect(terrain.props.at(-1)).toMatchObject({ tilt: 0, yaw: 0 });
+});
+
+it("picks a location from the terrain under the cursor when tilted", async () => {
+  useTwoHeights();
+  const { container } = renderPanel();
+  await screen.findByRole("button", { name: "Base: Low" });
+  const slider = await screen.findByRole("slider", { name: "Tilt" });
+  const frame = sizeFrame(container);
+  fireEvent.change(slider, { target: { value: "50" } });
+  // The map is narrower than the frame, so the CSS centres it; tilted, the terrain still spans the frame.
+  const canvas = container.querySelector(".live-map-canvas") as HTMLDivElement;
+  const margin = (800 - parseFloat(canvas.style.width)) / 2;
+  expect(margin).toBeGreaterThan(0);
+  vi.spyOn(canvas, "getBoundingClientRect").mockReturnValue(new DOMRect(margin, 0, 800 - 2 * margin, 600));
+
+  terrain.picked = { x: -60000, y: -40000, z: 15000 };
+  terrain.pickCalls.length = 0;
+  fireEvent.doubleClick(frame, { clientX: 120, clientY: 90 });
+  expect(terrain.pickCalls).toEqual([[120, 90]]);
+  const overlay = screen.getByRole("dialog", { name: "Picked location" });
+  expect(overlay).toHaveTextContent("-60000");
+  expect(overlay).toHaveTextContent("-40000");
+});
+
+it("picks nothing past the edge of the map, which a tilted view runs beyond", async () => {
+  useTwoHeights();
+  const { container } = renderPanel();
+  await screen.findByRole("button", { name: "Base: Low" });
+  const slider = await screen.findByRole("slider", { name: "Tilt" });
+  const frame = sizeFrame(container);
+  fireEvent.change(slider, { target: { value: "50" } });
+
+  terrain.picked = { x: deepDesert.maxX + 5000, y: -40000, z: 3000 };
+  fireEvent.doubleClick(frame, { clientX: 120, clientY: 90 });
+  expect(screen.queryByRole("dialog", { name: "Picked location" })).toBeNull();
+});
+
+it("falls back to the sand under the cursor where the terrain cannot be read", async () => {
+  useTwoHeights();
+  const { container } = renderPanel();
+  await screen.findByRole("button", { name: "Base: Low" });
+  const slider = await screen.findByRole("slider", { name: "Tilt" });
+  const frame = sizeFrame(container);
+  fireEvent.change(slider, { target: { value: "50" } });
+
+  terrain.picked = null;
+  // The centre of the view is the camera's centre, at the pivot height the sand sits at.
+  fireEvent.doubleClick(frame, { clientX: 400, clientY: 300 });
+  const overlay = screen.getByRole("dialog", { name: "Picked location" });
+  const numbers = [...overlay.querySelectorAll("strong")].map((node) => Number(node.textContent));
+  expect(numbers.filter(Number.isFinite).length).toBeGreaterThanOrEqual(2);
+});
+
+it("tilts and rotates on a right-drag, and leaves a left-drag panning", async () => {
+  useTwoHeights();
+  const { container } = renderPanel();
+  await screen.findByRole("button", { name: "Base: Low" });
+  const slider = await screen.findByRole("slider", { name: "Tilt" });
+  const frame = sizeFrame(container);
+
+  // Left-drag: no tilt.
+  fireEvent.mouseDown(frame, { button: 0, clientX: 300, clientY: 300 });
+  fireEvent.mouseMove(frame, { clientX: 340, clientY: 200 });
+  fireEvent.mouseUp(frame);
+  expect(slider).toHaveValue("0");
+
+  // Right-drag up 100 px leans the map back 30 degrees; across 50 px turns it 15.
+  fireEvent.mouseDown(frame, { button: 2, clientX: 300, clientY: 300 });
+  fireEvent.mouseMove(frame, { clientX: 350, clientY: 200 });
+  fireEvent.mouseUp(frame);
+  expect(slider).toHaveValue("30");
+  expect(terrain.props.at(-1)!.yaw).toBeCloseTo((15 * Math.PI) / 180, 9);
+
+  // It stops at the limit rather than going past it.
+  fireEvent.mouseDown(frame, { button: 2, clientX: 300, clientY: 300 });
+  fireEvent.mouseMove(frame, { clientX: 300, clientY: -900 });
+  fireEvent.mouseUp(frame);
+  expect(slider).toHaveValue("60");
+});
+
+it("shows a compass only off top-down, which turns the view back to north", async () => {
+  useTwoHeights();
+  const { container } = renderPanel();
+  await screen.findByRole("button", { name: "Base: Low" });
+  const slider = await screen.findByRole("slider", { name: "Tilt" });
+  const frame = sizeFrame(container);
+  expect(screen.queryByRole("button", { name: /^Facing/ })).toBeNull();
+
+  // Across 300 px turns the view 90 degrees; up 100 px leans it back 30.
+  fireEvent.mouseDown(frame, { button: 2, clientX: 300, clientY: 300 });
+  fireEvent.mouseMove(frame, { clientX: 600, clientY: 200 });
+  fireEvent.mouseUp(frame);
+  fireEvent.click(screen.getByRole("button", { name: /^Facing E \(90°\)/ }));
+  expect(terrain.props.at(-1)!.yaw).toBe(0);
+  expect(slider).toHaveValue("30");
+  expect(screen.getByRole("button", { name: /^Facing N \(0°\)/ })).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: "Top-Down" }));
+  expect(screen.queryByRole("button", { name: /^Facing/ })).toBeNull();
+});
+
+it("hands the sector grid's lines to the terrain while tilted, keeps its labels, and puts the flat one back after", async () => {
+  useTwoHeights();
+  const { container } = renderPanel();
+  await screen.findByRole("button", { name: "Base: Low" });
+  const slider = await screen.findByRole("slider", { name: "Tilt" });
+  sizeFrame(container);
+  expect(container.querySelectorAll("svg.live-map-sector-grid line")).toHaveLength(20);
+
+  fireEvent.change(slider, { target: { value: "45" } });
+  const tilted = container.querySelector("svg.live-map-sector-grid.is-3d");
+  expect(tilted).not.toBeNull();
+  // The terrain draws the lines; the overlay keeps only the labels.
+  expect(terrain.props.at(-1)!.sectorGrid).toBe(true);
+  expect(container.querySelectorAll("svg.live-map-sector-grid line, svg.live-map-sector-grid path")).toHaveLength(0);
+  expect(tilted!.querySelectorAll("text").length).toBeGreaterThan(0);
+  // Sized to the viewport, not to the scaled map.
+  expect(Number(tilted!.getAttribute("width"))).toBeGreaterThan(0);
+  expect(Number(tilted!.getAttribute("width"))).toBeLessThanOrEqual(800);
+  expect(tilted!.getAttribute("viewBox")).toBeNull();
+
+  // The toggle still governs it.
+  fireEvent.click(screen.getByRole("checkbox", { name: "Sector Grid" }));
+  expect(container.querySelector("svg.live-map-sector-grid")).toBeNull();
+  expect(terrain.props.at(-1)!.sectorGrid).toBe(false);
+  fireEvent.click(screen.getByRole("checkbox", { name: "Sector Grid" }));
+
+  fireEvent.click(screen.getByRole("button", { name: "Top-Down" }));
+  expect(container.querySelector("svg.live-map-sector-grid.is-3d")).toBeNull();
+  expect(container.querySelectorAll("svg.live-map-sector-grid line")).toHaveLength(20);
+  expect(container.querySelectorAll("svg.live-map-sector-grid text")).toHaveLength(81);
+});
+
+it("hides a marker the tilted terrain stands in front of, but never top-down or while selected", async () => {
+  useTwoHeights();
+  // The fake terrain hides anything below 5,000: "Low" (z 200), not "High" (z 20,000).
+  terrain.hidesBelow = 5000;
+  const { container } = renderPanel();
+  await screen.findByRole("button", { name: "Base: Low" });
+  const slider = await screen.findByRole("slider", { name: "Tilt" });
+  sizeFrame(container);
+
+  // Top-down nothing is behind anything.
+  expect(screen.getByRole("button", { name: "Base: Low" })).toBeInTheDocument();
+
+  fireEvent.change(slider, { target: { value: "45" } });
+  expect(screen.queryByRole("button", { name: "Base: Low" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Base: High" })).toBeInTheDocument();
+
+  // Back to top-down: it is back.
+  fireEvent.click(screen.getByRole("button", { name: "Top-Down" }));
+  const low = screen.getByRole("button", { name: "Base: Low" });
+
+  // Selected, it stays through the tilt: its overlay is open on it.
+  fireEvent.click(low);
+  fireEvent.change(slider, { target: { value: "45" } });
+  expect(screen.getByRole("button", { name: "Base: Low" })).toBeInTheDocument();
+});
+
+it("shows a marker the terrain is covering once it is searched for", async () => {
+  useTwoHeights();
+  terrain.hidesBelow = 5000;
+  const { container } = renderPanel();
+  await screen.findByRole("button", { name: "Base: Low" });
+  const slider = await screen.findByRole("slider", { name: "Tilt" });
+  sizeFrame(container);
+  fireEvent.change(slider, { target: { value: "45" } });
+  expect(screen.queryByRole("button", { name: "Base: Low" })).toBeNull();
+
+  // A search asks where it is: behind the rock is an answer.
+  const search = screen.getByPlaceholderText(/player, owner, base/i);
+  fireEvent.change(search, { target: { value: "Low" } });
+  expect(screen.getByRole("button", { name: "Base: Low" })).toBeInTheDocument();
+
+  fireEvent.change(search, { target: { value: "" } });
+  expect(screen.queryByRole("button", { name: "Base: Low" })).toBeNull();
 });

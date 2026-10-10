@@ -342,6 +342,16 @@ EOF
       esac
     fi
 
+    # Game containers can recreate UserSettings as their internal UID. Repair
+    # the host-managed paths before changing any values, so a Console user with
+    # a different host UID can materialize the settings needed by map restarts.
+    # Doing this before the writes also prevents a permissions failure from
+    # leaving a partially applied server mode or title.
+    if [ "$restart_services" = "1" ] && [ -x runtime/scripts/repair-host-runtime-permissions.sh ]; then
+      runtime/scripts/repair-host-runtime-permissions.sh
+      export DUNE_RUNTIME_PERMISSIONS_REPAIRED=1
+    fi
+
     if [ -n "$new_title" ]; then
       set_env_value SERVER_TITLE "$new_title"
       set_generated_env_value SERVER_TITLE "$new_title"

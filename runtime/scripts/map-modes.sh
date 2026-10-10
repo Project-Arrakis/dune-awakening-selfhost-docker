@@ -7,7 +7,11 @@ set -a
 [ -f .env ] && . ./.env
 set +a
 
+# shellcheck source=runtime/scripts/lib/postgres.sh
+source runtime/scripts/lib/postgres.sh
+
 STATE_FILE="${DUNE_MAP_MODES_FILE:-runtime/generated/map-runtime-modes.json}"
+STATE_VERSION=3
 GRACE_SECONDS="${DUNE_AUTOSCALER_DESPAWN_GRACE_SECONDS:-${DUNE_AUTOSCALER_IDLE_SECONDS:-300}}"
 RECONCILE_LOCK_FILE="${DUNE_ALWAYS_ON_RECONCILE_LOCK_FILE:-runtime/generated/map-modes-reconcile.lock}"
 RECONCILE_STATE_FILE="${DUNE_ALWAYS_ON_RECONCILE_STATE_FILE:-runtime/generated/map-modes-reconcile.tsv}"
@@ -93,13 +97,14 @@ protected_map() {
 }
 
 # Funcom resets some short-lived activity maps inside a still-running server
-# process after the last player leaves.  CB_Overland_S_06 (Smuggler's Run)
-# does not reliably reinitialize vehicle permissions on that path.  Funcom's
-# Hyper-V deployment avoids it by deallocating the pod and allocating a fresh
-# one for the next visit, so keep this map demand-driven in Docker as well.
+# process after the last player leaves or completes the activity. Some of
+# those in-process resets leave stale vehicle permissions; the two credits
+# story maps also intentionally crash/reinitialize and can no longer bind their
+# game port. Funcom's Hyper-V deployment deallocates the pod in each case,
+# so keep these maps demand-driven and allocate a fresh process per visit.
 requires_fresh_process() {
   case "$1" in
-    CB_Overland_S_06) return 0 ;;
+    CB_Overland_S_06|CB_Story_DestroyedZanovar|CB_Story_OrbitalMonitor) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -110,7 +115,7 @@ canonical_map() {
     printf '%s' "$input"
     return 0
   fi
-  docker exec dune-postgres psql -U postgres -d dune -At -v ON_ERROR_STOP=1 -c "
+  dune_psql -At -v ON_ERROR_STOP=1 -c "
     select map
     from dune.world_partition
     where lower(map) = lower('${input//\'/\'\'}')
@@ -122,7 +127,7 @@ canonical_map() {
 ensure_state_file() {
   mkdir -p "$(dirname "$STATE_FILE")"
   if [ ! -s "$STATE_FILE" ]; then
-    python3 - "$STATE_FILE" <<'PY'
+    python3 - "$STATE_FILE" "$STATE_VERSION" <<'PY'
 import json
 import sys
 from datetime import datetime, timezone
@@ -130,12 +135,56 @@ from pathlib import Path
 
 path = Path(sys.argv[1])
 payload = {
-    "version": 1,
+    "version": int(sys.argv[2]),
     "updated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
     "maps": {},
 }
 path.parent.mkdir(parents=True, exist_ok=True)
 path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+  fi
+
+  # v3 retires legacy Always On / Overmap Active selections for maps whose
+  # lifecycle now requires a fresh process per visit.  Merely masking the old
+  # value at read time is insufficient: older reconciliation and publication
+  # paths can consume the persisted value directly and create a spawn/despawn
+  # loop.  Migrate it once, atomically, while retaining Disabled as an explicit
+  # operator choice.
+  if ! grep -Eq '"version"[[:space:]]*:[[:space:]]*3([,[:space:]}]|$)' "$STATE_FILE" 2>/dev/null; then
+    python3 - "$STATE_FILE" "$STATE_VERSION" <<'PY'
+import json
+import os
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+path = Path(sys.argv[1])
+target_version = int(sys.argv[2])
+try:
+    data = json.loads(path.read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(0)
+if not isinstance(data, dict):
+    raise SystemExit(0)
+try:
+    current_version = int(data.get("version", 0) or 0)
+except (TypeError, ValueError):
+    current_version = 0
+if current_version >= target_version:
+    raise SystemExit(0)
+
+now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+maps = data.setdefault("maps", {})
+for map_name in ("CB_Overland_S_06", "CB_Story_DestroyedZanovar", "CB_Story_OrbitalMonitor"):
+    config = maps.get(map_name)
+    if isinstance(config, dict) and config.get("mode") not in {"dynamic", "disabled"}:
+        config["mode"] = "dynamic"
+        config["last_mode_change_at"] = now
+data["version"] = target_version
+data["updated_at"] = now
+tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+tmp.replace(path)
 PY
   fi
 }
@@ -211,13 +260,13 @@ set_mode() {
   esac
 
   if requires_fresh_process "$canonical" && [ "$mode" != "dynamic" ] && [ "$mode" != "disabled" ]; then
-    echo "$canonical must use Dynamic mode so each empty Smuggler's Run instance is deallocated before its next use." >&2
-    echo "Always On and Overmap Active can reuse Funcom's reset world with stale vehicle permissions." >&2
+    echo "$canonical must use Dynamic mode so each completed or empty instance is deallocated before its next use." >&2
+    echo "Always On and Overmap Active can reuse a Funcom process that is no longer safe to accept players." >&2
     exit 1
   fi
 
   ensure_state_file
-  python3 - "$STATE_FILE" "$canonical" "$mode" <<'PY'
+  python3 - "$STATE_FILE" "$canonical" "$mode" "$STATE_VERSION" <<'PY'
 import json
 import os
 import sys
@@ -227,11 +276,12 @@ from pathlib import Path
 path = Path(sys.argv[1])
 target = sys.argv[2]
 mode = sys.argv[3]
+state_version = int(sys.argv[4])
 try:
     data = json.loads(path.read_text(encoding="utf-8"))
 except Exception:
     data = {}
-data["version"] = 1
+data["version"] = state_version
 data.setdefault("maps", {})
 now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 data["updated_at"] = now
@@ -260,7 +310,7 @@ list_maps() {
   local mode memory_status state available requested reserve required swap_free
   require_postgres
   ensure_state_file
-  docker exec dune-postgres psql -U postgres -d dune -At -F '|' -c "
+  dune_psql -At -F '|' -c "
     select
       wp.map,
       count(*) as partitions,
@@ -385,7 +435,7 @@ recent_spawn_blocking() {
 warming_always_on_count() {
   local rows map partition_id server_id container logs warming=0
 
-  rows="$(docker exec dune-postgres psql -U postgres -d dune -At -F '|' -c "
+  rows="$(dune_psql -At -F '|' -c "
     select wp.map, wp.partition_id, wp.server_id
     from dune.world_partition wp
     left join dune.farm_state fs on fs.server_id = wp.server_id
@@ -459,7 +509,7 @@ adopt_live_unassigned_server() {
   local map="$1"
   local partition_id="$2"
 
-  docker exec dune-postgres psql -U postgres -d dune -At -v ON_ERROR_STOP=1 -c "
+  dune_psql -At -v ON_ERROR_STOP=1 -c "
 with candidate as (
   select fs.server_id
   from dune.farm_state fs
@@ -499,7 +549,7 @@ returning wp.server_id;
 assigned_server_for_partition() {
   local partition_id="$1"
 
-  docker exec dune-postgres psql -U postgres -d dune -At -c "
+  dune_psql -At -c "
     select coalesce(server_id, '')
     from dune.world_partition
     where partition_id = $partition_id
@@ -512,7 +562,7 @@ reconcile_map() {
   local rows assigned running container age adopted spawned=0
 
   require_postgres
-  rows="$(docker exec dune-postgres psql -U postgres -d dune -At -F '|' -c "
+  rows="$(dune_psql -At -F '|' -c "
     select partition_id, coalesce(server_id, '')
     from dune.world_partition
     where map = '${map//\'/\'\'}'
@@ -622,7 +672,7 @@ despawn_map() {
   local rows partition_id assigned running
 
   require_postgres
-  rows="$(docker exec dune-postgres psql -U postgres -d dune -At -F '|' -c "
+  rows="$(dune_psql -At -F '|' -c "
     select partition_id, coalesce(server_id, '')
     from dune.world_partition
     where map = '${map//\'/\'\'}'
@@ -648,6 +698,10 @@ reconcile_all() {
   while read -r map; do
     [ -n "$map" ] || continue
     protected_map "$map" && continue
+    # The persisted candidate list can contain a mode retired by a newer
+    # lifecycle policy.  Never reconcile it unless the effective policy still
+    # agrees that it is Always On.
+    [ "$(effective_mode_for_map "$map")" = "always-on" ] || continue
     maps+=("$map")
   done < <(python3 - "$STATE_FILE" "$STARTUP_PRIORITY" <<'PY'
 import json

@@ -27,6 +27,39 @@ test("task manager creates and completes allowlisted dune tasks", async () => {
   assert.match(task.logLines.map((line) => line.line).join("\n"), /task:status/);
 });
 
+test("Console update checks share concurrent work and cache exit 100 results", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-console-check-"));
+  const duneScript = join(dir, "dune");
+  writeFileSync(duneScript, "#!/usr/bin/env bash\necho call >> calls\nsleep .05\necho 'Current version: v1.0.0'\necho 'Latest version: v1.1.0'\nexit 100\n", { mode: 0o700 });
+  const manager = new TaskManager({ duneScript, repoRoot: dir, taskRetention: 20, commandTimeoutMs: 5000 });
+  const first = manager.create("updates", "selfUpdateCheck", {});
+  const second = manager.create("updates", "selfUpdateCheck", {});
+  for (const id of [first.id, second.id]) {
+    const task = await waitForTask(manager, id);
+    assert.equal(task.status, "succeeded", task.errorMessage);
+    assert.equal(task.exitCode, 100);
+  }
+  const third = await waitForTask(manager, manager.create("updates", "selfUpdateCheck", {}).id);
+  assert.equal(third.status, "succeeded");
+  assert.match(third.logLines.map(line => line.line).join("\n"), /Reusing update check result/);
+  assert.equal(readFileSync(join(dir, "calls"), "utf8"), "call\n");
+  assert.equal(taskTimeoutMs({ commandTimeoutMs: 300000 }, "selfUpdateCheck"), 120000);
+});
+
+test("failed Console checks retain diagnostics and back off repeated requests", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-console-failed-check-"));
+  const duneScript = join(dir, "dune");
+  writeFileSync(duneScript, "#!/usr/bin/env bash\necho call >> calls\necho 'Current version: v1.0.0'\necho 'provider unavailable' >&2\nexit 2\n", { mode: 0o700 });
+  const manager = new TaskManager({ duneScript, repoRoot: dir, taskRetention: 20, commandTimeoutMs: 5000 });
+  for (let i = 0; i < 2; i++) {
+    const task = await waitForTask(manager, manager.create("updates", "selfUpdateCheck", {}).id);
+    assert.equal(task.status, "failed");
+    assert.match(task.logLines.map(line => line.line).join("\n"), /provider unavailable/);
+    assert.match(task.logLines.map(line => line.line).join("\n"), /Current version/);
+  }
+  assert.equal(readFileSync(join(dir, "calls"), "utf8"), "call\n");
+});
+
 test("game update check exit 100 is treated as update-available success", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-task-update-"));
   const duneScript = join(dir, "dune");
@@ -45,6 +78,38 @@ test("game update check exit 100 is treated as update-available success", async 
   assert.equal(task.status, "succeeded");
   assert.equal(task.exitCode, 100);
   assert.match(task.logLines.map((line) => line.line).join("\n"), /Update available/);
+});
+
+test("failed startup surfaces a registry limit instead of a generic exit code", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-task-registry-limit-"));
+  const duneScript = join(dir, "dune");
+  writeFileSync(duneScript, "#!/usr/bin/env bash\necho 'Image: registry.funcom.com/funcom/self-hosting/db-utils:123'\necho 'docker: Error response from daemon: toomanyrequests' >&2\nexit 1\n", { mode: 0o700 });
+  const manager = new TaskManager({ duneScript, repoRoot: dir, taskRetention: 20, commandTimeoutMs: 5000 });
+  const created = manager.create("server", "start", {});
+  const task = await waitForTask(manager, created.id);
+  assert.equal(task.status, "failed");
+  assert.equal(task.errorMessage, "Funcom registry request limit reached. Try again later; no retry time was provided.");
+});
+
+test("game update check failure keeps Steam diagnostics and gives retry guidance", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-task-update-failure-"));
+  const duneScript = join(dir, "dune");
+  writeFileSync(duneScript, "#!/usr/bin/env bash\necho 'SteamCMD metadata check timed out after 45s.' >&2\necho 'No game files were changed.' >&2\nexit 2\n", { mode: 0o700 });
+
+  const manager = new TaskManager({
+    duneScript,
+    repoRoot: dir,
+    taskRetention: 20,
+    commandTimeoutMs: 5000
+  });
+
+  const created = manager.create("updates", "updateCheck", { fresh: true });
+  const task = await waitForTask(manager, created.id);
+  assert.equal(task.status, "failed");
+  assert.equal(task.exitCode, 2);
+  assert.equal(task.errorMessage, "Steam did not finish the game update check in time. Try again in a few minutes. No game files were changed.");
+  assert.match(task.logLines.map((line) => line.line).join("\n"), /SteamCMD metadata check timed out after 45s/);
+  assert.doesNotMatch(task.errorMessage, /failed with exit 2/i);
 });
 
 test("USERSETTINGS_WARNING lines surface as task.warnings without disturbing logLines", async () => {
@@ -97,12 +162,20 @@ test("long-running server tasks get an extended timeout", () => {
   const config = { commandTimeoutMs: 5000 };
 
   assert.equal(taskTimeoutMs(config, "status"), 5000);
+  assert.equal(taskTimeoutMs(config, "adminSpawnVehicle"), 5 * 60 * 1000);
+  assert.equal(taskTimeoutMs({ commandTimeoutMs: 600000 }, "adminSpawnVehicle"), 600000);
+  // Depot downloads get their own, longer floor: a 30-minute kill lands
+  // mid-SteamCMD and needs fix-steamcmd afterward.
+  assert.equal(taskTimeoutMs(config, "updateInstallAssets"), 4 * 60 * 60 * 1000);
+  assert.equal(taskTimeoutMs(config, "updateApply"), 4 * 60 * 60 * 1000);
+  assert.equal(taskTimeoutMs(config, "init"), 4 * 60 * 60 * 1000);
   assert.equal(taskTimeoutMs(config, "start"), 30 * 60 * 1000);
   assert.equal(taskTimeoutMs(config, "stop"), 30 * 60 * 1000);
   assert.equal(taskTimeoutMs(config, "restartAll"), 30 * 60 * 1000);
   assert.equal(taskTimeoutMs(config, "storageCleanupImages"), 30 * 60 * 1000);
   assert.equal(taskTimeoutMs(config, "storageCleanupBuildCache"), 30 * 60 * 1000);
   assert.equal(taskTimeoutMs(config, "sietchesSetActive"), 30 * 60 * 1000);
+  assert.equal(taskTimeoutMs(config, "deepdesertAction"), 30 * 60 * 1000);
   assert.equal(taskTimeoutMs(config, "sietchesRestart"), 30 * 60 * 1000);
   assert.equal(taskTimeoutMs(config, "sietchesReconcile"), 30 * 60 * 1000);
   assert.equal(taskTimeoutMs(config, "restartServiceStop"), 30 * 60 * 1000);
@@ -136,6 +209,7 @@ test("web self-update helper mounts the host repo path", () => {
   assert(args.includes("DUNE_SELF_UPDATE_TOKEN"));
   assert(args.includes("DUNE_SELF_UPDATE_RUN_ID=123e4567-e89b-42d3-a456-426614174000"));
   assert(args.includes("io.github.red-blink.dune-selfhost.role=self-update-helper"));
+  assert.deepEqual(args.slice(args.indexOf("--entrypoint"), args.indexOf("--entrypoint") + 4), ["--entrypoint", "/bin/sh", "redblink-dune-docker-console:dev", "-lc"]);
   assert(!args.includes("/repo:/repo"));
 });
 
@@ -294,8 +368,9 @@ test("detached self-update stays running until durable helper status completes i
   const previousProject = process.env.DUNE_COMPOSE_PROJECT_NAME;
   process.env.DUNE_COMPOSE_PROJECT_NAME = "dune-test";
   const calls = [];
+  const repoRoot = mkdtempSync(join(tmpdir(), "arrakis-self-update-task-"));
   const manager = new TaskManager({
-    repoRoot: "/repo",
+    repoRoot,
     hostRepoRoot: "/host/repo",
     taskRetention: 20,
     commandTimeoutMs: 5000
@@ -320,6 +395,7 @@ test("detached self-update stays running until durable helper status completes i
     assert.equal(calls[0][0], "ps");
     assert(calls[1].includes(`DUNE_SELF_UPDATE_RUN_ID=${created.id}`));
     assert(calls[1].includes("DUNE_SELF_UPDATE_BUILD_TIMEOUT_SECONDS=1800"));
+    assert.match(readFileSync(join(repoRoot, "runtime", "generated", "self-update-status", `${created.id}.env`), "utf8"), /^stage=launching$/m);
   } finally {
     if (previousProject === undefined) delete process.env.DUNE_COMPOSE_PROJECT_NAME;
     else process.env.DUNE_COMPOSE_PROJECT_NAME = previousProject;
@@ -618,6 +694,30 @@ test("a survival restart flushes queued map writes between the stop and start st
   assert.deepEqual(callLog, ["stop-service survival", "flush:restartServiceStop", "restart survival"]);
 });
 
+test("a battlegroup restart stops game maps and flushes queued writes before PostgreSQL is removed", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-task-full-restart-flush-"));
+  const duneScript = join(dir, "dune");
+  const callLogPath = join(dir, "calls.log");
+  writeFileSync(callLogPath, "");
+  writeFileSync(duneScript, `#!/usr/bin/env bash\necho "$*" >> "${callLogPath}"\n`, { mode: 0o700 });
+  chmodSync(duneScript, 0o700);
+
+  const manager = new TaskManager(
+    { duneScript, repoRoot: dir, taskRetention: 20, commandTimeoutMs: 5000 },
+    { onMapDown: async (operation) => { appendFileSync(callLogPath, `flush:${operation}\n`); return { flushed: [] }; } }
+  );
+
+  const created = manager.create("server", "restartAll", {});
+  const task = await waitForTask(manager, created.id);
+  assert.equal(task.status, "succeeded", task.errorMessage);
+  assert.deepEqual(readFileSync(callLogPath, "utf8").trim().split("\n"), [
+    "stop-game-servers-for-db-writes",
+    "flush:stopGameServersForDbWrites",
+    "stop",
+    "start"
+  ]);
+});
+
 test("a Sietch restart flushes queued map writes between the stop and start steps, not after both", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-task-flush-order-sietch-"));
   const duneScript = join(dir, "dune");
@@ -647,7 +747,9 @@ test("map-down refill results distinguish generator, water, and queue-specific f
       onMapDown: async () => ({
         flushed: [
           { ok: true, refillType: "generator" },
-          { ok: true, refillType: "water" }
+          { ok: true, refillType: "water" },
+          { ok: true, refillType: "generator", noLongerApplicable: true },
+          { ok: true, refillType: "water", noLongerApplicable: true }
         ],
         failures: [{ refillType: "water", error: "database unavailable" }]
       })
@@ -661,8 +763,69 @@ test("map-down refill results distinguish generator, water, and queue-specific f
   assert.deepEqual(lines, [
     "Applied 1 queued generator refill.",
     "Applied 1 queued water refill.",
-    "Queued water refills were not applied: database unavailable"
+    "Cleared 1 obsolete generator refill; the base or its generators no longer exist.",
+    "Cleared 1 obsolete water refill; the base or its water storage no longer exists.",
+    "QUEUED_WRITE_WARNING: Queued water refills were not applied: database unavailable"
   ]);
+  // The prefix is stripped back off for the task's own warnings list, which is
+  // what the Console panel renders -- the log keeps the tagged line.
+  assert.deepEqual(taskWarnings(task), ["Queued water refills were not applied: database unavailable"]);
+});
+
+test("a wedged flush is reported and the restart carries on instead of hanging", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-task-flush-timeout-"));
+  const previous = process.env.ADMIN_MAP_WRITE_FLUSH_TIMEOUT_MS;
+  process.env.ADMIN_MAP_WRITE_FLUSH_TIMEOUT_MS = "1000";
+  try {
+    const manager = new TaskManager(
+      { duneScript: join(dir, "dune"), repoRoot: dir, taskRetention: 20, commandTimeoutMs: 5000 },
+      // Never settles: a stuck PostgreSQL connection, or a backup process that
+      // never exits. Without the bound this await never returns and the
+      // restart's start half never runs.
+      { onMapDown: () => new Promise(() => {}) }
+    );
+    const task = { logLines: [], subscribers: new Set() };
+    // withTimeout unrefs its timer, so a wedged onMapDown leaves nothing to
+    // keep the event loop alive and the runner would tear this file down.
+    const keepAlive = setInterval(() => {}, 1000);
+
+    await manager.flushPendingMapWrites(task, "restartServiceStop");
+    clearInterval(keepAlive);
+
+    assert.deepEqual(task.logLines.map((entry) => entry.line), [
+      "QUEUED_WRITE_WARNING: Queued map writes were not applied: Queued map writes did not finish within 1s; continuing the restart. They stay queued and apply on a later pass."
+    ]);
+    assert.deepEqual(taskWarnings(task), ["Queued map writes were not applied: Queued map writes did not finish within 1s; continuing the restart. They stay queued and apply on a later pass."]);
+    assert.deepEqual(task.logLines.map((entry) => entry.stream), ["stderr"]);
+  } finally {
+    if (previous === undefined) delete process.env.ADMIN_MAP_WRITE_FLUSH_TIMEOUT_MS;
+    else process.env.ADMIN_MAP_WRITE_FLUSH_TIMEOUT_MS = previous;
+  }
+});
+
+test("a per-entry flush failure reaches the task log rather than being dropped", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-task-flush-entry-failures-"));
+  const manager = new TaskManager(
+    { duneScript: join(dir, "dune"), repoRoot: dir, taskRetention: 20, commandTimeoutMs: 5000 },
+    {
+      onMapDown: async () => ({
+        flushed: [
+          { ok: true, refillType: "delete" },
+          { ok: false, refillType: "delete", error: "This base was picked up into a backup and is no longer claimed." }
+        ]
+      })
+    }
+  );
+  const task = { logLines: [], subscribers: new Set() };
+
+  await manager.flushPendingMapWrites(task, "restartServiceStop");
+
+  assert.deepEqual(task.logLines.map((entry) => entry.line), [
+    "Applied 1 queued base delete.",
+    "QUEUED_WRITE_WARNING: 1 queued base delete could not be applied and stay queued: This base was picked up into a backup and is no longer claimed."
+  ]);
+  // Applied lines stay off the warnings list; only the failure is promoted.
+  assert.deepEqual(taskWarnings(task), ["1 queued base delete could not be applied and stay queued: This base was picked up into a backup and is no longer claimed."]);
 });
 
 function waitForTask(manager, id) {
@@ -680,3 +843,54 @@ function waitForTask(manager, id) {
     }, 20);
   });
 }
+
+// The prefix is an internal marker for taskWarnings, not something an operator
+// should read. The log is a disclosure anyone can open and the de-prefixed text
+// already renders above it, so shipping the sentinel would show the same line
+// twice, once with leaked plumbing on the front.
+test("the public task strips the internal warning prefix from its log lines", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-task-prefix-"));
+  const manager = new TaskManager(
+    { duneScript: join(dir, "dune"), repoRoot: dir, taskRetention: 20, commandTimeoutMs: 5000 },
+    {
+      onMapDown: async () => ({
+        flushed: [{ ok: false, refillType: "delete", error: "This base was picked up into a backup." }]
+      })
+    }
+  );
+  const task = { logLines: [], subscribers: new Set() };
+
+  await manager.flushPendingMapWrites(task, "restartServiceStop");
+
+  const internal = task.logLines.map((entry) => entry.line);
+  assert.match(internal[0], /^QUEUED_WRITE_WARNING: /, "the marker stays on the internal line");
+
+  const shipped = publicTask({ ...task, id: "t", type: "server", operation: "restartService", status: "succeeded", currentStep: "", progressMessage: "", startedAt: "", finishedAt: null, exitCode: 0, errorMessage: null });
+  assert.doesNotMatch(shipped.logLines[0].line, /QUEUED_WRITE_WARNING/, "but never reaches the browser");
+  assert.deepEqual(shipped.warnings, ["1 queued base delete could not be applied and stay queued: This base was picked up into a backup."]);
+});
+
+// Subprocess output reaches append() verbatim, so a spawned script printing the
+// internal marker could otherwise forge an operator-facing warning. The
+// usersettings marker is deliberately still honoured: usersettings.py is the
+// shipped script that raises it.
+test("a subprocess cannot forge a queued-write warning, but usersettings warnings still work", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-task-spoof-"));
+  const duneScript = join(dir, "dune");
+  writeFileSync(
+    duneScript,
+    "#!/usr/bin/env bash\necho 'QUEUED_WRITE_WARNING: All queued base deletes were applied.'\necho 'USERSETTINGS_WARNING: a real one'\necho done\n",
+    { mode: 0o700 }
+  );
+  chmodSync(duneScript, 0o700);
+
+  const manager = new TaskManager({ duneScript, repoRoot: dir, taskRetention: 20, commandTimeoutMs: 5000 });
+  const task = await waitForTask(manager, manager.create("server", "status", {}).id);
+
+  assert.deepEqual(taskWarnings(task), ["a real one"], "only the shipped script's marker is honoured");
+  const log = task.logLines.map((line) => line.line);
+  // The forged line is still logged -- it is the operator's own script output --
+  // but stripped of the marker so it cannot be promoted.
+  assert.ok(log.includes("All queued base deletes were applied."), `forged text stays in the log: ${log.join(" | ")}`);
+  assert.ok(!log.some((line) => line.startsWith("QUEUED_WRITE_WARNING: ")), "the marker must not survive from a subprocess");
+});

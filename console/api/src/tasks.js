@@ -4,6 +4,13 @@ import { statSync } from "node:fs";
 import { runDune, buildDuneArgs, validateServiceName } from "./runner.js";
 import { liveItemGrantWarning } from "./grantResults.js";
 import { createUpdateCheckCache } from "./services/updateCheckCache.js";
+import { initializeSelfUpdateStatus } from "./services/selfUpdateStatus.js";
+import { summarizeMapWriteFlush } from "./services/mapWriteSummary.js";
+import { withTimeout } from "./services/withTimeout.js";
+import { clampInt } from "./jsonStore.js";
+import { redactDbError } from "./db.js";
+import { recordTaskRestart } from "./services/restartHistory.js";
+import { downloadFailureMessage } from "./services/downloadFailure.js";
 
 // Operations that leave a map down with the database still reachable, so
 // anything queued for that map can be applied before it comes back up. "stop"
@@ -12,18 +19,47 @@ import { createUpdateCheckCache } from "./services/updateCheckCache.js";
 // sietchesRestartStop (not their Start halves) cover survival/Sietch
 // restarts -- see taskOperations, which splits those into separate stop and
 // start operations so the flush lands between them instead of after both.
-const MAP_DOWN_OPERATIONS = new Set(["mapsDespawn", "restartService", "restartServiceStop", "sietchesRestartStop"]);
+const MAP_DOWN_OPERATIONS = new Set(["mapsDespawn", "restartService", "restartServiceStop", "sietchesRestartStop", "stopGameServersForDbWrites"]);
+
+// Generous by default: a flush pass can include a full-database safety backup
+// before the first delete it applies. Still far below the 30-minute task
+// timeout a restart operation gets, so this fires first and lets the restart
+// report the reason and carry on.
+export function mapWriteFlushTimeoutMs() {
+  return clampInt(process.env.ADMIN_MAP_WRITE_FLUSH_TIMEOUT_MS, 300000, 1000, 1800000);
+}
+
+// The operations that download the game depot -- roughly 5 GB over SteamCMD --
+// rather than restart something. The 30-minute floor below was sized for
+// restarts and dumps; a depot download on a slow link exceeds it, and the
+// timeout is enforced by killing the process group, which lands mid-SteamCMD
+// and leaves exactly the manifest state `dune update fix-steamcmd` exists to
+// repair.
+export function assetDownloadTimeoutMs() {
+  return clampInt(process.env.ADMIN_ASSET_DOWNLOAD_TIMEOUT_MS, 4 * 60 * 60 * 1000, 30 * 60 * 1000, 24 * 60 * 60 * 1000);
+}
 
 export class TaskManager {
   constructor(config, options = {}) {
     this.config = config;
     this.onMapDown = options.onMapDown || null;
     this.tasks = new Map();
+    // Keyed by task id and held here rather than on the task: publicTask()
+    // allowlists what it serializes, and a callback has no business anywhere
+    // near that. Consumed on the first terminal state, either way, so a failed
+    // task does not leave one behind.
+    this.successHooks = new Map();
     this.runDockerCommand = options.runDockerCommand || runDockerCommand;
     this.updateCheckCache = options.updateCheckCache || createUpdateCheckCache(config, {
       collect: () => runDune(config, buildDuneArgs("updateCheck"), {
         allowedExitCodes: [0, 100],
         timeoutMs: taskTimeoutMs(config, "updateCheck")
+      })
+    });
+    this.consoleUpdateCheckCache = options.consoleUpdateCheckCache || createUpdateCheckCache(config, {
+      cacheMs: 5 * 60 * 1000, errorCacheMs: 5 * 60 * 1000, cacheFile: null,
+      collect: () => runDune(config, buildDuneArgs("selfUpdateCheck"), {
+        allowedExitCodes: [0, 100], timeoutMs: taskTimeoutMs(config, "selfUpdateCheck")
       })
     });
   }
@@ -36,8 +72,14 @@ export class TaskManager {
     return this.tasks.get(id) || null;
   }
 
-  create(type, operation, payload = {}) {
+  // `options.env` is deliberately NOT stored on the task: this.tasks retains
+  // tasks for config.taskRetention and publicTask() serializes them to callers,
+  // so a secret placed there would leak. It lives only in this closure.
+  create(type, operation, payload = {}, options = {}) {
     const id = randomUUID();
+    // Registered before the cached-hit branch below, which can complete a task
+    // synchronously inside this same call.
+    if (typeof options.onSuccess === "function") this.successHooks.set(id, options.onSuccess);
     const task = {
       id,
       type,
@@ -56,6 +98,8 @@ export class TaskManager {
     let cachedHit = null;
     if (operation === "updateCheck" && payload.fresh !== true) {
       cachedHit = this.updateCheckCache.peek();
+    } else if (operation === "selfUpdateCheck") {
+      cachedHit = this.consoleUpdateCheckCache.peek();
     }
 
     if (cachedHit) {
@@ -68,7 +112,7 @@ export class TaskManager {
     this.trim();
 
     if (!cachedHit) {
-      queueMicrotask(() => this.run(task, payload));
+      queueMicrotask(() => this.run(task, payload, options.env));
     }
     return publicTask(task);
   }
@@ -80,7 +124,7 @@ export class TaskManager {
     return () => task.subscribers.delete(write);
   }
 
-  async run(task, payload) {
+  async run(task, payload, env) {
     task.status = "running";
     task.currentStep = "Running";
     this.emit(task, "Task started");
@@ -94,6 +138,11 @@ export class TaskManager {
         return;
       }
 
+      if (task.operation === "consoleReload") {
+        await this.runConsoleReloadTask(task);
+        return;
+      }
+
       const operations = taskOperations(task.operation, payload);
       let lastCode = 0;
       for (const operation of operations) {
@@ -103,11 +152,14 @@ export class TaskManager {
         let result;
         if (operation === "updateCheck") {
           result = await this.readUpdateCheck(task, payload);
+        } else if (operation === "selfUpdateCheck") {
+          result = await this.consoleUpdateCheckCache.read();
+          this.recordUpdateCheckResult(task, result);
         } else {
           const args = buildDuneArgs(operation, payload);
           result = await runDune(this.config, args, {
             allowedExitCodes: operation === "selfUpdateCheck" ? [0, 100] : [0],
-            env: operation === "init" ? { DUNE_INIT_ASSUME_YES: "1" } : {},
+            env: { ...(operation === "init" ? { DUNE_INIT_ASSUME_YES: "1" } : {}), ...(env || {}) },
             timeoutMs: taskTimeoutMs(this.config, operation),
             onLine: (text, stream) => this.append(task, text, stream)
           });
@@ -116,23 +168,73 @@ export class TaskManager {
         const grantWarning = itemGrantTaskWarning(operation, result);
         if (grantWarning) throw Object.assign(new Error(grantWarning), { code: 1, stdout: result.stdout, stderr: result.stderr });
         lastCode = result.code;
-        if (MAP_DOWN_OPERATIONS.has(operation)) await this.flushPendingMapWrites(task, operation);
+        if (MAP_DOWN_OPERATIONS.has(operation)) await this.flushPendingMapWrites(task, operation, payload);
       }
-      if (["updateApply", "updateFixSteamcmd"].includes(task.operation)) {
+      if (["updateApply", "updateFixSteamcmd", "updateInstallAssets"].includes(task.operation)) {
         this.updateCheckCache.invalidate();
       }
       this.completeTaskSucceeded(task, lastCode);
+      try { recordTaskRestart(this.config, task, payload); } catch (error) {
+        console.error(`Restart history write failed: ${error?.message || "Unexpected error."}`);
+      }
     } catch (error) {
       task.status = "failed";
       task.exitCode = Number.isInteger(error.code) ? error.code : null;
-      task.errorMessage = error.message;
+      const downloadFailure = downloadFailureMessage([
+        ...task.logLines.map(line => line.line), error.stdout || "", error.stderr || ""
+      ].join("\n"));
+      if (["updateCheck", "selfUpdateCheck"].includes(task.operation)) {
+        if (error.stdout) this.append(task, error.stdout, "stdout");
+        if (error.stderr) this.append(task, error.stderr, "stderr");
+        task.errorMessage = downloadFailure || (task.operation === "updateCheck" ? updateCheckFailureMessage(error) : error.message);
+      } else {
+        task.errorMessage = downloadFailure || error.message;
+      }
       task.currentStep = "Failed";
       task.finishedAt = new Date().toISOString();
-      this.emit(task, error.message);
+      // Dropped, not run: a preview that failed must not authorize an apply.
+      this.successHooks.delete(task.id);
+      this.emit(task, task.errorMessage);
+      try { recordTaskRestart(this.config, task, payload); } catch (historyError) {
+        console.error(`Restart history write failed: ${historyError?.message || "Unexpected error."}`);
+      }
     }
   }
 
+  // The console cannot recreate its own container from inside it: the recreate
+  // kills this process, so an ordinary task would die before reporting
+  // anything. A detached helper outlives it, exactly as a console self-update
+  // already does -- the difference is that this one only recreates the
+  // container, never rebuilds the image, because a restored .env is a
+  // configuration change and not a code change.
+  async runConsoleReloadTask(task) {
+    const composeProjectName = process.env.DUNE_COMPOSE_PROJECT_NAME || process.env.COMPOSE_PROJECT_NAME;
+    if (!composeProjectName) throw new Error("Main Dune Compose project name was not provided to the Console.");
+    const helperImage = process.env.DUNE_SYSTEMD_HELPER_IMAGE || "redblink-dune-docker-console:dev";
+    const hostRepoRoot = process.env.DUNE_HOST_REPO_ROOT || this.config.hostRepoRoot || this.config.repoRoot;
+
+    this.append(task, "Starting a detached helper to recreate the Console container.", "stdout");
+    await this.runDockerCommand(buildSelfUpdateHelperDockerArgs({
+      helperName: `dune-console-reload-${Date.now()}`,
+      hostRepoRoot,
+      composeProjectName,
+      helperImage,
+      hostUid: process.env.DUNE_HOST_UID || String(process.getuid?.() ?? 0),
+      hostGid: process.env.DUNE_HOST_GID || String(process.getgid?.() ?? 0),
+      dockerSocketGid: process.env.DOCKER_SOCKET_GID || detectDockerSocketGid(),
+      command: "runtime/scripts/dune console reload"
+    }), this.config.repoRoot);
+
+    // Deliberately reported as succeeded here rather than after the recreate:
+    // this process is about to be killed by the helper, so this is the last
+    // thing it can truthfully say. The browser watches for the Console coming
+    // back rather than for this task finishing.
+    this.append(task, "The Console is restarting to load the restored configuration.", "stdout");
+    this.completeTaskSucceeded(task, 0);
+  }
+
   async runSelfUpdateHelperTask(task, payload) {
+    this.consoleUpdateCheckCache.invalidate();
     const args = buildDuneArgs(task.operation, payload);
     const helperName = `dune-web-self-update-${Date.now()}`;
     const composeProjectName = process.env.DUNE_COMPOSE_PROJECT_NAME || process.env.COMPOSE_PROJECT_NAME;
@@ -172,6 +274,7 @@ export class TaskManager {
 
     task.currentStep = "Starting update helper";
     this.emit(task, "Starting detached update helper");
+    initializeSelfUpdateStatus(this.config.repoRoot, task.id);
     await cleanupStaleSelfUpdateHelpers(this.config.repoRoot, this.runDockerCommand);
     const result = await this.runDockerCommand(buildSelfUpdateHelperDockerArgs({
       helperName,
@@ -241,26 +344,46 @@ export class TaskManager {
   // immediately by mapsSpawn -- so flush here rather than hope a tick lands in
   // between. Never fails the restart: an unreachable database just means the
   // entries stay queued for the next window.
-  async flushPendingMapWrites(task, operation) {
+  // Never allowed to hang: this runs between a restart's stop and start halves,
+  // so an await that never settles leaves the battlegroup down indefinitely.
+  // A flush that overruns is reported and abandoned; its entries stay queued
+  // and apply on a later pass, which is strictly better than a restart that
+  // never finishes. See services/withTimeout.js.
+  async flushPendingMapWrites(task, operation, payload = {}) {
     if (!this.onMapDown) return;
     try {
-      const result = await this.onMapDown(operation);
-      const applied = (result?.flushed || []).filter((entry) => entry.ok);
-      const generators = applied.filter((entry) => entry.refillType !== "water").length;
-      const water = applied.filter((entry) => entry.refillType === "water").length;
-      if (generators) this.append(task, `Applied ${generators} queued generator refill${generators === 1 ? "" : "s"}.`, "stdout");
-      if (water) this.append(task, `Applied ${water} queued water refill${water === 1 ? "" : "s"}.`, "stdout");
-      for (const failure of result?.failures || []) {
-        const label = failure.refillType === "water" ? "water refills" : "generator refills";
-        this.append(task, `Queued ${label} were not applied: ${failure.error || "unknown error"}`, "stderr");
+      const timeoutMs = mapWriteFlushTimeoutMs();
+      const result = await withTimeout(
+        Promise.resolve().then(() => this.onMapDown(operation, payload)),
+        timeoutMs,
+        `Queued map writes did not finish within ${Math.round(timeoutMs / 1000)}s; continuing the restart. They stay queued and apply on a later pass.`);
+      // Failures are prefixed so they survive onto task.warnings. Without that
+      // they would reach the task log only, and a restart's log sits behind a
+      // disclosure the operator has to think to open -- too easy to miss for a
+      // delete that silently did not happen.
+      for (const line of summarizeMapWriteFlush(result)) {
+        if (line.stream === "stderr") this.appendQueuedWriteWarning(task, line.text);
+        else this.append(task, line.text, line.stream);
       }
     } catch (error) {
-      this.append(task, `Queued generator refills were not applied: ${error?.message || "Unexpected error."}`, "stderr");
+      // redactDbError, not the raw message: this line is lifted onto
+      // task.warnings and rendered in the browser.
+      this.appendQueuedWriteWarning(task, `Queued map writes were not applied: ${redactDbError(error)}`);
     }
   }
 
-  append(task, text, stream) {
-    const lines = String(text).split(/\r?\n/).filter(Boolean).map((line) => ({ timestamp: new Date().toISOString(), stream, line }));
+  // Only the console's own code may raise a queued-write warning. Subprocess
+  // output reaches append() verbatim (see the onLine hook above), so without
+  // this a spawned script could print the marker and forge an operator-facing
+  // warning. USERSETTINGS_WARNING is deliberately not stripped: usersettings.py
+  // is the shipped script that raises it, and that is its documented path.
+  appendQueuedWriteWarning(task, text) {
+    this.append(task, QUEUED_WRITE_WARNING_PREFIX + stripQueuedWriteWarningPrefix(String(text)), "stderr", { internal: true });
+  }
+
+  append(task, text, stream, { internal = false } = {}) {
+    const lines = String(text).split(/\r?\n/).filter(Boolean)
+      .map((line) => ({ timestamp: new Date().toISOString(), stream, line: internal ? line : stripQueuedWriteWarningPrefix(line) }));
     task.logLines.push(...lines);
     if (task.logLines.length > 1000) task.logLines.splice(0, task.logLines.length - 1000);
     for (const row of lines) this.emit(task, row.line);
@@ -282,7 +405,7 @@ export class TaskManager {
     const ageSeconds = Math.max(0, Math.round((Date.now() - result.sampledAtMs) / 1000));
     this.append(task, result.fromCache
       ? `Reusing update check result from ${ageSeconds}s ago (cached).`
-      : "Ran a live Steam update check.", "stdout");
+      : `Ran a live ${task.operation === "selfUpdateCheck" ? "Console" : "Steam"} update check.`, "stdout");
     if (result.stdout) this.append(task, result.stdout, "stdout");
     if (result.stderr) this.append(task, result.stderr, "stderr");
   }
@@ -292,13 +415,40 @@ export class TaskManager {
     task.exitCode = exitCode;
     task.currentStep = "Finished";
     task.finishedAt = new Date().toISOString();
+    this.runSuccessHook(task);
     this.emit(task, "Task succeeded");
+  }
+
+  // The task has already succeeded by the time this runs, so a throwing hook
+  // must not turn it into a failure. The restore-preview receipt is the caller
+  // here and fails closed: a receipt that was never recorded refuses the apply
+  // rather than allowing it.
+  runSuccessHook(task) {
+    const hook = this.successHooks.get(task.id);
+    if (!hook) return;
+    this.successHooks.delete(task.id);
+    try {
+      hook(task);
+    } catch (error) {
+      console.error(`Task success hook failed for ${task.operation}: ${error?.message || "Unexpected error."}`);
+    }
   }
 
   trim() {
     const all = this.list();
     for (const task of all.slice(this.config.taskRetention)) this.tasks.delete(task.id);
   }
+}
+
+function updateCheckFailureMessage(error) {
+  const detail = `${error?.stdout || ""}\n${error?.stderr || ""}`;
+  if (/timed out|timeout/i.test(detail)) {
+    return "Steam did not finish the game update check in time. Try again in a few minutes. No game files were changed.";
+  }
+  if (/content host|could not resolve|no connection|network is unreachable/i.test(detail)) {
+    return "Steam's update service could not be reached. Try again in a few minutes. No game files were changed.";
+  }
+  return "The game update check could not be completed. Try again; if it keeps failing, check the SteamCMD details in the task log. No game files were changed.";
 }
 
 function itemGrantTaskWarning(operation, result) {
@@ -336,13 +486,14 @@ export function buildSelfUpdateHelperDockerArgs({
       "-e", `DOCKER_SOCKET_GID=${dockerSocketGid}`,
       ...extraEnv.flatMap((value) => ["-e", value]),
       "-w", "/repo",
+      "--entrypoint", "/bin/sh",
       helperImage,
-      "sh", "-lc", command
+      "-lc", command
     ];
 }
 
 function isSelfUpdateApplyOperation(operation) {
-  return operation === "selfUpdateApply";
+  return operation === "selfUpdateApply" || operation === "selfUpdateQaApply";
 }
 
 function isDiscordAdapterApplyOperation(operation) {
@@ -408,14 +559,25 @@ function shellQuote(value) {
 }
 
 export function taskTimeoutMs(config, operation) {
-  if (["start", "stop", "restartAll", "restartService", "restartServiceStop", "restartServiceStart", "serverTitle", "serverConfig", "init", "updateApply", "updateFixSteamcmd", "selfUpdateApply", "backupRestore", "storageCleanupImages", "storageCleanupBuildCache", "userSettingsSaveAndRestart", "userSettingsResetAndRestart", "userSettingsRawAndRestart", "mapsApplySettings", "mapsRespawn", "sietchesSetActive", "sietchesRestart", "sietchesRestartStop", "sietchesRestartStart", "sietchesReconcile"].includes(operation)) {
+  if (operation === "selfUpdateCheck") return Math.min(config.commandTimeoutMs, 120_000);
+  // Fresh-position capture can take two minutes before broker confirmation
+  // and persistence verification begin. Do not kill a successfully published
+  // spawn while its result is being verified.
+  if (operation === "adminSpawnVehicle") return Math.max(config.commandTimeoutMs, 5 * 60 * 1000);
+  if (operation === "experimentalTanksApply") return Math.max(config.commandTimeoutMs, 45 * 60 * 1000);
+  // Depot downloads first: these are not restarts and must not inherit a floor
+  // sized for one.
+  if (["init", "updateApply", "updateInstallAssets"].includes(operation)) {
+    return Math.max(config.commandTimeoutMs, assetDownloadTimeoutMs());
+  }
+  if (["backupSystemCreate", "backupSystemRestore", "start", "stop", "restartAll", "stopGameServersForDbWrites", "restartService", "restartServiceStop", "restartServiceStart", "serverTitle", "serverConfig", "updateFixSteamcmd", "selfUpdateApply", "backupRestore", "storageCleanupImages", "storageCleanupBuildCache", "userSettingsSaveAndRestart", "userSettingsResetAndRestart", "userSettingsRawAndRestart", "mapsApplySettings", "mapsRespawn", "sietchesSetActive", "sietchesRestart", "sietchesRestartStop", "sietchesRestartStart", "sietchesReconcile", "deepdesertAction"].includes(operation)) {
     return Math.max(config.commandTimeoutMs, 30 * 60 * 1000);
   }
   return config.commandTimeoutMs;
 }
 
 export function taskOperations(operation, payload = {}) {
-  if (operation === "restartAll") return ["stop", "start"];
+  if (operation === "restartAll") return ["stopGameServersForDbWrites", "stop", "start"];
   if (operation === "restartService") return restartServiceOperations(payload);
   // Every Sietch partition is a Survival_1 sub-partition, so this always
   // splits -- the shell layer resolves primary vs. secondary internally.
@@ -475,15 +637,37 @@ function restartServiceOperations(payload = {}) {
 }
 
 const USERSETTINGS_WARNING_PREFIX = "USERSETTINGS_WARNING: ";
+// Queued base/vehicle writes that did not apply during a restart's map-down
+// window. Same in-log prefix convention as the usersettings warning above: the
+// prefixed line stays in the task log, and taskWarnings lifts its text onto the
+// task so a panel can show it without the caller parsing log lines.
+const QUEUED_WRITE_WARNING_PREFIX = "QUEUED_WRITE_WARNING: ";
+const WARNING_PREFIXES = [USERSETTINGS_WARNING_PREFIX, QUEUED_WRITE_WARNING_PREFIX];
+
+function stripQueuedWriteWarningPrefix(line) {
+  return line.startsWith(QUEUED_WRITE_WARNING_PREFIX) ? line.slice(QUEUED_WRITE_WARNING_PREFIX.length) : line;
+}
 
 // usersettings.py prints one of these lines per Advanced Editor content warning (duplicate
 // keys, PvP/PvE selector overlaps with a toggle, legacy guild-alias overrides) instead of
 // silently dropping the content -- surfaced here as a distinct field so callers can show it
 // without parsing logLines themselves, while logLines keeps the raw line for diagnostics.
+// The prefixes are an internal marker so taskWarnings can lift a line onto the
+// task; they are not for operators. The log is now a disclosure anyone can
+// open, and the de-prefixed text already renders above it, so shipping the
+// sentinel would just be leaked plumbing shown twice.
+function withoutWarningPrefix(entry) {
+  const prefix = WARNING_PREFIXES.find((candidate) => entry.line.startsWith(candidate));
+  return prefix ? { ...entry, line: entry.line.slice(prefix.length) } : entry;
+}
+
 export function taskWarnings(task) {
   return task.logLines
-    .filter((entry) => entry.line.startsWith(USERSETTINGS_WARNING_PREFIX))
-    .map((entry) => entry.line.slice(USERSETTINGS_WARNING_PREFIX.length));
+    .map((entry) => {
+      const prefix = WARNING_PREFIXES.find((candidate) => entry.line.startsWith(candidate));
+      return prefix ? entry.line.slice(prefix.length) : "";
+    })
+    .filter((text) => text !== "");
 }
 
 export function publicTask(task) {
@@ -494,7 +678,7 @@ export function publicTask(task) {
     status: task.status,
     currentStep: task.currentStep,
     progressMessage: task.progressMessage,
-    logLines: task.logLines,
+    logLines: task.logLines.map(withoutWarningPrefix),
     warnings: taskWarnings(task),
     startedAt: task.startedAt,
     finishedAt: task.finishedAt,

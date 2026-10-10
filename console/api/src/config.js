@@ -1,14 +1,15 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, statSync, chownSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { networkInterfaces } from "node:os";
+import { clampInt } from "./jsonStore.js";
 
 export const APP_NAME = "Dune Docker Console";
 
 // Single source of truth for every host-facing port this console cares
 // about. Stock (Instance 1) values are the fallback defaults only --
 // multi-server / single-public-IP deployments override these via .env.
-// These values MUST stay in sync with runtime/scripts/runtime-env.sh's
+// These values MUST stay in sync with runtime/scripts/lib/ports.sh's
 // resolve_*_port() functions -- that file is the shell-side equivalent
 // used by non-Node scripts, and the two must never drift (found 6
 // places across the codebase that hardcoded these stock values directly
@@ -285,6 +286,14 @@ export function loadConfig() {
     // above, and the same test-only override need (mentat-link.darkdante.org
     // is a real, live, reachable hostname).
     mentatLinkConfirmationStatusUrl: process.env.MENTAT_LINK_CONFIRMATION_STATUS_URL || "https://mentat-link.darkdante.org/api/consoles/auto-invite/confirmation-status",
+    // dune-awakening-selfhost-docker#853/mentat-link#183: the role-picker
+    // backend's proxy leg -- a base URL, not a full endpoint, since the
+    // real path needs the connected guild's own id interpolated in
+    // (`${mentatLinkRolesUrlBase}/${guildId}/roles`). Same "Core never
+    // holds MENTAT_PROXY_SHARED_SECRET" reasoning as the two auto-invite
+    // URLs above (calls go through mentat-LINK's proxy, not directly to
+    // mentat-backend), and the same test-only override need.
+    mentatLinkRolesUrlBase: process.env.MENTAT_LINK_ROLES_URL_BASE || "https://mentat-link.darkdante.org/api/consoles",
     // The redirect_uri embedded in the Discord authorize URL this flow
     // builds -- a FIXED value (mentat-link's own callback route), unlike
     // the OLD flow's operator-configured discordHostedBotOAuthRedirectUri.
@@ -313,6 +322,7 @@ export function loadConfig() {
     discordBotHandoffUrl: (process.env.DISCORD_BOT_HANDOFF_URL || "").replace(/\/+$/, ""),
     generatedDir,
     secretsDir,
+    apiKeysFile: resolve(secretsDir, "api-keys.json"),
     auditLog: resolve(generatedDir, "web-admin-audit.jsonl"),
     // Tier 3 password + mandatory TOTP (RFC docs/rfc-console-auth.md §2.3/§4).
     // Gated OFF by default during incremental rollout: the backend enrollment/
@@ -336,6 +346,7 @@ export function loadConfig() {
     secondFactorFile: resolve(generatedDir, "console-second-factor.json"),
     totpIssuer: APP_NAME,
     enrollmentSessionTtlMs: 10 * 60 * 1000, // §4: short-lived, non-renewable enrollment session
+    restartHistoryFile: resolve(generatedDir, "restart-history.jsonl"),
     spicefieldOverridesFile: resolve(generatedDir, "spicefield-overrides.json"),
     // Committed data, not runtime state: Large-spice coordinates are a
     // permanent lookup keyed by Coriolis seed (0-11) -- the same seed
@@ -349,9 +360,23 @@ export function loadConfig() {
     landsraadMilestonePresetFile: resolve(generatedDir, "landsraad-milestones.json"),
     taskRetention: Number(process.env.ADMIN_TASK_RETENTION || 200),
     maxJsonBytes: Number(process.env.ADMIN_MAX_JSON_BYTES || 2 * 1024 * 1024),
-    maxUploadBytes: Number(process.env.ADMIN_MAX_UPLOAD_BYTES || 1024 * 1024 * 1024),
+    // Clamped, not a bare Number(): this is the only cap on a streamed upload
+    // that writes straight to disk, and a non-numeric value makes Number()
+    // return NaN, which turns every `received > maxUploadBytes` comparison
+    // false and removes the limit entirely. The `|| NaN` keeps an empty value
+    // meaning "unset", as the previous `|| default` did -- without it an empty
+    // ADMIN_MAX_UPLOAD_BYTES= reads as 0 and clamps to the 1MiB floor.
+    maxUploadBytes: clampInt(process.env.ADMIN_MAX_UPLOAD_BYTES || NaN, 1024 * 1024 * 1024, 1024 * 1024, 64 * 1024 * 1024 * 1024),
+    // How long a successful restore preview authorizes an apply. Clamped for
+    // the same reason as maxUploadBytes -- a NaN here would compare false in
+    // the expiry check and turn a short-lived receipt into a permanent one.
+    // The floor keeps it long enough to answer the identity and audit-log
+    // prompts the preview raises; the ceiling keeps it from becoming a
+    // standing authorization to overwrite the host.
+    restorePreviewTtlMs: clampInt(process.env.ADMIN_RESTORE_PREVIEW_TTL_MS || NaN, 15 * 60 * 1000, 60 * 1000, 2 * 60 * 60 * 1000),
     commandTimeoutMs: Number(process.env.ADMIN_COMMAND_TIMEOUT_MS || 120000),
-    updateCheckCacheMs: Number(process.env.ADMIN_UPDATE_CHECK_CACHE_MS || 5 * 60 * 1000),
+    updateCheckCacheMs: Number(process.env.ADMIN_UPDATE_CHECK_CACHE_MS || 30 * 60 * 1000),
+    updateCheckCacheFile: resolve(generatedDir, "game-update-check.json"),
     staticDir: process.env.ADMIN_STATIC_DIR || resolve(repoRoot, "console/web/dist"),
     allowedIps: parseAllowedIps(process.env.ADMIN_ALLOWED_IPS)
   };
@@ -383,6 +408,12 @@ function repairRootOwnedHostState(repoRoot) {
     updateEnvFileValue(envPath, "DUNE_HOST_GID", String(owner.gid));
   }
 
+  // This list is hand-maintained and covers the paths a root-run console must
+  // hand back to the host user. It is deliberately NOT shared with any other
+  // enumeration of these trees: it must include the addon download/staging
+  // caches (which a backup would skip) and needs only two of the secrets. Note
+  // runtime/backups/system/ is included: backup_system creates and chmods it,
+  // but a root-run console creating it first would leave it root-owned.
   for (const path of [
     repoRoot,
     envPath,
@@ -399,10 +430,12 @@ function repairRootOwnedHostState(repoRoot) {
     resolve(repoRoot, "runtime/generated/message-of-the-day-state.json"),
     resolve(repoRoot, "runtime/generated/player-announcements.json"),
     resolve(repoRoot, "runtime/generated/player-announcements-state.json"),
+    resolve(repoRoot, "runtime/generated/scheduled-map-messages.json"),
     resolve(repoRoot, "runtime/generated/player-bans.json"),
     resolve(repoRoot, "runtime/generated/public-directory-status.json"),
     resolve(repoRoot, "runtime/generated/restart-queue.json"),
     resolve(repoRoot, "runtime/generated/restart-queue-state.json"),
+    resolve(repoRoot, "runtime/generated/restart-history.jsonl"),
     resolve(repoRoot, "runtime/generated/restart-schedule.env"),
     resolve(repoRoot, "runtime/generated/shutdown-protection.env"),
     resolve(repoRoot, "runtime/generated/sietch-config.json"),
@@ -411,6 +444,8 @@ function repairRootOwnedHostState(repoRoot) {
     resolve(repoRoot, "runtime/generated/update-auto.env"),
     resolve(repoRoot, "runtime/generated/usersettings.json"),
     resolve(repoRoot, "runtime/generated/auto-refill-bases.json"),
+    resolve(repoRoot, "runtime/generated/auto-refill-water-bases.json"),
+    resolve(repoRoot, "runtime/generated/auto-refill-settings.json"),
     resolve(repoRoot, "runtime/generated/pending-generator-refills.json"),
     resolve(repoRoot, "runtime/generated/gameplay-profile.ini"),
     resolve(repoRoot, "runtime/generated/care-package.json"),
@@ -423,7 +458,9 @@ function repairRootOwnedHostState(repoRoot) {
     resolve(repoRoot, "runtime/addons/staging"),
     resolve(repoRoot, "runtime/addons/state.json"),
     resolve(repoRoot, "runtime/secrets/funcom-token.txt"),
-    resolve(repoRoot, "runtime/secrets/public-directory.json")
+    resolve(repoRoot, "runtime/secrets/public-directory.json"),
+    resolve(repoRoot, "runtime/backups"),
+    resolve(repoRoot, "runtime/backups/system")
   ]) {
     try {
       if (existsSync(path)) chownSync(path, owner.uid, owner.gid);
@@ -460,6 +497,19 @@ function readConsoleVersion(repoRoot) {
     return readFileSync(resolve(repoRoot, "VERSION"), "utf8").trim() || "dev";
   } catch {
     return "dev";
+  }
+}
+
+export function readConsoleBuildId(staticDir, fallback = "dev") {
+  try {
+    // Vite's index references every entry asset by its content-hashed
+    // filename, so its digest changes whenever the browser-facing build
+    // changes. Reading it live also detects an in-place rebuild without
+    // requiring VERSION to be bumped or the API process to restart.
+    const index = readFileSync(resolve(staticDir, "index.html"));
+    return createHash("sha256").update(index).digest("hex").slice(0, 16);
+  } catch {
+    return fallback;
   }
 }
 
@@ -523,6 +573,7 @@ export function publicConfig(config) {
   return {
     appName: config.appName,
     version: config.version,
+    buildId: readConsoleBuildId(config.staticDir, config.version),
     repoRoot: config.repoRoot,
     host: config.host,
     port: config.port,

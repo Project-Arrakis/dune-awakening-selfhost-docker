@@ -1,13 +1,19 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, ChevronUp } from "lucide-react";
+import { Boxes, ChevronDown, ChevronUp, Trash2, X } from "lucide-react";
 import type { VehicleModule, VehicleRow, VehicleSharedEntry } from "../../api/vehicles";
 import { DataTable, type SortDirection } from "../../components/common/DataTable";
 import { cachedInstanceNames, resolveInstanceNames } from "../maps/instanceNames";
+import { sectorForWorldPoint } from "../liveMap/liveMapSectorGrid";
 import { friendlyMapName } from "../maps/mapNames";
 import { VehiclePermissionsTab } from "./VehiclePermissionsTab";
+import { VehicleStorageOverlay } from "./VehicleStorageOverlay";
 
 const GLOBAL_COLUMNS = ["name", "type", "owner", "shared_with", "condition_percent", "fuel_percent", "location"];
-const PLAYER_COLUMNS = ["name", "type", "relationship", "owner", "condition_percent", "fuel_percent", "location"];
+const PLAYER_COLUMNS = ["name", "type", "condition_percent", "fuel_percent", "location"];
+// Shown when a player's list mixes access levels; hidden when every row is the same level.
+const PLAYER_ACCESS_COLUMNS = ["name", "type", "relationship", "owner", "condition_percent", "fuel_percent", "location"];
+// Co-owner view: every row has the same access level but the owner differs, so keep Owner only.
+const PLAYER_OWNER_COLUMNS = ["name", "type", "owner", "condition_percent", "fuel_percent", "location"];
 const COLUMN_LABELS: Record<string, string> = {
   name: "Vehicle",
   type: "Type",
@@ -22,6 +28,8 @@ const COLUMN_LABELS: Record<string, string> = {
 type VehicleTableProps = {
   rows: VehicleRow[];
   context?: "global" | "player";
+  showAccessColumns?: boolean;
+  showOwnerColumn?: boolean;
   emptyMessage?: string;
   sortColumn?: string;
   sortDirection?: SortDirection;
@@ -33,6 +41,30 @@ type VehicleTableProps = {
   // every request so the same vehicle can be re-focused twice in a row.
   focusVehicleId?: string;
   focusNonce?: number;
+  // Required, not optional: an optional prop would let a mount point silently
+  // render VehiclePermissionsTab's transfer button with no confirmation.
+  confirmAction: (message: string, options?: { title?: string; confirmLabel?: string; warning?: string; danger?: boolean; details?: { label: string; value: string; tone?: "accent" | "success" | "danger" }[] }) => Promise<boolean>;
+  // Delete is optional and defaults off, unlike confirmAction above: this is
+  // v1 scoped to the global Vehicles panel only (matching how Delete Base
+  // shipped), so PlayerVehiclesTab's mount is unaffected until these are
+  // deliberately wired through there too.
+  canDeleteVehicle?: boolean;
+  // capabilities.vehicleStoredDelete. Off, a Stored for Recovery row stays
+  // blocked.
+  canDeleteStoredVehicle?: boolean;
+  // Whether the server can read a vehicle's cargo hold at all
+  // (capabilities.vehicleStorage). Off by default so a mount that does not
+  // pass it through never offers a button that comes back unsupported.
+  storageSupported?: boolean;
+  // Echoes a cargo-delete failure into the panel-level banner once the modal
+  // is dismissed. Optional: PlayerVehiclesTab has no such banner, and the
+  // overlay's own inline error is the primary surface either way.
+  onError?: (text: string) => void;
+  queuedDeleteVehicleIds?: Set<string>;
+  deletingId?: string;
+  cancelingDeleteId?: string;
+  onDeleteVehicle?: (vehicle: VehicleRow) => void;
+  onCancelQueuedDelete?: (vehicle: VehicleRow) => void;
 };
 
 function toNumber(value: unknown): number | null {
@@ -73,9 +105,29 @@ function vehiclePartitionMap(map: unknown) {
   return "";
 }
 
+function vehicleLifecycleLocation(row: VehicleRow) {
+  switch (String(row.lifecycle_state || "Default")) {
+    case "Travel": return "In Transit";
+    case "VehicleBackup": return "Vehicle Backup";
+    case "VehicleRecovery": return "Stored for Recovery";
+    case "AbortedAuthorityTransfer": return "Transfer Interrupted";
+    default: return row.partition_id == null ? "Unassigned" : "";
+  }
+}
+
+// States the server refuses to delete, as tooltips. VehicleRecovery applies
+// only when canDeleteStoredVehicle is off.
+const DELETE_BLOCKED_REASONS: Record<string, string> = {
+  Travel: "In Transit — cannot be deleted until it arrives",
+  VehicleBackup: "In Vehicle Backup — cannot be deleted until its owner takes it back out",
+  VehicleRecovery: "Stored for Recovery — cannot be deleted as an ordinary vehicle"
+};
+
 function formatMapPartition(row: VehicleRow, instanceNames: Map<string, string>) {
   const rawMap = String(row.map || "").trim();
-  const partitionId = String(row.partition_id ?? 0);
+  const lifecycleLocation = vehicleLifecycleLocation(row);
+  if (lifecycleLocation) return `${friendlyMapName(rawMap)} · ${lifecycleLocation}`;
+  const partitionId = String(row.partition_id);
   const partitionMap = vehiclePartitionMap(rawMap);
   const instanceName = partitionMap ? instanceNames.get(`${partitionMap}:${partitionId}`) : "";
   return `${friendlyMapName(rawMap)} · ${instanceName || `Partition ${partitionId}`}`;
@@ -92,9 +144,9 @@ function mapGridSector(row: VehicleRow): string | null {
   const x = toNumber(row.x);
   const y = toNumber(row.y);
   if (x === null || y === null) return null;
-  const letter = String.fromCharCode(65 + Math.max(0, Math.min(8, Math.floor((1125000 - y) / 250000))));
-  const number = Math.max(0, Math.min(8, Math.floor((x + 1125000) / 250000))) + 1;
-  return `${letter}-${number}`;
+  // Same grid as the Live Map; null outside it rather than a clamped edge cell.
+  const sector = sectorForWorldPoint(x, y);
+  return sector ? `${sector[0]}-${sector.slice(1)}` : null;
 }
 
 function formatDurability(value: unknown): string {
@@ -109,7 +161,10 @@ function relationshipClass(value: string) {
 function renderVehicleCell(row: Record<string, unknown>, column: string, instanceNames: Map<string, string>) {
   const vehicle = row as VehicleRow;
   if (column === "name") {
-    const rawLocation = `${vehicle.map || "Unknown map"} · Partition ${vehicle.partition_id ?? 0}`;
+    const lifecycleLocation = vehicleLifecycleLocation(vehicle);
+    const rawLocation = lifecycleLocation
+      ? `${vehicle.map || "Unknown map"} · ${lifecycleLocation}`
+      : `${vehicle.map || "Unknown map"} · Partition ${vehicle.partition_id}`;
     return <div className="vehicles-name-cell"><span className="vehicles-name">{vehicle.name || "—"}</span><span className="vehicles-location" title={rawLocation}>{formatMapPartition(vehicle, instanceNames)}</span></div>;
   }
   if (column === "location") {
@@ -152,13 +207,21 @@ function renderComponent(module: VehicleModule, index: number) {
   );
 }
 
-export function VehicleTable({ rows, context = "global", emptyMessage = "No vehicles have been found yet.", sortColumn, sortDirection, onSort, canEditPermissions = false, onPermissionsSaved, focusVehicleId, focusNonce }: VehicleTableProps) {
+export function VehicleTable({
+  rows, context = "global", showAccessColumns = false, showOwnerColumn = false, emptyMessage = "No vehicles have been found yet.", sortColumn, sortDirection, onSort,
+  canEditPermissions = false, onPermissionsSaved, focusVehicleId, focusNonce, confirmAction,
+  canDeleteVehicle = false, canDeleteStoredVehicle = false, storageSupported = false, onError, queuedDeleteVehicleIds, deletingId, cancelingDeleteId, onDeleteVehicle, onCancelQueuedDelete
+}: VehicleTableProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [expandedTab, setExpandedTab] = useState<"components" | "permissions">("components");
+  // The open contents overlay's vehicle, or null. Held here rather than in
+  // renderExpandedRow so the modal is rendered outside the table -- inside it
+  // the dialog would live in a <td>.
+  const [storageFor, setStorageFor] = useState<VehicleRow | null>(null);
   const [instanceNames, setInstanceNames] = useState<Map<string, string>>(new Map());
   const expandedContentRef = useRef<HTMLDivElement>(null);
   const satisfiedFocusNonceRef = useRef<number | undefined>(undefined);
-  const columns = context === "player" ? PLAYER_COLUMNS : GLOBAL_COLUMNS;
+  const columns = context === "player" ? (showAccessColumns ? PLAYER_ACCESS_COLUMNS : showOwnerColumn ? PLAYER_OWNER_COLUMNS : PLAYER_COLUMNS) : GLOBAL_COLUMNS;
   const partitionMapsKey = [...new Set(rows.map((row) => vehiclePartitionMap(row.map)).filter(Boolean))].sort().join(",");
 
   useEffect(() => {
@@ -167,6 +230,14 @@ export function VehicleTable({ rows, context = "global", emptyMessage = "No vehi
       setExpandedTab("components");
     }
   }, [expandedId, rows]);
+
+  // The overlay reads one vehicle's hold, so it cannot outlive that vehicle
+  // being on screen -- a background refresh that drops the row (a delete, or
+  // a search the admin changed) closes it rather than leaving a modal
+  // describing something no longer listed.
+  useEffect(() => {
+    if (storageFor && !rows.some((row) => String(row.id) === String(storageFor.id))) setStorageFor(null);
+  }, [rows, storageFor]);
 
   // The caller's search request and this row data arrive on different
   // renders (the id lands in `rows` only once the parent's fetch resolves),
@@ -228,6 +299,7 @@ export function VehicleTable({ rows, context = "global", emptyMessage = "No vehi
   }
 
   return (
+    <>
     <DataTable
       rows={rows}
       columns={columns}
@@ -240,6 +312,36 @@ export function VehicleTable({ rows, context = "global", emptyMessage = "No vehi
       sortColumn={sortColumn}
       sortDirection={sortDirection}
       onSort={onSort}
+      actionClassName="actions-column vehicles-actions-column"
+      action={canDeleteVehicle ? (row) => {
+        const vehicle = row as VehicleRow;
+        const id = String(vehicle.id);
+        const label = vehicle.name || `vehicle ${id}`;
+        const queued = queuedDeleteVehicleIds?.has(id) ?? false;
+        const storedDelete = canDeleteStoredVehicle && vehicle.lifecycle_state === "VehicleRecovery";
+        const blockedReason = storedDelete ? "" : DELETE_BLOCKED_REASONS[String(vehicle.lifecycle_state || "")];
+        return queued
+          ? <span className="vehicles-queued-delete" title="Delete queued — applies when this map next restarts or stops">
+              <Trash2 size={16} aria-label={`Delete queued for ${label}`} />
+              <button
+                className="icon-toggle-button vehicles-queued-delete-cancel"
+                title="Cancel Queued Delete"
+                aria-label={`Cancel queued delete for ${label}`}
+                disabled={cancelingDeleteId === id}
+                onClick={(event) => { event.stopPropagation(); onCancelQueuedDelete?.(vehicle); }}
+              ><X size={14} /></button>
+            </span>
+          : <button
+              className="icon-toggle-button danger"
+              title={blockedReason || (storedDelete ? "Delete Stored Vehicle" : "Delete Vehicle")}
+              aria-label={blockedReason ? `Cannot delete ${label}: ${blockedReason}` : `Delete ${storedDelete ? "stored vehicle " : ""}${label}`}
+              // aria-disabled keeps the button focusable, so the reason is
+              // reachable by keyboard.
+              aria-disabled={blockedReason ? true : undefined}
+              disabled={deletingId === id}
+              onClick={(event) => { event.stopPropagation(); if (!blockedReason) onDeleteVehicle?.(vehicle); }}
+            ><Trash2 size={16} /></button>;
+      } : undefined}
       secondaryActionPosition="start"
       secondaryActionLabel=""
       secondaryActionClassName="vehicles-expand-column"
@@ -257,8 +359,26 @@ export function VehicleTable({ rows, context = "global", emptyMessage = "No vehi
         const vehicle = row as VehicleRow;
         const id = String(vehicle.id);
         const modules: VehicleModule[] = Array.isArray(vehicle.modules) ? vehicle.modules : [];
+        // A vehicle has exactly one cargo hold, on the vehicle actor itself --
+        // not one per module (dune.inventories.vehicle_module_id is empty in
+        // production; see duneDb.vehicleStorage). So this is a single control
+        // on the header rather than a button per storage card, which would
+        // open the same contents twice on a hypothetical two-module vehicle.
+        // The fitted storage module is still what gates it: a vehicle with no
+        // hold has a 0/0 inventory row and nothing worth opening.
+        const hasStorage = modules.some((module) => module.isStorage);
         const componentsPanel = <div className="vehicles-expanded">
-          <p className="vehicles-expanded-header">{modules.length} component{modules.length === 1 ? "" : "s"}</p>
+          <div className="vehicles-expanded-header-row">
+            <p className="vehicles-expanded-header">{modules.length} component{modules.length === 1 ? "" : "s"}</p>
+            {storageSupported && hasStorage && <button
+              className="bases-inventory-view-contents"
+              // Stops the row's own onRowClick from collapsing the panel out
+              // from under the modal. The permissions branch below wraps its
+              // content in the same guard; the no-permissions branch does not,
+              // so it has to live on the button.
+              onClick={(event) => { event.stopPropagation(); setStorageFor(vehicle); }}
+            ><Boxes size={14} aria-hidden="true" /> View Contents</button>}
+          </div>
           {modules.length === 0 ? <p className="muted">No components fitted.</p> : <div className="vehicles-component-grid">{modules.map(renderComponent)}</div>}
         </div>;
         // tabIndex=-1 makes this programmatically focusable (see the
@@ -292,6 +412,8 @@ export function VehicleTable({ rows, context = "global", emptyMessage = "No vehi
                     vehicleId={id}
                     vehicleName={String(vehicle.name || `vehicle ${id}`)}
                     onSaved={() => onPermissionsSaved?.()}
+                    confirmAction={confirmAction}
+                    deletePending={queuedDeleteVehicleIds?.has(id) ?? false}
                   />
                 </div>}
           </div>
@@ -299,5 +421,13 @@ export function VehicleTable({ rows, context = "global", emptyMessage = "No vehi
       }}
       emptyMessage={emptyMessage}
     />
+    {storageFor && <VehicleStorageOverlay
+      vehicleId={String(storageFor.id)}
+      vehicleName={String(storageFor.name || `vehicle ${storageFor.id}`)}
+      onClose={() => setStorageFor(null)}
+      confirmAction={confirmAction}
+      onError={onError}
+    />}
+    </>
   );
 }

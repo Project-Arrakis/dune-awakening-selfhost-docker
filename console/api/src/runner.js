@@ -19,7 +19,8 @@ export const serviceAliases = new Map([
   ["survival-1", "survival-1"],
   ["overmap", "overmap"],
   ["orchestrator", "orchestrator"],
-  ["autoscaler", "autoscaler"]
+  ["autoscaler", "autoscaler"],
+  ["coriolis", "coriolis"]
 ]);
 
 const simpleOperations = {
@@ -36,6 +37,8 @@ const simpleOperations = {
   updateCheck: ["update", "check"],
   updateApply: ["update", "--yes"],
   updateFixSteamcmd: ["update", "fix-steamcmd"],
+  updateInstallAssets: ["update", "install-assets"],
+  consoleReload: ["console", "reload"],
   updateAutoStatus: ["update", "auto", "status"],
   updateAutoDisable: ["update", "auto", "disable"],
   selfUpdateCheck: ["self-update", "check"],
@@ -44,6 +47,8 @@ const simpleOperations = {
   backupList: ["db", "list"],
   backupDeleteAll: ["db", "delete", "--all"],
   backupAutoStatus: ["db", "auto", "status"],
+  backupSystemCreate: ["db", "backup-system"],
+  backupSystemDeleteAll: ["db", "delete-system", "--all"],
   backupAutoDisable: ["db", "auto", "disable"],
   init: ["init"],
   restartScheduleStatus: ["restart-schedule", "status"],
@@ -58,11 +63,12 @@ const simpleOperations = {
   servers: ["servers"],
   mapsList: ["maps", "list"],
   sietchesList: ["sietches", "list"],
-  deepdesertStatus: ["deepdesert", "dual", "status"],
+  deepdesertStatus: ["deepdesert", "layout", "status"],
   players: ["admin", "players", "--show-full-ids"],
   adminHistory: ["admin", "history"],
   adminItemList: ["admin", "item-list"],
   adminVehicleList: ["admin", "vehicle-list"],
+  experimentalTanksStatus: ["experimental-tanks", "status"],
   adminSkillModules: ["admin", "skill-modules"]
 };
 
@@ -80,12 +86,21 @@ export function buildDuneArgs(operation, payload = {}) {
   if (simpleOperations[operation]) return simpleOperations[operation];
 
   switch (operation) {
+    case "experimentalTanksApply":
+      if (typeof payload.enabled !== "boolean" || payload.confirmRestart !== true) {
+        throw new Error("Confirm the Hagga restart before changing Experimental Tanks.");
+      }
+      return ["experimental-tanks", "apply", String(payload.enabled)];
+    case "selfUpdateQaApply":
+      return ["self-update", "install-qa", validateCommitSha(payload.sha)];
     case "restartService":
       return ["restart", validateServiceName(payload.service)];
     case "restartServiceStop":
       return ["stop-service", validateServiceName(payload.service)];
     case "restartServiceStart":
       return ["restart", validateServiceName(payload.service)];
+    case "stopGameServersForDbWrites":
+      return ["stop-game-servers-for-db-writes"];
     case "serverTitle":
       return ["config", "title", validateServerTitle(payload.title), "--yes"];
     case "serverConfig":
@@ -119,6 +134,23 @@ export function buildDuneArgs(operation, payload = {}) {
       }
     case "backupDelete":
       return ["db", "delete", validateBackupName(payload.backup)];
+    case "backupDeleteSelected":
+      return ["db", "delete", ...validateBackupNames(payload.backups)];
+    case "backupSystemDelete":
+      return ["db", "delete-system", validateBackupName(payload.backup)];
+    case "backupSystemDeleteSelected":
+      return ["db", "delete-system", ...validateBackupNames(payload.backups)];
+    case "backupSystemRestore": {
+      const args = ["db", "restore-system", validateBackupName(payload.backup)];
+      // Dry run unless the caller explicitly applies, so a mis-sent request
+      // previews rather than replaces the host's configuration.
+      if (!payload.apply) args.push("--dry-run");
+      if (payload.identityMode === "adopt-backup") args.push("--adopt-backup-battlegroup");
+      if (payload.identityMode === "keep-current") args.push("--keep-current-battlegroup");
+      if (payload.auditLogMode === "adopt-backup") args.push("--adopt-backup-audit-log");
+      if (payload.auditLogMode === "keep-current") args.push("--keep-current-audit-log");
+      return args;
+    }
     case "backupAutoEnable":
       {
         const args = ["db", "auto", "enable", validateUpdateTime(payload.time || "05:00")];
@@ -267,6 +299,12 @@ export function buildDuneArgs(operation, payload = {}) {
     case "sietchesReconcile":
       return ["sietches", "reconcile", validateMapName(payload.map)];
     case "deepdesertAction":
+      if (payload.instances !== undefined) {
+        const instances = validateInteger(payload.instances, 1, 3);
+        const thirdRole = String(payload.thirdRole || "pve").toLowerCase();
+        if (!["pve", "pvp"].includes(thirdRole)) throw new Error("Third Deep Desert role must be pve or pvp");
+        return ["deepdesert", "layout", "set", String(instances), "--third-role", thirdRole, "--yes", "--force"];
+      }
       return ["deepdesert", "dual", validateDeepDesertAction(payload.action), "--yes", ...(payload.action === "disable" ? ["--force"] : [])];
     case "userSettingsEngineValues":
       return ["usersettings", "engine-values"];
@@ -298,8 +336,16 @@ export function buildDuneArgs(operation, payload = {}) {
       return ["usersettings", "global-values"];
     case "userSettingsPartitionValues":
       return ["usersettings", "partition-values", validateMapName(payload.map), validatePartitionId(payload.partitionId)];
+    case "userSettingsServerCustomValues":
+      return ["usersettings", "server-custom-values", payload.scope === "serverCustomGlobal" ? "global" : payload.scope === "serverCustomPartition" ? "partition" : "map", validateMapName(payload.map || "Survival_1"), payload.partitionId ? validatePartitionId(payload.partitionId) : ""];
     case "userSettingsSave":
       return ["usersettings", "bulk-save", validateSettingsScope(payload.scope), validateMapName(payload.map || "Survival_1"), payload.partitionId ? validatePartitionId(payload.partitionId) : "", encodeJsonArg(payload.values || {})];
+    case "userSettingsMigrateCoriolisRegionFields":
+      // region comes only from the deployment's own SERVER_REGION (readSetupConfigValues,
+      // an allowlisted .env read), never from a request -- spawn's argv array means there
+      // is no shell to inject into regardless, and an unmapped/garbage value is a no-op
+      // on the Python side (migrate_coriolis_region_fields looks it up in a fixed dict).
+      return ["usersettings", "migrate-coriolis-region-fields", String(payload.region || "")];
     case "userSettingsSaveAndRestart":
       return buildDuneArgs("userSettingsSave", payload);
     case "userSettingsResetEngineGameplay":
@@ -341,6 +387,12 @@ export function buildDuneArgs(operation, payload = {}) {
   }
 }
 
+function validateCommitSha(value) {
+  const sha = String(value || "").trim().toLowerCase();
+  if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error("Invalid QA build identifier.");
+  return sha;
+}
+
 function encodeJsonArg(value) {
   return Buffer.from(JSON.stringify(value), "utf8").toString("base64");
 }
@@ -351,7 +403,7 @@ function encodeTextArg(value) {
 
 function validateSettingsScope(value) {
   const raw = String(value || "").trim();
-  if (["engine", "mapEngine", "partitionEngine", "global", "map", "partition", "profile"].includes(raw)) return raw;
+  if (["engine", "mapEngine", "partitionEngine", "global", "map", "partition", "serverCustomGlobal", "serverCustomMap", "serverCustomPartition", "profile"].includes(raw)) return raw;
   throw new Error(`Unsupported settings scope: ${raw}`);
 }
 
@@ -412,8 +464,12 @@ function killProcessTree(child) {
 }
 
 export function runDockerLogs(service, options = {}) {
-  const container = dockerContainerForLogService(service);
-  const args = ["logs", "--tail", String(options.tail || 400)];
+  const normalizedService = validateServiceName(service);
+  const useComposeService = normalizedService === "orchestrator";
+  const container = useComposeService ? "orchestrator" : dockerContainerForLogService(normalizedService);
+  const args = useComposeService
+    ? ["compose", "logs", "--tail", String(options.tail || 400)]
+    : ["logs", "--tail", String(options.tail || 400)];
   if (options.since) args.push("--since", String(options.since));
   if (options.follow) args.push("-f");
   args.push(container);
@@ -422,7 +478,8 @@ export function runDockerLogs(service, options = {}) {
     const spawnImpl = options.spawnImpl || spawn;
     const child = spawnImpl("docker", args, {
       shell: false,
-      env: { ...process.env }
+      env: { ...process.env },
+      cwd: useComposeService ? (process.env.DUNE_DOCKER_DIR || process.cwd()) : undefined
     });
     const stop = () => child.kill("SIGTERM");
     const timeout = setTimeout(stop, options.timeoutMs || 30000);
@@ -449,6 +506,61 @@ export function runDockerLogs(service, options = {}) {
     });
     if (options.signal?.aborted) stop();
     else options.signal?.addEventListener("abort", stop, { once: true });
+  });
+}
+
+// Game servers always write their active session to a DuneSandbox_PIDX*.log
+// file inside the container. That file is more authoritative than `docker
+// logs`: a stopped/started container can retain old stdout while the newly
+// launched game process writes only to Saved/Logs. Keep the lookup script
+// fixed and pass only an allowlisted container plus a numeric tail argument.
+// Select the lines rather than tail the file. The Coriolis block is written
+// once, during startup, so it sits near the *top* of the current session's log
+// and scrolls out of any tail window within hours: on a live farm the log was
+// 24,539 lines with the block at 383-576, while `tail -n 10000` began at 14,438.
+// Because an active log that opens is treated as authoritative, that silently
+// cost the Deep Desert layout -- and with it the rendered terrain -- on any
+// server up more than a few hours.
+//
+// Grepping is cheaper than tailing here too: it returns a handful of lines
+// through `docker exec` instead of the ~4 MB a 10,000-line tail transfers
+// (measured on that farm: 35 ms per call against 40 ms).
+//
+// Matching the log categories rather than the message text keeps this loose;
+// coriolisSeed.js owns the real parsing. `$1` bounds the output, and grep's
+// "no matches" (1) is kept distinct from a genuine read error (2+): an active
+// log that is merely empty is authoritative, an unreadable one must fall back.
+export const CURRENT_GAME_LOG_SCRIPT = [
+  'log_dir=/home/dune/server/DuneSandbox/Saved/Logs',
+  'latest="$(find "$log_dir" -maxdepth 1 -type f -name "DuneSandbox_PIDX*.log" ! -name "*-backup-*" -printf "%T@ %p\\n" 2>/dev/null | sort -nr | head -n 1 | cut -d" " -f2-)"',
+  '[ -n "$latest" ] || exit 3',
+  'matches="$(grep -E "LogCoriolis|LogWorldLayout" "$latest")"; status=$?',
+  '[ "$status" -le 1 ] || exit 4',
+  '[ -z "$matches" ] || echo "$matches" | tail -n "$1"'
+].join("; ");
+
+export function runDockerCurrentGameLog(service, options = {}) {
+  const container = dockerContainerForLogService(service);
+  const requestedTail = Number.parseInt(String(options.tail || 10000), 10);
+  const tail = Number.isFinite(requestedTail) ? Math.max(1, Math.min(100000, requestedTail)) : 10000;
+  const args = ["exec", container, "sh", "-c", CURRENT_GAME_LOG_SCRIPT, "dune-current-game-log", String(tail)];
+
+  return new Promise((resolve, reject) => {
+    const spawnImpl = options.spawnImpl || spawn;
+    const child = spawnImpl("docker", args, { shell: false, env: { ...process.env } });
+    const stop = () => child.kill("SIGTERM");
+    const timeout = setTimeout(stop, options.timeoutMs || 5000);
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout = appendBoundedOutput(stdout, redact(chunk.toString())); });
+    child.stderr.on("data", (chunk) => { stderr = appendBoundedOutput(stderr, redact(chunk.toString())); });
+    child.on("error", reject);
+    child.on("close", (code, signal) => {
+      clearTimeout(timeout);
+      const result = { code, signal, stdout, stderr, args: ["docker", ...args] };
+      if (code === 0) resolve(result);
+      else reject(Object.assign(new Error(`docker exec could not read the current game log from ${container}`), result));
+    });
   });
 }
 
@@ -501,7 +613,8 @@ export function dockerContainerForLogService(service) {
     ["survival-1", "dune-server-survival-1"],
     ["overmap", "dune-server-overmap"],
     ["orchestrator", "dune-orchestrator"],
-    ["autoscaler", "dune-autoscaler"]
+    ["autoscaler", "dune-autoscaler"],
+    ["coriolis", "dune-coriolis-coordinator"]
   ]);
   if (containers.has(normalized)) return containers.get(normalized);
   if (/^dune-server-[a-z0-9-]+$/i.test(normalized)) return normalized;
@@ -696,6 +809,11 @@ function validateBackupName(value) {
   const raw = String(value || "");
   if (/^[A-Za-z0-9._-]+$/.test(raw) && !raw.includes("..")) return raw;
   throw new Error("Invalid backup name");
+}
+
+function validateBackupNames(value) {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 100) throw new Error("Select between 1 and 100 backups");
+  return [...new Set(value.map(validateBackupName))];
 }
 
 export function isReadOnlySql(query) {

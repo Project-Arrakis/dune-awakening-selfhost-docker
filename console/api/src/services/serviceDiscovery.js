@@ -13,7 +13,7 @@ export async function discoverServices(config) {
 }
 
 export function knownServices() {
-  return ["postgres", "rmq-admin", "rmq-game", "text-router", "director", "gateway", "survival-1", "overmap", "orchestrator", "autoscaler"];
+  return ["postgres", "rmq-admin", "rmq-game", "text-router", "director", "gateway", "survival-1", "overmap", "orchestrator", "autoscaler", "coriolis"];
 }
 
 export function parseServiceNames(text) {
@@ -28,7 +28,8 @@ export function parseServiceNames(text) {
     ["dune-server-survival-1", "survival-1"],
     ["dune-server-overmap", "overmap"],
     ["dune-orchestrator", "orchestrator"],
-    ["dune-autoscaler", "autoscaler"]
+    ["dune-autoscaler", "autoscaler"],
+    ["dune-coriolis-coordinator", "coriolis"]
   ]);
   for (const line of String(text || "").split(/\r?\n/)) {
     const trimmed = line.trim();

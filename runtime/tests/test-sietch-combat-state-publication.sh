@@ -37,6 +37,18 @@ assert_contains "$SCRIPT" "usersettings.combat_settings_for_publication"
 assert_contains "$SCRIPT" "usersettings.merged_partition_values"
 assert_contains "$SCRIPT" "def combat_settings_for_partition"
 assert_contains "$SCRIPT" "def resolved_force_all_pvp_flag"
+assert_contains "$SCRIPT" "source runtime/scripts/farm-readiness.sh"
+assert_contains "$SCRIPT" "if survival_farm_is_ready; then"
+assert_contains "$SCRIPT" '"docker", "logs", "--tail", str(log_tail_lines), container'
+assert_contains "$SCRIPT" "timeout=docker_log_timeout"
+
+if ! grep -Pzoq 'from pathlib import Path\nimport os\nimport re\nimport subprocess' "$SCRIPT"; then
+  fail "$SCRIPT credential fallback must import os before reading bounded-log settings"
+fi
+
+if grep -Fq 'docker logs dune-server-survival-1' "$SCRIPT"; then
+  fail "$SCRIPT must not rescan the complete Survival log while publishing readiness"
+fi
 
 # The old bug: one fixed defaults dict, built once outside the per-line
 # loop, reused verbatim for every partition regardless of its

@@ -9,8 +9,11 @@ import {
   isAutoRefillWaterEnabled,
   readAutoRefillWaterState,
   setBaseAutoRefillWater,
+  clampAutoRefillWaterNextRun,
   writeAutoRefillWaterState
 } from "../src/services/autoRefillWater.js";
+import { readAutoRefillState, setBaseAutoRefill } from "../src/services/autoRefill.js";
+import { saveAutoRefillSettings } from "../src/services/autoRefillSettings.js";
 import { listQueuedBaseDeletes, listQueuedWaterRefills, queueWaterRefill } from "../src/duneDb.js";
 
 // Mirrors autoRefill.test.js exactly, retargeted at the water auto-refill
@@ -47,12 +50,21 @@ const TEST_ENV = {};
 function fakeDuneDb({
   levels = {},
   missingBases = [],
+  // Bases picked up into a backup; an Error value makes the check itself fail.
+  backedUpBases = [],
   target = { map: "Survival_1", partitionId: 3, queueSupported: true, writeSafeNow: false },
   calls = []
 } = {}) {
   const missing = new Set(missingBases.map(Number));
+  const backedUp = new Set(backedUpBases.filter((entry) => !(entry instanceof Error)).map(Number));
+  const backupCheckError = backedUpBases.find((entry) => entry instanceof Error);
   return {
     calls,
+    baseIsBackedUp: async (_db, baseId) => {
+      calls.push({ fn: "baseIsBackedUp", baseId });
+      if (backupCheckError) throw backupCheckError;
+      return backedUp.has(Number(baseId));
+    },
     baseWaterFuelLevels: async (_db, baseId) => {
       calls.push({ fn: "baseWaterFuelLevels", baseId });
       const entry = levels[baseId];
@@ -469,5 +481,137 @@ test("the water auto-refill enrollment file is written atomically with owner-onl
     const raw = readFileSync(statePath(repoRoot), "utf8");
     assert.equal(raw.endsWith("}\n"), true);
     assert.equal(JSON.parse(raw).schemaVersion, 1);
+  });
+});
+
+// --- Settings layering and interval re-arm ---
+// Mirrors the generator twin in autoRefill.test.js. Kept as a full parallel set
+// rather than a shared helper so a change to one subsystem's layering cannot
+// quietly pass because the other's still works.
+
+test("a persisted water threshold overrides the env var for the scanner itself", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    saveAutoRefillSettings(repoRoot, { waterThresholdPercent: 80 });
+    const clock = makeClock();
+    const duneDb = fakeDuneDb({ levels: { 482: { lowestPercent: 60, deviceCount: 2 } } });
+    const { scheduler } = makeScheduler(repoRoot, duneDb, clock, {});
+    setBaseAutoRefillWater(repoRoot, 482, true, { now: clock.now, env: TEST_ENV });
+    // The first tick only arms the schedule; a scan needs a primed scheduler.
+    await primeScheduler(scheduler, repoRoot, clock);
+    forceDue(repoRoot, clock);
+    await scheduler.tick();
+
+    assert.equal(listQueuedWaterRefills(repoRoot).length, 1, "queued against the saved threshold");
+  });
+});
+
+// The generator setting must not drive the water scanner, or the two
+// "independent subsystems" claim in the UI is false.
+test("the generator threshold does not affect the water scanner", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    saveAutoRefillSettings(repoRoot, { thresholdPercent: 80 });
+    const clock = makeClock();
+    const duneDb = fakeDuneDb({ levels: { 482: { lowestPercent: 60, deviceCount: 2 } } });
+    const { scheduler } = makeScheduler(repoRoot, duneDb, clock, {});
+    setBaseAutoRefillWater(repoRoot, 482, true, { now: clock.now, env: TEST_ENV });
+    // The first tick only arms the schedule; a scan needs a primed scheduler.
+    await primeScheduler(scheduler, repoRoot, clock);
+    forceDue(repoRoot, clock);
+    await scheduler.tick();
+
+    assert.equal(listQueuedWaterRefills(repoRoot).length, 0, "60% is healthy against water's own 50% default");
+  });
+});
+
+test("the water public state reports the persisted threshold and interval", async () => {
+  await withTempRepoRoot((repoRoot) => {
+    saveAutoRefillSettings(repoRoot, { waterThresholdPercent: 35, waterIntervalHours: 6 });
+    const state = autoRefillWaterPublicState(repoRoot, { env: { ADMIN_AUTO_REFILL_WATER_THRESHOLD_PERCENT: "70" } });
+    assert.equal(state.thresholdPercent, 35);
+    assert.equal(state.intervalHours, 6);
+  });
+});
+
+test("shortening the water interval pulls an already-armed scan in", async () => {
+  await withTempRepoRoot((repoRoot) => {
+    const clock = makeClock();
+    setBaseAutoRefillWater(repoRoot, 482, true, { now: clock.now, env: TEST_ENV });
+    assert.equal(Date.parse(readAutoRefillWaterState(repoRoot).nextRunAt), clock.at() + 24 * HOUR_MS);
+
+    saveAutoRefillSettings(repoRoot, { waterIntervalHours: 2 });
+    const next = clampAutoRefillWaterNextRun(repoRoot, { now: clock.now, env: TEST_ENV });
+    assert.equal(Date.parse(next), clock.at() + 2 * HOUR_MS);
+    assert.equal(Date.parse(readAutoRefillWaterState(repoRoot).nextRunAt), clock.at() + 2 * HOUR_MS, "persisted, not just returned");
+  });
+});
+
+test("lengthening the water interval leaves the armed scan where it is", async () => {
+  await withTempRepoRoot((repoRoot) => {
+    const clock = makeClock();
+    setBaseAutoRefillWater(repoRoot, 482, true, { now: clock.now, env: TEST_ENV });
+    const armed = readAutoRefillWaterState(repoRoot).nextRunAt;
+
+    saveAutoRefillSettings(repoRoot, { waterIntervalHours: 168 });
+    assert.equal(clampAutoRefillWaterNextRun(repoRoot, { now: clock.now, env: TEST_ENV }), armed);
+    assert.equal(readAutoRefillWaterState(repoRoot).nextRunAt, armed, "no write at all");
+  });
+});
+
+test("the water re-arm no-ops with nothing enrolled", async () => {
+  await withTempRepoRoot((repoRoot) => {
+    const clock = makeClock();
+    assert.equal(clampAutoRefillWaterNextRun(repoRoot, { now: clock.now, env: TEST_ENV }), "");
+  });
+});
+
+// The two subsystems keep separate enrollment files; re-arming one must not
+// touch the other's armed run.
+test("re-arming water leaves the generator enrollment untouched", async () => {
+  await withTempRepoRoot((repoRoot) => {
+    const clock = makeClock();
+    setBaseAutoRefill(repoRoot, 482, true, { now: clock.now, env: TEST_ENV });
+    setBaseAutoRefillWater(repoRoot, 482, true, { now: clock.now, env: TEST_ENV });
+    const generatorArmed = readAutoRefillState(repoRoot).nextRunAt;
+
+    saveAutoRefillSettings(repoRoot, { waterIntervalHours: 1 });
+    clampAutoRefillWaterNextRun(repoRoot, { now: clock.now, env: TEST_ENV });
+
+    assert.equal(readAutoRefillState(repoRoot).nextRunAt, generatorArmed);
+  });
+});
+
+// See autoRefill.test.js: a backed-up base resolves to partition 0, which the
+// water queue also treats as write-safe.
+test("a backed-up base is skipped by the water scan and stays enrolled", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    const clock = makeClock();
+    for (const baseId of [482, 517]) setBaseAutoRefillWater(repoRoot, baseId, true, { now: clock.now, env: TEST_ENV });
+    const duneDb = fakeDuneDb({ levels: { 482: { lowestPercent: 5 }, 517: { lowestPercent: 5 } }, backedUpBases: [482] });
+    const { scheduler } = makeScheduler(repoRoot, duneDb, clock);
+    await primeScheduler(scheduler, repoRoot, clock);
+
+    const result = await scheduler.tick();
+
+    assert.equal(result.backedUp, 1);
+    assert.equal(result.queued, 1);
+    assert.deepEqual(listQueuedWaterRefills(repoRoot).map((entry) => entry.baseId), [517]);
+    assert.equal(duneDb.calls.some((call) => call.fn === "baseWaterFuelLevels" && call.baseId === 482), false);
+    assert.ok(readAutoRefillWaterState(repoRoot).bases["482"]);
+  });
+});
+
+test("a water backup check that fails is a scan failure, never a refill", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    const clock = makeClock();
+    setBaseAutoRefillWater(repoRoot, 482, true, { now: clock.now, env: TEST_ENV });
+    const duneDb = fakeDuneDb({ levels: { 482: { lowestPercent: 5 } }, backedUpBases: [new Error("Connection terminated unexpectedly")] });
+    const { scheduler } = makeScheduler(repoRoot, duneDb, clock);
+    await primeScheduler(scheduler, repoRoot, clock);
+
+    const result = await scheduler.tick();
+
+    assert.equal(result.failures, 1);
+    assert.equal(result.queued, 0);
+    assert.deepEqual(listQueuedWaterRefills(repoRoot), []);
   });
 });

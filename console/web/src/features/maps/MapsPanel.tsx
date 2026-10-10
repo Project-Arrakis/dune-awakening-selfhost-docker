@@ -1,16 +1,25 @@
-import { Fragment, useEffect, useRef, useState } from "react";
-import { AlertTriangle, ChevronDown, ChevronUp, Download, Fuel, Grid2X2, Info, List, Lock, RotateCcw } from "lucide-react";
-import { mapsApi, type ChoamTerminalOverview, type ChoamTradeCenter, type LiveMapMemoryRow, type MapCombatStateResult, type MapRuntimeSettings, type MemoryBalancerState, type MemorySwapState, type PartitionCombatStateRow, type SpicefieldTypeRow, type UserSettingField, type UserSettingsSchema } from "../../api/maps";
+import { Fragment, useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { AlertTriangle, ChevronDown, ChevronUp, Download, Grid2X2, Info, List, Lock, MapPin, RotateCcw } from "lucide-react";
+import { mapsApi, type ChoamTransform, type ChoamCaptureBaseline, type ActiveSpicefieldRow, type ChoamCapturedPlacement, type ChoamTerminalOverview, type ChoamTradeCenter, type LiveMapMemoryRow, type MapCombatStateResult, type MapRuntimeSettings, type MemoryBalancerState, type MemorySwapState, type PartitionCombatStateRow, type UserSettingField, type UserSettingsSchema } from "../../api/maps";
+import { playersApi } from "../../api/players";
 import { runGatedRestart, type RestartGate, type RestartGateChoice } from "../server/restartQueueGuard";
-import { serverApi, type RestartQueueTarget } from "../../api/server";
+import { serverApi, type RestartHistoryResponse, type RestartHistoryRow, type RestartQueueTarget } from "../../api/server";
 import { setupApi, type Task } from "../../api/setup";
 import { SecretInput } from "../../components/SecretInput";
 import { InfoTooltip, KeyValueGrid, StatusPill, TechnicalDetails } from "../../components/common/DisplayPrimitives";
 import { firstDefined, formatUiSentence, stripAnsi, summarizeCommandText, titleCase } from "../../lib/display";
 import { refreshServerPorts } from "../../api/serverPorts";
 import { titleCaseWords } from "../players/playerAdminUtils";
-import { pendingRefillCountForMap, pendingRefillCountForPartition, usePendingRefills } from "../../lib/usePendingRefills";
-import type { PendingRefills } from "../../api/bases";
+import { QueueBadges, queueCountsTotal, type QueueCounts } from "../../components/common/QueueBadges";
+import {
+  childAccessPieceCountForMap,
+  childAccessPieceCountForPartition,
+  pendingRefillCountForMap,
+  pendingRefillCountForPartition,
+  usePendingQueues,
+  vehicleDeleteCountForMap,
+  vehicleDeleteCountForPartition
+} from "../../lib/usePendingRefills";
 import { friendlyMapName, hasFriendlyMapName } from "./mapNames";
 import { invalidateInstanceNames } from "./instanceNames";
 // Re-exported so existing importers (and MapsPanel.sietchNames.test.ts) keep working.
@@ -28,19 +37,28 @@ import {
   type SietchRow
 } from "./sietchRows";
 
-// Taking a partition down is when any generator refill queued for a base on it
-// gets written, so every control that does so says what is waiting on it.
-function PendingRefillBadge({ count }: { count: number }) {
-  if (!count) return null;
-  return <span className="pending-refill-badge" title="Queued generator refills are written while this is down">
-    <Fuel size={12} aria-hidden="true" />
-    {count.toLocaleString()} refill{count === 1 ? "" : "s"} pending
+// Taking a partition down is when any base write queued for it gets applied --
+// refills, deletes and permission changes alike -- so every control that does
+// so says what is waiting on it. Shares QueueBadges with the Bases banner and
+// the Server battlegroup note: this badge used to report generator refills
+// only, which quietly understated what a restart was about to do.
+function PendingRefillBadge({ counts }: { counts: QueueCounts }) {
+  if (!queueCountsTotal(counts)) return null;
+  return <span className="pending-refill-badge" title="Queued base writes are applied while this is down">
+    <QueueBadges counts={counts} labels={false} size={12} />
+    pending
   </span>;
 }
 
 type HomeTaskResult = { status: "running" | "succeeded" | "failed" | "stopped"; title: string; message?: string; details?: string; warnings?: string[] };
 type MapsResultScope = "maps" | "modifiers";
-type MapsTaskQueueState = { phase: "queued" | "running"; title: string };
+// Which button started the queued task. Save and Restart share one per-target
+// queue slot (both stay disabled while either runs, so two writes cannot
+// overlap on the same partition), so the label has to be scoped to the button
+// that actually owns the task -- otherwise restarting a Sietch relabelled its
+// "Save Sietch Settings" button too.
+type MapsTaskKind = "save" | "restart" | "other";
+type MapsTaskQueueState = { phase: "queued" | "running"; title: string; kind: MapsTaskKind };
 type MapsTaskResponse = { task?: Task; queued?: boolean; invalidatesInstanceNamesOnSuccess?: boolean };
 type MapsTaskAction = { label: string; run: () => Promise<MapsTaskResponse> };
 type MapsTaskOptions = {
@@ -49,6 +67,7 @@ type MapsTaskOptions = {
   resultTarget?: string;
   restartAcceptedMessage?: string;
   onRestartAccepted?: () => void;
+  taskKind?: MapsTaskKind;
 };
 type MapsTaskSequenceOptions = {
   saveAcceptedMessage?: string;
@@ -60,9 +79,9 @@ type MapsTaskSequenceOptions = {
   // discarding pending edits on rows the save never touched. Omit it when the
   // sequence writes no sietch fields at all; then nothing is discarded.
   writtenPartitionIds?: string[];
+  taskKind?: MapsTaskKind;
 };
 type PersistedMapsTask = { taskId?: string; result: HomeTaskResult | null; runningTitle?: string; successTitle?: string; resultScope?: MapsResultScope };
-type SpicefieldDraft = { maxActive: string; maxPrimed: string; spawningActive: boolean; spawnWeight: string };
 export type MapSortColumn = "map" | "status" | "mode" | "memory";
 type MapSortState = { column: MapSortColumn | null; direction: "asc" | "desc" };
 const MAP_SORT_COLUMNS: Array<[MapSortColumn, string]> = [
@@ -71,12 +90,36 @@ const MAP_SORT_COLUMNS: Array<[MapSortColumn, string]> = [
   ["mode", "Mode"],
   ["memory", "Memory"]
 ];
+const CORIOLIS_CYCLE_START_HOUR_FIELD_ID = "coriolis_cycle_start_hour";
+const CORIOLIS_CYCLE_START_DAY_FIELD_ID = "coriolis_cycle_start_day";
+// UTC regional master schedules. Must stay in sync with the
+// coriolis_cycle_start_hour/_day descriptions in runtime/scripts/usersettings.py.
+const CORIOLIS_REGION_HOURS: Record<string, number> = {
+  "Europe": 5,
+  "North America": 10,
+  "South America": 8,
+  "Asia": 9,
+  "Oceania": 19
+};
+const CORIOLIS_REGION_DAYS: Record<string, number> = {
+  "Europe": 3,
+  "North America": 3,
+  "South America": 3,
+  "Asia": 2,
+  "Oceania": 2
+};
+function coriolisHourRegionValueLabel(hour: number | undefined): string {
+  return hour === undefined ? "" : `${String(hour).padStart(2, "0")}:00 UTC`;
+}
+function coriolisDayRegionValueLabel(day: number | undefined): string {
+  return day === undefined ? "" : `Day ${day}`;
+}
 type ConfirmAction = (message: string, options?: { title?: string; confirmLabel?: string; cancelLabel?: string; danger?: boolean; warning?: string; details?: { label: string; value: string; tone?: "danger" | "success" | "accent" }[] }) => Promise<boolean>;
 type MapsPanelProps = {
   onError: (text: string) => void;
   confirmAction: ConfirmAction;
   restartGate: RestartGate;
-  confirmSettingsRestart: (kind: "UserEngine" | "UserGame", target?: RestartQueueTarget) => Promise<RestartGateChoice>;
+  confirmSettingsRestart: (kind: "UserEngine" | "UserGame" | "ServerSettings", target?: RestartQueueTarget) => Promise<RestartGateChoice>;
   waitForTaskWithUpdates: (task: Task, onUpdate: (task: Task) => void) => Promise<Task>;
   taskTechnicalDetails: (task: Task) => string;
 };
@@ -117,9 +160,9 @@ function inlineTaskResultClass(result: HomeTaskResult) {
   return result.status === "succeeded" || result.status === "stopped" ? "ok" : result.status === "failed" ? "fail" : "running";
 }
 
-function isDeepDesertDualResult(result: HomeTaskResult | null) {
+function isDeepDesertLayoutResult(result: HomeTaskResult | null) {
   if (!result) return false;
-  return /dual deep desert|extra deep desert/i.test(`${result.title || ""}\n${result.message || ""}`);
+  return /deep desert (?:layout|instance)|dual deep desert|extra deep desert/i.test(`${result.title || ""}\n${result.message || ""}`);
 }
 
 function isForceDespawnResult(result: HomeTaskResult | null) {
@@ -146,6 +189,14 @@ function mapResultTarget(map: string, partitionId = "") {
   return partitionId ? `map:${map}:${partitionId}` : `map:${map}`;
 }
 
+// A button only reports progress for the task it started. Buttons sharing the
+// target stay disabled (one write at a time per partition) but keep their idle
+// label, so a restart never reads as a save in progress and vice versa.
+function taskQueueButtonLabel(state: MapsTaskQueueState | undefined, kind: MapsTaskKind, runningLabel: string, idleLabel: string) {
+  if (!state || state.kind !== kind) return idleLabel;
+  return state.phase === "queued" ? "Queued" : runningLabel;
+}
+
 // Mirrors server.js's restartPayload: "engine"/"mapEngine"/"partitionEngine"
 // (UserEngine.ini is one shared file, not per-map -- "mapEngine"/
 // "partitionEngine" just scope the editor's view/edit to one map or
@@ -154,7 +205,7 @@ function mapResultTarget(map: string, partitionId = "") {
 // stay battlegroup-wide (undefined target) rather than being scoped to
 // whatever map happens to be selected in the editor.
 function settingsRestartTarget(scope: string, map?: string, partitionId?: string): RestartQueueTarget | undefined {
-  if (scope === "engine" || scope === "mapEngine" || scope === "partitionEngine" || scope === "global" || scope === "profile") return undefined;
+  if (scope === "engine" || scope === "mapEngine" || scope === "partitionEngine" || scope === "global" || scope === "serverCustomGlobal" || scope === "profile") return undefined;
   if (partitionId) return { partitionId };
   if (map) return { map };
   return undefined;
@@ -188,6 +239,26 @@ function formatBytes(value: number) {
 function formatGiB(value: number) {
   const amount = Number.isFinite(value) && value > 0 ? value / (1024 ** 3) : 0;
   return `${amount.toFixed(1)} GB`;
+}
+
+export function latestSuccessfulMapRestart(history: RestartHistoryResponse | null, map: string, partitionId = "", includeMapWide = false): RestartHistoryRow | null {
+  if (!history) return null;
+  const normalizedMap = String(map || "").trim().toLowerCase();
+  const normalizedPartition = String(partitionId || "").trim();
+  return history.rows.find((row) => row.scope === "map" && row.result === "Succeeded" && (
+    (normalizedPartition && row.partitionId === normalizedPartition)
+    || ((!normalizedPartition || includeMapWide) && !row.partitionId && String(row.map || "").trim().toLowerCase() === normalizedMap)
+  )) || null;
+}
+
+function mapRestartReading(history: RestartHistoryResponse | null, map: string, partitionId = "", includeMapWide = false) {
+  if (!history) return "Loading...";
+  const row = latestSuccessfulMapRestart(history, map, partitionId, includeMapWide);
+  if (!row) return "Not Recorded Yet";
+  const date = new Date(row.finishedAt);
+  return Number.isFinite(date.getTime())
+    ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date)
+    : "Unknown";
 }
 
 function escapeRegExp(value: string) {
@@ -314,6 +385,67 @@ function updateSietches(body: Record<string, unknown>) {
   });
 }
 
+// Shared by both Coriolis "Match Region" toggles (Cycle Start Hour and Day) --
+// the only difference between them is which field id and region table they
+// read, never the logic. Called unconditionally, once per field, at fixed
+// call sites in MapsPanel's render (never in a loop or behind a condition),
+// so the Rules of Hooks hold same as any other hook.
+function useCoriolisMatchRegion(
+  fieldId: string,
+  regionTable: Record<string, number>,
+  schema: UserSettingsSchema | null,
+  gameValues: Record<string, string>,
+  gameDraft: Record<string, string>,
+  setGameDraft: (updater: (current: Record<string, string>) => Record<string, string>) => void,
+  gameValuesReady: boolean,
+  serverRegion: string,
+  userGameTargetKey: string
+) {
+  const [manualOverride, setManualOverride] = useState<boolean | null>(null);
+  const regionValue = regionTable[serverRegion];
+  const draftValue = gameDraft[fieldId];
+  // Derived synchronously (not useState+useEffect) so it's never one render
+  // behind gameValues/gameDraft -- a state+effect version briefly rendered a
+  // just-loaded custom value as locked/disabled under its stale previous
+  // value before the correcting effect caught up on the next tick.
+  // Before real data has loaded there is nothing to infer from, so this must
+  // default to false (unlocked), not true -- a true default would render the
+  // field as locked-to-region for one paint even for a target whose saved
+  // value is a deliberate manual choice, which is exactly the false claim
+  // this feature exists to avoid making.
+  const inferredMatchesRegion = gameValuesReady
+    ? coriolisFieldMatchesRegionInference(schema?.game.find((candidate) => candidate.id === fieldId), gameValues[fieldId], regionValue)
+    : false;
+  // manualOverride is null (follow the inference) until the admin actually
+  // clicks the toggle this session; see the reset effect below for why it
+  // can't just live folded into inferredMatchesRegion's own state.
+  const matchesRegion = manualOverride ?? inferredMatchesRegion;
+  useEffect(() => {
+    // A manual toggle choice is scoped to the target it was made for --
+    // switching targets re-infers fresh rather than carrying it over.
+    setManualOverride(null);
+  }, [userGameTargetKey]);
+  useEffect(() => {
+    // While On, keep the draft pinned to the region's value -- covers both a
+    // manual toggle flip and a target switch landing on a different saved value.
+    if (!gameValuesReady || !matchesRegion || regionValue === undefined) return;
+    const desired = String(regionValue);
+    if (draftValue === desired) return;
+    setGameDraft((current) => ({ ...current, [fieldId]: desired }));
+  }, [gameValuesReady, matchesRegion, regionValue, draftValue]);
+  // A scope that has never had this field saved at all gets the region's
+  // value written once, server-side, at startup (migrate_coriolis_region_fields
+  // in usersettings.py, invoked from server.js) -- not from here. Doing it
+  // client-side meant "browse a target" silently issued a write with no
+  // confirmation, pinned whichever scope happened to be open (breaking
+  // Global -> Map -> Partition inheritance), and could never distinguish
+  // "unset" from "explicitly saved to equal the schema default" -- on a
+  // region whose value equals the field's default (Europe for the hour;
+  // Europe, North America, and South America for the day) that looped
+  // forever.
+  return { matchesRegion, regionValue, setManualOverride };
+}
+
 export function MapsPanel({ onError, confirmAction, restartGate, confirmSettingsRestart, waitForTaskWithUpdates, taskTechnicalDetails }: MapsPanelProps) {
   const [mapsText, setMapsText] = useState("");
   const [memoryText, setMemoryText] = useState("");
@@ -325,6 +457,21 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   const [engineDraft, setEngineDraft] = useState<Record<string, string>>({});
   const [gameValues, setGameValues] = useState<Record<string, string>>({});
   const [gameDraft, setGameDraft] = useState<Record<string, string>>({});
+  const [serverCustomValues, setServerCustomValues] = useState<Record<string, string>>({});
+  const [serverCustomDraft, setServerCustomDraft] = useState<Record<string, string>>({});
+  const [spiceFieldValues, setSpiceFieldValues] = useState<Record<string, string>>({});
+  const [spiceFieldDraft, setSpiceFieldDraft] = useState<Record<string, string>>({});
+  const [serverRegion, setServerRegion] = useState("");
+  const [gameValuesTargetKey, setGameValuesTargetKey] = useState("");
+  const [spiceFieldValuesTargetKey, setSpiceFieldValuesTargetKey] = useState("");
+  // /code-review high finding (2026-09-24): spiceFieldValuesTargetKey alone
+  // only detects staleness against the *current* target -- it doesn't stop a
+  // genuinely out-of-order response (rapid Target A -> B -> C switches, none
+  // dirty, so the reload guard never blocks) from overwriting a fresher
+  // in-flight target's values with a staler one, since both requests are
+  // "for a real target" and neither is cancelled. A sequence ref closes this:
+  // a response is only ever applied if no newer request has been issued since.
+  const spiceFieldRequestSeqRef = useRef(0);
   const [rawEngine, setRawEngine] = useState("");
   const [rawGame, setRawGame] = useState("");
   const [rawEngineOriginal, setRawEngineOriginal] = useState("");
@@ -352,25 +499,29 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   const [sietchDimensionsText, setSietchDimensionsText] = useState("");
   const [sietchDimensionIdsText, setSietchDimensionIdsText] = useState("");
   const [activeSietches, setActiveSietches] = useState("1");
+  const [deepDesertLayoutDraft, setDeepDesertLayoutDraft] = useState("1");
+  const [deepDesertThirdRoleDraft, setDeepDesertThirdRoleDraft] = useState<"pve" | "pvp">("pve");
   const [sietchDrafts, setSietchDrafts] = useState<Record<string, { displayName: string; password: string }>>({});
   const [sietchPasswordTouched, setSietchPasswordTouched] = useState<Record<string, boolean>>({});
   const [selectedMapName, setSelectedMapName] = useState("");
   const [selectedPartitionId, setSelectedPartitionId] = useState("");
+  const [restartHistory, setRestartHistory] = useState<RestartHistoryResponse | null>(null);
   const [mapSort, setMapSort] = useState<MapSortState>({ column: null, direction: "asc" });
   const [engineMapName, setEngineMapName] = useState("__global__");
   const [enginePartitionId, setEnginePartitionId] = useState("");
   const [userGameMapName, setUserGameMapName] = useState("");
   const [userGamePartitionId, setUserGamePartitionId] = useState("");
   const [selectedGameCategory, setSelectedGameCategory] = useState("");
+  const [selectedServerCustomCategory, setSelectedServerCustomCategory] = useState("");
   const [selectedEngineCategory, setSelectedEngineCategory] = useState("");
   const [modifierFilter, setModifierFilter] = useState("");
   const [modifierViewMode, setModifierViewMode] = useState<"grid" | "list">("grid");
-  const [settingsTab, setSettingsTab] = useState<"engine" | "game" | "spicefields" | "choam">("engine");
-  const [spicefieldRows, setSpicefieldRows] = useState<SpicefieldTypeRow[]>([]);
-  const [spicefieldDrafts, setSpicefieldDrafts] = useState<Record<string, SpicefieldDraft>>({});
+  const [settingsTab, setSettingsTab] = useState<"engine" | "game" | "serverCustom" | "spicefields" | "choam">("engine");
+  const [activeSpicefields, setActiveSpicefields] = useState<ActiveSpicefieldRow[]>([]);
+  const [spicefieldsLoaded, setSpicefieldsLoaded] = useState(false);
   const [spicefieldResult, setSpicefieldResult] = useState<HomeTaskResult | null>(null);
-  const [spicefieldSavingId, setSpicefieldSavingId] = useState("");
   const [spicefieldFilter, setSpicefieldFilter] = useState("");
+  const [spicefieldSettingsFilter, setSpicefieldSettingsFilter] = useState("");
   const [choamOverview, setChoamOverview] = useState<ChoamTerminalOverview | null>(null);
   const [choamSavingKey, setChoamSavingKey] = useState("");
   const [choamResult, setChoamResult] = useState<HomeTaskResult | null>(null);
@@ -389,7 +540,24 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   const [mapsResultScope, setMapsResultScope] = useState<MapsResultScope>(() => loadPersistedMapsResultScope());
   const [mapsResultTarget, setMapsResultTarget] = useState("");
   const [mapsTaskQueueStates, setMapsTaskQueueStates] = useState<Record<string, MapsTaskQueueState>>({});
-  const { pending: pendingRefills } = usePendingRefills();
+  const pendingQueues = usePendingQueues();
+  // Every queue that a map-down window flushes, for one partition or for every
+  // partition of one world_partition map. Kept as callbacks so each restart
+  // control reads the same complete set of counts.
+  const queueCountsForPartition = useCallback((partitionId: number): QueueCounts => ({
+    fuel: pendingRefillCountForPartition(pendingQueues.fuel.pending, partitionId),
+    water: pendingRefillCountForPartition(pendingQueues.water.pending, partitionId),
+    deletes: pendingRefillCountForPartition(pendingQueues.deletes.pending, partitionId),
+    vehicleDeletes: vehicleDeleteCountForPartition(pendingQueues.vehicleDeletes.pending, partitionId),
+    permissions: childAccessPieceCountForPartition(pendingQueues.permissions.pending, partitionId)
+  }), [pendingQueues.fuel.pending, pendingQueues.water.pending, pendingQueues.deletes.pending, pendingQueues.vehicleDeletes.pending, pendingQueues.permissions.pending]);
+  const queueCountsForMap = useCallback((partitionMap: string): QueueCounts => ({
+    fuel: pendingRefillCountForMap(pendingQueues.fuel.pending, partitionMap),
+    water: pendingRefillCountForMap(pendingQueues.water.pending, partitionMap),
+    deletes: pendingRefillCountForMap(pendingQueues.deletes.pending, partitionMap),
+    vehicleDeletes: vehicleDeleteCountForMap(pendingQueues.vehicleDeletes.pending, partitionMap),
+    permissions: childAccessPieceCountForMap(pendingQueues.permissions.pending, partitionMap)
+  }), [pendingQueues.fuel.pending, pendingQueues.water.pending, pendingQueues.deletes.pending, pendingQueues.vehicleDeletes.pending, pendingQueues.permissions.pending]);
   const mapsLoadRef = useRef<Promise<void> | null>(null);
   const mapsRuntimeRefreshRef = useRef<Promise<void> | null>(null);
   const mapsDisplayedTerminalTaskRef = useRef<Set<string>>(new Set());
@@ -405,19 +573,19 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     if (!updates.length) return;
     setMemoryText((current) => updateMemoryStatusText(current, updates));
   }
-  async function enqueueMapsTask(resultTarget: string, title: string, action: () => Promise<void>) {
+  async function enqueueMapsTask(resultTarget: string, title: string, kind: MapsTaskKind, action: () => Promise<void>) {
     const trackedTarget = resultTarget.trim();
     if (trackedTarget && mapsQueuedTargetsRef.current.has(trackedTarget)) return;
     const queueId = trackedTarget || `task:${++mapsAnonymousTaskIdRef.current}`;
     mapsQueuedTargetsRef.current.add(queueId);
     if (trackedTarget) {
-      setMapsTaskQueueStates((current) => ({ ...current, [trackedTarget]: { phase: "queued", title } }));
+      setMapsTaskQueueStates((current) => ({ ...current, [trackedTarget]: { phase: "queued", title, kind } }));
     }
     const queuedTask = mapsTaskQueueRef.current
       .catch(() => undefined)
       .then(async () => {
         if (trackedTarget) {
-          setMapsTaskQueueStates((current) => ({ ...current, [trackedTarget]: { phase: "running", title } }));
+          setMapsTaskQueueStates((current) => ({ ...current, [trackedTarget]: { phase: "running", title, kind } }));
         }
         try {
           await action();
@@ -436,12 +604,25 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     await queuedTask;
   }
   async function runTaskAndRefresh(action: () => Promise<{ task?: Task; queued?: boolean }>, runningTitle = "Applying Map Changes", successTitle = "Map Changes Applied", options: MapsTaskOptions = {}) {
-    await enqueueMapsTask(options.resultTarget || "", runningTitle, () => runTaskAndRefreshNow(action, runningTitle, successTitle, options));
+    await enqueueMapsTask(options.resultTarget || "", runningTitle, options.taskKind || "other", () => runTaskAndRefreshNow(action, runningTitle, successTitle, options));
   }
   async function runTaskAndRefreshNow(action: () => Promise<{ task?: Task; queued?: boolean }>, runningTitle: string, successTitle: string, options: MapsTaskOptions) {
     const resultScope = options.resultScope || "maps";
     const resultTarget = options.resultTarget || "";
-    const response = await action();
+    const started: HomeTaskResult = { status: "running", title: runningTitle };
+    setMapsResultScope(resultScope);
+    setMapsResultTarget(resultTarget);
+    setMapsResult(started);
+    persistMapsTask({ result: started, runningTitle, successTitle, resultScope });
+    let response: { task?: Task; queued?: boolean };
+    try {
+      response = await action();
+    } catch (error) {
+      const failed: HomeTaskResult = { status: "failed", title: "Map Change Failed", details: error instanceof Error ? error.message : String(error) };
+      setMapsResult(failed);
+      persistMapsTask(null);
+      throw error;
+    }
     if (!response.task) {
       // Gated by the restart queue: this save-and-restart was captured into a
       // countdown, so the change applies when it fires. Manage it under
@@ -453,10 +634,6 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
       await loadMaps();
       return;
     }
-    const started: HomeTaskResult = { status: "running", title: runningTitle };
-    setMapsResultScope(resultScope);
-    setMapsResultTarget(resultTarget);
-    setMapsResult(started);
     persistMapsTask({ taskId: response.task.id, result: started, runningTitle, successTitle, resultScope });
     let restartAcceptedShown = false;
     const final = await waitForTaskWithUpdates(response.task, (task) => {
@@ -508,7 +685,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   }
   async function runTaskSequenceAndRefresh(actions: MapsTaskAction[], runningTitle = "Applying Map Changes", successTitle = "Map Changes Applied", options: MapsTaskSequenceOptions = {}) {
     if (!actions.length) return;
-    await enqueueMapsTask(options.resultTarget || "", runningTitle, () => runTaskSequenceAndRefreshNow(actions, runningTitle, successTitle, options));
+    await enqueueMapsTask(options.resultTarget || "", runningTitle, options.taskKind || "other", () => runTaskSequenceAndRefreshNow(actions, runningTitle, successTitle, options));
   }
   async function runTaskSequenceAndRefreshNow(actions: MapsTaskAction[], runningTitle: string, successTitle: string, options: MapsTaskSequenceOptions) {
     const resultScope = options.resultScope || "maps";
@@ -624,10 +801,9 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
         const reason = status.status === "rejected" ? status.reason : memoryStatus.reason;
         throw new Error(reason instanceof Error ? reason.message : String(reason));
       }
-      const mapStatus = status.status === "fulfilled" ? status.value : {};
-      setMapsText(status.status === "fulfilled" ? String(mapStatus.maps?.stdout || "") : "");
-      setServersText(status.status === "fulfilled" ? String(mapStatus.services?.stdout || "") : "");
-      setReadinessText(status.status === "fulfilled" ? String(mapStatus.readiness?.stdout || "") : "");
+      setMapsText(status.status === "fulfilled" ? String(status.value.maps?.stdout || "") : "");
+      setServersText(status.status === "fulfilled" ? String(status.value.services?.stdout || "") : "");
+      setReadinessText(status.status === "fulfilled" ? String(status.value.readiness?.stdout || "") : "");
       setMemoryText(memoryStatus.status === "fulfilled" ? memoryStatus.value.stdout : "");
       if (status.status !== "fulfilled" || memoryStatus.status !== "fulfilled") {
         const failed = status.status === "rejected" ? status.reason : memoryStatus.status === "rejected" ? memoryStatus.reason : "";
@@ -644,17 +820,17 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     if (mapsRuntimeRefreshRef.current) return mapsRuntimeRefreshRef.current;
     mapsRuntimeRefreshRef.current = (async () => {
       const [status, memoryStatus] = await Promise.allSettled([
-        withTimeout(mapsApi.status(), 60000, "Refreshing map status timed out."),
-        withTimeout(mapsApi.memory(), 60000, "Refreshing map memory timed out.")
+        withTimeout(mapsApi.status(), 60000, "Refreshing map status timed out.").then((status) => {
+          setMapsText(String(status.maps?.stdout || ""));
+          setServersText(String(status.services?.stdout || ""));
+          setReadinessText(String(status.readiness?.stdout || ""));
+          return status;
+        }),
+        withTimeout(mapsApi.memory(), 60000, "Refreshing map memory timed out.").then((memoryStatus) => {
+          setMemoryText(memoryStatus.stdout);
+          return memoryStatus;
+        })
       ]);
-      if (status.status === "fulfilled") {
-        setMapsText(String(status.value.maps?.stdout || ""));
-        setServersText(String(status.value.services?.stdout || ""));
-        setReadinessText(String(status.value.readiness?.stdout || ""));
-      }
-      if (memoryStatus.status === "fulfilled") {
-        setMemoryText(memoryStatus.value.stdout);
-      }
       if (status.status === "fulfilled" || memoryStatus.status === "fulfilled") {
         setLoadError("");
       }
@@ -682,11 +858,21 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     setRawEngine(raw.content || "");
     setRawEngineOriginal(raw.content || "");
   }
+  async function loadServerRegion() {
+    try {
+      const state = await setupApi.state();
+      setServerRegion(String(state.serverConfig?.SERVER_REGION || ""));
+    } catch {
+      // Match Region is a convenience on top of the Cycle Start Hour field --
+      // if the deployment region can't be read, the field just stays manual.
+      setServerRegion("");
+    }
+  }
   async function loadInitialModifierSettings() {
     // The raw Advanced editor is loaded only when it is opened. Making it part
     // of this gate would add another command before the normal modifier cards
     // can be used.
-    await Promise.all([loadSchema(), loadUserEngineValues()]);
+    await Promise.all([loadSchema(), loadUserEngineValues(), loadServerRegion(), loadSpiceFieldSettings()]);
     setModifierSettingsLoaded(true);
   }
   async function loadSelectedEngineSettings(mapName: string, partitionId?: string) {
@@ -705,8 +891,47 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     const parsed = parseUserSettingsMap(values.stdout || "");
     setGameValues(parsed);
     setGameDraft(parsed);
+    // userGameName/effectiveUserGamePartitionId flip synchronously on target
+    // selection, one render before this resolves -- this key lets derived
+    // state tell "gameValues is still the previous (or empty) target's" apart
+    // from "gameValues genuinely belongs to what's selected now", which
+    // matters for anything (like Match Region's auto-migration) that must
+    // never act on a stale or not-yet-loaded value.
+    setGameValuesTargetKey(settingsTargetKey(mapName, partitionId || ""));
     setRawGame(raw.content || "");
     setRawGameOriginal(raw.content || "");
+  }
+  async function loadSelectedServerCustomSettings(mapName: string, partitionId?: string) {
+    const scope = mapName === "__global__" ? "serverCustomGlobal" : partitionId ? "serverCustomPartition" : "serverCustomMap";
+    const values = await mapsApi.userSettingsValues(scope, mapName === "__global__" ? "Survival_1" : mapName, partitionId);
+    const parsed = parseUserSettingsMap(values.stdout || "");
+    setServerCustomValues(parsed);
+    setServerCustomDraft(parsed);
+  }
+  // Spice Field settings are UserGame.ini fields (MAP_FIELDS, category "Spice
+  // Fields"), shown in the settings section of the Spice Fields tab. They
+  // follow the same shared Target selector as the rest of the UserGame/
+  // Custom Settings tabs (see selectUserGameTarget) -- Global when no Target
+  // is chosen, matching PR #228's original always-visible UX, or that
+  // Target's own Map/Partition scope once one is picked.
+  async function loadSpiceFieldSettings(mapName?: string, partitionId?: string) {
+    const target = mapName || "__global__";
+    const seq = ++spiceFieldRequestSeqRef.current;
+    const values = await mapsApi.userGame(target, target === "__global__" ? undefined : partitionId);
+    // A newer loadSpiceFieldSettings call has been issued since this one
+    // started -- applying this response now would overwrite that newer
+    // request's (possibly already-applied) result with stale data. Drop it.
+    if (seq !== spiceFieldRequestSeqRef.current) return;
+    const parsed = parseUserSettingsMap(values.stdout || "");
+    setSpiceFieldValues(parsed);
+    setSpiceFieldDraft(parsed);
+    // Same staleness guard as loadSelectedSettings' gameValuesTargetKey: an
+    // in-flight fetch for a target the operator has since navigated away from
+    // must not be trusted just because it happened to resolve. Comparing this
+    // key against the *current* userGameTargetKey (not "the last request
+    // issued") means an out-of-order resolution is correctly treated as not
+    // ready even if it overwrites spiceFieldValues with another target's data.
+    setSpiceFieldValuesTargetKey(settingsTargetKey(target, target === "__global__" ? "" : (partitionId || "")));
   }
   // Three draft policies, deliberately distinct:
   //   preserveDrafts      -- background polling; whatever is on screen wins.
@@ -803,15 +1028,11 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     setHostMemoryReserveMode(settings.hostMemoryReserveConfigured ? "custom" : "automatic");
     setHostMemoryReserve(String(settings.hostMemoryReserveGiB));
   }
-  async function loadSpicefields(options: { preserveDrafts?: boolean } = {}) {
+  async function loadSpicefields() {
     const result = await mapsApi.spicefields();
-    const rows = result.rows || [];
-    setSpicefieldRows(rows);
-    const drafts = Object.fromEntries(rows.map((row) => [String(row.spicefield_type_id), spicefieldDraftFromRow(row)]));
-    setSpicefieldDrafts((current) => options.preserveDrafts ? { ...drafts, ...current } : drafts);
-    if (result.reason && !rows.length) {
-      setSpicefieldResult({ status: "failed", title: "Spice Fields Unavailable", message: result.reason });
-    }
+    setActiveSpicefields(result.activeFields || []);
+    setSpicefieldsLoaded(true);
+    setSpicefieldResult(result.reason ? { status: "failed", title: "Spice Fields Unavailable", message: result.reason } : null);
   }
   async function loadChoamTerminals() {
     const overview = await mapsApi.choamTerminals();
@@ -823,7 +1044,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     if (!(await confirmAction(`Install a CHOAM Exchange terminal at ${center.name}?`, {
       title: `Install at ${center.name}`,
       confirmLabel: "Install Terminals",
-      details: [["Installation Scope", `All ${sietchCount} active Sietches`], ["Reload Required", "Restart Battlegroup"]].map(([label, value]) => ({ label, value }))
+      details: [["Installation Scope", `All ${sietchCount} active Sietches`], ["Reload Required", "Restart Map"]].map(([label, value]) => ({ label, value }))
     }))) return;
     setChoamSavingKey(center.key);
     setChoamResult({ status: "running", title: `Installing ${center.name} Terminals...` });
@@ -834,7 +1055,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
       setChoamResult({
         status: "succeeded",
         title: created ? "CHOAM Terminals Installed" : "CHOAM Terminals Already Installed",
-        message: created ? `${created} terminal${created === 1 ? "" : "s"} added. Restart the battlegroup to load them in-game.` : "Every active sietch already has this trade-center terminal."
+        message: created ? `${created} terminal${created === 1 ? "" : "s"} added. Restart the map to load them in-game.` : "Every active sietch already has this trade-center terminal."
       });
     } catch (error) {
       setChoamResult({ status: "failed", title: "CHOAM Terminal Installation Failed", message: error instanceof Error ? error.message : String(error) });
@@ -848,46 +1069,72 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
       title: `Remove from ${center.name}`,
       confirmLabel: "Remove Terminals",
       danger: true,
-      details: [["Tracked Terminals", String(installed)], ["Reload Required", "Restart Battlegroup"]].map(([label, value]) => ({ label, value, tone: label === "Tracked Terminals" ? "danger" as const : undefined }))
+      details: [["Tracked Terminals", String(installed)], ["Reload Required", "Restart Map"]].map(([label, value]) => ({ label, value, tone: label === "Tracked Terminals" ? "danger" as const : undefined }))
     }))) return;
     setChoamSavingKey(center.key);
     setChoamResult({ status: "running", title: `Removing ${center.name} Terminals...` });
     try {
       const result = await mapsApi.removeChoamTerminals(center.key);
       await loadChoamTerminals();
-      setChoamResult({ status: "succeeded", title: "CHOAM Terminals Removed", message: result.removed ? `${result.removed} terminal${result.removed === 1 ? "" : "s"} removed. Restart the battlegroup to unload them in-game.` : "No console-managed terminals were installed at this trade post." });
+      setChoamResult({ status: "succeeded", title: "CHOAM Terminals Removed", message: result.removed ? `${result.removed} terminal${result.removed === 1 ? "" : "s"} removed. Restart the map to unload them in-game.` : "No console-managed terminals were installed at this trade post." });
     } catch (error) {
       setChoamResult({ status: "failed", title: "CHOAM Terminal Removal Failed", message: error instanceof Error ? error.message : String(error) });
     } finally {
       setChoamSavingKey("");
     }
   }
-  async function saveSpicefield(row: SpicefieldTypeRow) {
-    const id = String(row.spicefield_type_id);
-    const draft = spicefieldDrafts[id] || spicefieldDraftFromRow(row);
-    const maxActive = parseWholeNumber(draft.maxActive);
-    const maxPrimed = parseWholeNumber(draft.maxPrimed);
-    const spawnWeight = Number(draft.spawnWeight);
-    if (maxActive === null || maxActive < 0 || maxPrimed === null || maxPrimed < 0 || !Number.isFinite(spawnWeight) || spawnWeight < 0) {
-      setSpicefieldResult({ status: "failed", title: "Spice Field Not Saved", message: "Use non-negative numbers for max active, max primed, and spawn weight." });
-      return;
-    }
-    setSpicefieldSavingId(id);
-    setSpicefieldResult({ status: "running", title: "Saving Spice Field..." });
+  async function saveChoamPosition(center: ChoamTradeCenter, position: { x: number; y: number; z: number; yaw: number }, playerId: string) {
+    const installed = choamOverview?.placements.filter((entry) => entry.trade_center_key === center.key && entry.actor_present).length || 0;
+    // Moving an installed terminal destroys and recreates its actors, so it is
+    // confirmed like the other destructive actions on this panel.
+    if (installed && !(await confirmAction(`Move the ${installed} installed ${center.name} terminal${installed === 1 ? "" : "s"} to the new position?`, {
+      title: `Move ${center.name}`,
+      confirmLabel: "Save And Move",
+      warning: "The existing terminals are removed and reinstalled at the new position in a single step.",
+      details: [["Tracked Terminals", String(installed)], ["Reload Required", "Restart Map"]].map(([label, value]) => ({ label, value }))
+    }))) return;
+    setChoamSavingKey(center.key);
+    setChoamResult({ status: "running", title: `Saving ${center.name} Position...` });
     try {
-      const result = await mapsApi.updateSpicefield(id, {
-        max_globally_active: maxActive,
-        max_globally_primed: maxPrimed,
-        is_spawning_active: draft.spawningActive,
-        global_spawn_weight: spawnWeight
+      const result = await mapsApi.setChoamPosition({
+        tradeCenterKey: center.key,
+        x: position.x, y: position.y, z: position.z, yaw: position.yaw,
+        sourcePlayerId: playerId || undefined,
+        applyNow: installed > 0
       });
-      setSpicefieldRows((current) => current.map((item) => String(item.spicefield_type_id) === id ? result.row : item));
-      setSpicefieldDrafts((current) => ({ ...current, [id]: spicefieldDraftFromRow(result.row) }));
-      setSpicefieldResult({ status: "succeeded", title: "Spice Field Saved", message: "Live database controls were updated and will be reapplied after battlegroup restarts. Existing active fields may remain until the game updates them." });
+      await loadChoamTerminals();
+      const message = result.moved
+        ? `Position saved and ${result.moved.created} terminal${result.moved.created === 1 ? "" : "s"} moved. Restart the map for the change to appear in-game.`
+        : result.reinstallRequired
+          ? `Position saved for ${center.name}. Remove and reinstall its terminals for the new position to take effect.`
+          : `Position saved for ${center.name}. It will be used the next time terminals are installed.`;
+      setChoamResult({ status: "succeeded", title: "CHOAM Terminal Position Saved", message });
     } catch (error) {
-      setSpicefieldResult({ status: "failed", title: "Spice Field Save Failed", message: error instanceof Error ? error.message : String(error) });
+      setChoamResult({ status: "failed", title: "CHOAM Terminal Position Save Failed", message: error instanceof Error ? error.message : String(error) });
     } finally {
-      setSpicefieldSavingId("");
+      setChoamSavingKey("");
+    }
+  }
+  async function resetChoamPosition(center: ChoamTradeCenter) {
+    if (!(await confirmAction(`Reset ${center.name} to its default position?`, {
+      title: `Reset ${center.name}`,
+      confirmLabel: "Reset Position",
+      danger: true
+    }))) return;
+    setChoamSavingKey(center.key);
+    setChoamResult({ status: "running", title: `Resetting ${center.name} Position...` });
+    try {
+      const result = await mapsApi.clearChoamPosition(center.key);
+      await loadChoamTerminals();
+      setChoamResult({
+        status: "succeeded",
+        title: "CHOAM Terminal Position Reset",
+        message: result.reinstallRequired ? `${center.name} reset to its default position. Remove and reinstall its terminals for the change to take effect.` : `${center.name} reset to its default position.`
+      });
+    } catch (error) {
+      setChoamResult({ status: "failed", title: "CHOAM Terminal Position Reset Failed", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setChoamSavingKey("");
     }
   }
   async function toggleMemoryBalancer() {
@@ -1014,6 +1261,13 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     void refreshDeferredRestartPending();
   }, []);
   useEffect(() => {
+    let active = true;
+    serverApi.restartHistory().then((result) => {
+      if (active) setRestartHistory(result);
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [mapsResult?.status]);
+  useEffect(() => {
     const persisted = loadPersistedMapsTask();
     if (!persisted?.taskId || persisted.result?.status !== "running") return;
     let cancelled = false;
@@ -1089,9 +1343,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   }, [memorySwapResult]);
   useEffect(() => {
     if (!spicefieldResult || spicefieldResult.status === "running") return;
-    const id = window.setTimeout(() => {
-      setSpicefieldResult(null);
-    }, 5000);
+    const id = window.setTimeout(() => setSpicefieldResult(null), 7000);
     return () => window.clearTimeout(id);
   }, [spicefieldResult]);
   useEffect(() => {
@@ -1116,7 +1368,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   }, []);
   useEffect(() => {
     if (!modifiersOpen || settingsTab !== "spicefields") return undefined;
-    const id = window.setInterval(() => { void loadSpicefields({ preserveDrafts: true }).catch(() => {}); }, 5000);
+    const id = window.setInterval(() => { void loadSpicefields().catch(() => {}); }, 5000);
     return () => window.clearInterval(id);
   }, [modifiersOpen, settingsTab]);
   useEffect(() => {
@@ -1184,6 +1436,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   const isUserGameSurvival = userGameName === "Survival_1";
   const isUserGameDeepDesert = /^DeepDesert_/i.test(userGameName);
   const isUserGameDeepDesertRuntime = /^(DeepDesert_|Overmap$)/i.test(userGameName);
+  const isUserGameOvermap = userGameName === "Overmap";
   const sietchRows = parseSietchRows(sietchDimensionsText || sietchesText, sietchDimensionIdsText);
   const survivalSietchRows = sietchRows.filter((row) => row.partitionId);
   const primarySurvivalSietch = survivalSietchRows.find((row) => String(row.dimension) === "0") || survivalSietchRows[0] || null;
@@ -1191,8 +1444,21 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   const deepDesertPartitionRows = serverPartitionRows.filter((row) => String(row.map || "") === "DeepDesert_1").sort((a, b) => Number(a.dimension ?? 0) - Number(b.dimension ?? 0));
   const userGameDeepDesertPartitionOptions = isUserGameDeepDesert ? deepDesertPartitionRows.filter((row) => row.partitionId) : [];
   const dynamicDeepDesertRows = deepDesertPartitionRows.filter((row) => !isPrimaryDeepDesertPartition(row));
-  const deepDesertDualEnabled = dynamicDeepDesertRows.length > 0;
-  const deepDesertDualConfiguring = mapsResultScope === "maps" && mapsResult?.status === "running" && isDeepDesertDualResult(mapsResult);
+  const deepDesertInstanceCount = Math.max(1, Math.min(3, deepDesertPartitionRows.length || 1));
+  const thirdDeepDesertRow = deepDesertPartitionRows.find((row) => Number(row.dimension ?? -1) === 2) || null;
+  const thirdDeepDesertCombat = thirdDeepDesertRow
+    ? combatStateByMap["DeepDesert_1"]?.partitions.find((partition) => partition.partitionId === String(thirdDeepDesertRow.partitionId || "")) || null
+    : null;
+  const deepDesertThirdRoleKnown = deepDesertInstanceCount !== 3 || thirdDeepDesertCombat?.configuredState === "PVP" || thirdDeepDesertCombat?.configuredState === "PVE";
+  const deepDesertThirdRole: "pve" | "pvp" = thirdDeepDesertCombat?.configuredState === "PVP" ? "pvp" : "pve";
+  const deepDesertMultiEnabled = deepDesertInstanceCount > 1;
+  const deepDesertLayoutConfiguring = mapsResultScope === "maps" && mapsResult?.status === "running" && isDeepDesertLayoutResult(mapsResult);
+  useEffect(() => {
+    if (!deepDesertLayoutConfiguring) {
+      setDeepDesertLayoutDraft(String(deepDesertInstanceCount));
+      setDeepDesertThirdRoleDraft(deepDesertThirdRole);
+    }
+  }, [deepDesertInstanceCount, deepDesertLayoutConfiguring, deepDesertThirdRole]);
   const partitionOptions = isSurvival ? survivalSietchRows : [];
   const userGamePartitionOptions = isUserGameSurvival ? sietchRows.filter((row) => row.partitionId) : [];
   const userGameTargets = buildUserGameTargets(mapRows, serverPartitionRows, survivalSietchRows, deepDesertPartitionRows);
@@ -1207,12 +1473,85 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   const isEngineGlobal = engineMapName === "__global__";
   const engineTargetKey = settingsTargetKey(engineMapName, isEngineGlobal ? "" : enginePartitionId);
   const gameFields = schema ? (effectivePartitionId ? schema.partition : schema.game).filter((field) => field.id !== "partition_pve_enabled" || effectivePartitionId) : [];
-  const userGameFields = schema && userGameName ? (!isUserGameGlobal && effectiveUserGamePartitionId ? schema.partition : schema.game).filter((field) => field.id !== "partition_pve_enabled" || (!isUserGameGlobal && effectiveUserGamePartitionId)) : [];
+  // Spice Fields (category "Spice Fields") are deliberately excluded here --
+  // they have their own dedicated, always-visible global section in the Spice
+  // Fields tab (see spiceFieldSettings below), backed by its own
+  // load/save cycle. Leaving them in this list too would create a second,
+  // unsynchronized editable copy of the same UserGame.ini values: editing one
+  // surface wouldn't invalidate the other's already-loaded draft, so an
+  // operator could see stale values in whichever surface they opened second.
+  const userGameFields = schema && userGameName ? (!isUserGameGlobal && effectiveUserGamePartitionId ? schema.partition : schema.game).filter((field) => (field.id !== "partition_pve_enabled" || (!isUserGameGlobal && effectiveUserGamePartitionId)) && field.category !== "Spice Fields") : [];
+  // userGameName/effectiveUserGamePartitionId flip synchronously the instant a
+  // target is picked, one render before loadSelectedSettings's async fetch
+  // resolves and actually updates gameValues/gameDraft for it. Without this,
+  // that in-between render sees the *previous* target's (or the initial
+  // empty) gameValues while userGameName already points at the new one --
+  // read as "field untouched" -- and the Match Region hooks below would
+  // flicker the toggle, or worse, pin a draft from data that was never this
+  // target's to begin with.
+  const gameValuesReady = Boolean(userGameName) && gameValuesTargetKey === userGameTargetKey;
+  const coriolisHour = useCoriolisMatchRegion(CORIOLIS_CYCLE_START_HOUR_FIELD_ID, CORIOLIS_REGION_HOURS, schema, gameValues, gameDraft, setGameDraft, gameValuesReady, serverRegion, userGameTargetKey);
+  const coriolisDay = useCoriolisMatchRegion(CORIOLIS_CYCLE_START_DAY_FIELD_ID, CORIOLIS_REGION_DAYS, schema, gameValues, gameDraft, setGameDraft, gameValuesReady, serverRegion, userGameTargetKey);
+  const coriolisHourMatchRegionAvailable = coriolisHour.regionValue !== undefined && userGameFields.some((field) => field.id === CORIOLIS_CYCLE_START_HOUR_FIELD_ID);
+  const coriolisDayMatchRegionAvailable = coriolisDay.regionValue !== undefined && userGameFields.some((field) => field.id === CORIOLIS_CYCLE_START_DAY_FIELD_ID);
   const gameGroups = groupSettingsFields(userGameFields, true, modifiedSettingsFields(userGameFields, gameValues, gameDraft));
   const activeGameCategory = gameGroups.some(([category]) => category === selectedGameCategory) ? selectedGameCategory : gameGroups[0]?.[0] || "";
   const activeGameFields = activeGameCategory === "All" ? userGameFields : gameGroups.find(([category]) => category === activeGameCategory)?.[1] || [];
   const filteredGameFields = filterSettingsFields(activeGameFields, modifierFilter);
-  const filteredSpicefieldRows = filterSpicefieldRows(spicefieldRows, spicefieldFilter);
+  const serverCustomFields = schema?.serverCustom || [];
+  const serverCustomGroups = groupSettingsFields(serverCustomFields, true, modifiedSettingsFields(serverCustomFields, serverCustomValues, serverCustomDraft));
+  const activeServerCustomCategory = serverCustomGroups.some(([category]) => category === selectedServerCustomCategory) ? selectedServerCustomCategory : serverCustomGroups[0]?.[0] || "";
+  const activeServerCustomFields = activeServerCustomCategory === "All" ? serverCustomFields : serverCustomGroups.find(([category]) => category === activeServerCustomCategory)?.[1] || [];
+  const filteredServerCustomFields = filterSettingsFields(activeServerCustomFields, modifierFilter);
+  // Reads schema.partition when a partition is selected, matching
+  // userGameFields' own scope switch just above -- the two schema arrays
+  // happen to carry identical Spice Fields specs today (verified against
+  // runtime/scripts/usersettings.py's PARTITION_FIELDS/MAP_FIELDS), but this
+  // keeps the UI correct automatically if a future backend change ever
+  // diverges partition-scoped bounds/defaults from the global ones, instead
+  // of silently reading the wrong schema.
+  const spiceFieldSettings = (schema ? (!isUserGameGlobal && effectiveUserGamePartitionId ? schema.partition : schema.game) : []).filter((field) => field.category === "Spice Fields");
+  const filteredSpiceFieldSettings = filterSettingsFields(spiceFieldSettings, spicefieldSettingsFilter);
+  // Dirty-detection deliberately does NOT use spiceFieldSettings above
+  // (test-found bug, 2026-09-24): spiceFieldValues/spiceFieldDraft can belong
+  // to a *different*, stale target than the one spiceFieldSettings is now
+  // scoped to (that's the whole premise of the reload-skip-while-dirty guard
+  // below) -- changedKeys() only ever compares field ids present in the
+  // fields list it's given, so if the current target's schema array happens
+  // to omit an id the stale draft actually differs on (empty for Overmap in
+  // this fixture; schema.game/schema.partition are expected to carry
+  // identical Spice Fields ids in real data, but nothing enforces that), a
+  // real pending edit would silently stop counting as dirty. Union of both
+  // schema arrays sidesteps this entirely for dirty-detection specifically;
+  // spiceFieldSettings itself stays correctly target-scoped for rendering,
+  // validation bounds, and defaults.
+  const spiceFieldDirtyDetectionFields = schema
+    ? [...schema.game, ...schema.partition].filter((field, index, all) => field.category === "Spice Fields" && all.findIndex((candidate) => candidate.id === field.id) === index)
+    : [];
+  const spiceFieldsDirty = changedKeys(spiceFieldValues, spiceFieldDraft, spiceFieldDirtyDetectionFields);
+  const invalidSpiceFieldsDirty = spiceFieldsDirty.filter((fieldId) => {
+    const field = spiceFieldSettings.find((candidate) => candidate.id === fieldId);
+    return Boolean(field && !settingValueIsValid(field, spiceFieldDraft[fieldId] ?? field.default ?? ""));
+  });
+  // Spice Fields follows the same shared Target selector as the rest of this
+  // tab (userGameTargetKey), defaulting to "Global" when nothing is selected
+  // -- reuses the already-correct label strings from userGameTargets rather
+  // than reformatting the target ourselves.
+  const spiceFieldsTargetLabel = userGameTargetKey ? (userGameTargets.find((target) => target.key === userGameTargetKey)?.label || "Global") : "Global";
+  // Unlike userGameTargetKey (which is "" until a Target is explicitly
+  // picked), Spice Fields defaults to Global the instant it loads -- PR
+  // #228's original always-visible behavior, preserved by this PR. So the
+  // key it's ready-checked against must also default to Global's key when
+  // nothing is explicitly selected, not to "".
+  const spiceFieldsEffectiveTargetKey = userGameTargetKey || settingsTargetKey("__global__", "");
+  // Same shape as gameValuesReady: true only once spiceFieldValues/Draft
+  // genuinely belong to the currently-selected target, not merely "a fetch
+  // for spice fields resolved at some point." False while a fetch for a new
+  // target is in flight (guards the out-of-order-response race) and while a
+  // dirty draft has deliberately blocked the auto-reload below (guards
+  // against a Save writing this draft's values to the wrong scope).
+  const spiceFieldValuesReady = spiceFieldValuesTargetKey === spiceFieldsEffectiveTargetKey;
+  const filteredActiveSpicefields = filterActiveSpicefields(activeSpicefields, spicefieldFilter);
   const engineSchemaFields = isEngineGlobal
     ? schema?.engine || []
     : enginePartitionId
@@ -1225,6 +1564,11 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   const filteredEngineFields = filterSettingsFields(activeEngineFields, modifierFilter);
   const engineDirty = changedKeys(engineValues, engineDraft, engineFields);
   const gameDirty = changedKeys(gameValues, gameDraft, userGameFields);
+  const serverCustomDirty = changedKeys(serverCustomValues, serverCustomDraft, serverCustomFields);
+  const invalidServerCustomDirty = serverCustomDirty.filter((fieldId) => {
+    const field = serverCustomFields.find((candidate) => candidate.id === fieldId);
+    return Boolean(field && !settingValueIsValid(field, serverCustomDraft[fieldId] ?? field.default ?? ""));
+  });
   // The download buttons report how many settings each client ini actually carries.
   // Count the generated file rather than the drafts: downloads reflect saved state
   // and include only non-default values explicitly classified as client-required.
@@ -1250,6 +1594,8 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   const modifierDirtySummary = [
     engineDirty.length ? `${engineDirty.length} UserEngine value${engineDirty.length === 1 ? "" : "s"}` : "",
     gameDirty.length ? `${gameDirty.length} UserGame value${gameDirty.length === 1 ? "" : "s"}` : "",
+    serverCustomDirty.length ? `${serverCustomDirty.length} Custom Settings value${serverCustomDirty.length === 1 ? "" : "s"}` : "",
+    spiceFieldsDirty.length ? `${spiceFieldsDirty.length} Spice Field setting${spiceFieldsDirty.length === 1 ? "" : "s"}` : "",
     rawEngineDirty ? "UserEngine.ini" : "",
     rawGameDirty ? "UserGame.ini" : ""
   ].filter(Boolean).join(", ");
@@ -1314,6 +1660,11 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     if (selectedMapName) void loadSelectedSettings(selectedMapName, next || undefined).catch((error) => onError(error instanceof Error ? error.message : String(error)));
   }
   function selectUserGameTarget(next: string) {
+    // A Target change invalidates every request issued for the previous
+    // Target, even when an unsaved draft deliberately prevents us from
+    // starting a replacement load below. Otherwise that older response can
+    // still resolve afterward and overwrite the draft we are preserving.
+    spiceFieldRequestSeqRef.current += 1;
     const target = userGameTargets.find((item) => item.key === next);
     if (!target) {
       setUserGameMapName("");
@@ -1321,12 +1672,35 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
       setSelectedGameCategory("");
       setGameValues({});
       setGameDraft({});
+      setServerCustomValues({});
+      setServerCustomDraft({});
+      // Deselecting reverts Spice Fields to Global too, matching §8.2 of
+      // docs/design/spice-fields-per-map-scoping-l1-design-2026-09-21.md --
+      // unless there's an unsaved Spice Fields draft, in which case this is
+      // reached from the *other* tab this selector lives on, and clobbering
+      // it silently (the operator isn't even looking at the Spice Fields tab
+      // right now) is the exact cross-tab data-loss hazard this guard exists
+      // for. spiceFieldValuesReady naturally goes false until the operator
+      // either discards (see the Discard Changes button, which re-syncs) or
+      // saves, so nothing can write this stale draft to the wrong scope.
+      if (!spiceFieldsDirty.length) void loadSpiceFieldSettings().catch((error) => onError(error instanceof Error ? error.message : String(error)));
       return;
     }
     setUserGameMapName(target.map);
     setUserGamePartitionId(target.partitionId);
     setSelectedGameCategory("");
-    void loadSelectedSettings(target.map, target.partitionId || undefined).catch((error) => onError(error instanceof Error ? error.message : String(error)));
+    setSelectedServerCustomCategory("");
+    const loader = settingsTab === "serverCustom" ? loadSelectedServerCustomSettings : loadSelectedSettings;
+    void loader(target.map, target.partitionId || undefined).catch((error) => onError(error instanceof Error ? error.message : String(error)));
+    // Spice Fields reloads for whichever target this shared selector just
+    // picked, independent of settingsTab -- this selector lives on the
+    // UserGame and Custom Settings tabs, but the settings it scopes render on
+    // the separate Spice Fields tab, so keeping it in sync here (not gated
+    // on the active tab) means it's already correct the moment an operator
+    // navigates there. Skipped when there's an unsaved Spice Fields draft --
+    // see the matching comment in the deselect branch above; the operator may
+    // not even be on that tab to notice their edits vanish.
+    if (!spiceFieldsDirty.length) void loadSpiceFieldSettings(target.map, target.partitionId || undefined).catch((error) => onError(error instanceof Error ? error.message : String(error)));
   }
   function selectEngineTarget(next: string) {
     const target = userGameTargets.find((item) => item.key === next);
@@ -1415,13 +1789,15 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     }
     if (activeChanged) actions.push(...survivalSietchActions({ includeActive: true, includePartitions: false }));
     if (rowName === "Survival_1" && primarySurvivalSietch) actions.push(...survivalSietchActions({ includeActive: false, includePartitions: true, partitionId: primarySurvivalSietch.partitionId }));
-    const confirmed = await confirmAction(`Save map settings for ${rowName}?`);
+    const confirmed = await confirmAction(activeSietchesDecreased
+      ? "Reduce the active Sietches? Extra Sietches will be stopped and removed. The Director and primary Sietch will restart to update the in-game server list, briefly disconnecting primary Sietch players."
+      : `Save map settings for ${rowName}?`);
     if (confirmed) {
       const successMessage = activeChanged
         ? activeSietchesDecreased
           ? primaryChanged
             ? "Sietch changes saved successfully. Extra sietches were despawned, and the main sietch settings were updated. Changes may take a short time to appear in-game."
-            : "Sietch changes saved successfully. Extra sietches were despawned and removed from the active list."
+            : "Sietch changes saved successfully. Extra Sietches were removed. The primary Sietch is restarting; the in-game list will update once it is Ready."
           : primaryChanged
             ? "Sietch changes saved successfully. The new sietch is starting, and the main sietch settings were updated. Changes may take a short time to appear in-game."
             : "Sietch changes saved successfully. The sietch is starting and may take a few minutes to appear in-game after it is running."
@@ -1438,6 +1814,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
         activeChanged ? "Sietch Changes Saved" : "Map Settings Saved",
         {
           saveAcceptedMessage: successMessage,
+          taskKind: "save",
           memoryUpdates: memoryChanged ? [{ map: rowName, memory: memoryCliValue(memory) }] : [],
           resultTarget: mapResultTarget(rowName),
           // This form only carries the primary sietch's fields, so that is the
@@ -1541,6 +1918,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
         : "Memory settings saved successfully.";
       await runTaskSequenceAndRefresh(actions, `Saving ${sietchTargetDisplayName(sietch, draft.displayName)} Settings`, "Sietch Saved", {
         saveAcceptedMessage: successMessage,
+        taskKind: "save",
         memoryUpdates: memoryChanged ? [{ map: "Survival_1", partitionId: sietch.partitionId, memory: memoryCliValue(memory) }] : [],
         resultTarget: mapResultTarget("Survival_1", sietch.partitionId),
         // Derived from sietchActions' own source, so a pending edit on any
@@ -1579,32 +1957,37 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
       () => Promise.resolve({ task }),
       `Restarting ${label}`,
       `${label} Restarted`,
-      { resultTarget }
+      { resultTarget, taskKind: "restart" }
     );
   }
-  async function enableDualDeepDesert() {
-    if (!(await confirmAction("Enable dual Deep Desert setup?"))) return;
-    await runTaskAndRefresh(
-      () => mapsApi.updateDeepdesert({ action: "enable", confirmation: "UPDATE DEEP DESERT" }),
-      "Enabling Dual Deep Desert",
-      "Dual Deep Desert Enabled"
-    );
-  }
-  async function disableDualDeepDesert(row?: Record<string, unknown>) {
-    const label = row ? deepDesertPartitionName(row) : "Dual Deep Desert";
-    if (!(await confirmAction(`Disable ${label}?`, {
-      title: "Dual Deep Desert",
-      confirmLabel: "Disable",
-      danger: true,
+  async function applyDeepDesertLayout() {
+    const instances = Number(deepDesertLayoutDraft) as 1 | 2 | 3;
+    if (deepDesertInstanceCount === 3 && !deepDesertThirdRoleKnown) return;
+    const thirdRoleChanged = instances === 3 && deepDesertInstanceCount === 3 && deepDesertThirdRoleDraft !== deepDesertThirdRole;
+    if (![1, 2, 3].includes(instances) || (instances === deepDesertInstanceCount && !thirdRoleChanged)) return;
+    const reducing = instances < deepDesertInstanceCount;
+    const layoutName = instances === 1 ? "Single" : instances === 2 ? "Dual" : "Triple";
+    if (!(await confirmAction(`Apply the ${layoutName} Deep Desert layout?`, {
+      title: "Deep Desert Layout",
+      confirmLabel: "Apply Layout",
+      danger: reducing,
       details: [
-        { label: "Impact", value: "The extra Deep Desert instance will be despawned.", tone: "danger" }
+        { label: "Instances", value: `${deepDesertInstanceCount} → ${instances}` },
+        ...(instances === 3 ? [{ label: "Third Instance", value: deepDesertThirdRoleDraft === "pvp" ? "PvP" : "PvE" }] : []),
+        { label: "Impact", value: "Overland will restart to load the updated Kanly layout. Only newly added, removed, or role-changed Deep Desert instances will be affected; unchanged instances stay online." },
+        ...(reducing ? [{ label: "Safety", value: "A database safety backup will be created first." }] : []),
+        ...(reducing ? [{ label: "Impact", value: "Removed instances must be empty and will be stopped before removal.", tone: "danger" as const }] : [])
       ]
     }))) return;
     await runTaskAndRefresh(
-      () => mapsApi.updateDeepdesert({ action: "disable", confirmation: "UPDATE DEEP DESERT" }),
-      "Despawning Extra Deep Desert",
-      "Dual Deep Desert Disabled"
+      () => mapsApi.updateDeepdesert({ instances, thirdRole: deepDesertThirdRoleDraft, confirmation: "UPDATE DEEP DESERT" }),
+      `Applying ${layoutName} Deep Desert Layout`,
+      `${layoutName} Deep Desert Layout Applied`
     );
+    await Promise.all([
+      loadCombatState("DeepDesert_1"),
+      loadSietches({ preserveDrafts: true })
+    ]);
   }
   async function saveDeepDesertPartitionSettings(row: Record<string, unknown>) {
     const parent = mapRows.find((item) => String(item.map || "") === "DeepDesert_1") || {};
@@ -1626,13 +2009,13 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
       }),
       `Saving ${deepDesertPartitionName(row)} Settings`,
       "Deep Desert Saved",
-      { memoryUpdates: [{ map: "DeepDesert_1", partitionId, memory: memoryCliValue(memory) }], resultTarget: mapResultTarget("DeepDesert_1", partitionId) }
+      { memoryUpdates: [{ map: "DeepDesert_1", partitionId, memory: memoryCliValue(memory) }], resultTarget: mapResultTarget("DeepDesert_1", partitionId), taskKind: "save" }
     );
   }
   async function forceDespawnMap(row: Record<string, unknown>) {
     const rowName = String(row.map || "");
     if (!rowName || rowName === "Survival_1" || rowName === "Overmap") return;
-    if (rowName === "DeepDesert_1" && deepDesertDualEnabled) {
+    if (rowName === "DeepDesert_1" && deepDesertMultiEnabled) {
       const targets = [String(row.partitionId || row.partition || "").trim(), ...dynamicDeepDesertRows.map((deepRow) => String(deepRow.partitionId || "").trim())].filter(Boolean);
       const uniqueTargets = Array.from(new Set(targets));
       if (!uniqueTargets.length) return;
@@ -1645,9 +2028,11 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
       );
       return;
     }
-    const target = String(row.partitionId || row.partition || rowName);
     if (!(await confirmAction(`Force despawn ${rowName}?`))) return;
-    await runTaskAndRefresh(() => mapsApi.despawn(target, "DESPAWN MAP"), `Despawning ${rowName}`, `${rowName} Despawned`, { resultTarget: mapResultTarget(rowName) });
+    // A map row represents every dimension of that map. Passing its first
+    // partition id only removed one dimension and made operators repeat the
+    // action. The runtime map-name path intentionally drains all dimensions.
+    await runTaskAndRefresh(() => mapsApi.despawn(rowName, "DESPAWN MAP"), `Despawning ${rowName}`, `${rowName} Despawned`, { resultTarget: mapResultTarget(rowName) });
   }
   async function forceSpawnMap(row: Record<string, unknown>) {
     const rowName = String(row.map || "").trim();
@@ -1676,7 +2061,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     }
     if (!gated.task) return;
     const task = gated.task;
-    await runTaskAndRefresh(() => Promise.resolve({ task }), `Restarting ${rowName}`, `${rowName} Restarted`, { resultTarget: mapResultTarget(rowName) });
+    await runTaskAndRefresh(() => Promise.resolve({ task }), `Restarting ${rowName}`, `${rowName} Restarted`, { resultTarget: mapResultTarget(rowName), taskKind: "restart" });
   }
   async function forceDespawnDeepDesertPartition(row: Record<string, unknown>) {
     const partitionId = String(row.partitionId || "").trim();
@@ -1706,6 +2091,43 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
       { resultScope: "modifiers", restartAcceptedMessage: "Changes saved successfully. The maps are restarting and should be back up soon." }
     );
     await loadSelectedSettings(userGameName, partitionId);
+    await refreshDeferredRestartPending();
+  }
+  async function saveServerCustom() {
+    if (!userGameName || invalidServerCustomDirty.length) return;
+    const scope = isUserGameGlobal ? "serverCustomGlobal" : effectiveUserGamePartitionId ? "serverCustomPartition" : "serverCustomMap";
+    const map = isUserGameGlobal ? "Survival_1" : userGameName;
+    const partitionId = isUserGameGlobal ? undefined : effectiveUserGamePartitionId || undefined;
+    const choice = await confirmSettingsRestart("ServerSettings", settingsRestartTarget(scope, map, partitionId));
+    if (choice === "cancel") return;
+    await runTaskAndRefresh(
+      () => mapsApi.saveUserSettings({ scope, map, partitionId, values: valuesForDirtyFields(serverCustomValues, serverCustomDraft, serverCustomFields), immediate: choice === "immediate", deferRestart: choice === "manual" }),
+      `Saving ${isUserGameGlobal ? "Global" : userGameName} Custom Settings`,
+      "Custom Settings Saved",
+      { resultScope: "modifiers", restartAcceptedMessage: "Changes saved successfully. The affected maps are restarting and should be back up soon." }
+    );
+    await loadSelectedServerCustomSettings(userGameName, partitionId);
+    await refreshDeferredRestartPending();
+  }
+  async function saveSpiceFields() {
+    if (invalidSpiceFieldsDirty.length || isUserGameOvermap) return;
+    // Same derivation as saveGame() (MapsPanel.tsx's per-target UserGame
+    // save), except "nothing selected" defaults to Global here instead of
+    // saveGame()'s own early-return guard -- Spice Fields must still save at
+    // Global scope with no Target chosen, matching PR #228's original UX.
+    const spiceIsGlobal = isUserGameGlobal || !userGameName;
+    const scope = spiceIsGlobal ? "global" : effectiveUserGamePartitionId ? "partition" : "map";
+    const map = spiceIsGlobal ? "Survival_1" : userGameName;
+    const partitionId = spiceIsGlobal ? undefined : effectiveUserGamePartitionId || undefined;
+    const choice = await confirmSettingsRestart("UserGame", settingsRestartTarget(scope, map, partitionId));
+    if (choice === "cancel") return;
+    await runTaskAndRefresh(
+      () => mapsApi.saveUserSettings({ scope, map, partitionId, values: valuesForDirtyFields(spiceFieldValues, spiceFieldDraft, spiceFieldSettings), immediate: choice === "immediate", deferRestart: choice === "manual" }),
+      `Saving ${spiceIsGlobal ? "Global" : userGameName} Spice Field settings`,
+      "Spice Fields Saved",
+      { resultScope: "modifiers", restartAcceptedMessage: "Changes saved successfully. The maps are restarting and should be back up soon." }
+    );
+    await loadSpiceFieldSettings(spiceIsGlobal ? undefined : userGameName, partitionId);
     await refreshDeferredRestartPending();
   }
   async function saveRaw(kind: "engine" | "game") {
@@ -1893,7 +2315,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
       </div>
     </div> : null}
     {memorySwapResult ? <div className="maps-result-slot"><HomeTaskResultCard result={memorySwapResult} /></div> : null}
-    {mapsResult && mapsResultScope === "maps" && !isDeepDesertDualResult(mapsResult) && !isForceDespawnResult(mapsResult) && !isForceSpawnResult(mapsResult) && !isMapSettingsResult(mapsResult) && !isSietchRestartResult(mapsResult) ? <div className="maps-result-slot"><HomeTaskResultCard result={mapsResult} /></div> : null}
+    {mapsResult && mapsResultScope === "maps" && !isDeepDesertLayoutResult(mapsResult) && !isForceDespawnResult(mapsResult) && !isForceSpawnResult(mapsResult) && !isMapSettingsResult(mapsResult) && !isSietchRestartResult(mapsResult) ? <div className="maps-result-slot"><HomeTaskResultCard result={mapsResult} /></div> : null}
     <section className="action-section">
       <h4>Maps Overview</h4>
       <MapModeGuide />
@@ -1942,8 +2364,11 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
         const primaryDraft = primarySurvivalSietch ? sietchDrafts[primarySurvivalSietch.partitionId] || { displayName: primarySurvivalSietch.displayName, password: primarySurvivalSietch.password } : undefined;
         const primaryDeepDesertPartition = isDeepDesertRow ? deepDesertPartitionRows.find(isPrimaryDeepDesertPartition) || deepDesertPartitionRows[0] : undefined;
         const memoryRow = memoryForDisplayedMap(liveMemory, rowName, row, primaryDeepDesertPartition);
-        const primaryDeepDesertCombatRow = isDeepDesertRow && primaryDeepDesertPartition
+        const resolvedPrimaryDeepDesertCombatRow = isDeepDesertRow && primaryDeepDesertPartition
           ? combatStateByMap["DeepDesert_1"]?.partitions.find((p) => p.partitionId === String(primaryDeepDesertPartition.partitionId || "")) || null
+          : null;
+        const primaryDeepDesertCombatRow = isDeepDesertRow && primaryDeepDesertPartition
+          ? deepDesertLayoutCombatRow(primaryDeepDesertPartition, resolvedPrimaryDeepDesertCombatRow, deepDesertLayoutConfiguring, deepDesertThirdRoleDraft)
           : null;
         const primaryDeepDesertName = isDeepDesertRow && primaryDeepDesertPartition
           ? deepDesertPartitionName(primaryDeepDesertPartition, primaryDeepDesertCombatRow)
@@ -1951,30 +2376,35 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
         const primarySietchCombatRow = isSurvivalRow && primarySurvivalSietch
           ? combatStateByMap["Survival_1"]?.partitions.find((partition) => partition.partitionId === primarySurvivalSietch.partitionId) || null
           : null;
-        const baseStatus = isDeepDesertRow && deepDesertDualConfiguring
-          ? "Configuring"
-          : isDeepDesertRow && primaryDeepDesertPartition ? partitionStatusById.get(String(primaryDeepDesertPartition.partitionId || "")) || String(primaryDeepDesertPartition.status || row.status || "Not Available")
+        const primaryPartitionId = isSurvivalRow
+          ? String(primarySurvivalSietch?.partitionId || "")
+          : isDeepDesertRow
+            ? String(primaryDeepDesertPartition?.partitionId || "")
+            : String(row.partitionId || row.partition || "");
+        const baseStatus = isDeepDesertRow && primaryDeepDesertPartition ? partitionStatusById.get(String(primaryDeepDesertPartition.partitionId || "")) || String(primaryDeepDesertPartition.status || row.status || "Not Available")
           : isSurvivalRow && primarySurvivalSietch ? readinessStatusByPartitionId.get(primarySurvivalSietch.partitionId) || partitionStatusById.get(primarySurvivalSietch.partitionId) || String(row.status || "Not Available") : String(row.status || "Not Available");
         const displayStatus = isSurvivalRow && /^Ready$/i.test(baseStatus) ? "Ready" : statusWithLiveMemory(baseStatus, memoryRow, row.mode);
-        const canForceDespawn = isDeepDesertRow && deepDesertDualEnabled
+        const canForceDespawn = isDeepDesertRow && deepDesertMultiEnabled
           ? [displayStatus, ...dynamicDeepDesertRows.map((deepRow) => partitionStatusById.get(String(deepRow.partitionId || "")) || String(deepRow.status || ""))].some((status) => mapCanForceDespawn({ status }))
           : mapCanForceDespawn({ ...row, status: displayStatus });
         const canForceSpawn = !canForceDespawn && mapCanForceSpawn({ ...row, status: displayStatus });
-        const dualDeepDesertResultActive = Boolean(mapsResult && mapsResultScope === "maps" && isDeepDesertDualResult(mapsResult));
+        const deepDesertLayoutResultActive = Boolean(mapsResult && mapsResultScope === "maps" && isDeepDesertLayoutResult(mapsResult));
         const rowTarget = mapResultTarget(rowName);
         const rowTaskQueueState = mapsTaskQueueStates[rowTarget];
         const rowResultActive = mapsResultTarget === rowTarget;
         const rowMapSettingsResultActive = Boolean(rowResultActive && mapsResult && mapsResultScope === "maps" && isMapSettingsResult(mapsResult));
         const rowSietchRestartResultActive = Boolean(rowResultActive && mapsResult && mapsResultScope === "maps" && isSietchRestartResult(mapsResult));
-        const rowForceDespawnResultActive = Boolean(rowResultActive && mapsResult && mapsResultScope === "maps" && isForceDespawnResult(mapsResult) && !isDeepDesertDualResult(mapsResult));
+        const rowForceDespawnResultActive = Boolean(rowResultActive && mapsResult && mapsResultScope === "maps" && isForceDespawnResult(mapsResult) && !isDeepDesertLayoutResult(mapsResult));
         const rowForceSpawnResultActive = Boolean(rowResultActive && mapsResult && mapsResultScope === "maps" && isForceSpawnResult(mapsResult));
         return <Fragment key={rowName}><tr><td><MapDisplayName mapId={rowName} instanceName={isDeepDesertRow ? primaryDeepDesertName : undefined} sietch={isSurvivalRow ? primarySurvivalSietch : null} draft={isSurvivalRow ? primaryDraft : undefined} combatState={isDeepDesertRow ? primaryDeepDesertCombatRow?.configuredState || "UNKNOWN" : isSurvivalRow ? primarySietchCombatRow?.configuredState || "UNKNOWN" : undefined} combatRestartRequired={Boolean(isDeepDesertRow ? primaryDeepDesertCombatRow?.configurationDrift : primarySietchCombatRow?.configurationDrift)} /></td><td><MapRuntimeStatus value={displayStatus} detail={row.statusDetail} /></td><td>{String(row.mode || "Not Available")}</td><td><MemoryUsageBar row={memoryRow} fallback={liveMemoryFallback(row)} configuredLimit={row.memory} swapEnabled={Boolean(memorySwap?.enabled)} /></td><td className="actions-column"><button className="stable-action-button" onClick={() => selectMap(row)}>{isSelected ? "Close" : "Edit"}</button></td></tr>
           {isSelected && <tr className="inline-edit-row" key={`${rowName}-edit`}><td colSpan={5}>
             <section className="inline-edit-panel">
               <div className="panel-title"><h4>Edit {isDeepDesertRow && primaryDeepDesertName ? primaryDeepDesertName : rowName}</h4></div>
-              <KeyValueGrid items={[["Status", displayStatus], ["Mode", row.mode], ["Memory", row.memory], ["Dimensions", row.dimensions], ...(isSurvivalRow && primarySurvivalSietch ? [["Password", primarySurvivalSietch.passwordSet ? "Set" : "Not Set"] as [string, unknown]] : [])]} />
+              <KeyValueGrid items={[["Status", displayStatus], ["Mode", row.mode], ["Memory", row.memory], ["Dimensions", row.dimensions], ["Last Restart", mapRestartReading(restartHistory, rowName, primaryPartitionId, true)], ...(isSurvivalRow && primarySurvivalSietch ? [["Password", primarySurvivalSietch.passwordSet ? "Set" : "Not Set"] as [string, unknown]] : [])]} />
               {requiresFreshProcess
-                ? <p className="muted">Smuggler&apos;s Run stays Dynamic so its instance is retired as soon as it becomes empty and the next visit starts with fresh vehicle permissions.</p>
+                ? <p className="muted">{rowName === "CB_Overland_S_06"
+                  ? <>Smuggler&apos;s Run stays Dynamic so its instance is retired as soon as it becomes empty and the next visit starts with fresh vehicle permissions.</>
+                  : <>This story map stays Dynamic so its completed instance is retired and the next visit starts in a fresh server process.</>}</p>
                 : isVehicleDeployMap(rowName) && <p className="muted">Vehicle-deploy Overland maps use Overmap Active instead of Always On by default to avoid vehicle ownership restore races during startup.</p>}
               <div className="action-line">
                 <label className="compact-select">Mode<select value={modeDraft} disabled={String(row.mode) === "Core Map"} onChange={(event) => setModeDraft(event.target.value)}><option value="dynamic">Dynamic</option>{!requiresFreshProcess && <option value="always-on">Always On</option>}{!requiresFreshProcess && <option value="overmap-active">Overmap Active</option>}<option value="disabled">Disabled</option></select></label>
@@ -1983,18 +2413,18 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
                 {isSurvivalRow && <label className="memory-number-field">Active Sietches<input type="number" min="1" max="64" step="1" value={activeSietches} onChange={(event) => setActiveSietches(event.target.value)} /></label>}
                 {isSurvivalRow && primarySurvivalSietch && primarySietchDraft && <label>Name<input value={primarySietchDraft.displayName} placeholder="Default name" onChange={(event) => setSietchDrafts({ ...sietchDrafts, [primarySurvivalSietch.partitionId]: { ...primarySietchDraft, displayName: event.target.value } })} /></label>}
                 {isSurvivalRow && primarySurvivalSietch && primarySietchDraft && <label>Password<SecretInput value={sietchPasswordInputValue(primarySurvivalSietch, primarySietchDraft, Boolean(sietchPasswordTouched[primarySurvivalSietch.partitionId]))} placeholder={passwordPlaceholder(sietchHasPassword(primarySurvivalSietch, primarySietchDraft))} onFocus={(event) => { if (!sietchPasswordTouched[primarySurvivalSietch.partitionId] && primarySurvivalSietch.passwordSet) event.currentTarget.select(); }} onChange={(event) => { setSietchPasswordTouched({ ...sietchPasswordTouched, [primarySurvivalSietch.partitionId]: true }); setSietchDrafts({ ...sietchDrafts, [primarySurvivalSietch.partitionId]: { ...primarySietchDraft, password: event.target.value } }); }} /></label>}
-                <button disabled={!mapSettingsDirty || Boolean(rowTaskQueueState)} onClick={() => run(() => saveSelectedMapSettings(row))}>{rowTaskQueueState?.phase === "queued" ? "Queued" : rowTaskQueueState?.phase === "running" ? "Saving..." : "Save Map Settings"}</button>
+                <button disabled={!mapSettingsDirty || Boolean(rowTaskQueueState)} onClick={() => run(() => saveSelectedMapSettings(row))}>{taskQueueButtonLabel(rowTaskQueueState, "save", "Saving...", "Save Map Settings")}</button>
                 {/* Survival_1 restarts per Sietch, so scope the badge to the
                     primary partition; every other map only respawns whole, so
                     show everything queued anywhere on it. */}
                 {isSurvivalRow && primarySurvivalSietch?.active
-                  ? <PendingRefillBadge count={pendingRefillCountForPartition(pendingRefills, Number(primarySurvivalSietch.partitionId))} />
-                  : <PendingRefillBadge count={pendingRefillCountForMap(pendingRefills, rowName)} />}
-                {isSurvivalRow && primarySurvivalSietch?.active && <button disabled={Boolean(rowTaskQueueState)} title="Restart only this Sietch" onClick={() => run(() => restartSietch(primarySurvivalSietch, rowTarget))}>{rowTaskQueueState?.phase === "queued" ? "Queued" : rowTaskQueueState?.phase === "running" ? "Restarting..." : "Restart"}</button>}
+                  ? <PendingRefillBadge counts={queueCountsForPartition(Number(primarySurvivalSietch.partitionId))} />
+                  : <PendingRefillBadge counts={queueCountsForMap(rowName)} />}
+                {isSurvivalRow && primarySurvivalSietch?.active && <button disabled={Boolean(rowTaskQueueState)} title="Restart only this Sietch" onClick={() => run(() => restartSietch(primarySurvivalSietch, rowTarget))}>{taskQueueButtonLabel(rowTaskQueueState, "restart", "Restarting...", "Restart")}</button>}
                 {/* Only offered while the map is up -- a stopped map wants Force
                     Spawn, not a despawn+spawn cycle. */}
                 {rowName !== "Survival_1" && rowName !== "Overmap" && canForceDespawn && String(row.partitionId || row.partition || "").trim()
-                  && <button disabled={Boolean(rowTaskQueueState)} title="Restart this map by despawning and respawning its partition" onClick={() => run(() => respawnMap(row))}>{rowTaskQueueState?.phase === "queued" ? "Queued" : rowTaskQueueState?.phase === "running" ? "Restarting..." : "Restart"}</button>}
+                  && <button disabled={Boolean(rowTaskQueueState)} title="Restart this map by despawning and respawning its partition" onClick={() => run(() => respawnMap(row))}>{taskQueueButtonLabel(rowTaskQueueState, "restart", "Restarting...", "Restart")}</button>}
                 {rowName !== "Survival_1" && rowName !== "Overmap" && canForceSpawn && <button title="Force spawn this stopped map" onClick={() => run(() => forceSpawnMap(row))}>Force Spawn</button>}
                 {rowName !== "Survival_1" && rowName !== "Overmap" && canForceDespawn && <button className="danger" title="Force despawn this running map" onClick={() => run(() => forceDespawnMap(row))}>Force Despawn</button>}
                 {rowMapSettingsResultActive && mapsResult ? <span className={`inline-task-result map-action-result result-${inlineTaskResultClass(mapsResult)}`}>
@@ -2014,16 +2444,24 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
                   {mapsResult.message && <span className="inline-task-message">{formatResultMessage(mapsResult.message)}</span>}
                 </span> : null}
               </div>
-              {isDeepDesert && <section className="action-section nested-action deep-desert-dual-section">
-                <div className="action-line deep-desert-dual-line">
-                  <span className="deep-desert-dual-label">Dual Deep Desert:</span>
-                  <label className={`switch-checkbox deep-desert-dual-toggle ${deepDesertDualEnabled ? "enabled" : "disabled"}`}><input aria-label="Dual Deep Desert" type="checkbox" checked={deepDesertDualEnabled} onChange={(event) => run(() => event.target.checked ? enableDualDeepDesert() : disableDualDeepDesert())} /><strong className="switch-state">{deepDesertDualEnabled ? "ON" : "OFF"}</strong></label>
-                  {dualDeepDesertResultActive && mapsResult ? <span className={`inline-task-result result-${inlineTaskResultClass(mapsResult)}`}>
+              {isDeepDesert && <section className="action-section nested-action deep-desert-layout-section">
+                <div className="deep-desert-layout-heading">
+                  <div><strong>Deep Desert Layout</strong><p>Choose how many independent Deep Desert instances this battlegroup provides.</p></div>
+                  <span className="badge badge-info">{deepDesertInstanceCount} Active</span>
+                </div>
+                <div className="deep-desert-layout-controls">
+                  <div className="deep-desert-layout-options" role="radiogroup" aria-label="Deep Desert instances">
+                    {([1, 2, 3] as const).map((count) => <button type="button" role="radio" aria-checked={deepDesertLayoutDraft === String(count)} className={deepDesertLayoutDraft === String(count) ? "active" : ""} key={count} disabled={deepDesertLayoutConfiguring} onClick={() => setDeepDesertLayoutDraft(String(count))}><strong>{count}</strong><span>{count === 1 ? "Single" : count === 2 ? "Dual" : "Triple"}</span></button>)}
+                  </div>
+                  {deepDesertLayoutDraft === "3" ? <div className="deep-desert-third-role"><span>{deepDesertInstanceCount === 3 && !deepDesertThirdRoleKnown ? "Detecting Third Role..." : "Third Instance"}</span><div role="radiogroup" aria-label="Third Deep Desert role"><button type="button" role="radio" aria-checked={deepDesertThirdRoleDraft === "pve"} className={deepDesertThirdRoleDraft === "pve" ? "active" : ""} disabled={deepDesertLayoutConfiguring || (deepDesertInstanceCount === 3 && !deepDesertThirdRoleKnown)} onClick={() => setDeepDesertThirdRoleDraft("pve")}>PvE</button><button type="button" role="radio" aria-checked={deepDesertThirdRoleDraft === "pvp"} className={deepDesertThirdRoleDraft === "pvp" ? "active" : ""} disabled={deepDesertLayoutConfiguring || (deepDesertInstanceCount === 3 && !deepDesertThirdRoleKnown)} onClick={() => setDeepDesertThirdRoleDraft("pvp")}>PvP</button></div></div> : null}
+                  <button disabled={(deepDesertLayoutDraft === String(deepDesertInstanceCount) && !(deepDesertLayoutDraft === "3" && deepDesertThirdRoleDraft !== deepDesertThirdRole)) || deepDesertLayoutConfiguring || (deepDesertInstanceCount === 3 && !deepDesertThirdRoleKnown)} onClick={() => run(applyDeepDesertLayout)}>{deepDesertLayoutConfiguring ? "Applying..." : "Apply Layout"}</button>
+                  {deepDesertLayoutResultActive && mapsResult ? <span className={`inline-task-result result-${inlineTaskResultClass(mapsResult)}`}>
                     <strong className={mapsResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(mapsResult.title, mapsResult.status === "running")}</strong>
                     {mapsResult.message && <span className="inline-task-message">{formatResultMessage(mapsResult.message)}</span>}
                   </span> : null}
                 </div>
-                {deepText && !dualDeepDesertResultActive && <MapCommandSummary text={deepText} />}
+                <p className="deep-desert-layout-note">The first two instances keep the standard PvE/PvP pair. Triple layouts let you choose the third instance role. A safety backup is created before removing instances.</p>
+                {deepText && !deepDesertLayoutResultActive && <MapCommandSummary text={deepText} />}
               </section>}
             </section>
           </td></tr>}
@@ -2031,7 +2469,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
             const childSelected = selectedMapName === "DeepDesert_1" && selectedPartitionId === String(deepRow.partitionId || "");
             const deepMemory = partitionMemoryValue(memoryText, String(deepRow.partitionId || ""), String(row.memory || ""), "DeepDesert_1");
             const childMemoryRow = memoryForMap(liveMemory, "DeepDesert_1", { partitionId: deepRow.partitionId });
-            const childStatus = deepDesertDualConfiguring ? "Configuring" : statusWithLiveMemory(partitionStatusById.get(String(deepRow.partitionId || "")) || String(deepRow.status || "Not Available"), childMemoryRow, row.mode);
+            const childStatus = statusWithLiveMemory(partitionStatusById.get(String(deepRow.partitionId || "")) || String(deepRow.status || "Not Available"), childMemoryRow, row.mode);
             const childMemoryDirty = childSelected && memory !== memoryInputValue(deepMemory);
             const childCanForceDespawn = mapCanForceDespawn({ ...deepRow, status: childStatus });
             const childCanForceSpawn = !childCanForceDespawn && mapCanForceSpawn({ ...deepRow, status: childStatus });
@@ -2039,18 +2477,19 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
             const childTaskQueueState = mapsTaskQueueStates[childTarget];
             const childResultActive = mapsResultTarget === childTarget;
             const childMapSettingsResultActive = Boolean(childResultActive && mapsResult && mapsResultScope === "maps" && isMapSettingsResult(mapsResult));
-            const childForceDespawnResultActive = Boolean(childResultActive && mapsResult && mapsResultScope === "maps" && isForceDespawnResult(mapsResult) && !isDeepDesertDualResult(mapsResult));
-            const childCombatRow = combatStateByMap["DeepDesert_1"]?.partitions.find((p) => p.partitionId === String(deepRow.partitionId || "")) || null;
-            const childName = deepDesertPartitionName(deepRow, childCombatRow);
+            const childForceDespawnResultActive = Boolean(childResultActive && mapsResult && mapsResultScope === "maps" && isForceDespawnResult(mapsResult) && !isDeepDesertLayoutResult(mapsResult));
             const childForceSpawnResultActive = Boolean(childResultActive && mapsResult && mapsResultScope === "maps" && isForceSpawnResult(mapsResult));
-            return <Fragment key={`deepdesert-${String(deepRow.partitionId || deepRow.dimension || "")}`}><tr className="sietch-child-row"><td><MapDisplayName mapId="DeepDesert_1" instanceName={childName} combatState={childCombatRow?.configuredState || "UNKNOWN"} combatRestartRequired={Boolean(childCombatRow?.configurationDrift)} /><span className="sietch-child-meta">Partition {String(deepRow.partitionId || "Unknown")} / Dimension {String(deepRow.dimension || "Unknown")}{childCombatRow?.configurationDrift ? " / Restart required to apply saved PvP-PvE settings" : ""}</span></td><td><MapRuntimeStatus value={childStatus} /></td><td>Dual</td><td><MemoryUsageBar row={childMemoryRow} fallback={liveMemoryFallback({ ...row, status: childStatus })} configuredLimit={deepMemory} swapEnabled={Boolean(memorySwap?.enabled)} /></td><td className="actions-column"><button className="stable-action-button" onClick={() => selectDeepDesertPartition(deepRow)}>{childSelected ? "Close" : "Edit"}</button></td></tr>
+            const resolvedChildCombatRow = combatStateByMap["DeepDesert_1"]?.partitions.find((p) => p.partitionId === String(deepRow.partitionId || "")) || null;
+            const childCombatRow = deepDesertLayoutCombatRow(deepRow, resolvedChildCombatRow, deepDesertLayoutConfiguring, deepDesertThirdRoleDraft);
+            const childName = deepDesertPartitionName(deepRow, childCombatRow);
+            return <Fragment key={`deepdesert-${String(deepRow.partitionId || deepRow.dimension || "")}`}><tr className="sietch-child-row"><td><MapDisplayName mapId="DeepDesert_1" instanceName={childName} combatState={childCombatRow?.configuredState || "UNKNOWN"} combatRestartRequired={Boolean(childCombatRow?.configurationDrift)} /><span className="sietch-child-meta">Partition {String(deepRow.partitionId || "Unknown")} / Dimension {String(deepRow.dimension || "Unknown")}{childCombatRow?.configurationDrift ? " / Restart required to apply saved PvP-PvE settings" : ""}</span></td><td><MapRuntimeStatus value={childStatus} /></td><td>{String(row.mode || "Dynamic")}</td><td><MemoryUsageBar row={childMemoryRow} fallback={liveMemoryFallback({ ...row, status: childStatus })} configuredLimit={deepMemory} swapEnabled={Boolean(memorySwap?.enabled)} /></td><td className="actions-column"><button className="stable-action-button" onClick={() => selectDeepDesertPartition(deepRow)}>{childSelected ? "Close" : "Edit"}</button></td></tr>
               {childSelected && <tr className="inline-edit-row"><td colSpan={5}><section className="inline-edit-panel">
                 <div className="panel-title"><h4>Edit {childName}</h4></div>
-                <KeyValueGrid items={[["Partition", deepRow.partitionId], ["Dimension", deepRow.dimension], ["Status", childStatus], ["Memory", deepMemory]]} />
+                <KeyValueGrid items={[["Name", childName], ["Role", childCombatRow?.configuredState === "PVP" ? "PvP" : childCombatRow?.configuredState === "PVE" ? "PvE" : "Not Available"], ["Partition", deepRow.partitionId], ["Dimension", deepRow.dimension], ["Status", childStatus], ["Memory", deepMemory], ["Last Restart", mapRestartReading(restartHistory, "DeepDesert_1", String(deepRow.partitionId || ""))]]} />
                 <div className="action-line">
                   <label className="memory-number-field">Memory<input type="number" min="0.01" step="0.01" inputMode="decimal" value={memory} onChange={(event) => setMemory(event.target.value)} placeholder="8" /></label>
                   <span className="unit-label">GB</span>
-                  <button disabled={!childMemoryDirty || Boolean(childTaskQueueState)} onClick={() => run(() => saveDeepDesertPartitionSettings(deepRow))}>{childTaskQueueState?.phase === "queued" ? "Queued" : childTaskQueueState?.phase === "running" ? "Saving..." : "Save"}</button>
+                  <button disabled={!childMemoryDirty || Boolean(childTaskQueueState)} onClick={() => run(() => saveDeepDesertPartitionSettings(deepRow))}>{taskQueueButtonLabel(childTaskQueueState, "save", "Saving...", "Save")}</button>
                   {childCanForceSpawn && <button title="Force spawn this stopped Deep Desert instance" onClick={() => run(() => forceSpawnDeepDesertPartition(deepRow))}>Force Spawn</button>}
                   {childCanForceDespawn && <button className="danger" title="Force despawn this running Deep Desert instance" onClick={() => run(() => forceDespawnDeepDesertPartition(deepRow))}>Force Despawn</button>}
                   {childMapSettingsResultActive && mapsResult ? <span className={`inline-task-result map-action-result result-${inlineTaskResultClass(mapsResult)}`}>
@@ -2087,15 +2526,15 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
             return <Fragment key={`sietch-${sietch.partitionId}`}><tr className="sietch-child-row"><td><MapDisplayName mapId="Survival_1" sietch={sietch} draft={draft} combatState={childCombatRow?.configuredState || "UNKNOWN"} combatRestartRequired={Boolean(childCombatRow?.configurationDrift)} /><span className="sietch-child-meta">Partition {sietch.partitionId} / Dimension {sietch.dimension}{childCombatRow?.configurationDrift ? " / Restart required to apply saved PvP-PvE settings" : ""}</span></td><td><MapRuntimeStatus value={childStatus} /></td><td>Sietch</td><td>{sietch.active ? <MemoryUsageBar row={childMemoryRow} fallback={liveMemoryFallback(row)} configuredLimit={sietchMemory} swapEnabled={Boolean(memorySwap?.enabled)} /> : <span className="muted">Unallocated</span>}</td><td className="actions-column"><button className="stable-action-button" onClick={() => selectSietch(sietch)}>{childSelected ? "Close" : "Edit"}</button></td></tr>
               {childSelected && <tr className="inline-edit-row"><td colSpan={5}><section className="inline-edit-panel">
                 <div className="panel-title"><h4>Edit {sietch.displayName}</h4></div>
-                <KeyValueGrid items={[["Partition", sietch.partitionId], ["Dimension", sietch.dimension], ["Status", childStatus], ["Memory", sietchMemory], ["Password", sietch.passwordSet ? "Set" : "Not Set"]]} />
+                <KeyValueGrid items={[["Partition", sietch.partitionId], ["Dimension", sietch.dimension], ["Status", childStatus], ["Memory", sietchMemory], ["Last Restart", mapRestartReading(restartHistory, "Survival_1", sietch.partitionId)], ["Password", sietch.passwordSet ? "Set" : "Not Set"]]} />
                 <div className="action-line">
                   <label className="memory-number-field">Memory<input type="number" min="0.01" step="0.01" inputMode="decimal" value={memory} onChange={(event) => setMemory(event.target.value)} placeholder="8" /></label>
                   <span className="unit-label">GB</span>
                   <label>Name<input value={draft.displayName} placeholder="Default name" onChange={(event) => setSietchDrafts({ ...sietchDrafts, [sietch.partitionId]: { ...draft, displayName: event.target.value } })} /></label>
                   <label>Password<SecretInput value={sietchPasswordInputValue(sietch, draft, Boolean(sietchPasswordTouched[sietch.partitionId]))} placeholder={passwordPlaceholder(sietchHasPassword(sietch, draft))} onFocus={(event) => { if (!sietchPasswordTouched[sietch.partitionId] && sietch.passwordSet) event.currentTarget.select(); }} onChange={(event) => { setSietchPasswordTouched({ ...sietchPasswordTouched, [sietch.partitionId]: true }); setSietchDrafts({ ...sietchDrafts, [sietch.partitionId]: { ...draft, password: event.target.value } }); }} /></label>
-                  <button disabled={!childDirty || Boolean(childTaskQueueState)} onClick={() => run(() => saveSietchSettings(sietch))}>{childTaskQueueState?.phase === "queued" ? "Queued" : childTaskQueueState?.phase === "running" ? "Saving..." : "Save Sietch Settings"}</button>
-                  {sietch.active && <PendingRefillBadge count={pendingRefillCountForPartition(pendingRefills, Number(sietch.partitionId))} />}
-                  {sietch.active && <button disabled={Boolean(childTaskQueueState)} title="Restart only this Sietch" onClick={() => run(() => restartSietch(sietch, childTarget))}>{childTaskQueueState?.phase === "queued" ? "Queued" : childTaskQueueState?.phase === "running" ? "Restarting..." : "Restart"}</button>}
+                  <button disabled={!childDirty || Boolean(childTaskQueueState)} onClick={() => run(() => saveSietchSettings(sietch))}>{taskQueueButtonLabel(childTaskQueueState, "save", "Saving...", "Save Sietch Settings")}</button>
+                  {sietch.active && <PendingRefillBadge counts={queueCountsForPartition(Number(sietch.partitionId))} />}
+                  {sietch.active && <button disabled={Boolean(childTaskQueueState)} title="Restart only this Sietch" onClick={() => run(() => restartSietch(sietch, childTarget))}>{taskQueueButtonLabel(childTaskQueueState, "restart", "Restarting...", "Restart")}</button>}
                   {childMapSettingsResultActive && mapsResult ? <span className={`inline-task-result map-action-result result-${inlineTaskResultClass(mapsResult)}`}>
                     <strong className={mapsResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(mapsResult.title, mapsResult.status === "running")}</strong>
                     {mapsResult.message && <span className="inline-task-message">{formatResultMessage(mapsResult.message)}</span>}
@@ -2129,11 +2568,12 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
         <div className="settings-tabs" role="tablist" aria-label="Interactive modifier editor">
           <button className={settingsTab === "engine" ? "active" : ""} role="tab" aria-selected={settingsTab === "engine"} onClick={() => setSettingsTab("engine")}>UserEngine</button>
           <button className={settingsTab === "game" ? "active" : ""} role="tab" aria-selected={settingsTab === "game"} onClick={() => setSettingsTab("game")}>UserGame</button>
-          <button className={settingsTab === "spicefields" ? "active" : ""} role="tab" aria-selected={settingsTab === "spicefields"} onClick={() => { setSettingsTab("spicefields"); void loadSpicefields({ preserveDrafts: true }).catch(() => undefined); }}>Spice Fields</button>
+          <button className={settingsTab === "serverCustom" ? "active" : ""} role="tab" aria-selected={settingsTab === "serverCustom"} onClick={() => { setSettingsTab("serverCustom"); if (userGameName) void loadSelectedServerCustomSettings(userGameName, isUserGameGlobal ? undefined : effectiveUserGamePartitionId || undefined).catch(() => undefined); }}>Custom Settings</button>
+          <button className={settingsTab === "spicefields" ? "active" : ""} role="tab" aria-selected={settingsTab === "spicefields"} onClick={() => { setSettingsTab("spicefields"); void loadSpicefields().catch(() => undefined); }}>Spice Fields</button>
           <button className={settingsTab === "choam" ? "active" : ""} role="tab" aria-selected={settingsTab === "choam"} onClick={() => { setSettingsTab("choam"); void loadChoamTerminals().catch(() => undefined); }}>CHOAM Terminals</button>
         </div>
         {(settingsTab === "engine" || settingsTab === "game") && <div className="settings-download-buttons">
-          <InfoTooltip id="client-ini-download-help" label="About Client Configuration Downloads">Some modifiers must match on the server and each player&apos;s client. Save changes first, then download the files, close Dune: Awakening, back up the existing client INIs, and merge the generated sections into Saved/Config/WindowsClient. Only non-default settings known to require client configuration are included.</InfoTooltip>
+          <InfoTooltip id="client-ini-download-help" label="About Client Configuration Downloads">Some modifiers must match on the server and each player&apos;s client. Save changes first, then close Dune: Awakening and back up the existing files. Merge the generated Game.ini and Engine.ini sections into their matching files under Saved/Config/Windows. Only non-default settings known to require client configuration are included.</InfoTooltip>
           <button className="settings-download-button" type="button" title={!isEngineGlobal ? "Download client Engine.ini for the selected UserEngine target" : "Download client Engine.ini for global UserEngine values"} onClick={() => run(downloadClientEngineIni)}><Download size={16} /> Engine.ini{clientIniCounts.engine === null ? "" : ` (${clientIniCounts.engine})`}</button>
           <button className="settings-download-button" type="button" title={userGameName && !isUserGameGlobal ? "Download client Game.ini for the selected UserGame target" : "Download client Game.ini for global UserGame values"} onClick={() => run(downloadClientGameIni)}><Download size={16} /> Game.ini{clientIniCounts.game === null ? "" : ` (${clientIniCounts.game})`}</button>
         </div>}
@@ -2164,22 +2604,55 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
             </div>
           </div>
         </div>
-        {userGameName && <SettingsCardGrid fields={filteredGameFields} values={gameDraft} onChange={(id, value) => setGameDraft({ ...gameDraft, [id]: value })} viewMode={modifierViewMode} emptyMessage={modifierEmptyMessage(!!schema, userGameFields.length, modifierFilter, activeGameCategory)} />}
+        {userGameName && <SettingsCardGrid fields={filteredGameFields} values={gameDraft} onChange={(id, value) => setGameDraft({ ...gameDraft, [id]: value })} viewMode={modifierViewMode} emptyMessage={modifierEmptyMessage(!!schema, userGameFields.length, modifierFilter, activeGameCategory)} matchRegionControls={[
+          { fieldId: CORIOLIS_CYCLE_START_HOUR_FIELD_ID, enabled: coriolisHour.matchesRegion, available: coriolisHourMatchRegionAvailable, regionLabel: serverRegion, regionValueLabel: coriolisHourRegionValueLabel(coriolisHour.regionValue), onToggle: coriolisHour.setManualOverride },
+          { fieldId: CORIOLIS_CYCLE_START_DAY_FIELD_ID, enabled: coriolisDay.matchesRegion, available: coriolisDayMatchRegionAvailable, regionLabel: serverRegion, regionValueLabel: coriolisDayRegionValueLabel(coriolisDay.regionValue), onToggle: coriolisDay.setManualOverride }
+        ]} />}
         <div className="action-row"><button disabled={!gameDirty.length || !userGameName} onClick={() => run(saveGame)}>Save</button><button disabled={!gameDirty.length} onClick={() => setGameDraft(gameValues)}>Discard Changes</button><button className="settings-reset-all-button" disabled={!userGameName || !userGameFields.length} title="Set every UserGame setting on this tab back to its default value" onClick={() => run(() => resetAllToDefaults("game"))}>Restore Defaults</button></div>
+      </> : settingsTab === "serverCustom" ? <>
+        <div className="settings-selector-row">
+          <label className="compact-select">Target<select value={userGameTargetKey} onChange={(event) => selectUserGameTarget(event.target.value)}><option value="">Select Map Or Partition</option>{userGameTargets.map((target) => <option key={target.key} value={target.key}>{target.label}</option>)}</select></label>
+          <label className="compact-select">Setting Category<select disabled={!userGameName} value={activeServerCustomCategory} onChange={(event) => setSelectedServerCustomCategory(event.target.value)}>{serverCustomGroups.map(([category, fields]) => <option key={category} value={category}>{category} ({fields.length})</option>)}</select></label>
+          <div className="modifier-search-tools">
+            <input className="modifier-filter-input" disabled={!userGameName && !spiceFieldSettings.length} aria-label="Filter Custom Settings" value={modifierFilter} onChange={(event) => setModifierFilter(event.target.value)} placeholder="Filter custom settings" />
+            <div className="catalog-view-toggle" aria-label="Custom Settings view">
+              <button type="button" className={modifierViewMode === "grid" ? "active" : ""} title="Grid view" aria-label="Grid view" aria-pressed={modifierViewMode === "grid"} onClick={() => setModifierViewMode("grid")}><Grid2X2 size={17} /></button>
+              <button type="button" className={modifierViewMode === "list" ? "active" : ""} title="List view" aria-label="List view" aria-pressed={modifierViewMode === "list"} onClick={() => setModifierViewMode("list")}><List size={18} /></button>
+            </div>
+          </div>
+        </div>
+        {userGameName && <><p className="muted">Official Patch 1.5 settings stored in <code>Saved/Config/LinuxServer/ServerCustomSettings.ini</code>. Dune Docker keeps <code>DifficultyLevel=Custom</code> and preserves unmanaged file values.</p><SettingsCardGrid fields={filteredServerCustomFields} values={serverCustomDraft} onChange={(id, value) => setServerCustomDraft({ ...serverCustomDraft, [id]: value })} viewMode={modifierViewMode} emptyMessage={modifierEmptyMessage(!!schema, serverCustomFields.length, modifierFilter, activeServerCustomCategory)} /></>}
+        {invalidServerCustomDirty.length > 0 && <p className="error">Enter a supported value within the displayed range before saving.</p>}
+        <div className="action-row"><button disabled={!serverCustomDirty.length || !userGameName || invalidServerCustomDirty.length > 0} onClick={() => run(saveServerCustom)}>Save Custom Settings</button><button disabled={!serverCustomDirty.length} onClick={() => setServerCustomDraft(serverCustomValues)}>Discard Custom Settings Changes</button><button className="settings-reset-all-button" disabled={!userGameName || !serverCustomFields.length} title="Set every Server Setting on this tab back to its default value" onClick={() => setServerCustomDraft(Object.fromEntries(serverCustomFields.map((field) => [field.id, field.default ?? ""]))) }>Restore Custom Settings Defaults</button></div>
       </> : settingsTab === "spicefields" ? <>
-        <SpicefieldsEditor
-          rows={filteredSpicefieldRows}
-          allRows={spicefieldRows}
-          drafts={spicefieldDrafts}
-          filter={spicefieldFilter}
-          savingId={spicefieldSavingId}
-          result={spicefieldResult}
-          onFilterChange={setSpicefieldFilter}
-          onRefresh={() => run(() => loadSpicefields({ preserveDrafts: true }))}
-          onDraftChange={(id, draft) => setSpicefieldDrafts({ ...spicefieldDrafts, [id]: draft })}
-          onDiscard={(row) => setSpicefieldDrafts({ ...spicefieldDrafts, [String(row.spicefield_type_id)]: spicefieldDraftFromRow(row) })}
-          onSave={(row) => run(() => saveSpicefield(row))}
-        />
+        <SpicefieldsEditor rows={filteredActiveSpicefields} allRows={activeSpicefields} loaded={spicefieldsLoaded} filter={spicefieldFilter} result={spicefieldResult} onFilterChange={setSpicefieldFilter} onRefresh={() => run(loadSpicefields)} />
+        <section className="spicefield-settings-section" aria-labelledby="spicefield-settings-title">
+          <div className="spicefield-settings-heading">
+            <h3 id="spicefield-settings-title">Settings</h3>
+            <p className="spicefield-settings-scope"><strong>Editing:</strong> {spiceFieldsTargetLabel} <span className="spicefield-settings-scope-hint">(change Target in the UserGame or Custom Settings tab)</span></p>
+            <p>These settings apply to whichever Target is selected in the UserGame or Custom Settings tab -- server-wide (Global) when nothing is selected, or scoped to that specific map/partition once one is. Patch 1.5 removed the old per-map and per-size active-field caps and spawn weights; these are the supported controls that remain.</p>
+          </div>
+          <div className="modifier-search-tools spicefield-settings-tools">
+            <input className="modifier-filter-input" aria-label="Filter Spice Field Settings" value={spicefieldSettingsFilter} onChange={(event) => setSpicefieldSettingsFilter(event.target.value)} placeholder="Filter settings" />
+            <div className="catalog-view-toggle" aria-label="Spice Field Settings view">
+              <button type="button" className={modifierViewMode === "grid" ? "active" : ""} title="Grid view" aria-label="Grid view" aria-pressed={modifierViewMode === "grid"} onClick={() => setModifierViewMode("grid")}><Grid2X2 size={17} /></button>
+              <button type="button" className={modifierViewMode === "list" ? "active" : ""} title="List view" aria-label="List view" aria-pressed={modifierViewMode === "list"} onClick={() => setModifierViewMode("list")}><List size={18} /></button>
+            </div>
+          </div>
+          {isUserGameOvermap
+            ? <div className="empty spicefield-overmap-notice"><Info size={14} aria-hidden="true" /> Overmap doesn&apos;t host spice fields -- select Global, Hagga Basin, or Deep Desert in the UserGame or Custom Settings tab's Target selector to edit these.</div>
+            : <SettingsCardGrid fields={filteredSpiceFieldSettings} values={spiceFieldDraft} onChange={(id, value) => setSpiceFieldDraft({ ...spiceFieldDraft, [id]: value })} viewMode={modifierViewMode} emptyMessage={modifierEmptyMessage(!!schema, spiceFieldSettings.length, spicefieldSettingsFilter, "Settings")} />}
+          {invalidSpiceFieldsDirty.length > 0 && <p className="error">Enter a valid value for every changed setting before saving.</p>}
+          {!isUserGameOvermap && !spiceFieldValuesReady && spiceFieldsDirty.length > 0 && <p className="spicefield-settings-stale-notice">Target changed on another tab while this had unsaved edits, so these weren&apos;t discarded automatically -- they&apos;re still for the previous Target. Save is disabled until you Discard Changes, which also loads the new Target&apos;s Spice Field settings.</p>}
+          {/* Discard Changes deliberately has no isUserGameOvermap check, unlike
+              Save/Restore Defaults (/code-review high finding, 2026-09-24): if
+              Overmap is the current Target but the draft is a stale, dirty
+              leftover from a target picked before switching to Overmap (the
+              reload-skip above only fires while dirty), this is the only way
+              back -- disabling it too would trap the operator with no path to
+              a clean state. */}
+          <div className="action-row"><button disabled={isUserGameOvermap || !spiceFieldsDirty.length || invalidSpiceFieldsDirty.length > 0 || !spiceFieldValuesReady} onClick={() => run(saveSpiceFields)}>Save</button><button disabled={!spiceFieldsDirty.length} onClick={() => { setSpiceFieldDraft(spiceFieldValues); if (!spiceFieldValuesReady) void loadSpiceFieldSettings(isUserGameGlobal ? undefined : userGameName, isUserGameGlobal ? undefined : effectiveUserGamePartitionId || undefined).catch((error) => onError(error instanceof Error ? error.message : String(error))); }}>Discard Changes</button><button className="settings-reset-all-button" disabled={isUserGameOvermap || !spiceFieldSettings.length} title="Set every setting on this tab back to its default value" onClick={() => setSpiceFieldDraft(Object.fromEntries(spiceFieldSettings.map((field) => [field.id, field.default ?? ""])))}>Restore Defaults</button></div>
+        </section>
       </> : <>
         <ChoamTerminalsEditor
           overview={choamOverview}
@@ -2187,6 +2660,8 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
           result={choamResult}
           onInstall={(center) => run(() => installChoamCenter(center))}
           onRemove={(center) => run(() => removeChoamCenter(center))}
+          onSavePosition={(center, position, playerId) => run(() => saveChoamPosition(center, position, playerId))}
+          onResetPosition={(center) => run(() => resetChoamPosition(center))}
         />
       </>}</div>}
     </div>
@@ -2200,125 +2675,415 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   </section>;
 }
 
-export function SpicefieldsEditor({
-  rows,
-  allRows,
-  drafts,
-  filter,
-  savingId,
-  result,
-  onFilterChange,
-  onRefresh,
-  onDraftChange,
-  onDiscard,
-  onSave
-}: {
-  rows: SpicefieldTypeRow[];
-  allRows: SpicefieldTypeRow[];
-  drafts: Record<string, SpicefieldDraft>;
+export function SpicefieldsEditor({ rows, allRows, loaded, filter, result, onFilterChange, onRefresh }: {
+  rows: ActiveSpicefieldRow[];
+  allRows: ActiveSpicefieldRow[];
+  loaded: boolean;
   filter: string;
-  savingId: string;
   result: HomeTaskResult | null;
   onFilterChange: (value: string) => void;
   onRefresh: () => void;
-  onDraftChange: (id: string, draft: SpicefieldDraft) => void;
-  onDiscard: (row: SpicefieldTypeRow) => void;
-  onSave: (row: SpicefieldTypeRow) => void;
 }) {
   return <section className="spicefields-editor">
     <div className="settings-selector-row spicefields-toolbar">
-      <label className="wide-field">Filter<input value={filter} onChange={(event) => onFilterChange(event.target.value)} placeholder="Filter by map, type, or dimension" /></label>
+      <label className="wide-field">Filter<input value={filter} onChange={(event) => onFilterChange(event.target.value)} placeholder="Filter by map, size, or dimension" /></label>
       <button className="spicefields-refresh-button" onClick={onRefresh}>Refresh</button>
     </div>
+    <p className="muted">Active Spice Fields reported by the current game database. Patch 1.5 removed the old per-type caps and weights; supported resource settings are available below this table.</p>
     {result && <div className="maps-result-slot"><HomeTaskResultCard result={result} /></div>}
-    {!allRows.length ? <div className="empty">Spice field controls are unavailable for this database schema.</div> : null}
-    {allRows.length && !rows.length ? <div className="empty">No spice fields match this filter.</div> : null}
+    {!loaded ? <div className="empty">Loading active Spice Fields...</div> : null}
+    {loaded && !allRows.length ? <div className="empty">No Spice Fields are active right now.</div> : null}
+    {allRows.length && !rows.length ? <div className="empty">No Spice Fields match this filter.</div> : null}
     {rows.length ? <div className="settings-list-wrap spicefields-table-wrap"><table className="settings-list-table spicefields-table">
-      <thead><tr>
-        <th scope="col">Map</th>
-        <th scope="col">Type</th>
-        <th scope="col">Dimension</th>
-        <th scope="col">Live</th>
-        <th scope="col">Max Active</th>
-        <th scope="col">Max Primed</th>
-        <th scope="col">Spawning</th>
-        <th scope="col">Weight</th>
-        <th scope="col">Actions</th>
-      </tr></thead>
-      <tbody>{rows.map((row) => {
-        const id = String(row.spicefield_type_id);
-        const draft = drafts[id] || spicefieldDraftFromRow(row);
-        const dirty = spicefieldDraftDirty(row, draft);
-        const saving = savingId === id;
-        return <tr key={id}>
-          <td data-label="Map"><strong>{row.map_name}</strong><small>ID {row.spicefield_type_id}</small></td>
-          <td data-label="Type">{row.field_type}</td>
-          <td data-label="Dimension">{row.dimension_index}</td>
-          <td data-label="Live"><span>{row.current_globally_active ?? 0} active</span><small>{row.current_globally_primed ?? 0} primed</small></td>
-          <td data-label="Max Active"><input aria-label={`${row.map_name} Max Active`} type="number" min="0" step="1" value={draft.maxActive} onChange={(event) => onDraftChange(id, { ...draft, maxActive: event.target.value })} /></td>
-          <td data-label="Max Primed"><input aria-label={`${row.map_name} Max Primed`} type="number" min="0" step="1" value={draft.maxPrimed} onChange={(event) => onDraftChange(id, { ...draft, maxPrimed: event.target.value })} /></td>
-          <td data-label="Spawning"><select aria-label={`${row.map_name} Spawning`} value={draft.spawningActive ? "true" : "false"} onChange={(event) => onDraftChange(id, { ...draft, spawningActive: event.target.value === "true" })}><option value="true">Enabled</option><option value="false">Disabled</option></select></td>
-          <td data-label="Weight"><input aria-label={`${row.map_name} Weight`} type="number" min="0" step="any" value={draft.spawnWeight} onChange={(event) => onDraftChange(id, { ...draft, spawnWeight: event.target.value })} /></td>
-          <td data-label="Actions"><div className="action-row spicefield-row-actions"><button disabled={!dirty || saving} onClick={() => onSave(row)}>{saving ? "Saving..." : "Save"}</button><button disabled={!dirty || saving} onClick={() => onDiscard(row)}>Discard</button></div></td>
-        </tr>;
-      })}</tbody>
+      <thead><tr><th scope="col">Map</th><th scope="col">Size</th><th scope="col">Dimension</th><th scope="col">Spice Remaining</th><th scope="col">Field ID</th></tr></thead>
+      <tbody>{rows.map((row) => <tr key={`${row.map_name}:${row.dimension_index}:${row.field_id}`}>
+        <td data-label="Map"><strong>{friendlyMapName(row.map_name)}</strong><small>{row.map_name}</small></td>
+        <td data-label="Size">{row.field_type}</td>
+        <td data-label="Dimension">{row.dimension_index}</td>
+        <td data-label="Spice Remaining">{row.value_remaining.toLocaleString()}</td>
+        <td data-label="Field ID"><code>{row.field_id}</code></td>
+      </tr>)}</tbody>
     </table></div> : null}
   </section>;
 }
 
-function ChoamTerminalsEditor({
+export function ChoamTerminalsEditor({
   overview,
   savingKey,
   result,
   onInstall,
-  onRemove
+  onRemove,
+  onSavePosition,
+  onResetPosition
 }: {
   overview: ChoamTerminalOverview | null;
   savingKey: string;
   result: HomeTaskResult | null;
   onInstall: (center: ChoamTradeCenter) => void;
   onRemove: (center: ChoamTradeCenter) => void;
+  onSavePosition: (center: ChoamTradeCenter, position: { x: number; y: number; z: number; yaw: number }, playerId: string) => void;
+  onResetPosition: (center: ChoamTradeCenter) => void;
 }) {
+  const [expandedKey, setExpandedKey] = useState("");
   const activeSietches = overview?.sietches.length || 0;
   return <section className="choam-terminals-editor">
     <div className="choam-terminals-toolbar">
-      <p>Restart the battlegroup after installing or removing terminals for the changes to appear in-game.</p>
+      <p>Restart the map after installing, moving or removing terminals for the changes to appear in-game.</p>
     </div>
     {result && <div className="maps-result-slot"><HomeTaskResultCard result={result} /></div>}
     {!overview ? <div className="empty">CHOAM terminal state is loading.</div> : null}
     {overview && !overview.supported ? <div className="empty">{overview.reason || "CHOAM terminal placement is unavailable."}</div> : null}
     {overview?.supported ? <div className="settings-list-wrap choam-terminals-table-wrap"><table className="settings-list-table choam-terminals-table">
-      <thead><tr><th>Trade Post</th><th>Coverage</th><th>Status</th><th>Actions</th></tr></thead>
+      <thead><tr><th>Trade Post</th><th>Coverage</th><th>Position</th><th>Status</th><th>Actions</th></tr></thead>
       <tbody>{overview.tradeCenters.map((center) => {
         const placements = overview.placements.filter((entry) => entry.trade_center_key === center.key && entry.actor_present);
         const installed = placements.length;
         const complete = activeSietches > 0 && installed >= activeSietches;
         const saving = savingKey === center.key;
-        return <tr key={center.key}>
-          <td><strong>{center.name}</strong></td>
-          <td className="choam-terminal-coverage">{installed} / {activeSietches} Sietches</td>
-          <td className="choam-terminal-status">
-            <span className={`badge ${complete ? "badge-pass" : installed ? "badge-warn" : "badge-info"}`}>
-              {complete ? "Installed" : installed ? "Partial" : "Not Installed"}
-            </span>
-          </td>
-          <td className="choam-terminal-actions-cell"><div className="action-row choam-terminal-actions">
-            {installed
-              ? <button className="danger" disabled={saving} onClick={() => onRemove(center)}>{saving ? "Working..." : "Remove"}</button>
-              : <button disabled={saving} onClick={() => onInstall(center)}>{saving ? "Working..." : "Install"}</button>}
-          </div></td>
-        </tr>;
+        const expanded = expandedKey === center.key;
+        return <Fragment key={center.key}>
+          <tr>
+            <td><strong>{center.name}</strong></td>
+            <td className="choam-terminal-coverage">{installed} / {activeSietches} Sietches</td>
+            <td className="choam-terminal-position">
+              <span className={`badge ${center.custom ? "badge-warn" : "badge-info"}`}>{center.custom ? "Custom" : "Default"}</span>
+            </td>
+            <td className="choam-terminal-status">
+              <span className={`badge ${complete ? "badge-pass" : installed ? "badge-warn" : "badge-info"}`}>
+                {complete ? "Installed" : installed ? "Partial" : "Not Installed"}
+              </span>
+            </td>
+            <td className="choam-terminal-actions-cell"><div className="action-row choam-terminal-actions">
+              {installed
+                ? <button className="danger" disabled={saving} onClick={() => onRemove(center)}>{saving ? "Working..." : "Remove"}</button>
+                : <button disabled={saving} onClick={() => onInstall(center)}>{saving ? "Working..." : "Install"}</button>}
+              <button className="choam-position-toggle" disabled={saving} title="Set the position this trade post's terminals install at" onClick={() => setExpandedKey(expanded ? "" : center.key)}><MapPin size={16} /> {expanded ? "Close" : "Set Position"}</button>
+            </div></td>
+          </tr>
+          {expanded ? <tr className="choam-position-editor-row"><td colSpan={5}>
+            <ChoamPositionEditor
+              center={center}
+              limits={overview.positionLimits}
+              saving={saving}
+              onSave={onSavePosition}
+              onReset={onResetPosition}
+              onClose={() => setExpandedKey("")}
+            />
+          </td></tr> : null}
+        </Fragment>;
       })}</tbody>
     </table></div> : null}
   </section>;
 }
 
-function SettingsCardGrid({ fields, values, onChange, viewMode = "grid", emptyMessage = "Select a modifier category." }: { fields: UserSettingField[]; values: Record<string, string>; onChange: (id: string, value: string) => void; viewMode?: "grid" | "list"; emptyMessage?: string }) {
+type ChoamPlayerOption = { id: string; name: string };
+
+
+// The stored quaternion is pure yaw; heading is that yaw plus the mesh's 90
+// degree front offset, i.e. the direction the console actually points.
+function formFromTransform(transform: ChoamTransform) {
+  const yaw = (Math.atan2(transform.qz, transform.qw) * 2 * 180) / Math.PI;
+  return {
+    x: String(transform.x),
+    y: String(transform.y),
+    z: String(transform.z),
+    heading: String(Math.round(normalizeHeading(yaw + 90) * 10) / 10)
+  };
+}
+
+function finiteField(value: string) {
+  const trimmed = String(value ?? "").trim();
+  if (!trimmed) return null;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeHeading(value: number) {
+  if (!Number.isFinite(value)) return 0;
+  return ((value % 360) + 360) % 360;
+}
+
+// World heading, not the stored yaw: 0 points along +X, 90 along +Y, and the
+// dial draws +Y upward so it reads like a map rather than a rotation value.
+export function HeadingDial({ value, onChange }: { value: number; onChange: (next: number) => void }) {
+  const ref = useRef<SVGSVGElement | null>(null);
+  const size = 160;
+  const centre = size / 2;
+  const radius = 52;
+  const radians = (normalizeHeading(value) * Math.PI) / 180;
+  const tipX = centre + radius * Math.cos(radians);
+  const tipY = centre - radius * Math.sin(radians);
+
+  function headingFromEvent(event: { clientX: number; clientY: number }) {
+    const box = ref.current?.getBoundingClientRect();
+    if (!box) return null;
+    const dx = event.clientX - (box.left + box.width / 2);
+    const dy = (box.top + box.height / 2) - event.clientY;
+    if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) return null;
+    return normalizeHeading((Math.atan2(dy, dx) * 180) / Math.PI);
+  }
+
+  function handlePointer(event: ReactPointerEvent<SVGSVGElement>) {
+    if (event.buttons === 0 && event.type === "pointermove") return;
+    const heading = headingFromEvent(event);
+    if (heading !== null) onChange(heading);
+  }
+
+  return <svg
+    ref={ref}
+    className="choam-dial"
+    viewBox={`0 0 ${size} ${size}`}
+    role="slider"
+    tabIndex={0}
+    aria-label="Direction the terminal faces, in degrees"
+    aria-valuemin={0}
+    aria-valuemax={359}
+    aria-valuenow={Math.round(normalizeHeading(value))}
+    onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); handlePointer(event); }}
+    onPointerMove={handlePointer}
+    onKeyDown={(event) => {
+      const step = event.shiftKey ? 15 : 1;
+      if (event.key === "ArrowLeft" || event.key === "ArrowUp") { event.preventDefault(); onChange(normalizeHeading(value + step)); }
+      if (event.key === "ArrowRight" || event.key === "ArrowDown") { event.preventDefault(); onChange(normalizeHeading(value - step)); }
+    }}
+  >
+    <circle cx={centre} cy={centre} r={radius + 8} className="choam-dial-face" />
+    {[0, 45, 90, 135, 180, 225, 270, 315].map((tick) => {
+      const tickRadians = (tick * Math.PI) / 180;
+      const inner = tick % 90 === 0 ? radius - 6 : radius - 3;
+      return <line
+        key={tick}
+        x1={centre + inner * Math.cos(tickRadians)}
+        y1={centre - inner * Math.sin(tickRadians)}
+        x2={centre + (radius + 1) * Math.cos(tickRadians)}
+        y2={centre - (radius + 1) * Math.sin(tickRadians)}
+        className={tick % 90 === 0 ? "choam-dial-tick choam-dial-tick-major" : "choam-dial-tick"}
+      />;
+    })}
+    <text x={size - 6} y={centre + 4} className="choam-dial-axis" textAnchor="end">+X</text>
+    <text x={centre} y={14} className="choam-dial-axis" textAnchor="middle">+Y</text>
+    <line x1={centre} y1={centre} x2={tipX} y2={tipY} className="choam-dial-needle" />
+    <circle cx={tipX} cy={tipY} r={7} className="choam-dial-grip" />
+    <circle cx={centre} cy={centre} r={3} className="choam-dial-hub" />
+  </svg>;
+}
+
+export function ChoamPositionEditor({
+  center,
+  limits,
+  saving,
+  onSave,
+  onReset,
+  onClose
+}: {
+  center: ChoamTradeCenter;
+  limits: { radiusUu: number; verticalUu: number };
+  saving: boolean;
+  onSave: (center: ChoamTradeCenter, position: { x: number; y: number; z: number; yaw: number }, playerId: string) => void;
+  onReset: (center: ChoamTradeCenter) => void;
+  onClose: () => void;
+}) {
+  const [players, setPlayers] = useState<ChoamPlayerOption[] | null>(null);
+  const [playersLoading, setPlayersLoading] = useState(false);
+  const [selectedPlayerId, setSelectedPlayerId] = useState("");
+  const [capturing, setCapturing] = useState(false);
+  const [captureMessage, setCaptureMessage] = useState("");
+  const [captured, setCaptured] = useState<ChoamCapturedPlacement | null>(null);
+  // Editable copy of the capture. Heading is the direction the terminal faces
+  // (stored yaw + 90), because that is what the operator is actually aiming.
+  const [form, setForm] = useState<{ x: string; y: string; z: string; heading: string } | null>(() => formFromTransform(center.transform));
+  const [waited, setWaited] = useState(0);
+  const [captureState, setCaptureState] = useState<"waiting" | "moving" | null>(null);
+  const [cycleSeconds, setCycleSeconds] = useState(0);
+  // Each start/stop gets a new generation. This prevents a late response from
+  // an earlier request from overwriting the form or stopping a newer capture.
+  const captureRunId = useRef(0);
+  useEffect(() => () => { captureRunId.current += 1; }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPlayersLoading(true);
+    playersApi.online()
+      .then((result) => {
+        if (cancelled) return;
+        const rows = (result.rows || [])
+          .map((row) => ({ id: String(row.actor_id ?? ""), name: String(row.character_name || "").trim() }))
+          .filter((player) => player.id && player.name);
+        setPlayers(rows);
+      })
+      .catch(() => { if (!cancelled) setPlayers([]); })
+      .finally(() => { if (!cancelled) setPlayersLoading(false); });
+    return () => { cancelled = true; };
+  }, []);
+
+  async function useCharacterPosition() {
+    if (!selectedPlayerId) return;
+    const runId = ++captureRunId.current;
+    setCapturing(true);
+    setCaptured(null);
+    setCaptureMessage("");
+    setWaited(0);
+    setCaptureState(null);
+    setCycleSeconds(0);
+    const startedAt = Date.now();
+    // Reset whenever a save catches the character mid-move, so the progress bar
+    // tracks the wait for the NEXT save rather than total elapsed time.
+    let cycleStartedAt = Date.now();
+    let baseline: ChoamCaptureBaseline | null = null;
+    try {
+      for (;;) {
+        if (runId !== captureRunId.current) return;
+        const elapsed = Math.round((Date.now() - startedAt) / 1000);
+        setWaited(elapsed);
+        setCycleSeconds(Math.round((Date.now() - cycleStartedAt) / 1000));
+        if (elapsed > CHOAM_CAPTURE_TIMEOUT_SECONDS) {
+          setCaptureMessage("The game has not written that character's position yet. Stand still and try again.");
+          return;
+        }
+        const result = await mapsApi.captureChoamPosition(center.key, selectedPlayerId, baseline);
+        if (runId !== captureRunId.current) return;
+        if (!result.supported || !result.placement || !result.source) {
+          setCaptureMessage(result.reason || "That character has no stored position yet.");
+          return;
+        }
+        if (result.ready) {
+          setCaptured(result.placement);
+          setForm({
+            x: String(result.placement.x),
+            y: String(result.placement.y),
+            z: String(result.placement.z),
+            heading: String(normalizeHeading(result.placement.yaw + 90))
+          });
+          return;
+        }
+        setCaptureState(result.state === "moving" ? "moving" : "waiting");
+        if (result.state === "moving") cycleStartedAt = Date.now();
+        baseline = {
+          serial: result.serial || "",
+          x: Number(result.source.x),
+          y: Number(result.source.y),
+          z: Number(result.source.z),
+          yaw: Number(result.source.yaw || 0)
+        };
+        await new Promise((resolve) => setTimeout(resolve, CHOAM_CAPTURE_POLL_MS));
+      }
+    } catch (error) {
+      if (runId === captureRunId.current) {
+        setCaptureMessage(error instanceof Error ? error.message : String(error));
+      }
+    } finally {
+      if (runId === captureRunId.current) setCapturing(false);
+    }
+  }
+
+  // Recomputed from the edited values against the post's SHIPPED default, which
+  // is what the server validates against on save.
+  // Mirrors finiteCoordinate() on the server: Number("") is 0, so a cleared
+  // field would otherwise pass validation and silently save that axis as zero.
+  const parsed = form
+    ? { x: finiteField(form.x), y: finiteField(form.y), z: finiteField(form.z), heading: finiteField(form.heading) }
+    : null;
+  const editedValid = Boolean(parsed && Object.values(parsed).every((value) => value !== null));
+  const edited = editedValid && parsed
+    ? { x: parsed.x as number, y: parsed.y as number, z: parsed.z as number, heading: parsed.heading as number }
+    : null;
+  const base = center.defaultTransform;
+  const distanceUu = edited && editedValid && base
+    ? Math.sqrt((edited.x - base.x) ** 2 + (edited.y - base.y) ** 2)
+    : captured?.distanceUu ?? 0;
+  const verticalUu = edited && editedValid && base ? Math.abs(edited.z - base.z) : captured?.verticalUu ?? 0;
+  const withinBound = distanceUu <= limits.radiusUu && verticalUu <= limits.verticalUu;
+  const distanceMeters = distanceUu / 100;
+  const limitMeters = limits.radiusUu / 100;
+  const barPercent = Math.min(100, (distanceUu / limits.radiusUu) * 100);
+  const hasOnlinePlayers = Boolean(players?.length);
+
+  function setField(field: "x" | "y" | "z" | "heading", value: string) {
+    setForm((current) => (current ? { ...current, [field]: value } : current));
+  }
+
+  return <div className="choam-position-editor">
+    <p className="choam-position-editor-hint">Edit the position directly, or stand where the terminal should go facing the way it should face and capture it from a character.</p>
+    <div className="choam-position-editor-controls">
+      <label className="compact-select choam-character-select"><span>Character</span>
+        <select value={selectedPlayerId} onChange={(event) => { captureRunId.current += 1; setCapturing(false); setSelectedPlayerId(event.target.value); setCaptured(null); setCaptureMessage(""); }} disabled={playersLoading || capturing || !hasOnlinePlayers}>
+          <option value="">{playersLoading || !hasOnlinePlayers ? "" : "Select an online character"}</option>
+          {(players || []).map((player) => <option key={player.id} value={player.id}>{player.name}</option>)}
+        </select>
+      </label>
+      <button disabled={!selectedPlayerId || capturing} onClick={() => void useCharacterPosition()}>Use Character Position</button>
+    </div>
+    {capturing ? <div className="choam-capture-steps">
+      <div className="choam-capture-step">
+        <span className="spinner choam-capture-spinner" aria-hidden="true" />
+        <div className="choam-capture-step-body">
+          <p className="choam-capture-step-label">Waiting for the game to save the character position</p>
+          <span className="choam-capture-bar"><span style={{ width: `${Math.min(100, (cycleSeconds / CHOAM_HEARTBEAT_SECONDS) * 100)}%` }} /></span>
+          <p className="choam-capture-step-note">
+            {captureState === "moving"
+              ? "That save caught the character moving. Waiting for the next one."
+              : `Saves happen about once a minute. ${waited}s so far.`}
+          </p>
+        </div>
+      </div>
+      <div className="choam-capture-step choam-capture-step-pending">
+        <span className="choam-capture-dot" aria-hidden="true" />
+        <div className="choam-capture-step-body">
+          <p className="choam-capture-step-label">Confirming the character held still across that save</p>
+        </div>
+      </div>
+      <button className="choam-capture-stop" onClick={() => { captureRunId.current += 1; setCapturing(false); }}>Stop waiting</button>
+    </div> : null}
+    {players && !playersLoading && !players.length ? <p className="empty">No characters are online right now.</p> : null}
+    {captureMessage ? <p className="choam-position-editor-message">{captureMessage}</p> : null}
+    {form ? <>
+      <div className="choam-position-sections">
+        <fieldset className="choam-position-section">
+          <legend>Position</legend>
+          <label>X<input type="number" step="1" value={form.x} onChange={(event) => setField("x", event.target.value)} /></label>
+          <label>Y<input type="number" step="1" value={form.y} onChange={(event) => setField("y", event.target.value)} /></label>
+          <label>Z<input type="number" step="1" value={form.z} onChange={(event) => setField("z", event.target.value)} /></label>
+        </fieldset>
+        <fieldset className="choam-position-section choam-position-section-facing">
+          <legend>Facing</legend>
+          <HeadingDial value={Number(form.heading) || 0} onChange={(next) => setField("heading", String(Math.round(next * 10) / 10))} />
+          <label className="choam-heading-value"><span className="sr-only">Facing in degrees</span><input type="number" step="1" value={form.heading} onChange={(event) => setField("heading", event.target.value)} /></label>
+        </fieldset>
+      </div>
+      <p className="choam-position-editor-note">Drag the dial or type a heading. Arrow keys nudge by 1 degree, shift-arrow by 15.</p>
+      {!editedValid ? <p className="choam-position-editor-warning">Every value must be a number.</p> : null}
+      <div className="choam-position-editor-distance">
+        <span>{distanceMeters.toFixed(1)} m from the trade post</span>
+        <span className="choam-position-editor-limit">limit {limitMeters.toFixed(1)} m</span>
+      </div>
+      <div className={`choam-position-bar-track${withinBound ? "" : " choam-position-bar-danger"}`}>
+        <span className="choam-position-bar-fill" style={{ width: `${barPercent}%` }} />
+      </div>
+      {editedValid && !withinBound ? <p className="choam-position-editor-warning">This position is outside the allowed range for this trade post.</p> : null}
+    </> : null}
+    <p className="choam-position-editor-note">The game writes character positions about once a minute. Capture waits for that write and for the character to hold still across it, so it can take up to two minutes.</p>
+    <p className="choam-position-editor-restart">Saving records the position. An installed terminal only moves in-game after a map restart.</p>
+    <div className="action-row">
+      <button disabled={!editedValid || !withinBound || saving} onClick={() => edited && onSave(center, { x: edited.x, y: edited.y, z: edited.z, yaw: normalizeHeading(edited.heading - 90) }, selectedPlayerId)}>{saving ? "Saving..." : "Save Position"}</button>
+      {center.custom ? <button className="danger" disabled={saving} onClick={() => onReset(center)}>{saving ? "Working..." : "Reset to Default"}</button> : null}
+      <button disabled={saving} onClick={onClose}>Cancel</button>
+    </div>
+  </div>;
+}
+
+const CHOAM_CAPTURE_TIMEOUT_SECONDS = 150;
+const CHOAM_HEARTBEAT_SECONDS = 60;
+const CHOAM_CAPTURE_POLL_MS = 3000;
+
+type MatchRegionControl = { fieldId: string; enabled: boolean; available: boolean; regionLabel: string; regionValueLabel: string; onToggle: (next: boolean) => void };
+
+function SettingsCardGrid({ fields, values, onChange, viewMode = "grid", emptyMessage = "Select a modifier category.", matchRegionControls }: { fields: UserSettingField[]; values: Record<string, string>; onChange: (id: string, value: string) => void; viewMode?: "grid" | "list"; emptyMessage?: string; matchRegionControls?: MatchRegionControl[] }) {
   if (!fields.length) return <div className="empty">{emptyMessage}</div>;
   if (viewMode === "list") {
     return <div className="settings-list-wrap"><table className="settings-list-table"><thead><tr><th>Modifier</th><th>Setting Key</th><th>Value</th></tr></thead><tbody>{fields.map((field) => {
       const value = values[field.id] ?? field.default ?? "";
       const modified = isModifiedFromDefault(field, value);
+      const matchRegion = matchRegionControls?.find((control) => control.fieldId === field.id);
       return <Fragment key={field.id}>
         {(field.clientFile || modified) && <tr className="settings-list-badge-row"><td colSpan={3}>
           {field.clientFile && <span className="badge badge-info settings-list-badge" title={`Also requires updating the client's ${field.clientFile}.`}>Client &quot;{field.clientFile}&quot;</span>}
@@ -2327,13 +3092,45 @@ function SettingsCardGrid({ fields, values, onChange, viewMode = "grid", emptyMe
         <tr>
           <td><strong>{friendlySettingLabel(field.id, field.key || field.id, field.label)}</strong><small>{fieldCategory(field)}</small></td>
           <td>{field.key || field.id}</td>
-          <td><SettingInput field={field} value={value} inputId={`setting-list-${field.scope}-${field.id}`} onChange={(nextValue) => onChange(field.id, nextValue)} /></td>
+          <td>
+            {matchRegion && <MatchRegionToggle control={matchRegion} idPrefix={`setting-list-${field.scope}`} fieldLabel={friendlySettingLabel(field.id, field.key || field.id, field.label)} />}
+            <SettingInput field={field} value={value} inputId={`setting-list-${field.scope}-${field.id}`} onChange={(nextValue) => onChange(field.id, nextValue)} disabled={matchRegion?.enabled} />
+          </td>
         </tr>
         {field.description && <tr className="settings-list-description-row"><td colSpan={3}><span className="settings-field-description"><Info size={14} aria-hidden="true" /><span className="settings-field-description-text">{field.description}</span></span></td></tr>}
       </Fragment>;
     })}</tbody></table></div>;
   }
-  return <div className="settings-grid settings-grid-roomy">{fields.map((field) => <SettingControl key={field.id} field={field} value={values[field.id] ?? field.default ?? ""} onChange={(value) => onChange(field.id, value)} />)}</div>;
+  return <div className="settings-grid settings-grid-roomy">{fields.map((field) => <SettingControl key={field.id} field={field} value={values[field.id] ?? field.default ?? ""} onChange={(value) => onChange(field.id, value)} matchRegion={matchRegionControls?.find((control) => control.fieldId === field.id)} />)}</div>;
+}
+
+// Same visual spec as .bases-rank-segments / .vehicles-rank-segments, under
+// its own settings-scoped class names per this repo's CSS scoping convention.
+function MatchRegionToggle({ control, idPrefix, fieldLabel }: { control: MatchRegionControl; idPrefix: string; fieldLabel: string }) {
+  const groupName = `${idPrefix}-${control.fieldId}-match-region`;
+  const title = control.available
+    ? `Set from the deployment's region: ${control.regionLabel}, ${control.regionValueLabel}.`
+    : `No regional master schedule is defined for ${control.regionLabel || "this deployment's region"} -- set manually.`;
+  return <div className="settings-match-region" title={title}>
+    <span className="settings-match-region-label">Match Region</span>
+    {/* More than one Coriolis field can carry a Match Region toggle at once
+        (Cycle Start Hour and Day) -- a bare "Match Region" label would leave
+        every toggle on the page indistinguishable to a screen reader. */}
+    <div className="settings-match-region-segments" role="radiogroup" aria-label={`Match Region for ${fieldLabel}`}>
+      {([["On", true], ["Off", false]] as const).map(([label, isOn]) => (
+        <label className="settings-match-region-segment" key={label}>
+          <input
+            type="radio"
+            name={groupName}
+            checked={control.enabled === isOn}
+            disabled={!control.available}
+            onChange={() => control.onToggle(isOn)}
+          />
+          {label}
+        </label>
+      ))}
+    </div>
+  </div>;
 }
 
 function ModifiedBadge({ field, label, onReset }: { field: UserSettingField; label: string; onReset: () => void }) {
@@ -2344,32 +3141,64 @@ function ModifiedBadge({ field, label, onReset }: { field: UserSettingField; lab
   </span>;
 }
 
-function SettingControl({ field, value, onChange }: { field: UserSettingField; value: string; onChange: (value: string) => void }) {
+function SettingControl({ field, value, onChange, matchRegion }: { field: UserSettingField; value: string; onChange: (value: string) => void; matchRegion?: MatchRegionControl }) {
   const label = friendlySettingLabel(field.id, field.key || field.id, field.label);
   const inputId = `setting-${field.scope}-${field.id}`;
   const modified = isModifiedFromDefault(field, value);
-  return <label className="settings-field" htmlFor={inputId}>
+  // A plain <div> here, not <label htmlFor>: the Match Region toggle below renders its
+  // own <label> per radio segment, and a <label> cannot legally contain another <label>
+  // -- harmless in practice (browsers still route clicks correctly; confirmed empirically
+  // during review), but not a spec-valid document. The field name stays clickable via its
+  // own inner <label> instead.
+  return <div className="settings-field">
     <div className="settings-field-heading">
       {(field.clientFile || modified) && <span className="settings-field-badges">
         {field.clientFile && <span className="badge badge-info" title={`Also requires updating the client's ${field.clientFile}.`}>Client &quot;{field.clientFile}&quot;</span>}
         {modified && <ModifiedBadge field={field} label={label} onReset={() => onChange(field.default ?? "")} />}
       </span>}
-      <strong>{label}</strong>
+      <label htmlFor={inputId}><strong>{label}</strong></label>
       <small>{field.key || field.id}</small>
     </div>
     {field.description && <span className="settings-field-description"><Info size={14} aria-hidden="true" /><span className="settings-field-description-text">{field.description}</span></span>}
-    <SettingInput field={field} value={value} inputId={inputId} onChange={onChange} />
-  </label>;
+    {matchRegion && <MatchRegionToggle control={matchRegion} idPrefix={`setting-${field.scope}`} fieldLabel={label} />}
+    <SettingInput field={field} value={value} inputId={inputId} onChange={onChange} disabled={matchRegion?.enabled} />
+  </div>;
 }
 
-function SettingInput({ field, value, inputId, onChange }: { field: UserSettingField; value: string; inputId: string; onChange: (value: string) => void }) {
-  return field.type === "boolean"
-    ? <select id={inputId} value={normalizeBooleanText(value)} onChange={(event) => onChange(event.target.value)}><option value="True">True</option><option value="False">False</option></select>
+function SettingInput({ field, value, inputId, onChange, disabled }: { field: UserSettingField; value: string; inputId: string; onChange: (value: string) => void; disabled?: boolean }) {
+  const input = field.options?.length
+    ? <select id={inputId} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)}>{field.options.map((option) => <option key={option} value={option}>{option}</option>)}</select>
+    : field.type === "boolean"
+    ? <select id={inputId} value={normalizeBooleanText(value)} disabled={disabled} onChange={(event) => onChange(event.target.value)}><option value="True">True</option><option value="False">False</option></select>
     : field.type === "integer" || field.type === "number"
-      ? <input id={inputId} type="number" step={field.type === "integer" ? "1" : "any"} min={field.minimum ?? undefined} max={field.maximum ?? undefined} value={value} onChange={(event) => onChange(event.target.value)} />
+      ? <input id={inputId} type="number" step={field.type === "integer" ? "1" : "any"} min={field.minimum ?? undefined} max={field.maximum ?? undefined} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)} />
       : String(value).length > 72 || value.includes("(")
-        ? <textarea id={inputId} rows={3} value={value} onChange={(event) => onChange(event.target.value)} />
-        : <input id={inputId} value={value} onChange={(event) => onChange(event.target.value)} />;
+        ? <textarea id={inputId} rows={3} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)} />
+        : <input id={inputId} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)} />;
+  const bounded = field.minimum != null || field.maximum != null;
+  const range = field.minimum != null && field.maximum != null
+    ? `${field.minimum}–${field.maximum}`
+    : field.minimum != null
+      ? `${field.minimum} or greater`
+      : `${field.maximum} or less`;
+  const recommended = field.recommendedMinimum != null || field.recommendedMaximum != null;
+  const recommendedRange = field.recommendedMinimum != null && field.recommendedMaximum != null
+    ? `${field.recommendedMinimum}–${field.recommendedMaximum}`
+    : field.recommendedMinimum != null
+      ? `${field.recommendedMinimum} or greater`
+      : `${field.recommendedMaximum} or less`;
+  const numericCandidate = String(value).trim();
+  const numericValue = Number(numericCandidate);
+  const hasNumericValue = numericCandidate !== "" && Number.isFinite(numericValue);
+  const belowRecommendation = recommended && hasNumericValue && field.recommendedMinimum != null && numericValue < field.recommendedMinimum;
+  const aboveRecommendation = recommended && hasNumericValue && field.recommendedMaximum != null && numericValue > field.recommendedMaximum;
+  return <>
+    {input}
+    {bounded && <small className="muted settings-value-constraint">Allowed: {range}{field.type === "integer" ? " (whole numbers)" : ""}</small>}
+    {recommended && <small className="muted settings-value-constraint">Recommended: {recommendedRange}</small>}
+    {aboveRecommendation && <small className="settings-value-recommendation-warning">Above Funcom&apos;s recommended range. Higher values may increase server and client load.</small>}
+    {belowRecommendation && <small className="settings-value-recommendation-warning">Below Funcom&apos;s recommended range. Lower values may produce unsupported gameplay behavior.</small>}
+  </>;
 }
 
 export function MemoryUsageBar({ row, fallback, configuredLimit, swapEnabled = false }: { row: LiveMapMemoryRow | null; fallback: string; configuredLimit?: unknown; swapEnabled?: boolean }) {
@@ -2506,32 +3335,10 @@ export function modifierEmptyMessage(schemaLoaded: boolean, fieldCount: number, 
   return "Select a modifier category.";
 }
 
-function filterSpicefieldRows(rows: SpicefieldTypeRow[], query: string) {
+function filterActiveSpicefields(rows: ActiveSpicefieldRow[], query: string) {
   const needle = String(query || "").trim().toLowerCase();
   if (!needle) return rows;
-  return rows.filter((row) => `${row.map_name} ${row.field_type} dimension ${row.dimension_index} ${row.spicefield_type_id}`.toLowerCase().includes(needle));
-}
-
-function spicefieldDraftFromRow(row: SpicefieldTypeRow): SpicefieldDraft {
-  return {
-    maxActive: String(row.max_globally_active ?? 0),
-    maxPrimed: String(row.max_globally_primed ?? 0),
-    spawningActive: row.is_spawning_active !== false,
-    spawnWeight: String(row.global_spawn_weight ?? 0)
-  };
-}
-
-function spicefieldDraftDirty(row: SpicefieldTypeRow, draft: SpicefieldDraft) {
-  return String(row.max_globally_active ?? 0) !== String(parseWholeNumber(draft.maxActive) ?? draft.maxActive)
-    || String(row.max_globally_primed ?? 0) !== String(parseWholeNumber(draft.maxPrimed) ?? draft.maxPrimed)
-    || (row.is_spawning_active !== false) !== draft.spawningActive
-    || Number(row.global_spawn_weight ?? 0) !== Number(draft.spawnWeight);
-}
-
-function parseWholeNumber(value: string) {
-  const n = Number(value);
-  if (!Number.isInteger(n)) return null;
-  return n;
+  return rows.filter((row) => `${row.map_name} ${friendlyMapName(row.map_name)} ${row.field_type} dimension ${row.dimension_index} ${row.field_id}`.toLowerCase().includes(needle));
 }
 
 function settingsCategory(value: string) {
@@ -2551,6 +3358,19 @@ function friendlySettingLabel(id: string, fallback: string, explicit = "") {
 
 function normalizeBooleanText(value: string) {
   return /^(1|true|yes|on)$/i.test(String(value)) ? "True" : "False";
+}
+
+export function settingValueIsValid(field: UserSettingField, value: string) {
+  const candidate = String(value ?? "").trim();
+  if (field.options?.length) return field.options.includes(candidate);
+  if (field.type === "boolean") return /^(true|false)$/i.test(candidate);
+  if (field.type !== "integer" && field.type !== "number") return true;
+  if (!candidate || (field.type === "integer" && !/^-?\d+$/.test(candidate))) return false;
+  const parsed = Number(candidate);
+  if (!Number.isFinite(parsed)) return false;
+  if (field.minimum != null && parsed < field.minimum) return false;
+  if (field.maximum != null && parsed > field.maximum) return false;
+  return true;
 }
 
 function parseUserSettingsMap(text: string) {
@@ -2581,6 +3401,22 @@ export function countIniOverrides(content: string) {
 // permanently flagged against a "True"/"False" selection.
 export function isModifiedFromDefault(field: UserSettingField, value: string) {
   return settingValueChanged(field, String(field.default ?? ""), String(value ?? ""));
+}
+
+// Whether a Coriolis field's "Match Region" toggle should infer as On for a
+// freshly loaded saved value: the value already equals the region's value
+// for this field (hour or day -- the logic never depended on which). Any
+// other saved value -- including the untouched schema default -- is treated
+// as a deliberate value and must never be silently overwritten, so it infers
+// Off. (A scope that has genuinely never had this field saved gets the
+// region's value written once, server-side, at startup -- see
+// migrate_coriolis_region_fields in usersettings.py -- so by the time this
+// runs "default" and "unset" are no longer the same question.)
+export function coriolisFieldMatchesRegionInference(field: UserSettingField | undefined, savedValue: string, regionValue: number | undefined): boolean {
+  if (!field || regionValue === undefined) return false;
+  const fieldDefault = String(field.default ?? "");
+  const resolved = String(savedValue ?? fieldDefault);
+  return Number(resolved) === regionValue;
 }
 
 // Pseudo-category listed alongside the real ones, so an admin can see just the
@@ -2687,9 +3523,43 @@ function partitionMemoryValue(memoryText: string, partitionId: string, fallback:
 // Bgd.ServerDisplayName (partition -> map -> global UserEngine.ini) — the
 // name a player actually sees in-game. It takes precedence over the
 // synthesized "Deep Desert N (PvP/PvE)" text below.
-export function deepDesertPartitionName(row: Record<string, unknown>, combatRow?: PartitionCombatStateRow | null) {
+type DeepDesertCombatDisplayRow = Partial<PartitionCombatStateRow> & Pick<PartitionCombatStateRow, "configuredState">;
+
+// A layout change creates partition rows before every downstream combat-state
+// read has caught up. During that short window, show the roles the operator
+// selected instead of flashing each new row's template/default PvE badge and
+// changing it later. Once the task finishes, the server-resolved state becomes
+// authoritative again.
+export function deepDesertLayoutCombatRow(
+  row: Record<string, unknown>,
+  resolved: PartitionCombatStateRow | null,
+  configuring: boolean,
+  thirdRole: "pve" | "pvp"
+): DeepDesertCombatDisplayRow | null {
+  if (!configuring) return resolved;
+  const dimension = Number(row.dimension ?? row.dimensionIndex);
+  const configuredState = dimension === 0
+    ? "PVE"
+    : dimension === 1
+      ? "PVP"
+      : dimension === 2
+        ? (thirdRole === "pvp" ? "PVP" : "PVE")
+        : "UNKNOWN";
+  return { ...resolved, configuredState, configurationDrift: false, restartRequired: false };
+}
+
+export function deepDesertPartitionName(row: Record<string, unknown>, combatRow?: DeepDesertCombatDisplayRow | null) {
   const configuredName = String(combatRow?.serverDisplayName || "").trim();
-  if (configuredName) return configuredName;
+  if (configuredName) {
+    // Managed default names contain a role for readability. Always reconcile
+    // that word with the same canonical combat state used by the adjacent
+    // badge so a stale name cache can never display PvE beside a PvP badge.
+    if (/^Deep Desert Pv[EP](?: \d+)?$/i.test(configuredName) && (combatRow?.configuredState === "PVP" || combatRow?.configuredState === "PVE")) {
+      const role = combatRow.configuredState === "PVP" ? "PvP" : "PvE";
+      return configuredName.replace(/Pv[EP]/i, role);
+    }
+    return configuredName;
+  }
   const dimension = Number(row.dimension);
   const suffix = Number.isFinite(dimension) ? ` ${dimension + 1}` : "";
   if (combatRow) {
@@ -2754,7 +3624,7 @@ function buildUserGameTargets(
 function liveMemoryFallback(row: Record<string, unknown>) {
   const configured = String(row.memory || "").trim();
   if (configured && !/^Not Available$/i.test(configured) && liveMemoryIsReadyMode(row.mode)) return configured;
-  if (liveMemoryIsPendingStatus(row.status)) return "Waiting for sample";
+  if (liveMemoryIsPendingStatus(row.status)) return "Waiting for Sample";
   return "Unallocated";
 }
 
@@ -3073,7 +3943,11 @@ function isVehicleDeployMap(value: string) {
 }
 
 function isFreshProcessMap(value: string) {
-  return String(value || "").trim() === "CB_Overland_S_06";
+  return [
+    "CB_Overland_S_06",
+    "CB_Story_DestroyedZanovar",
+    "CB_Story_OrbitalMonitor",
+  ].includes(String(value || "").trim());
 }
 
 function modeInputValue(value: string) {

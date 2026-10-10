@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { Download, FileJson, FolderOpen, Trash2, Upload } from "lucide-react";
+import { Download, FileJson, FolderOpen, Library, Trash2, Upload } from "lucide-react";
 import { api, apiDownload } from "../../api/client";
 import { DataTable, useSortableRows } from "../../components/common/DataTable";
 import { TechnicalDetails } from "../../components/common/DisplayPrimitives";
 import { formatUiSentence } from "../../lib/display";
+import { CommunityBlueprintBrowser } from "./CommunityBlueprintBrowser";
 
 type BlueprintRow = Record<string, unknown> & {
   id: number;
@@ -51,6 +52,7 @@ export function BlueprintsPanel({ onError, confirmAction, dbPlayerId = "", playe
   const [exporting, setExporting] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [importProgress, setImportProgress] = useState<{ current: number; total: number; name: string } | null>(null);
+  const [view, setView] = useState<"player" | "browse">("player");
 
   useEffect(() => { void load(); }, [dbPlayerId]);
 
@@ -301,6 +303,12 @@ export function BlueprintsPanel({ onError, confirmAction, dbPlayerId = "", playe
   const blueprintSort = useSortableRows(rows);
 
   return <section className="blueprints-panel">
+    <div className="blueprint-view-tabs" role="tablist" aria-label="Blueprint sections">
+      <button type="button" role="tab" aria-selected={view === "player"} className={view === "player" ? "active" : ""} onClick={() => setView("player")}><FileJson size={16} /> Player Blueprints</button>
+      <button type="button" role="tab" aria-selected={view === "browse"} className={view === "browse" ? "active" : ""} onClick={() => setView("browse")}><Library size={16} /> Browse Blueprints</button>
+    </div>
+
+    {view === "browse" ? <CommunityBlueprintBrowser dbPlayerId={dbPlayerId} playerName={playerName} confirmAction={confirmAction} onInstalled={() => load(false)} /> : <>
     {result && <div className={`result-panel home-task-result result-${result.status === "succeeded" ? "ok" : "fail"}`} aria-live="polite">
       <strong>{result.title}</strong>
       <p>{formatUiSentence(result.message)}</p>
@@ -394,5 +402,6 @@ export function BlueprintsPanel({ onError, confirmAction, dbPlayerId = "", playe
         </div>
       </div>
     )}
+    </>}
   </section>;
 }

@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createUpdateCheckCache } from "../src/services/updateCheckCache.js";
 
 test("update check cache reuses a completed result within the TTL", async () => {
@@ -50,6 +53,24 @@ test("update check cache coalesces overlapping and forced reads onto one in-flig
   assert.equal(firstResult.stdout, "build-result");
   assert.equal(overlappingResult.stdout, "build-result");
   assert.equal(firstResult.code, overlappingResult.code);
+});
+
+test("optional failure backoff expires and invalidation permits an immediate retry", async () => {
+  let currentTime = 1000;
+  let collections = 0;
+  const cache = createUpdateCheckCache({}, {
+    errorCacheMs: 60000, now: () => currentTime,
+    collect: async () => { collections++; throw new Error("provider unavailable"); }
+  });
+  await assert.rejects(cache.read(), /provider unavailable/);
+  await assert.rejects(cache.read({ fresh: true }), /provider unavailable/);
+  assert.equal(collections, 1);
+  currentTime += 60001;
+  await assert.rejects(cache.read(), /provider unavailable/);
+  assert.equal(collections, 2);
+  cache.invalidate();
+  await assert.rejects(cache.read(), /provider unavailable/);
+  assert.equal(collections, 3);
 });
 
 test("update check cache does not cache a rejected collection", async () => {
@@ -166,6 +187,54 @@ test("peek returns null once the cached entry is past its TTL", async () => {
   currentTime += 10001;
   const result = cache.peek();
   assert.equal(result, null);
+});
+
+test("completed update checks survive a Console restart and invalidation removes the durable cache", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "dune-update-check-cache-"));
+  const cacheFile = join(dir, "game-update-check.json");
+  let currentTime = 1000;
+  let collections = 0;
+  const firstProcess = createUpdateCheckCache({}, {
+    cacheFile,
+    cacheMs: 30000,
+    now: () => currentTime,
+    collect: async () => ({ code: 100, stdout: `build-${++collections}`, stderr: "" })
+  });
+
+  const live = await firstProcess.read();
+  assert.equal(live.fromCache, false);
+  assert.equal(existsSync(cacheFile), true);
+
+  currentTime += 1000;
+  const restartedProcess = createUpdateCheckCache({}, {
+    cacheFile,
+    cacheMs: 30000,
+    now: () => currentTime,
+    collect: async () => { throw new Error("durable cache should be reused"); }
+  });
+  const restored = await restartedProcess.read();
+  assert.equal(restored.fromCache, true);
+  assert.equal(restored.code, 100);
+  assert.equal(restored.stdout, "build-1");
+
+  restartedProcess.invalidate();
+  assert.equal(existsSync(cacheFile), false);
+  assert.equal(restartedProcess.peek(), null);
+});
+
+test("a malformed durable update-check cache fails closed and recollects", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "dune-update-check-cache-invalid-"));
+  const cacheFile = join(dir, "game-update-check.json");
+  writeFileSync(cacheFile, JSON.stringify({ code: 7, sampledAtMs: 1000, stdout: "bad" }));
+  const cache = createUpdateCheckCache({}, {
+    cacheFile,
+    now: () => 2000,
+    collect: async () => ({ code: 0, stdout: "fresh", stderr: "" })
+  });
+
+  const result = await cache.read();
+  assert.equal(result.fromCache, false);
+  assert.equal(result.stdout, "fresh");
 });
 
 test("peek returns null immediately after invalidate", async () => {

@@ -4,7 +4,7 @@ export function hasAddonUpdates(catalog: CommunityAddonSummary[], installed: Ins
   const catalogById = new Map(catalog.map((addon) => [addon.id, addon]));
   return installed.some((addon) => {
     const catalogAddon = catalogById.get(addon.id);
-    return Boolean(catalogAddon && addonUpdateAvailable(addon.version, catalogAddon.version));
+    return Boolean(catalogAddon && catalogAddon.lifecycle !== "removed" && addonUpdateAvailable(addon.version, catalogAddon.version));
   });
 }
 

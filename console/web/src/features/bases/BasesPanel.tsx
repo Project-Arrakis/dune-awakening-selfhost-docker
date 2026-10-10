@@ -1,8 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Boxes, ChevronDown, ChevronUp, Download, Droplet, Fuel, Trash2, Users, X, Zap } from "lucide-react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { Boxes, ChevronDown, ChevronUp, Download, Droplet, Fuel, Grid3X3, KeyRound, Lock, Settings, Trash2, Users, X, Zap } from "lucide-react";
 import { BaseInventoryTab } from "./BaseInventoryTab";
+import { BaseChildPermissionsTab } from "./BaseChildPermissionsTab";
+import { BaseLandClaimTab } from "./BaseLandClaimTab";
 import { BasePermissionsTab } from "./BasePermissionsTab";
 import { BaseWaterTab } from "./BaseWaterTab";
+import { AutoRefillSettingsOverlay } from "./AutoRefillSettingsOverlay";
+import { DownloadBaseDialog, type DownloadBaseTarget } from "./DownloadBaseDialog";
+import { PlayerAccessSelect } from "../../components/common/PlayerAccessSelect";
+import { PLAYER_ACCESS_DEFAULT, accessCountLabel, accessEmptyAdjective, describePlayerAccess, filterRowsByAccess, type PlayerAccessFilter } from "../../lib/playerAccess";
 import { basesApi, type AutoRefillBase, type AutoRefillWaterBase, type RefillDeviceResult, type RefillWaterDeviceResult } from "../../api/bases";
 import { friendlyMapName } from "../maps/mapNames";
 import { mapsApi } from "../../api/maps";
@@ -10,9 +16,9 @@ import { cachedInstanceNames, resolveInstanceNames } from "../maps/instanceNames
 import { InfoTooltip } from "../../components/common/DisplayPrimitives";
 import { serverApi } from "../../api/server";
 import { setupApi, type Task } from "../../api/setup";
-import { apiDownload } from "../../api/client";
 import { DataTable, type SortDirection } from "../../components/common/DataTable";
-import { pendingRefillCountForPartition, usePendingBaseDeletes, usePendingRefills, usePendingWaterRefills } from "../../lib/usePendingRefills";
+import { QueueBadges, queueCountsSummary, queueCountsTotal, type QueueCounts } from "../../components/common/QueueBadges";
+import { childAccessPieceCountForPartition, pendingRefillCountForPartition, usePendingBaseDeletes, usePendingChildAccess, usePendingRefills, usePendingWaterRefills } from "../../lib/usePendingRefills";
 import { runGatedRestart, serviceRestartTarget, type RestartGate } from "../server/restartQueueGuard";
 
 type BasesPanelProps = {
@@ -21,12 +27,17 @@ type BasesPanelProps = {
   restartGate: RestartGate;
   formatMutationResult: (result: unknown) => string;
   focusRequest?: { baseId: string; nonce: number };
+  playerId?: string;
+  playerName?: string;
+  embedded?: boolean;
+  // The Bases page's "Bases | Base Backups" toggle (BasesPage), in the title.
+  viewSwitch?: ReactNode;
 };
 
 type SharedWithEntry = { name: string; rank: number; label: string };
 
 type GeneratorEntry = {
-  type: "fuel" | "spice" | "windTurbineOmni" | "windTurbineDirectional";
+  type: "fuel" | "spice" | "windTurbineOmni" | "windTurbineDirectional" | "windtrap" | "largeWindtrap";
   name: string;
   fuelName: string;
   fuelCells: number;
@@ -52,6 +63,9 @@ type BaseRow = Record<string, unknown> & {
   shared_with: SharedWithEntry[];
   generatorDataAvailable: boolean;
   generatorCount: number;
+  // Windtraps are refilled with generators but kept out of the generator
+  // totals above; this counts them for the refill button and confirm text.
+  windtrapCount?: number;
   fuelCells: number;
   generatorRuntimeSeconds: number;
   generatorUptimeMultiplier: number;
@@ -110,6 +124,7 @@ const BASES_PAGE_SIZES = [25, 50, 100, 200] as const;
 const BASES_DEFAULT_PAGE_SIZE = 50;
 
 type BasesCache = {
+  scope: string;
   q: string;
   page: number;
   pageSize: number;
@@ -118,6 +133,8 @@ type BasesCache = {
   rows: BaseRow[];
   totalCount: number;
   totalBases: number;
+  totalOwned: number;
+  totalShared: number;
   totalPieces: number;
   totalPlaceables: number;
   lastFetchedAt: number;
@@ -165,8 +182,8 @@ function readCachedRefillStatus() {
   return refillStatusCache;
 }
 
-function sameView(cache: BasesCache | null, q: string, page: number, pageSize: number, sortColumn: string, sortDirection: SortDirection) {
-  return !!cache && cache.q === q && cache.page === page && cache.pageSize === pageSize && cache.sortColumn === sortColumn && cache.sortDirection === sortDirection;
+function sameView(cache: BasesCache | null, scope: string, q: string, page: number, pageSize: number, sortColumn: string, sortDirection: SortDirection) {
+  return !!cache && cache.scope === scope && cache.q === q && cache.page === page && cache.pageSize === pageSize && cache.sortColumn === sortColumn && cache.sortDirection === sortDirection;
 }
 
 function errorText(error: unknown) {
@@ -221,6 +238,17 @@ function queueRestartTarget(partitionMap: string, partitionId: number, dimension
   return { kind: "respawn", partitionId, label: `Restart ${partitionMap}` };
 }
 
+// Windtraps ride along with generator refill (their filters burn like fuel), but
+// their cards and copy talk about filters rather than generators and fuel.
+function isWindtrapType(type: string) {
+  return type === "windtrap" || type === "largeWindtrap";
+}
+
+// Every device a generator refill writes to: generators plus windtraps.
+function refillDeviceCount(base: BaseRow) {
+  return (Number(base.generatorCount) || 0) + (Number(base.windtrapCount) || 0);
+}
+
 // Report what actually changed per device rather than a generic "Action
 // completed." — "nothing was added" is a meaningful outcome here, not a failure.
 function summarizeRefill(response: {
@@ -237,7 +265,9 @@ function summarizeRefill(response: {
     .map((device) => `${device.label}: +${device.added} ${device.fuelName}${device.added === 1 ? "" : "s"}${device.capped ? " (capped by inventory space)" : ""}`)
     .join(" · ");
   const skipped = result.devices.filter((device) => device.skipped).length;
-  return `Added ${result.totalAdded} fuel unit${result.totalAdded === 1 ? "" : "s"} across ${changed.length} device${changed.length === 1 ? "" : "s"}. ${detail}${skipped ? ` · ${skipped} skipped (no inventory)` : ""}`;
+  const windtraps = changed.filter((device) => isWindtrapType(device.type)).length;
+  const unitName = windtraps === 0 ? "fuel unit" : windtraps === changed.length ? "filter unit" : "fuel and filter unit";
+  return `Added ${result.totalAdded} ${unitName}${result.totalAdded === 1 ? "" : "s"} across ${changed.length} device${changed.length === 1 ? "" : "s"}. ${detail}${skipped ? ` · ${skipped} skipped (no inventory)` : ""}`;
 }
 
 // Mirrors summarizeRefill. No fuelName/capped/skipped -- water refill is a
@@ -340,14 +370,36 @@ function renderBaseCell(row: Record<string, unknown>, column: string, instanceNa
   );
 }
 
-export function BasesPanel({ onError, confirmAction, restartGate, formatMutationResult, focusRequest }: BasesPanelProps) {
-  const [q, setQ] = useState(() => basesCache?.q ?? "");
-  const [submittedQ, setSubmittedQ] = useState(() => basesCache?.q ?? "");
-  const [page, setPage] = useState(() => basesCache?.page ?? 0);
-  const [pageSize, setPageSize] = useState<number>(() => basesCache?.pageSize ?? BASES_DEFAULT_PAGE_SIZE);
-  const [sortColumn, setSortColumn] = useState(() => basesCache?.sortColumn ?? "name");
-  const [sortDirection, setSortDirection] = useState<SortDirection>(() => basesCache?.sortDirection ?? "asc");
-  const [rows, setRows] = useState<BaseRow[]>(() => basesCache?.rows ?? []);
+export function BasesPanel({ onError, confirmAction, restartGate, formatMutationResult, focusRequest, playerId = "", playerName = "", embedded = false, viewSwitch }: BasesPanelProps) {
+  // Per-player view only: which of the player's bases to list. The access level
+  // is part of the cache scope so each choice keeps its own cached view.
+  const [access, setAccess] = useState<PlayerAccessFilter>(PLAYER_ACCESS_DEFAULT);
+  const scope = playerId ? `player:${playerId}:${access}` : "all";
+  // Drop the previous level's rows at once so they cannot be acted on under the new level's header.
+  // The loading branch swaps in a separate header, so the select the user just used is unmounted;
+  // hand focus back to the live one once loading ends so keyboard users are not dropped on <body>.
+  const accessSelectRef = useRef<HTMLSelectElement>(null);
+  const refocusAccessSelect = useRef(false);
+  function changeAccess(next: PlayerAccessFilter) {
+    refocusAccessSelect.current = true;
+    setRows([]);
+    setTotalCount(0);
+    setTotalBases(0);
+    setTotalOwned(0);
+    setTotalShared(0);
+    setTotalPieces(0);
+    setTotalPlaceables(0);
+    setLoading(true);
+    setAccess(next);
+  }
+  const initialCache = basesCache?.scope === scope ? basesCache : null;
+  const [q, setQ] = useState(() => initialCache?.q ?? "");
+  const [submittedQ, setSubmittedQ] = useState(() => initialCache?.q ?? "");
+  const [page, setPage] = useState(() => initialCache?.page ?? 0);
+  const [pageSize, setPageSize] = useState<number>(() => initialCache?.pageSize ?? (playerId ? 5000 : BASES_DEFAULT_PAGE_SIZE));
+  const [sortColumn, setSortColumn] = useState(() => initialCache?.sortColumn ?? "name");
+  const [sortDirection, setSortDirection] = useState<SortDirection>(() => initialCache?.sortDirection ?? "asc");
+  const [rows, setRows] = useState<BaseRow[]>(() => initialCache?.rows ?? []);
   // partition id -> operator-chosen instance name ("Deep Desert PvE", "Sietch
   // Abbir"). Loaded after the table renders, never blocking it: the names come
   // from a CLI-backed endpoint, and the partition number alone already
@@ -356,12 +408,20 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
   // Bumped by the same refresh cycle that reloads the rows, so a stale TTL is
   // re-checked on the panel's own schedule rather than only on remount.
   const [instanceNamesTick, setInstanceNamesTick] = useState(0);
-  const [totalCount, setTotalCount] = useState(() => basesCache?.totalCount ?? 0);
-  const [totalBases, setTotalBases] = useState(() => basesCache?.totalBases ?? 0);
-  const [totalPieces, setTotalPieces] = useState(() => basesCache?.totalPieces ?? 0);
-  const [totalPlaceables, setTotalPlaceables] = useState(() => basesCache?.totalPlaceables ?? 0);
-  const [loading, setLoading] = useState(() => basesCache === null);
-  const [downloadingId, setDownloadingId] = useState("");
+  const [totalCount, setTotalCount] = useState(() => initialCache?.totalCount ?? 0);
+  const [totalBases, setTotalBases] = useState(() => initialCache?.totalBases ?? 0);
+  const [totalOwned, setTotalOwned] = useState(() => initialCache?.totalOwned ?? 0);
+  const [totalShared, setTotalShared] = useState(() => initialCache?.totalShared ?? 0);
+  const [totalPieces, setTotalPieces] = useState(() => initialCache?.totalPieces ?? 0);
+  const [totalPlaceables, setTotalPlaceables] = useState(() => initialCache?.totalPlaceables ?? 0);
+  const [loading, setLoading] = useState(() => initialCache === null);
+  useEffect(() => {
+    if (!loading && refocusAccessSelect.current) {
+      refocusAccessSelect.current = false;
+      accessSelectRef.current?.focus();
+    }
+  }, [loading]);
+  const [downloadTarget, setDownloadTarget] = useState<DownloadBaseTarget | null>(null);
   const [refillingId, setRefillingId] = useState("");
   const [refillResult, setRefillResult] = useState(() => readCachedRefillStatus().text);
   // Drives the status line's styling: "running" keeps it on screen with a
@@ -370,18 +430,21 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
   const [canRefill, setCanRefill] = useState(false);
   const [canQueue, setCanQueue] = useState(false);
   const [canEditPermissions, setCanEditPermissions] = useState(false);
+  const [canEditChildAccess, setCanEditChildAccess] = useState(false);
   const [canRefillWater, setCanRefillWater] = useState(false);
   const [canQueueWater, setCanQueueWater] = useState(false);
   const [canDeleteBase, setCanDeleteBase] = useState(false);
   const [canQueueDelete, setCanQueueDelete] = useState(false);
+  const [canQueueChildAccess, setCanQueueChildAccess] = useState(false);
   // Which tab the expanded row is showing. Power is the default so expanding a
   // row behaves exactly as it did before this feature existed.
-  const [expandedTab, setExpandedTab] = useState<"power" | "water" | "inventory" | "permissions">("power");
+  const [expandedTab, setExpandedTab] = useState<"power" | "water" | "inventory" | "land-claim" | "permissions" | "child-access">("power");
   const [cancelingId, setCancelingId] = useState("");
   const [cancelingWaterId, setCancelingWaterId] = useState("");
   const [refillingWaterId, setRefillingWaterId] = useState("");
   const [deletingId, setDeletingId] = useState("");
   const [cancelingDeleteId, setCancelingDeleteId] = useState("");
+  const [cancelingChildAccessId, setCancelingChildAccessId] = useState("");
   // Bumped after an immediate (non-queued) water refill so an already-open
   // Water tab knows to refetch -- it fetches its own data independently of
   // the bases list/row, so nothing else tells it a refill just landed.
@@ -394,6 +457,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
   // once rather than polled: it only changes when this panel changes it.
   const [autoRefillBases, setAutoRefillBases] = useState<Map<string, AutoRefillBase>>(new Map());
   const [autoRefillThreshold, setAutoRefillThreshold] = useState(50);
+  const [autoRefillWindtrapThreshold, setAutoRefillWindtrapThreshold] = useState(40);
   const [autoRefillIntervalHours, setAutoRefillIntervalHours] = useState(24);
   const [savingAutoRefillId, setSavingAutoRefillId] = useState("");
   // Distinct from "no bases enrolled": the enrollment read itself failed, so
@@ -406,12 +470,14 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
   const [autoRefillWaterIntervalHours, setAutoRefillWaterIntervalHours] = useState(24);
   const [savingAutoRefillWaterId, setSavingAutoRefillWaterId] = useState("");
   const [autoRefillWaterUnavailable, setAutoRefillWaterUnavailable] = useState(false);
+  const [autoRefillSettingsOpen, setAutoRefillSettingsOpen] = useState(false);
   const requestIdRef = useRef(0);
   const lastExpandedRef = useRef<string | null>(null);
   const skipNextSearchReset = useRef(true);
   const { pending: pendingRefills, refresh: refreshPendingRefills } = usePendingRefills(canQueue);
   const { pending: pendingWaterRefills, refresh: refreshPendingWaterRefills } = usePendingWaterRefills(canQueueWater);
   const { pending: pendingBaseDeletes, refresh: refreshPendingBaseDeletes } = usePendingBaseDeletes(canQueueDelete);
+  const { pending: pendingChildAccess, refresh: refreshPendingChildAccess } = usePendingChildAccess(canQueueChildAccess);
   const previousPendingTotal = useRef<number | null>(null);
 
   useEffect(() => {
@@ -446,32 +512,57 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
     const requestId = ++requestIdRef.current;
     if (!options.silent) onError("");
     try {
-      const result = await basesApi.list(params);
+      const result = playerId ? await basesApi.forPlayer(playerId, { ...params, access }) : await basesApi.list(params);
       if (requestIdRef.current !== requestId) return;
-      const nextRows = (result.rows || []).map(withCoordinates);
+      // The server applies the access filter. Re-checking it here also covers an
+      // older API that ignores the parameter; the endpoint is unpaginated for a
+      // player, so a client-side narrowing can derive the totals from the rows.
+      const allRows = (result.rows || []).map(withCoordinates);
+      const narrowed = Boolean(playerId) && access !== "all";
+      const nextRows = playerId ? filterRowsByAccess(allRows, access) : allRows;
+      // Only derive totals from the rows when the client had to drop some (an
+      // older API that ignored `access`); otherwise the server's totals stand.
+      const ownedOnlyTotals = narrowed && nextRows.length !== allRows.length ? {
+        count: nextRows.length,
+        pieces: nextRows.reduce((sum, row) => sum + (Number(row.piece_count) || 0), 0),
+        placeables: nextRows.reduce((sum, row) => sum + (Number(row.placeable_count) || 0), 0)
+      } : null;
       setRows(nextRows);
       setCanRefill(Boolean(result.capabilities?.generatorRefill));
       setCanQueue(Boolean(result.capabilities?.generatorRefillQueue));
       setCanEditPermissions(Boolean(result.capabilities?.basePermissions));
+      setCanEditChildAccess(Boolean(result.capabilities?.baseChildAccess));
+      setCanQueueChildAccess(Boolean(result.capabilities?.baseChildAccessQueue));
       setCanRefillWater(Boolean(result.capabilities?.waterRefill));
       setCanQueueWater(Boolean(result.capabilities?.waterRefillQueue));
       setCanDeleteBase(Boolean(result.capabilities?.baseDelete));
       setCanQueueDelete(Boolean(result.capabilities?.baseDeleteQueue));
-      setTotalCount(result.totalCount || 0);
-      setTotalBases(result.totalBases || 0);
-      setTotalPieces(result.totalPieces || 0);
-      setTotalPlaceables(result.totalPlaceables || 0);
+      const nextTotalCount = ownedOnlyTotals ? ownedOnlyTotals.count : result.totalCount || 0;
+      const nextTotalBases = ownedOnlyTotals ? ownedOnlyTotals.count : result.totalBases || 0;
+      const nextTotalOwned = ownedOnlyTotals ? (access === "owner" ? ownedOnlyTotals.count : 0) : result.totalOwned || 0;
+      const nextTotalShared = ownedOnlyTotals ? (access === "coowner" ? ownedOnlyTotals.count : 0) : result.totalShared || 0;
+      const nextTotalPieces = ownedOnlyTotals ? ownedOnlyTotals.pieces : result.totalPieces || 0;
+      const nextTotalPlaceables = ownedOnlyTotals ? ownedOnlyTotals.placeables : result.totalPlaceables || 0;
+      setTotalCount(nextTotalCount);
+      setTotalBases(nextTotalBases);
+      setTotalOwned(nextTotalOwned);
+      setTotalShared(nextTotalShared);
+      setTotalPieces(nextTotalPieces);
+      setTotalPlaceables(nextTotalPlaceables);
       basesCache = {
+        scope,
         q: params.q,
         page: params.page,
         pageSize: params.pageSize,
         sortColumn: params.sortColumn,
         sortDirection: params.sortDirection,
         rows: nextRows,
-        totalCount: result.totalCount || 0,
-        totalBases: result.totalBases || 0,
-        totalPieces: result.totalPieces || 0,
-        totalPlaceables: result.totalPlaceables || 0,
+        totalCount: nextTotalCount,
+        totalBases: nextTotalBases,
+        totalOwned: nextTotalOwned,
+        totalShared: nextTotalShared,
+        totalPieces: nextTotalPieces,
+        totalPlaceables: nextTotalPlaceables,
         lastFetchedAt: Date.now()
       };
       // Re-run the instance-name effect on the same cycle. Its own dependency
@@ -484,18 +575,20 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
     } finally {
       if (requestIdRef.current === requestId) setLoading(false);
     }
-  }, [onError]);
+  }, [onError, playerId, scope, access]);
 
   useEffect(() => {
     let cancelled = false;
     let timeoutId: number | undefined;
     const params = { q: submittedQ, page, pageSize, sortColumn, sortDirection };
-    const cacheHit = sameView(basesCache, submittedQ, page, pageSize, sortColumn, sortDirection) ? basesCache : null;
+    const cacheHit = sameView(basesCache, scope, submittedQ, page, pageSize, sortColumn, sortDirection) ? basesCache : null;
 
     if (cacheHit) {
       setRows(cacheHit.rows);
       setTotalCount(cacheHit.totalCount);
       setTotalBases(cacheHit.totalBases);
+      setTotalOwned(cacheHit.totalOwned);
+      setTotalShared(cacheHit.totalShared);
       setTotalPieces(cacheHit.totalPieces);
       setTotalPlaceables(cacheHit.totalPlaceables);
       setLoading(false);
@@ -516,7 +609,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
     void load(params, { silent: Boolean(cacheHit) }).then(scheduleNext);
 
     const onVisibilityChange = () => {
-      const currentCache = sameView(basesCache, submittedQ, page, pageSize, sortColumn, sortDirection) ? basesCache : null;
+      const currentCache = sameView(basesCache, scope, submittedQ, page, pageSize, sortColumn, sortDirection) ? basesCache : null;
       if (document.visibilityState === "visible" && (!currentCache || Date.now() - currentCache.lastFetchedAt >= BASES_AUTO_REFRESH_MS)) {
         void load(params, { silent: true }).then(scheduleNext);
       }
@@ -528,7 +621,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
       window.clearTimeout(timeoutId);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [submittedQ, page, pageSize, sortColumn, sortDirection, load]);
+  }, [submittedQ, page, pageSize, sortColumn, sortDirection, load, scope]);
 
   // Upgrade "Partition 59" to "Deep Desert PvE" once the names arrive. One
   // request pair per distinct partition map on the page (the dimension table
@@ -591,32 +684,12 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
     return () => window.clearTimeout(timer);
   }, [refillStatus, refillResult]);
 
-  async function handleDownloadBlueprint(row: BaseRow) {
-    const id = String(row.base_id);
-    setDownloadingId(id);
-    try {
-      const response = await apiDownload(`/api/bases/${encodeURIComponent(id)}/export`);
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      const responseFilename = response.headers.get("content-disposition")?.match(/filename="([^"]+)"/)?.[1];
-      anchor.download = responseFilename
-        || `${String(row.owner_name || "unknown_player").replace(/[^a-zA-Z0-9_-]/g, "_")}_base_${id}.json`;
-      anchor.click();
-      URL.revokeObjectURL(url);
-    } catch (error) {
-      onError(errorText(error));
-    } finally {
-      setDownloadingId("");
-    }
-  }
-
   async function handleRefillGenerators(base: BaseRow) {
     const id = String(base.base_id);
-    const count = Number(base.generatorCount) || 0;
+    const count = refillDeviceCount(base);
+    const hasWindtraps = (Number(base.windtrapCount) || 0) > 0;
     const confirmed = await confirmAction(
-      `Refill ${count} power device${count === 1 ? "" : "s"} at "${base.name || `base ${id}`}" to full fuel?`,
+      `Refill ${count} power device${count === 1 ? "" : "s"} at "${base.name || `base ${id}`}" to full ${hasWindtraps ? "fuel and filters" : "fuel"}?`,
       {
         title: "Refill Generators",
         confirmLabel: "Refill",
@@ -780,6 +853,31 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
     }
   }
 
+  // Mirrors handleCancelQueuedDelete. Discards every queued piece for the
+  // base at once -- the queue holds one entry per base, not per piece.
+  async function handleCancelQueuedChildAccess(base: BaseRow) {
+    const id = String(base.base_id);
+    const label = base.name || `base ${id}`;
+    const count = queuedChildAccessBaseIds.get(id) || 0;
+    const confirmed = await confirmAction(
+      `Discard the ${count} queued permission change(s) for "${label}"?`,
+      { title: "Discard Queued Permission Changes", confirmLabel: "Discard", danger: true });
+    if (!confirmed) return;
+    onError("");
+    setCancelingChildAccessId(id);
+    try {
+      await basesApi.cancelQueuedChildAccess(id);
+      writeRefillStatus(`Queued permission changes for "${label}" were discarded.`, "ok");
+      await refreshPendingChildAccess();
+    } catch (error) {
+      const text = errorText(error);
+      writeRefillStatus(text, "fail");
+      onError(text);
+    } finally {
+      setCancelingChildAccessId("");
+    }
+  }
+
   async function handleCancelQueuedDelete(base: BaseRow) {
     const id = String(base.base_id);
     const label = base.name || `base ${id}`;
@@ -808,6 +906,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
       const state = await basesApi.autoRefill();
       setAutoRefillBases(new Map(state.bases.map((entry) => [String(entry.baseId), entry])));
       setAutoRefillThreshold(state.thresholdPercent);
+      setAutoRefillWindtrapThreshold(state.windtrapThresholdPercent ?? 40);
       setAutoRefillIntervalHours(state.intervalHours);
       setAutoRefillUnavailable(false);
     } catch {
@@ -853,7 +952,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
         {
           title: "Auto-Refill",
           confirmLabel: "Turn On",
-          warning: `Every ${autoRefillIntervalHours}h this base is checked, and a refill is queued if any generator holds less than ${autoRefillThreshold}% of its fuel cap. Queued refills are written the next time this base's map restarts or stops — auto-refill never restarts a map by itself.`
+          warning: `Every ${autoRefillIntervalHours}h this base is checked, and a refill is queued if any generator holds less than ${autoRefillThreshold}% of its fuel cap or any windtrap less than ${autoRefillWindtrapThreshold}% of its filters. Queued refills are written the next time this base's map restarts or stops — auto-refill never restarts a map by itself.`
         }
       );
       if (!confirmed) return;
@@ -970,7 +1069,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
   // flushQueuedGeneratorRefills and flushQueuedWaterRefills unconditionally --
   // so one restart call covers a target with fuel, water, or both queued, and
   // the combined banner below only needs a single handler rather than two.
-  async function handleRestartForCombinedQueue(group: { map: string; partitionId: number; partitionMap: string; dimensionIndex: number; fuelCount: number; waterCount: number; deleteCount: number }) {
+  async function handleRestartForCombinedQueue(group: CombinedQueueTarget) {
     const target = queueRestartTarget(group.partitionMap, group.partitionId, group.dimensionIndex);
     if (target.kind === "none") return;
     const key = `${group.map}|${group.partitionId}`;
@@ -978,6 +1077,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
     if (group.fuelCount) parts.push(`${group.fuelCount} queued generator refill${group.fuelCount === 1 ? "" : "s"}`);
     if (group.waterCount) parts.push(`${group.waterCount} queued water refill${group.waterCount === 1 ? "" : "s"}`);
     if (group.deleteCount) parts.push(`${group.deleteCount} queued base delete${group.deleteCount === 1 ? "" : "s"}`);
+    if (group.permissionCount) parts.push(`${group.permissionCount} queued permission change${group.permissionCount === 1 ? "" : "s"}`);
     onError("");
     const label = group.partitionMap || group.map;
     // Route through the restart queue: when it is enabled and players are online
@@ -987,7 +1087,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
     const gated = await runGatedRestart({
       restartGate,
       label,
-      note: `Applies ${parts.join(" and ")}. Players on this map are disconnected while it restarts.`,
+      note: `Applies ${parts.length > 2 ? `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}` : parts.join(" and ")}. Players on this map are disconnected while it restarts.`,
       target: target.kind === "sietch" || target.kind === "respawn" ? { partitionId: target.partitionId } : serviceRestartTarget(target.service),
       dispatch: (opts) => target.kind === "sietch" ? mapsApi.restartSietch(String(target.partitionId), { ...opts, label })
         : target.kind === "respawn" ? mapsApi.respawn(String(target.partitionId), "RESTART MAP", { ...opts, label })
@@ -1007,8 +1107,8 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
       // Report what the restart actually did. Without this the running line
       // stands forever and a failed restart reads as a successful one.
       const finished = await waitForTask(startedTask);
-      const [refreshedFuel, refreshedWater, refreshedDeletes] = await Promise.all([
-        refreshPendingRefills(), refreshPendingWaterRefills(), refreshPendingBaseDeletes()
+      const [refreshedFuel, refreshedWater, refreshedDeletes, refreshedPermissions] = await Promise.all([
+        refreshPendingRefills(), refreshPendingWaterRefills(), refreshPendingBaseDeletes(), refreshPendingChildAccess()
       ]);
       if (finished.status === "succeeded") {
         // The flush races the restart's own write-safety window, so a
@@ -1018,15 +1118,16 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
           pendingRefillCountForPartition(refreshedFuel, group.partitionId)
           || pendingRefillCountForPartition(refreshedWater, group.partitionId)
           || pendingRefillCountForPartition(refreshedDeletes, group.partitionId)
+          || childAccessPieceCountForPartition(refreshedPermissions, group.partitionId)
         );
         writeRefillStatus(
           stillQueued
-            ? `${label} restarted. Its queued refills and deletes are still queued and will apply once the map is confirmed down.`
-            : `${label} restarted. Any refills and deletes queued for it have been applied.`,
+            ? `${label} restarted. Its queued base writes are still queued and will apply once the map is confirmed down.`
+            : `${label} restarted. Any base writes queued for it have been applied.`,
           "ok"
         );
       } else {
-        const text = `${label} restart ${finished.status}. Its refills are still queued.`;
+        const text = `${label} restart ${finished.status}. Its queued base writes are still queued.`;
         writeRefillStatus(text, "fail");
         onError(text);
       }
@@ -1039,8 +1140,8 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
     }
   }
 
-  // Move focus into a row that has just opened. The expanded panel renders below
-  // the row, so without this the focus stays on the chevron and the content can
+  // Move focus into a base's details after it has opened. Without this the focus
+  // stays on the chevron and the content can
   // open below the fold. Keyed on the base id alone: switching tabs already
   // focuses the tab that was clicked, and re-focusing on every tab change would
   // fight the user.
@@ -1075,10 +1176,62 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
     target.scrollIntoView?.({ block: "nearest" });
   }, [expandedBaseId, rows]);
 
+  // The expanded row's own height varies with its content (a wrapped
+  // Generators/Shared With cell makes some bases' rows taller than others),
+  // so the sticky tablist below it can't use a fixed pixel offset -- it has
+  // to know this specific row's real height. Measured via ResizeObserver
+  // (not just once on expand) because the row can reflow after mount, e.g.
+  // once generator data finishes loading and wraps onto another line.
+  // Must stay above the `loading` early return -- see the effect above.
+  useEffect(() => {
+    if (!expandedBaseId) return undefined;
+    const wrap = document.querySelector<HTMLElement>(".table-wrap.bases-table-wrap");
+    const row = wrap?.querySelector<HTMLElement>("tr.row-expanded");
+    if (!wrap || !row) return undefined;
+    // The header row is measured for the same reason as the expanded row, and
+    // must not be assumed either: the table is table-layout:fixed with
+    // percentage columns and `th { white-space: normal }`, so headers wrap to
+    // two or three lines as the viewport narrows -- and the fixed-width
+    // actions column squeezes the percentage columns further. A hardcoded
+    // header height leaves the expanded row stuck at the same offset as a
+    // taller header, which then paints over it (the header has the higher
+    // z-index).
+    const header = wrap.querySelector<HTMLElement>(".bases-table > thead > tr");
+    const update = () => {
+      wrap.style.setProperty("--bases-expanded-row-height", `${row.getBoundingClientRect().height}px`);
+      if (header) wrap.style.setProperty("--bases-header-height", `${header.getBoundingClientRect().height}px`);
+    };
+    const clear = () => {
+      wrap.style.removeProperty("--bases-expanded-row-height");
+      wrap.style.removeProperty("--bases-header-height");
+    };
+    update();
+    // Not available under jsdom in tests -- degrade to the one-time
+    // measurement above rather than throwing.
+    if (typeof ResizeObserver === "undefined") return clear;
+    const observer = new ResizeObserver(update);
+    observer.observe(row);
+    if (header) observer.observe(header);
+    return () => {
+      observer.disconnect();
+      clear();
+    };
+  }, [expandedBaseId, expandedTab, rows]);
+
+  const panelClassName = embedded ? "playerAdmin_box player-bases-panel" : "panel";
+  const PanelHeading = embedded ? "h4" : "h2";
+
   if (loading) {
-    return <section className="panel">
-      <div className="panel-title"><h2>Bases</h2></div>
-      <div className="loading-panel">
+    return <section className={panelClassName}>
+      <div className="panel-title">
+        <div>
+          <PanelHeading>Bases</PanelHeading>
+          {playerId && <p className="playerAdmin_note">{describePlayerAccess("Bases", playerName, access)} Expand a row to use the same tools available on the main Bases page.</p>}
+        </div>
+        {viewSwitch}
+        {playerId && <div className="action-row players-filter-row"><PlayerAccessSelect value={access} onChange={changeAccess} disabled /></div>}
+      </div>
+      <div className="loading-panel" role="status">
         <span className="spinner" aria-hidden="true" />
         <strong className="loading-dots">Loading Bases</strong>
       </div>
@@ -1119,18 +1272,31 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
   });
   const staleDeleteTargetKeys = new Set(staleQueuedDeletes.map((entry) => `${entry.map || "Unknown"}|${entry.partitionId}`));
 
+  // Mirrors the block above, for the pending base-permission queue. The badge
+  // counts pieces, not bases: one base with six queued pieces is six pending
+  // writes, and reading it as "1" would understate what a restart applies.
+  const pendingChildAccessTotal = (pendingChildAccess?.pending || [])
+    .reduce((total, entry) => total + entry.updates.length, 0);
+  const queuedChildAccessBaseIds = new Map((pendingChildAccess?.pending || [])
+    .map((entry) => [String(entry.baseId), entry.updates.length] as const));
+  const staleQueuedChildAccess = (pendingChildAccess?.pending || []).filter((entry) => {
+    const queuedAt = Date.parse(entry.queuedAt);
+    return Number.isFinite(queuedAt) && Date.now() - queuedAt > STALE_QUEUED_REFILL_MS;
+  });
+  const staleChildAccessTargetKeys = new Set(staleQueuedChildAccess.map((entry) => `${entry.map || "Unknown"}|${entry.partitionId}`));
+
   // Combined queue banner: one box covering all three queues. Merge byTarget
   // rows keyed on map|partitionId -- restarting a target already flushes
   // whichever queue(s) are waiting on it (see handleRestartForCombinedQueue),
   // so one restart button per target is correct even though the fuel/water/
   // delete counts come from three separate endpoints.
-  type CombinedQueueTarget = { map: string; partitionId: number; partitionMap: string; dimensionIndex: number; fuelCount: number; waterCount: number; deleteCount: number };
+  type CombinedQueueTarget = { map: string; partitionId: number; partitionMap: string; dimensionIndex: number; fuelCount: number; waterCount: number; deleteCount: number; permissionCount: number };
   const combinedQueueTargets: CombinedQueueTarget[] = (() => {
     const byKey = new Map<string, CombinedQueueTarget>();
     for (const group of pendingRefills?.byTarget || []) {
       byKey.set(`${group.map}|${group.partitionId}`, {
         map: group.map, partitionId: group.partitionId, partitionMap: group.partitionMap, dimensionIndex: group.dimensionIndex,
-        fuelCount: group.count, waterCount: 0, deleteCount: 0
+        fuelCount: group.count, waterCount: 0, deleteCount: 0, permissionCount: 0
       });
     }
     for (const group of pendingWaterRefills?.byTarget || []) {
@@ -1139,7 +1305,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
       if (existing) existing.waterCount = group.count;
       else byKey.set(key, {
         map: group.map, partitionId: group.partitionId, partitionMap: group.partitionMap, dimensionIndex: group.dimensionIndex,
-        fuelCount: 0, waterCount: group.count, deleteCount: 0
+        fuelCount: 0, waterCount: group.count, deleteCount: 0, permissionCount: 0
       });
     }
     for (const group of pendingBaseDeletes?.byTarget || []) {
@@ -1148,24 +1314,40 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
       if (existing) existing.deleteCount = group.count;
       else byKey.set(key, {
         map: group.map, partitionId: group.partitionId, partitionMap: group.partitionMap, dimensionIndex: group.dimensionIndex,
-        fuelCount: 0, waterCount: 0, deleteCount: group.count
+        fuelCount: 0, waterCount: 0, deleteCount: group.count, permissionCount: 0
+      });
+    }
+    // Counted from the entries rather than byTarget: byTarget counts queued
+    // bases, and this badge counts pieces, matching the headline above.
+    for (const group of pendingChildAccess?.byTarget || []) {
+      const key = `${group.map}|${group.partitionId}`;
+      const pieces = (pendingChildAccess?.pending || [])
+        .filter((entry) => `${entry.map || "Unknown"}|${entry.partitionId}` === key)
+        .reduce((total, entry) => total + entry.updates.length, 0);
+      const existing = byKey.get(key);
+      if (existing) existing.permissionCount = pieces;
+      else byKey.set(key, {
+        map: group.map, partitionId: group.partitionId, partitionMap: group.partitionMap, dimensionIndex: group.dimensionIndex,
+        fuelCount: 0, waterCount: 0, deleteCount: 0, permissionCount: pieces
       });
     }
     return [...byKey.values()];
   })();
-  const combinedQueueTotal = pendingTotal + pendingWaterTotal + pendingDeleteTotal;
+  const combinedQueueCounts: QueueCounts = {
+    fuel: pendingTotal, water: pendingWaterTotal,
+    deletes: pendingDeleteTotal, vehicleDeletes: 0, permissions: pendingChildAccessTotal
+  };
+  const combinedQueueTotal = queueCountsTotal(combinedQueueCounts);
   // The banner's own heading names only the kinds of writes actually queued,
   // so "Refills queued" stays exactly as it read before this feature existed
   // when there is nothing to delete, rather than a permanently generic label.
-  const combinedQueueHeadingParts = [
-    ...(pendingTotal > 0 || pendingWaterTotal > 0 ? ["Refills"] : []),
-    ...(pendingDeleteTotal > 0 ? ["Deletes"] : [])
-  ];
+  // Shared with the Server panel's battlegroup note so both word it the same.
+  const combinedQueueHeading = queueCountsSummary(combinedQueueCounts);
   // Whether any stale entry actually has a restart button in the list above. A
   // group whose partition does not resolve renders "Restart this map from the
   // Maps tab" instead, so pointing at a button that is not there would be wrong.
-  const combinedStaleTargetKeys = new Set([...staleTargetKeys, ...staleWaterTargetKeys, ...staleDeleteTargetKeys]);
-  const combinedStaleCount = staleQueued.length + staleQueuedWater.length + staleQueuedDeletes.length;
+  const combinedStaleTargetKeys = new Set([...staleTargetKeys, ...staleWaterTargetKeys, ...staleDeleteTargetKeys, ...staleChildAccessTargetKeys]);
+  const combinedStaleCount = staleQueued.length + staleQueuedWater.length + staleQueuedDeletes.length + staleQueuedChildAccess.length;
   const combinedStaleHasRestartButton = combinedQueueTargets.some((group) =>
     combinedStaleTargetKeys.has(`${group.map}|${group.partitionId}`)
     && queueRestartTarget(group.partitionMap, group.partitionId, group.dimensionIndex).kind !== "none");
@@ -1210,17 +1392,44 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
   }
 
   return (
-    <section className="panel">
+    <section className={panelClassName}>
       <div className="panel-title">
-        <h2>Bases</h2>
-        <div className="action-row">
+        <div>
+          <PanelHeading>Bases</PanelHeading>
+          {playerId && <p className="playerAdmin_note">{describePlayerAccess("Bases", playerName, access)} Expand a row to use the same tools available on the main Bases page.</p>}
+        </div>
+        {viewSwitch}
+        <div className={playerId ? "action-row players-filter-row" : "action-row"}>
+          {/* Hidden in the per-player embed -- that view is one player's lens
+              and these settings are global -- and hidden without a refill
+              queue, matching the per-base toggles. */}
+          {!playerId && (canQueue || canQueueWater) && (
+            <button
+              className="bases-settings-button"
+              title="Auto-refill settings"
+              aria-label="Auto-refill settings"
+              onClick={() => setAutoRefillSettingsOpen(true)}
+            ><Settings size={16} /></button>
+          )}
+          {playerId && <PlayerAccessSelect value={access} onChange={changeAccess} selectRef={accessSelectRef} />}
           <button onClick={() => void load({ q: submittedQ, page, pageSize, sortColumn, sortDirection })}>Refresh</button>
         </div>
       </div>
-      <p className="action-help-note">
-        Total Bases: {totalBases.toLocaleString()} · Total Building Pieces: {totalPieces.toLocaleString()} · Total Placeables: {totalPlaceables.toLocaleString()}
-      </p>
-      {stalledCombinedCount > 0 && <div className="bases-stalled-banner" role="alert">
+      {playerId
+        ? <div className="player-vehicles-summary player-bases-summary" aria-label="Player base totals">
+            {access === "all"
+              ? <>
+                  <span><strong>{totalBases.toLocaleString()}</strong> Total</span>
+                  <span><strong>{totalOwned.toLocaleString()}</strong> Owned</span>
+                  <span><strong>{totalShared.toLocaleString()}</strong> Shared</span>
+                </>
+              : <span><strong>{totalBases.toLocaleString()}</strong> {accessCountLabel(access)}</span>}
+            <span><strong>{totalPieces.toLocaleString()}</strong> Building Pieces</span>
+            <span><strong>{totalPlaceables.toLocaleString()}</strong> Placeables</span>
+          </div>
+        : <p className="action-help-note">Total Bases: {totalBases.toLocaleString()} · Total Building Pieces: {totalPieces.toLocaleString()} · Total Placeables: {totalPlaceables.toLocaleString()}</p>}
+      {playerId && totalCount > rows.length && <p className="playerAdmin_note danger" role="status">This player has more bases than can be listed here; some bases may be missing.</p>}
+      {!playerId && stalledCombinedCount > 0 && <div className="bases-stalled-banner" role="alert">
         <p className="bases-stalled-banner-title">
           {stalledCombinedCount.toLocaleString()} base{stalledCombinedCount === 1 ? " has" : "s have"} stalled auto-refill
           {stalledFuelCount > 0 && <span className="bases-queue-badge bases-queue-badge-fuel">
@@ -1234,7 +1443,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
           Auto-refill queued 3 refills without raising the {stalledFuelCount > 0 && stalledWaterCount > 0 ? "fuel or water" : stalledFuelCount > 0 ? "fuel" : "water"} on {stalledCombinedCount === 1 ? "this base" : "these bases"}. Refill manually to find out why, or turn auto-refill off and back on to resume trying.
         </p>
       </div>}
-      {combinedQueueTotal > 0 && <div className="bases-pending-refills">
+      {!playerId && combinedQueueTotal > 0 && <div className="bases-pending-refills">
         {/* Per-resource counts rather than two bare icons over a combined
             total: "2 refills queued" beside a fuel and a water icon does not
             say which is which, and the split is what decides whether you go
@@ -1244,16 +1453,8 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
           {/* Explicit spaces around the badges: they are inline elements, so
               without them the text content reads "Refills queued2 fuel1 water"
               to a screen reader and to anyone copying it. */}
-          {combinedQueueHeadingParts.join(" and ")} queued
-          {pendingTotal > 0 && <> <span className="bases-queue-badge bases-queue-badge-fuel">
-            <Fuel size={13} aria-hidden="true" />{pendingTotal.toLocaleString()} fuel
-          </span></>}
-          {pendingWaterTotal > 0 && <> <span className="bases-queue-badge bases-queue-badge-water">
-            <Droplet size={13} aria-hidden="true" />{pendingWaterTotal.toLocaleString()} water
-          </span></>}
-          {pendingDeleteTotal > 0 && <> <span className="bases-queue-badge bases-queue-badge-delete">
-            <Trash2 size={13} aria-hidden="true" />{pendingDeleteTotal.toLocaleString()} delete{pendingDeleteTotal === 1 ? "" : "s"}
-          </span></>}
+          {combinedQueueHeading} queued
+          {" "}<QueueBadges counts={combinedQueueCounts} />
         </p>
         <p className="action-help-note">
           {/* No battlegroup-level advice here: this banner only offers the
@@ -1272,15 +1473,10 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
                 {group.partitionMap && group.partitionMap !== group.map ? ` (${group.partitionMap})` : ""}
                 {group.partitionId ? ` · partition ${group.partitionId}` : ""}
               </span>
-              {group.fuelCount > 0 && <span className="bases-queue-badge bases-queue-badge-fuel">
-                <Fuel size={13} aria-hidden="true" />{group.fuelCount.toLocaleString()}
-              </span>}
-              {group.waterCount > 0 && <span className="bases-queue-badge bases-queue-badge-water">
-                <Droplet size={13} aria-hidden="true" />{group.waterCount.toLocaleString()}
-              </span>}
-              {group.deleteCount > 0 && <span className="bases-queue-badge bases-queue-badge-delete">
-                <Trash2 size={13} aria-hidden="true" />{group.deleteCount.toLocaleString()}
-              </span>}
+              <QueueBadges labels={false} counts={{
+                fuel: group.fuelCount, water: group.waterCount,
+                deletes: group.deleteCount, vehicleDeletes: 0, permissions: group.permissionCount
+              }} />
               {target.kind === "none"
                 ? <span className="muted">Restart this map from the Maps tab</span>
                 : restartingTargets.includes(key)
@@ -1303,7 +1499,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
         {refillStatus === "running" && <span className="spinner" aria-hidden="true" />}
         <strong className={refillStatus === "running" ? "loading-dots" : ""}>{refillResult}</strong>
       </p>}
-      <div className="action-row bases-search-row">
+      {!playerId && <div className="action-row bases-search-row">
         <input
           value={q}
           onChange={(event) => setQ(event.target.value)}
@@ -1312,7 +1508,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
         />
         <button onClick={submitSearch}>Search</button>
         <button onClick={handleClearSearch} disabled={!q && !submittedQ}>Clear</button>
-      </div>
+      </div>}
       <DataTable
         rows={rows}
         columns={["base_id", "name", "base_type", "owner_name", "shared_with", "map", "generators", "piece_count", "placeable_count", "coordinates"]}
@@ -1336,7 +1532,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
         action={(row) => {
           const base = row as BaseRow;
           const id = String(base.base_id);
-          const refillable = canRefill && base.generatorDataAvailable && (Number(base.generatorCount) || 0) > 0;
+          const refillable = canRefill && base.generatorDataAvailable && refillDeviceCount(base) > 0;
           // Auto-refill is shown by restyling this button rather than by adding a
           // control: the column is a fixed width and already holds one button per
           // refillable resource. The button stays clickable when enrolled, so
@@ -1346,9 +1542,12 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
           const autoRefillStalled = Boolean(autoRefillEntryForRow?.stalledAt);
           const refillTitle = !canRefill ? "Refill is unsupported on this database"
             : !base.generatorDataAvailable ? "Generator data is unavailable for this base"
-            : !refillable ? "No generators at this base"
+            : !refillable ? "No generators or windtraps at this base"
             : autoRefillStalled ? `Auto-refill has stalled after ${autoRefillEntryForRow?.consecutiveQueues || 3} refills that did not raise the fuel. Click to refill now.`
             : autoRefillOn ? `Auto-refill is on — checked every ${autoRefillIntervalHours}h below ${autoRefillThreshold}%. Click to refill now.`
+            // The accessible name stays "Refill Generators" for every base; only
+            // this visible tooltip names what a windtrap-only base will get.
+            : (Number(base.generatorCount) || 0) === 0 ? "Refill Windtrap Filters"
             : "Refill Generators";
           // Water isn't bundled into this row's data (fetched on demand in the
           // Water tab instead), so there is no per-row "has water storage"
@@ -1409,7 +1608,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
                   disabled={deletePending || !canRefillWater || refillingWaterId === id}
                   onClick={(event) => { event.stopPropagation(); void handleRefillWater(base); }}
                 ><Droplet size={16} /></button>}
-            <button className="icon-toggle-button" title="Download Base as Blueprint" aria-label="Download Base as Blueprint" disabled={downloadingId === id} onClick={(event) => { event.stopPropagation(); void handleDownloadBlueprint(base); }}><Download size={16} /></button>
+            <button className="icon-toggle-button" title="Download Base" aria-label="Download Base" onClick={(event) => { event.stopPropagation(); setDownloadTarget({ id, name: String(base.name || ""), ownerName: String(base.owner_name || "") }); }}><Download size={16} /></button>
             {canDeleteBase && (deletePending
               ? <span className="bases-queued-delete" title="Delete queued — applies when this map next restarts or stops">
                   <Trash2 size={16} aria-label="Delete queued for this base" />
@@ -1428,6 +1627,23 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
                   disabled={deletingId === id}
                   onClick={(event) => { event.stopPropagation(); void handleDeleteBase(base); }}
                 ><Trash2 size={16} /></button>)}
+            {/* Unlike the four controls above, this one has no always-present
+                button: permissions are edited inside the expanded row, not
+                from here. It appears only while something is queued, so it
+                costs the fixed-width column nothing the rest of the time. */}
+            {queuedChildAccessBaseIds.has(id) && <span
+              className="bases-queued-permission"
+              title={`${queuedChildAccessBaseIds.get(id)} permission change(s) queued — applies when this map next restarts or stops`}
+            >
+              <KeyRound size={16} aria-label="Permission changes queued for this base" />
+              <button
+                className="icon-toggle-button bases-queued-permission-cancel"
+                title="Discard Queued Permission Changes"
+                aria-label="Discard Queued Permission Changes"
+                disabled={cancelingChildAccessId === id}
+                onClick={(event) => { event.stopPropagation(); void handleCancelQueuedChildAccess(base); }}
+              ><X size={14} /></button>
+            </span>}
           </span>;
         }}
         secondaryActionPosition="start"
@@ -1457,13 +1673,90 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
         rowKey={(row) => String(row.base_id)}
         onRowClick={(row) => toggleExpanded(String(row.base_id))}
         isRowExpanded={(row) => expandedBaseId === String(row.base_id)}
+        // Its own <tr>, sticky beneath the expanded row above (see that CSS
+        // rule's comment): position: sticky on an element nested inside a
+        // <td> does not reliably hold once scrolled past, only on a <tr>
+        // itself -- verified live. Everything the tab strip needs
+        // (expandedTab, setExpandedTab, the capability flags) is already in
+        // this component's scope, same as renderExpandedRow below.
+        renderExpandedSticky={(row) => {
+          const base = row as BaseRow;
+          const id = String(base.base_id);
+          return (
+            <div className="bases-expanded-tablist" role="tablist" aria-label="Base details" onClick={(event) => event.stopPropagation()}>
+              <button
+                role="tab"
+                id={`bases-tab-power-${id}`}
+                aria-selected={expandedTab === "power"}
+                aria-controls={`bases-panel-power-${id}`}
+                className={`bases-expanded-tab${expandedTab === "power" ? " active" : ""}`}
+                onClick={() => setExpandedTab("power")}
+              ><Zap size={15} aria-hidden="true" />Power</button>
+              <button
+                role="tab"
+                id={`bases-tab-water-${id}`}
+                aria-selected={expandedTab === "water"}
+                aria-controls={`bases-panel-water-${id}`}
+                className={`bases-expanded-tab${expandedTab === "water" ? " active" : ""}`}
+                onClick={() => setExpandedTab("water")}
+              ><Droplet size={15} aria-hidden="true" />Water</button>
+              <button
+                role="tab"
+                id={`bases-tab-inventory-${id}`}
+                aria-selected={expandedTab === "inventory"}
+                aria-controls={`bases-panel-inventory-${id}`}
+                className={`bases-expanded-tab${expandedTab === "inventory" ? " active" : ""}`}
+                onClick={() => setExpandedTab("inventory")}
+              ><Boxes size={15} aria-hidden="true" />Inventory</button>
+              <button
+                role="tab"
+                id={`bases-tab-land-claim-${id}`}
+                aria-selected={expandedTab === "land-claim"}
+                aria-controls={`bases-panel-land-claim-${id}`}
+                className={`bases-expanded-tab${expandedTab === "land-claim" ? " active" : ""}`}
+                onClick={() => setExpandedTab("land-claim")}
+              ><Grid3X3 size={15} aria-hidden="true" />Land Claim Editor</button>
+              {canEditPermissions && <button
+                role="tab"
+                id={`bases-tab-permissions-${id}`}
+                aria-selected={expandedTab === "permissions"}
+                aria-controls={`bases-panel-permissions-${id}`}
+                className={`bases-expanded-tab${expandedTab === "permissions" ? " active" : ""}`}
+                // The label wraps onto two deliberate lines, so name the tab
+                // explicitly rather than letting the accessible name be
+                // assembled from two adjacent inline spans.
+                aria-label="Sub-Fief Permissions"
+                onClick={() => setExpandedTab("permissions")}
+              ><Users size={15} aria-hidden="true" /><span className="bases-expanded-tab-lines">
+                <span>Sub-Fief</span>
+                <span>Permissions</span>
+              </span></button>}
+              {canEditChildAccess && <button
+                role="tab"
+                id={`bases-tab-child-access-${id}`}
+                aria-selected={expandedTab === "child-access"}
+                aria-controls={`bases-panel-child-access-${id}`}
+                className={`bases-expanded-tab${expandedTab === "child-access" ? " active" : ""}`}
+                // See the Sub-Fief Permissions tab's matching comment: the
+                // label wraps onto two deliberate lines, so name the tab
+                // explicitly rather than letting the accessible name be
+                // assembled from two adjacent inline spans.
+                aria-label="Base Permissions"
+                onClick={() => setExpandedTab("child-access")}
+              ><Lock size={15} aria-hidden="true" /><span className="bases-expanded-tab-lines">
+                <span>Base</span>
+                <span>Permissions</span>
+              </span></button>}
+            </div>
+          );
+        }}
         renderExpandedRow={(row) => {
           const base = row as BaseRow;
           const id = String(base.base_id);
           const renderPower = () => {
           if (!base.generatorDataAvailable) return <p className="muted">Generator data is currently unavailable.</p>;
           const generators = base.generators ?? [];
-          if (!generators.length) return <p className="muted">No generators built at this base.</p>;
+          if (!generators.length) return <p className="muted">No generators or windtraps built at this base.</p>;
           const autoRefillEntry = autoRefillBases.get(id);
           const savingAutoRefill = savingAutoRefillId === id;
           const lastChecked = autoRefillEntry?.lastCheckedAt ? formatAgo(autoRefillEntry.lastCheckedAt) : "";
@@ -1475,7 +1768,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
           // InfoTooltip's popover is absolutely positioned with its own fixed
           // max-width, so it has no such constraint -- and it matches the
           // rest of the app rather than a bare native title attribute.
-          const autoRefillTooltip = `Checked every ${autoRefillIntervalHours}h. Queues a refill when any generator drops below ${autoRefillThreshold}%.`
+          const autoRefillTooltip = `Checked every ${autoRefillIntervalHours}h. Queues a refill when any generator drops below ${autoRefillThreshold}% or any windtrap below ${autoRefillWindtrapThreshold}%.`
             + (autoRefillEntry && lastChecked ? ` Last checked ${lastChecked}${autoRefillEntry.lastLowestPercent === null ? "" : ` — lowest ${autoRefillEntry.lastLowestPercent}%`}.` : "")
             + (autoRefillEntry && !lastChecked ? " Not checked yet." : "")
             + (autoRefillUnavailable ? " Last known state — the latest read failed." : "");
@@ -1512,7 +1805,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
                   {/* Giving up has to be visible, or the operator believes fuel is
                       being handled while this base quietly stays empty. */}
                   {autoRefillEntry?.stalledAt && <p className="bases-auto-refill-stalled" role="alert">
-                    Paused after {autoRefillEntry.consecutiveQueues} refills that did not raise this base's fuel. Refill manually to check why, or turn auto-refill off and on to resume.
+                    Paused after {autoRefillEntry.consecutiveQueues} refills that did not raise this base's fuel or filters. Refill manually to check why, or turn auto-refill off and on to resume.
                   </p>}
                 </>}
               </div>}
@@ -1520,13 +1813,15 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
                 {QUEUED_RESERVE_EXPLANATION}
               </p>
               <div className="bases-card-grid">
-              {generators.map((generator, index) => (
+              {generators.map((generator, index) => {
+                const windtrap = isWindtrapType(generator.type);
+                return (
                 <div className="bases-card" key={`${generator.type}-${index}`}>
                   <div className="bases-card-title">{generator.name}</div>
                   <dl className="bases-card-stats">
-                    <dt>Generators</dt>
+                    <dt>{windtrap ? "Windtraps" : "Generators"}</dt>
                     <dd>{generator.generatorCount.toLocaleString()}</dd>
-                    <dt>Fuel Queued</dt>
+                    <dt>{windtrap ? "Filters Queued" : "Fuel Queued"}</dt>
                     <dd>{generator.fuelCells.toLocaleString()} {generator.fuelName}{generator.fuelCells === 1 ? "" : "s"}</dd>
                     {!hasNoQueuedFuel(generator.unstockedCount, generator.generatorCount) ? (
                       <>
@@ -1536,13 +1831,14 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
                     ) : null}
                     {generator.unstockedCount ? (
                       <>
-                        <dt>No Queued Fuel</dt>
+                        <dt>{windtrap ? "No Queued Filters" : "No Queued Fuel"}</dt>
                         <dd>{generator.unstockedCount.toLocaleString()} of {generator.generatorCount.toLocaleString()}</dd>
                       </>
                     ) : null}
                   </dl>
                 </div>
-              ))}
+                );
+              })}
               </div>
             </div>
           );
@@ -1558,50 +1854,11 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
 
           // Power and Water always render (Water needs no capability the way
           // Permissions does -- see baseWater's "no capability gate" note in
-          // the plan); Permissions only when the schema supports it.
+          // the plan); Permissions only when the schema supports it. The tab
+          // strip itself now renders via renderExpandedSticky above, in its
+          // own sticky <tr> -- this is the tabpanel content only.
           return (
             <div className="bases-expanded-tabs" onClick={(event) => event.stopPropagation()}>
-              <div className="bases-expanded-tablist" role="tablist" aria-label="Base details">
-                <button
-                  role="tab"
-                  id={`bases-tab-power-${id}`}
-                  aria-selected={expandedTab === "power"}
-                  aria-controls={`bases-panel-power-${id}`}
-                  className={`bases-expanded-tab${expandedTab === "power" ? " active" : ""}`}
-                  onClick={() => setExpandedTab("power")}
-                ><Zap size={15} aria-hidden="true" />Power</button>
-                <button
-                  role="tab"
-                  id={`bases-tab-water-${id}`}
-                  aria-selected={expandedTab === "water"}
-                  aria-controls={`bases-panel-water-${id}`}
-                  className={`bases-expanded-tab${expandedTab === "water" ? " active" : ""}`}
-                  onClick={() => setExpandedTab("water")}
-                ><Droplet size={15} aria-hidden="true" />Water</button>
-                <button
-                  role="tab"
-                  id={`bases-tab-inventory-${id}`}
-                  aria-selected={expandedTab === "inventory"}
-                  aria-controls={`bases-panel-inventory-${id}`}
-                  className={`bases-expanded-tab${expandedTab === "inventory" ? " active" : ""}`}
-                  onClick={() => setExpandedTab("inventory")}
-                ><Boxes size={15} aria-hidden="true" />Inventory</button>
-                {canEditPermissions && <button
-                  role="tab"
-                  id={`bases-tab-permissions-${id}`}
-                  aria-selected={expandedTab === "permissions"}
-                  aria-controls={`bases-panel-permissions-${id}`}
-                  className={`bases-expanded-tab${expandedTab === "permissions" ? " active" : ""}`}
-                  // The label wraps onto two deliberate lines, so name the tab
-                  // explicitly rather than letting the accessible name be
-                  // assembled from two adjacent inline spans.
-                  aria-label="Sub-Fief Permissions"
-                  onClick={() => setExpandedTab("permissions")}
-                ><Users size={15} aria-hidden="true" /><span className="bases-expanded-tab-lines">
-                  <span>Sub-Fief</span>
-                  <span>Permissions</span>
-                </span></button>}
-              </div>
               {expandedTab === "power"
                 ? <div role="tabpanel" id={`bases-panel-power-${id}`} aria-labelledby={`bases-tab-power-${id}`}>{renderPower()}</div>
                 : expandedTab === "water"
@@ -1632,7 +1889,17 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
                       onError={onError}
                     />
                   </div>
-                : <div role="tabpanel" id={`bases-panel-permissions-${id}`} aria-labelledby={`bases-tab-permissions-${id}`}>
+                : expandedTab === "land-claim"
+                ? <div role="tabpanel" id={`bases-panel-land-claim-${id}`} aria-labelledby={`bases-tab-land-claim-${id}`}>
+                    <BaseLandClaimTab
+                      baseId={id}
+                      baseName={String(base.name || `base ${id}`)}
+                      confirmAction={confirmAction}
+                      onError={onError}
+                    />
+                  </div>
+                : expandedTab === "permissions"
+                ? <div role="tabpanel" id={`bases-panel-permissions-${id}`} aria-labelledby={`bases-tab-permissions-${id}`}>
                     <BasePermissionsTab
                       baseId={id}
                       baseName={String(base.name || `base ${id}`)}
@@ -1645,13 +1912,24 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
                         void load({ q: submittedQ, page, pageSize, sortColumn, sortDirection }, { silent: true });
                       }}
                     />
+                  </div>
+                : <div role="tabpanel" id={`bases-panel-child-access-${id}`} aria-labelledby={`bases-tab-child-access-${id}`}>
+                    <BaseChildPermissionsTab
+                      baseId={id}
+                      baseName={String(base.name || `base ${id}`)}
+                      queueSupported={canQueueChildAccess}
+                      confirmAction={confirmAction}
+                      onError={onError}
+                    />
                   </div>}
             </div>
           );
         }}
-        emptyMessage="No bases have been found yet."
+        emptyMessage={playerId
+          ? `${playerName || "This player"} has no ${accessEmptyAdjective(access)}bases.${access === "all" ? "" : " Try another Permission level."}`
+          : "No bases have been found yet."}
       />
-      <div className="panel-title bases-pagination-footer">
+      {!playerId && <div className="panel-title bases-pagination-footer">
         <p className="action-help-note">
           Showing {rangeStart}-{rangeEnd} of {totalCount} rows.
         </p>
@@ -1668,7 +1946,15 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
           <button disabled={!hasNextPage} onClick={() => setPage(page + 1)}>Next</button>
           <button disabled={!hasNextPage} onClick={() => setPage(totalPages - 1)}>Last</button>
         </div>
-      </div>
+      </div>}
+      {autoRefillSettingsOpen && <AutoRefillSettingsOverlay
+        onClose={() => setAutoRefillSettingsOpen(false)}
+        // Both tooltips interpolate these values, so they read stale until
+        // the two enrollment GETs are refetched.
+        onSaved={() => { void refreshAutoRefill(); void refreshAutoRefillWater(); }}
+        onError={onError}
+      />}
+      {downloadTarget && <DownloadBaseDialog base={downloadTarget} onClose={() => setDownloadTarget(null)} />}
     </section>
   );
 }

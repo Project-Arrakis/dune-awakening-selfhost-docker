@@ -101,7 +101,8 @@ function fakeBlueprintDb(calls) {
         return { rows: [], rowCount: 1 };
       }
       if (text.includes("insert into dune.building_blueprint_pentashields")) {
-        pentashields.push({ blueprint_id: values[0], placeable_id: values[1], scale: [Number(values[2]), Number(values[3]), Number(values[4])] });
+        const scale = values.slice(2, 5).map(Number);
+        pentashields.push({ blueprint_id: values[0], placeable_id: values[1], scale });
         return { rows: [], rowCount: 1 };
       }
       if (text.includes("delete from dune.building_blueprint_pentashields")) {
@@ -253,7 +254,7 @@ test("import blueprint inserts placeables with 6-element transform", async () =>
   });
   assert.equal(placeables.length, 1);
   assert.equal(placeables[0].type, "Generator_Placeable");
-  assert.match(String(placeables[0].transform), /-149/);
+  assert.equal(placeables[0].transform, "{-149,968,386,180,10,5}");
 });
 
 test("import blueprint removes small and advanced Sub-Fief claim consoles", async () => {
@@ -312,8 +313,8 @@ test("import blueprint repairs the legacy live-export placeable rotation axis", 
     ]
   });
   assert.deepEqual(placeables.map((row) => row.transform), [
-    "{10,20,30,0,170,0}",
-    "{40,50,60,0,-10,0}"
+    "{10,20,30,170,0,0}",
+    "{40,50,60,-10,0,0}"
   ]);
 });
 
@@ -326,16 +327,19 @@ test("import blueprint preserves native placeable rotation axes", async () => {
     ]
   });
   assert.deepEqual(placeables.map((row) => row.transform), [
-    "{10,20,30,0,90,0}",
-    "{40,50,60,5,-90,2}"
+    "{10,20,30,90,0,0}",
+    "{40,50,60,-90,5,2}"
   ]);
 });
 
-test("import blueprint inserts pentashields with scale", async () => {
-  const { db, pentashields } = fakeBlueprintDb([]);
+test("import blueprint inserts pentashields with ordinary PostgreSQL scale bounds", async () => {
+  const calls = [];
+  const { db, pentashields } = fakeBlueprintDb(calls);
   await importBlueprint(db, 123, { pentashields: [SAMPLE_PENTASHIELD] });
   assert.equal(pentashields.length, 1);
   assert.deepEqual(pentashields[0].scale, [10, 2, 10]);
+  const insert = calls.find((call) => call.text.includes("insert into dune.building_blueprint_pentashields"));
+  assert.match(insert.text, /ARRAY\[\$3,\$4,\$5\]::smallint\[\]/);
 });
 
 test("import blueprint shifts zero-based IDs and preserves pentashield references", async () => {
@@ -411,6 +415,28 @@ test("export blueprint returns full JSON structure", async () => {
   assert.equal(result.instances.length, 2);
   assert.equal(result.placeables.length, 1);
   assert.equal(result.pentashields.length, 1);
+});
+
+test("export blueprint converts persisted yaw and pitch to Solido axes", async () => {
+  const { db, placeables } = fakeBlueprintDb([]);
+  placeables.push({
+    blueprint_id: 77,
+    placeable_id: 1,
+    building_type: "Generator_Placeable",
+    transform: [10, 20, 30, 135, 15, -5]
+  });
+
+  const result = await exportBlueprint(db, 77);
+  assert.deepEqual(result.placeables, [{
+    placeable_id: 1,
+    building_type: "Generator_Placeable",
+    x: 10,
+    y: 20,
+    z: 30,
+    rx: 15,
+    ry: 135,
+    rz: -5
+  }]);
 });
 
 test("export blueprint omits stored Sub-Fief claim consoles and their linked pentashields", async () => {

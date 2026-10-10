@@ -12,6 +12,11 @@ export const DISCORD_ADAPTER_ROUTES = Object.freeze({
   // by the general (non-Discord) /api/map/markers and /api/map/spice
   // routes, just not previously exposed to the Discord adapter.
   WORLD_CORIOLIS: "/api/integrations/discord/world/coriolis",
+  // WORLD_ATLAS (mentat#376, issue #938): public tier, per-sietch/per-Deep-
+  // Desert-instance summary (PvP/PvE, live sandstorm status, the farm-wide
+  // Coriolis cycle) -- reuses the same combat-state/Coriolis/sandstorm
+  // resolvers already used elsewhere (see services/sietchAtlas.js).
+  WORLD_ATLAS: "/api/integrations/discord/world/atlas",
   READINESS: "/api/integrations/discord/readiness",
   SERVICES: "/api/integrations/discord/services",
   POPULATION: "/api/integrations/discord/population",
@@ -104,6 +109,13 @@ export const DISCORD_ADAPTER_ROUTES = Object.freeze({
   SERVERS: "/api/integrations/discord/servers",
   PORTS: "/api/integrations/discord/ports",
   DB: "/api/integrations/discord/db",
+  // WRITE_PREVIEW / WRITE_EXECUTE (issue #215, docs/rw-architecture.md
+  // section 3): the write bridge. Gated by requireDiscordBotToken() (like
+  // every route in this table, automatically, before any route-specific
+  // dispatch) + verifyActorSignature({required:true}) + requireDiscordCapability
+  // (WRITE_BRIDGE_ACCESS) + meetsMinTier() for the specific requested action.
+  WRITE_PREVIEW: "/api/integrations/discord/write/preview",
+  WRITE_EXECUTE: "/api/integrations/discord/write/execute",
   // CATALOG is deliberately NOT added to DISCORD_LIVE_ADAPTER_ROUTES below.
   // It is metadata ABOUT the live routes, not itself one of them -- adding
   // it there would require commandCatalog.js's COMMAND_METADATA to have an
@@ -119,6 +131,7 @@ export const DISCORD_LIVE_ADAPTER_ROUTES = Object.freeze([
   DISCORD_ADAPTER_ROUTES.HEALTH,
   DISCORD_ADAPTER_ROUTES.STATUS,
   DISCORD_ADAPTER_ROUTES.WORLD_CORIOLIS,
+  DISCORD_ADAPTER_ROUTES.WORLD_ATLAS,
   DISCORD_ADAPTER_ROUTES.READINESS,
   DISCORD_ADAPTER_ROUTES.SERVICES,
   DISCORD_ADAPTER_ROUTES.POPULATION,
@@ -127,6 +140,10 @@ export const DISCORD_LIVE_ADAPTER_ROUTES = Object.freeze([
   DISCORD_ADAPTER_ROUTES.OPS_RESOURCES,
   DISCORD_ADAPTER_ROUTES.OPS_ECONOMY,
   DISCORD_ADAPTER_ROUTES.OPS_INVENTORY,
+  // Issue #1001 (R0 completion): wires the already-existing, permanent
+  // opsLocationProvider() placeholder (see its own comment in
+  // opsProvider.js) as a live route -- not real per-player tracking.
+  DISCORD_ADAPTER_ROUTES.OPS_LOCATION,
   DISCORD_ADAPTER_ROUTES.OPS_SOC,
   DISCORD_ADAPTER_ROUTES.OPS_PROMETHEUS,
   DISCORD_ADAPTER_ROUTES.OPS_DASHBOARD,
@@ -163,7 +180,9 @@ export const DISCORD_LIVE_ADAPTER_ROUTES = Object.freeze([
   DISCORD_ADAPTER_ROUTES.VERSION,
   DISCORD_ADAPTER_ROUTES.SERVERS,
   DISCORD_ADAPTER_ROUTES.PORTS,
-  DISCORD_ADAPTER_ROUTES.DB
+  DISCORD_ADAPTER_ROUTES.DB,
+  DISCORD_ADAPTER_ROUTES.WRITE_PREVIEW,
+  DISCORD_ADAPTER_ROUTES.WRITE_EXECUTE
 ]);
 
 export const DISCORD_PLANNED_ADAPTER_ROUTES = Object.freeze(
@@ -367,6 +386,6 @@ export function discordAdapterErrorResponse(error) {
   };
 }
 
-function csv(value) {
+export function csv(value) {
   return String(value || "").split(",").map((item) => item.trim()).filter(Boolean);
 }

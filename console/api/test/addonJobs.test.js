@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isReadOnlySql } from "../src/db.js";
+import { MARKET_BOT_DISABLE_BACKUPS_PHRASE, saveMarketBotSettings } from "../src/services/marketBotSettings.js";
 import {
   ADDON_SCHEDULED_RUN_RATE_SCOPE,
   EDA_EXCHANGE_BOT_ADDON_ID,
@@ -318,6 +319,58 @@ test("builds buyback SQL server-side from the bundled seed plan", () => {
   }
 });
 
+// Regression for the SQL-builder exchangeId boundary: every exported builder
+// must reject a malicious exchangeId before any SQL is generated, across the
+// whole set of builders (not just buildBuybackSql), so a future change to one
+// builder's validation cannot silently let injected text reach raw SQL.
+test("malicious exchangeId never reaches generated SQL in any buyback SQL builder", () => {
+  const repoRoot = makeRepoRoot();
+  const config = { repoRoot, mockMode: false };
+  try {
+    const plan = loadBuybackSeedPlan(config);
+    const schedule = normalizeBuybackSchedule({ enabled: true, exchangeId: "77", priceMultiplier: 5, buybackPercent: 60, maxBuys: 250 });
+
+    const maliciousExchangeIds = [
+      "77; DROP TABLE dune.items",
+      "77 OR 1=1",
+      "'; SELECT pg_sleep(5); --",
+      "77--",
+      "",
+      "0",
+      "-1",
+      "007",
+      "9223372036854775808" // one past PG_BIGINT_MAX
+    ];
+
+    const builders = [
+      { name: "buildBuybackEligibilitySql", call: (s) => buildBuybackEligibilitySql(plan, s) },
+      { name: "buildBuybackClassifySql", call: (s) => buildBuybackClassifySql(plan, s) },
+      { name: "buildPlayerPortalExchangeOverviewSql", call: (s) => buildPlayerPortalExchangeOverviewSql(s) },
+      { name: "buildBuybackSql", call: (s) => buildBuybackSql(plan, s) }
+    ];
+
+    for (const { name, call } of builders) {
+      for (const exchangeId of maliciousExchangeIds) {
+        assert.throws(
+          () => call({ ...schedule, exchangeId }),
+          /exchangeId is invalid/,
+          `${name} must reject exchangeId ${JSON.stringify(exchangeId)} before building SQL`
+        );
+      }
+    }
+
+    // A valid id still flows through untouched: exactly "o.exchange_id = 77",
+    // with no extra characters an injection attempt could have appended.
+    for (const { name, call } of builders) {
+      const sql = call(schedule);
+      assert.match(sql, /o\.exchange_id = 77(?![\d;'])/, `${name} must embed the validated exchangeId verbatim`);
+      assert.doesNotMatch(sql, /nosemgrep/i, `${name} must not send scanner directives to PostgreSQL`);
+    }
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
 test("player portal market overview stays available when Buyback classification fails", async () => {
   const repoRoot = makeRepoRoot();
   const config = { repoRoot, mockMode: false };
@@ -495,6 +548,44 @@ test("admin buyback rules set exchange, caps, basis, and Max Buys as intended", 
     assert.equal(normalizeBuybackSchedule({ buybackPriceBasis: "lowest" }).buybackPriceBasis, "lowest");
     assert.equal(normalizeBuybackSchedule({ buybackPriceBasis: "average" }).buybackPriceBasis, "average");
     assert.equal(normalizeBuybackSchedule({ buybackPriceBasis: "weird" }).buybackPriceBasis, "seeded", "unknown basis falls back to seeded");
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("loadBuybackSeedPlan remaps Treadwheel vehicle masks", () => {
+  const repoRoot = makeRepoRoot({
+    price_multiplier: 5,
+    rows: [
+      { template_id: "TreadwheelChassis_4", kind: "equippable", price: 6500, category_mask: 0x02050000, category_depth: 3, quality_level: 0 },
+      { template_id: "TreadwheelEngine_Unique_Speed_4_Schematic", kind: "schematic", price: 4000, category_mask: 0x02060500, category_depth: 3, quality_level: 0 },
+      { template_id: "SandcrawlerChassis_6", kind: "equippable", price: 8000, category_mask: 0x02050000, category_depth: 3, quality_level: 0 }
+    ]
+  });
+  try {
+    const plan = loadBuybackSeedPlan({ repoRoot });
+    const byId = Object.fromEntries(plan.rows.map((row) => [row.templateId, row]));
+    assert.equal(byId.TreadwheelChassis_4.categoryMask, 0x02000000);
+    assert.equal(byId.TreadwheelEngine_Unique_Speed_4_Schematic.categoryMask, 0x02060000);
+    assert.equal(byId.SandcrawlerChassis_6.categoryMask, 0x02050000);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("loadBuybackSeedPlan remaps legacy depth-2 ranged masks", () => {
+  const repoRoot = makeRepoRoot({
+    price_multiplier: 5,
+    rows: [
+      { template_id: "ChoamSda2", kind: "equippable", price: 6500, category_mask: 0x01020000, category_depth: 2, quality_level: 0 },
+      { template_id: "Ammo", kind: "ammunition", price: 50, category_mask: 0x010e0000, category_depth: 2, quality_level: 0 }
+    ]
+  });
+  try {
+    const plan = loadBuybackSeedPlan({ repoRoot });
+    const byId = Object.fromEntries(plan.rows.map((row) => [row.templateId, row]));
+    assert.equal(byId.ChoamSda2.categoryMask, 0x01010200);
+    assert.equal(byId.Ammo.categoryMask, 0x01020000);
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
   }
@@ -742,6 +833,32 @@ test("eligible run takes exactly one backup before the sweep and audits the resu
       [audits[0].action, audits[0].detail.status, audits[0].detail.purchased, audits[0].detail.trigger, audits[0].detail.ok],
       ["addons.scheduled-job", "swept", 4, "schedule", true]
     );
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("eligible run skips the backup but still sweeps when safety backups are disabled", async () => {
+  const repoRoot = makeRepoRoot();
+  const config = { repoRoot, mockMode: false };
+  try {
+    saveMarketBotSettings(config, { safetyBackups: false, confirmation: MARKET_BOT_DISABLE_BACKUPS_PHRASE });
+    const db = fakeDb({ eligible: "4", sweepRow: { purchased: "4", total_units: "40", total_solari: "1234" } });
+    const { scheduler, backups, audits, state } = makeScheduler(config, { db });
+    saveBuybackSchedule(config, { enabled: true, exchangeId: "42", intervalMinutes: 10, maxBuys: 50 }, { now: () => state.clock });
+
+    await scheduler.tick(); // arms
+    state.clock += 10 * 60000;
+    await scheduler.tick();
+
+    assert.equal(db.sweeps.length, 1, "the sweep still runs");
+    assert.equal(backups.length, 0, "no backup while disabled");
+    const persisted = readBuybackSchedule(config);
+    assert.equal(persisted.lastRunStatus, "swept");
+    assert.match(persisted.lastRunDetail, /Safety backup skipped: disabled in Market Bot settings\./);
+    assert.equal(audits.length, 1);
+    assert.equal(audits[0].detail.backupSkipped, true, "the audit entry records the skipped backup");
+    assert.match(readBuybackLog(config).batches[0].note, /safety backup skipped \(disabled\)/);
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
   }

@@ -33,7 +33,10 @@ test("spice field reconcile reapplies saved overrides only when live DB drifts",
   writeExecutable(join(fakeBin, "docker"), [
     "#!/usr/bin/env bash",
     "if [ \"$1\" = ps ]; then echo dune-postgres; exit 0; fi",
-    "sql=$(cat)",
+    // The reconcile queries through runtime/scripts/lib/postgres.sh, which
+    // passes the statement as psql's -Atc argument rather than on stdin, so the
+    // SQL to inspect is the last element of argv.
+    "sql=${!#}",
     "printf '%s\\n---\\n' \"$sql\" >> \"$SQL_LOG\"",
     "if printf '%s' \"$sql\" | grep -q \"to_regclass('dune.spicefield_types')\"; then",
     "  printf 't\\n'",
@@ -48,7 +51,12 @@ test("spice field reconcile reapplies saved overrides only when live DB drifts",
     ...process.env,
     PATH: `${fakeBin}:${process.env.PATH}`,
     SPICEFIELD_OVERRIDES_FILE: overridesFile,
-    SQL_LOG: sqlLog
+    SQL_LOG: sqlLog,
+    // The `docker` stub above is the only database this fixture has, so pin the
+    // leg that goes through it. Left on `auto`, the seam would take its TCP leg
+    // wherever a psql client is installed -- GitHub's runner images ship one --
+    // and dial a server that does not exist.
+    DUNE_PSQL_TRANSPORT: "exec"
   };
 
   const noDrift = spawnSync("bash", ["runtime/scripts/spicefield-overrides.sh", "reconcile"], {
