@@ -239,6 +239,7 @@ Current runtime service defaults include:
 ```text
 POSTGRES_PORT=15432
 RMQ_ADMIN_PORT=32573
+RMQ_ADMIN_HTTP_PORT=32574
 RMQ_GAME_PORT=31982
 RMQ_GAME_HTTP_PORT=31983
 RMQ_GAME_LOCAL_HTTP_PORT=15672
@@ -410,7 +411,7 @@ The helper derives current values from repository source rather than assuming th
 
 It currently derives:
 
-- service defaults from `runtime/scripts/runtime-env.sh`;
+- service defaults from `runtime/scripts/lib/ports.sh`;
 - UserEngine `Port` / `IGWPort` defaults from `runtime/scripts/usersettings.py`;
 - game/IGW pool maximum offsets from `runtime/scripts/spawn-server.sh`;
 - Admin Web default from `.env.example`;
@@ -626,7 +627,7 @@ python3 runtime/scripts/usersettings.py materialize-current
 Before editing `.env` by hand, audit for an existing definition rather than appending a duplicate:
 
 ```bash
-grep -nE '^(SERVER_IP|SERVER_IP_MODE|SERVER_BIND_IP|POSTGRES_PORT|RMQ_ADMIN_PORT|RMQ_GAME_PORT|RMQ_GAME_HTTP_PORT|RMQ_GAME_LOCAL_HTTP_PORT|TEXT_ROUTER_PORT|DIRECTOR_PORT|ADMIN_BIND_PORT|ADMIN_WEB_PORT|METRICS_PROMETHEUS_PORT|CLIENT_PORT_BASE|IGW_PORT_BASE)=' .env
+grep -nE '^(SERVER_IP|SERVER_IP_MODE|SERVER_BIND_IP|POSTGRES_PORT|RMQ_ADMIN_PORT|RMQ_ADMIN_HTTP_PORT|RMQ_GAME_PORT|RMQ_GAME_HTTP_PORT|RMQ_GAME_LOCAL_HTTP_PORT|TEXT_ROUTER_PORT|DIRECTOR_PORT|ADMIN_BIND_PORT|ADMIN_WEB_PORT|METRICS_PROMETHEUS_PORT|CLIENT_PORT_BASE|IGW_PORT_BASE)=' .env
 ```
 
 The interactive manager (`runtime/scripts/manager.sh`, UserEngine global-default editor) can also set `Port`/`IGWPort` directly if you prefer a menu over the two `engine-set` commands above. Running map containers retain the prior values until restarted either way.
@@ -737,7 +738,7 @@ Global collision validation: PASS
 ## Phase 14 — Verify `.env`
 
 ```bash
-grep -E '^(SERVER_IP|SERVER_IP_MODE|SERVER_BIND_IP|POSTGRES_PORT|RMQ_ADMIN_PORT|RMQ_GAME_PORT|RMQ_GAME_HTTP_PORT|RMQ_GAME_LOCAL_HTTP_PORT|TEXT_ROUTER_PORT|DIRECTOR_PORT|ADMIN_BIND_PORT|ADMIN_WEB_PORT|METRICS_PROMETHEUS_PORT|CLIENT_PORT_BASE|IGW_PORT_BASE)=' .env
+grep -E '^(SERVER_IP|SERVER_IP_MODE|SERVER_BIND_IP|POSTGRES_PORT|RMQ_ADMIN_PORT|RMQ_ADMIN_HTTP_PORT|RMQ_GAME_PORT|RMQ_GAME_HTTP_PORT|RMQ_GAME_LOCAL_HTTP_PORT|TEXT_ROUTER_PORT|DIRECTOR_PORT|ADMIN_BIND_PORT|ADMIN_WEB_PORT|METRICS_PROMETHEUS_PORT|CLIENT_PORT_BASE|IGW_PORT_BASE)=' .env
 ```
 
 VM2 should show:
@@ -748,6 +749,7 @@ SERVER_IP_MODE=public
 SERVER_BIND_IP=192.168.68.128
 POSTGRES_PORT=16432
 RMQ_ADMIN_PORT=33573
+RMQ_ADMIN_HTTP_PORT=33574
 RMQ_GAME_PORT=32982
 RMQ_GAME_HTTP_PORT=32983
 RMQ_GAME_LOCAL_HTTP_PORT=16672
@@ -1008,6 +1010,7 @@ git diff HEAD@{1} -- \
   docker-compose*.yml \
   runtime/defaults/UserEngine.ini \
   runtime/scripts/runtime-env.sh \
+  runtime/scripts/lib/ports.sh \
   runtime/scripts/usersettings.py \
   runtime/scripts/manager.sh \
   runtime/scripts/spawn-server.sh \
@@ -1162,7 +1165,7 @@ This catches:
 | UserEngine `Port` / `IGWPort` defaults | `runtime/defaults/UserEngine.ini`, `runtime/scripts/usersettings.py` |
 | UserEngine interactive editing | `runtime/scripts/manager.sh` |
 | Dynamic Player/Game and IGW pool allocation | `runtime/scripts/spawn-server.sh` |
-| Core service-port defaults | `runtime/scripts/runtime-env.sh` |
+| Core service-port defaults | `runtime/scripts/lib/ports.sh` |
 | PostgreSQL host mapping | `runtime/scripts/start-postgres.sh` |
 | RabbitMQ host mappings | `runtime/scripts/start-rabbitmq.sh` |
 | Text Router host mapping | `runtime/scripts/start-text-router.sh` |

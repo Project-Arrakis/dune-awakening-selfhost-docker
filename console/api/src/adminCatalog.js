@@ -7,7 +7,16 @@ const CUSTOMIZATION_GROUPS = Object.freeze([
   { id: "atreides", name: "Atreides", matches: (itemId) => /^B1C3_Atre/i.test(itemId) },
   { id: "harkonnen", name: "Harkonnen", matches: (itemId) => /^B1C3_Hark/i.test(itemId) },
   { id: "smuggler", name: "Smuggler", matches: (itemId) => /^(?:MTX_)?B1C3_Smug/i.test(itemId) },
-  { id: "dune-man", name: "Dune Man", matches: (itemId) => /^MTX_B1C2_DuneMan/i.test(itemId) }
+  { id: "dune-man", name: "Dune Man", matches: (itemId) => /^MTX_B1C2_DuneMan/i.test(itemId) },
+  { id: "filmic-archive", name: "Filmic Archive", matches: (itemId) => /^(?:MTX_Fremen_FedaykinArmor_SetVariant|MTX_Atre_CaladanTrenchcoat_SetVariant|MTX_Sard_Scout_SetVariant)$/i.test(itemId) }
+]);
+
+const KNOWN_DLC_REQUIREMENTS = Object.freeze([
+  {
+    name: "Lost Harvest",
+    steamAppId: "3596900",
+    matches: (itemId) => /^(?:MTX_B1C2_DuneMan|MTX_Neut_DesertMechanic)/i.test(itemId)
+  }
 ]);
 
 export function resolveCatalogItem(repoRoot, { itemName = "", itemId = "" } = {}) {
@@ -248,6 +257,12 @@ function normalizeItem(item, repoRoot = "") {
   if (item.group) result.group = String(item.group);
   if (item.volume !== undefined && item.volume !== null) result.volume = Number(item.volume);
   if (isValidStackSize(item.stackSize)) result.stackSize = item.stackSize;
+  const knownRequirement = KNOWN_DLC_REQUIREMENTS.find((entry) => entry.matches(id));
+  const requiredDlc = item.requiredDlc || knownRequirement?.name;
+  const requiredSteamDlc = item.requiredSteamDlc || knownRequirement?.steamAppId;
+  if (requiredDlc) result.requiredDlc = String(requiredDlc);
+  if (requiredSteamDlc) result.requiredSteamDlc = String(requiredSteamDlc);
+  if (item.entitlementControlled || requiredDlc || /^MTX_/i.test(id)) result.entitlementControlled = true;
   return result;
 }
 

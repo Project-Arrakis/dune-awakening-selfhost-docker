@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { resolvedAllowedActions, nsFromAction } from "./iamPolicy";
 import { api, post } from "../../api/client";
 
@@ -12,9 +12,26 @@ interface PolicyCatalog {
   actions: string[];
   actionMap: Record<string, string>;
   namespaces: Record<string, string>;
+  /** Why a tier's effective policy differs from the saved file (issue #1160). */
+  notices?: {
+    addedDefaultDenies: { tier: string; action: string }[];
+    keptExactAllows: { tier: string; action: string }[];
+  };
+  /** Identifies the store as last read; sent back as If-Match so a concurrent change is refused (#1193). */
+  revision?: string;
 }
 
 const TIERS = ["owner", "admin", "moderator", "player"] as const;
+
+interface SavePolicyResult {
+  revision?: string;
+  policies?: PolicyCatalog["policies"];
+  notices?: PolicyCatalog["notices"];
+  addedDefaultDenies?: { tier: string; action: string }[];
+}
+
+const listNotice = (items: { tier: string; action: string }[]) =>
+  items.map((item) => `${item.tier.charAt(0).toUpperCase()}${item.tier.slice(1)}: ${item.action}`).join(", ");
 
 function parseStatements(text: string): PolicyStatement[] | null {
   try {
@@ -70,8 +87,17 @@ export function IamPolicyEditor() {
   const [selectedTier, setSelectedTier] = useState<string>("admin");
   const [jsonText, setJsonText] = useState("");
   const [jsonError, setJsonError] = useState("");
+  // A refused save because another admin saved first. Not a validation error: it must not block the next Save.
+  const [conflictNote, setConflictNote] = useState("");
+  // A refused or failed save (#1197). Names the tier it was for, is shown whichever tier is on screen
+  // when the answer arrives, and does not block the next Save the way a JSON validation error does.
+  const [saveError, setSaveError] = useState("");
+  const saveButtonRef = useRef<HTMLButtonElement>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [savedNote, setSavedNote] = useState("");
+  // The tier on screen right now, readable from an async handler that started earlier (#1190).
+  const selectedTierRef = useRef<string>("admin");
   const [editorTab, setEditorTab] = useState<"builder" | "json" | "test">("builder");
   const [testResults, setTestResults] = useState<Record<string, boolean> | null>(null);
   const [search, setSearch] = useState("");
@@ -86,9 +112,17 @@ export function IamPolicyEditor() {
 
   if (!catalog && loadError) return <section className="iam-editor-error"><h3>Failed to load IAM policies</h3><button onClick={() => { setLoadError(false); window.location.reload(); }}>Retry</button></section>;
 
+  // Anything that changes the policy on screen also retires the note about the last save
+  // (#1185): "Saved. The shipped Deny was also added for ..." described a different policy.
+  const markEdited = () => { setSaved(false); setSavedNote(""); };
+
   const selectTier = (tier: string) => {
+    selectedTierRef.current = tier;
     setSelectedTier(tier);
-    setSaved(false);
+    markEdited();
+    setConflictNote("");
+    setSaveError("");
+    setJsonError("");
     setTestResults(null);
     setSearch("");
     if (catalog) {
@@ -166,7 +200,17 @@ export function IamPolicyEditor() {
       }
     }
     setJsonText(JSON.stringify(updated, null, 2));
-    setSaved(false);
+    markEdited();
+  };
+
+  // After a conflict the text area still holds this admin's edit; this swaps in what the server enforces now.
+  const showCurrentPolicy = () => {
+    const current = catalog?.policies[selectedTier];
+    if (current) setJsonText(JSON.stringify(current.statements, null, 2));
+    setJsonError("");
+    setConflictNote("");
+    // The note held the focused button; keep keyboard and screen-reader users in the footer.
+    saveButtonRef.current?.focus();
   };
 
   const validateJson = (text: string): PolicyStatement[] | null => {
@@ -189,18 +233,83 @@ export function IamPolicyEditor() {
     const valid = validateJson(jsonText);
     if (!valid || !catalog) return;
     if (selectedTier === "owner" && Array.isArray(valid) && valid.length === 0) {
-      setJsonError("Cannot save an empty policy for the owner tier. At least one own er-level permission is required to prevent permanent lock-out.");
+      setJsonError("Cannot save an empty policy for the owner tier. At least one owner-level permission is required to prevent permanent lock-out.");
       return;
     }
     setSaving(true);
+    setSavedNote("");
+    setConflictNote("");
+    setSaveError("");
     try {
-      await post("/api/settings/iam/policy", { tier: selectedTier, statements: valid });
-      const policies = { ...catalog.policies, [selectedTier]: { version: 1, tier: selectedTier, statements: valid } };
-      setCatalog({ ...catalog, policies });
-      setSaved(true);
-      setTimeout(() => setSaved(false), 3000);
-    } catch {
-      setJsonError("Failed to save policy");
+      // The server takes the COMPLETE policy store (PUT /api/settings/iam/policy), not one tier.
+      // (This used to POST { tier, statements } to a route that does not exist, so nothing
+      // was ever saved: issue #1179.)
+      // The server replaces the whole store, so it refuses a save (409) if the store changed after the
+      // revision sent as If-Match (#1193). Re-read first so a change to ANOTHER tier does not stop this save:
+      // take the latest store and its revision, but only if THIS tier is still what the page last showed.
+      // If someone changed this tier, do not send a save at all: the fresh revision would make the server
+      // accept it and overwrite their change.
+      let base = catalog.policies;
+      let revision = catalog.revision;
+      try {
+        const latest = await api<PolicyCatalog>("/api/settings/iam/policies");
+        if (latest?.policies) {
+          if (JSON.stringify(latest.policies[selectedTier]) !== JSON.stringify(catalog.policies[selectedTier])) {
+            setCatalog({ ...catalog, policies: latest.policies, notices: latest.notices ?? catalog.notices, revision: latest.revision });
+            if (selectedTierRef.current === selectedTier) {
+              setConflictNote(`Another admin changed the ${selectedTier} policy since this page showed it.`);
+            }
+            setSaving(false);
+            return;
+          }
+          base = latest.policies;
+          revision = latest.revision;
+        }
+      } catch {
+        // Fall back to what is on screen; the PUT below still reports its own failure.
+      }
+      const next = { ...base, [selectedTier]: { version: 1, tier: selectedTier, statements: valid } };
+      const result = await api<SavePolicyResult>("/api/settings/iam/policy", {
+        method: "PUT",
+        headers: revision ? { "If-Match": revision } : undefined,
+        body: JSON.stringify(next)
+      });
+      // Adopt what the server now enforces: it may have added a shipped Deny to what was sent.
+      const policies = result?.policies ?? next;
+      setCatalog({ ...catalog, policies, notices: result?.notices ?? catalog.notices, revision: result?.revision });
+      // The admin may have switched tier while this save was in flight. The catalog is updated either
+      // way, but the text area, the note and the Saved state belong to the tier that was saved: writing
+      // them under another tier would show its statements there, and a second Save would then write them
+      // to that other tier (review of PR #1189).
+      if (selectedTierRef.current === selectedTier) {
+        const enforced = policies[selectedTier];
+        if (enforced) setJsonText(JSON.stringify(enforced.statements, null, 2));
+        const added = result?.addedDefaultDenies ?? [];
+        if (added.length > 0) setSavedNote(`Saved. The shipped Deny was also added for ${listNotice(added)}.`);
+        setJsonError("");
+        setSaved(true);
+        setTimeout(() => setSaved(false), 3000);
+      }
+    } catch (error) {
+      // Another admin saved first. Adopt what is enforced now so the next Save is based on it, but keep
+      // the text this admin typed: it is their unsaved work, and the message tells them to review it.
+      const conflict = (error as { status?: number; body?: Partial<PolicyCatalog> })?.status === 409
+        ? (error as { body?: Partial<PolicyCatalog> }).body
+        : undefined;
+      if (conflict?.policies) {
+        if (selectedTierRef.current === selectedTier) {
+          setConflictNote(error instanceof Error && error.message ? error.message : "The policies changed since you loaded them.");
+        }
+        setCatalog((current) => current && {
+          ...current,
+          policies: conflict.policies!,
+          notices: conflict.notices ?? current.notices,
+          revision: conflict.revision ?? current.revision
+        });
+      }
+      if (!conflict?.policies) {
+        setSaveError(`Could not save the ${selectedTier} policy: ${error instanceof Error && error.message ? error.message : "Failed to save policy"}`);
+      }
     }
     setSaving(false);
   };
@@ -216,8 +325,25 @@ export function IamPolicyEditor() {
 
   if (!catalog) return <section className="iam-editor-loading"><p className="loading-dots">Loading policies</p></section>;
 
+  const addedDenies = catalog?.notices?.addedDefaultDenies ?? [];
+  const keptAllows = catalog?.notices?.keptExactAllows ?? [];
+  const listActions = listNotice;
+
   return (
     <section className="iam-policy-editor">
+      {addedDenies.length > 0 && (
+        <p className="iam-notice" role="status">
+          This policy was saved before newer security defaults existed, so Deny rules were added when the Console started:{" "}
+          <strong>{listActions(addedDenies)}</strong>. The tier now gets a 403 for these actions. Save the policy to keep the
+          change, or name an action in an Allow to keep it granted.
+        </p>
+      )}
+      {keptAllows.length > 0 && (
+        <p className="iam-notice iam-notice-warning" role="status">
+          Allowed by name, so the shipped Deny was not applied: <strong>{listActions(keptAllows)}</strong>. These actions let that
+          tier read every credential on this host through a system backup. Remove the Allow to restore the Deny.
+        </p>
+      )}
       <div className="iam-tier-selector">
         {TIERS.map((tier) => (
           <button key={tier} className={`iam-tier-btn ${selectedTier === tier ? "active" : ""}`} onClick={() => selectTier(tier)}>
@@ -282,7 +408,7 @@ export function IamPolicyEditor() {
             <textarea
               className={`iam-json-textarea ${jsonError ? "has-error" : ""}`}
               value={jsonText}
-              onChange={(e) => { setJsonText(e.target.value); setSaved(false); setJsonError(""); }}
+              onChange={(e) => { setJsonText(e.target.value); markEdited(); setJsonError(""); }}
               rows={16}
               spellCheck={false}
             />
@@ -318,9 +444,17 @@ export function IamPolicyEditor() {
 
       <div className="iam-editor-footer">
         {jsonError && <p className="iam-json-error" style={{ marginBottom: "8px" }}>{jsonError}</p>}
-        <button className="stable-action-button" onClick={savePolicy} disabled={saving || (editorTab === "json" && !!jsonError)}>
+        {saveError && <p className="iam-json-error" role="alert" style={{ marginBottom: "8px" }}>{saveError}</p>}
+        {conflictNote && (
+          <p className="iam-notice iam-notice-warning" role="alert">
+            {conflictNote} Your edits are kept. Show the current {selectedTier} policy to review it, or save again to replace it with your edits.{" "}
+            <button type="button" className="stable-action-button" onClick={showCurrentPolicy}>Show current policy</button>
+          </p>
+        )}
+        <button ref={saveButtonRef} className="stable-action-button" onClick={savePolicy} disabled={saving || (editorTab === "json" && !!jsonError)}>
           {saving ? "Saving..." : saved ? "Saved" : `Save ${selectedTier} policy`}
         </button>
+        {savedNote && <p className="iam-notice" role="status">{savedNote}</p>}
       </div>
     </section>
   );

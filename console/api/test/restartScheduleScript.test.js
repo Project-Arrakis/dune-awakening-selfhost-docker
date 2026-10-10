@@ -14,6 +14,11 @@ test("scheduled restart reapplies saved Spice Field overrides after startup", ()
   const generatedDir = join(dir, "runtime", "generated");
   mkdirSync(scriptsDir, { recursive: true });
   mkdirSync(generatedDir, { recursive: true });
+  // The script queries through runtime/scripts/lib/postgres.sh, which sources
+  // lib/ports.sh; both have to exist in the fixture for the source to succeed.
+  mkdirSync(join(scriptsDir, "lib"), { recursive: true });
+  copyFileSync(join(repoRoot, "runtime/scripts/lib/ports.sh"), join(scriptsDir, "lib/ports.sh"));
+  copyFileSync(join(repoRoot, "runtime/scripts/lib/postgres.sh"), join(scriptsDir, "lib/postgres.sh"));
 
   copyFileSync(
     join(repoRoot, "runtime", "scripts", "restart-schedule.sh"),
@@ -78,6 +83,11 @@ test("scheduled restart skips queued back-to-back activations", () => {
   const generatedDir = join(dir, "runtime", "generated");
   mkdirSync(scriptsDir, { recursive: true });
   mkdirSync(generatedDir, { recursive: true });
+  // The script queries through runtime/scripts/lib/postgres.sh, which sources
+  // lib/ports.sh; both have to exist in the fixture for the source to succeed.
+  mkdirSync(join(scriptsDir, "lib"), { recursive: true });
+  copyFileSync(join(repoRoot, "runtime/scripts/lib/ports.sh"), join(scriptsDir, "lib/ports.sh"));
+  copyFileSync(join(repoRoot, "runtime/scripts/lib/postgres.sh"), join(scriptsDir, "lib/postgres.sh"));
 
   copyFileSync(
     join(repoRoot, "runtime", "scripts", "restart-schedule.sh"),
@@ -124,6 +134,11 @@ test("scheduled restart leaves the running Battlegroup untouched when saved sett
   const generatedDir = join(dir, "runtime", "generated");
   mkdirSync(scriptsDir, { recursive: true });
   mkdirSync(generatedDir, { recursive: true });
+  // The script queries through runtime/scripts/lib/postgres.sh, which sources
+  // lib/ports.sh; both have to exist in the fixture for the source to succeed.
+  mkdirSync(join(scriptsDir, "lib"), { recursive: true });
+  copyFileSync(join(repoRoot, "runtime/scripts/lib/ports.sh"), join(scriptsDir, "lib/ports.sh"));
+  copyFileSync(join(repoRoot, "runtime/scripts/lib/postgres.sh"), join(scriptsDir, "lib/postgres.sh"));
 
   copyFileSync(join(repoRoot, "runtime/scripts/restart-schedule.sh"), join(scriptsDir, "restart-schedule.sh"));
   chmodSync(join(scriptsDir, "restart-schedule.sh"), 0o700);

@@ -139,6 +139,13 @@ test("a valid policy still saves, and the structural checks still run first", ()
   restoreDefaults();
 });
 
+test("a save reports player-tier grants the strict player gate caps away", () => {
+  const player = (Action) => ({ owner: ownerAllowAll, player: { version: 1, tier: "player", statements: [{ Effect: "Allow", Action }] } });
+  assert.deepEqual(setPolicies(player(["players:read", "guilds:read"])).playerCappedActions, []);
+  assert.deepEqual(setPolicies(player(["bases:read"])).playerCappedActions, ["bases:read"]);
+  restoreDefaults();
+});
+
 test("a refused save does not change the active policy", () => {
   restoreDefaults();
   // Probes a live catalog action, not players:mutate: that name is now a
@@ -233,6 +240,13 @@ test("the policies endpoint hands back the vocabulary", () => {
   const handler = serverSrc.slice(serverSrc.indexOf('path === "/api/settings/iam/policies"'));
   const body = handler.slice(0, handler.indexOf("\n  }\n"));
   assert.match(body, /actions: \[\.\.\.allKnownActions\(\)\]\.sort\(\)/);
+});
+
+test("the policies endpoint tells the Settings page why a saved policy differs from what is enforced", () => {
+  const handler = serverSrc.slice(serverSrc.indexOf('path === "/api/settings/iam/policies"'));
+  const body = handler.slice(0, handler.indexOf("\n  }\n"));
+  assert.match(body, /notices: getPolicyNotices\(\)/, "issue #1160: the added Denies / kept Allows must reach the UI");
+  assert.match(serverSrc, /import \{[^}]*\bgetPolicyNotices\b[^}]*\} from "\.\/policy\.js"/);
 });
 
 // ---- Removed action aliases ----

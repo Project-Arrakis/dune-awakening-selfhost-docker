@@ -12,6 +12,8 @@ export type CatalogItem = {
   source?: string;
   image?: string;
   group?: string;
+  requiredDlc?: string;
+  requiredSteamDlc?: string;
 };
 
 // Shared module-level cache: the full catalog (~2,600 items) is identical
@@ -103,6 +105,7 @@ export function ItemCatalogSelector({ label = "Select Item", selected, onSelect,
           <span>
             <strong>{fullName}</strong>
             <small>{item.id}{item.category ? ` - ${titleCase(item.category)}` : ""}</small>
+            {item.requiredDlc && <small>Requires {item.requiredDlc}</small>}
           </span>
         </button>;
       })}
@@ -110,7 +113,7 @@ export function ItemCatalogSelector({ label = "Select Item", selected, onSelect,
     </div>
     {selected && <div className="catalog-selected-item">
       <CatalogItemThumb item={selected} large />
-      <KeyValueGrid items={[["Item Name", selected.name], ["Item ID", selected.id], ["Category", selected.category ? titleCase(selected.category) : ""], ["Source", selected.source || ""]]} />
+      <KeyValueGrid items={[["Item Name", selected.name], ["Item ID", selected.id], ["Category", selected.category ? titleCase(selected.category) : ""], ["Source", selected.source || ""], ["Requires", selected.requiredDlc || ""]]} />
     </div>}
   </div>;
 }

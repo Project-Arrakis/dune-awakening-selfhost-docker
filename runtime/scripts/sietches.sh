@@ -3,10 +3,16 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
+# POSTGRES_PORT and DUNE_PSQL_TRANSPORT from here configure the Postgres seam.
+[ -f .env ] && . ./.env
+
 # shellcheck source=runtime/scripts/sietch-name.sh
 source runtime/scripts/sietch-name.sh
 # shellcheck source=runtime/scripts/host-file-ownership.sh
 source runtime/scripts/host-file-ownership.sh
+
+# shellcheck source=runtime/scripts/lib/postgres.sh
+source runtime/scripts/lib/postgres.sh
 
 PARTITION_CATALOG="runtime/generated/partition-catalog.json"
 SERVER_CATALOG="runtime/generated/server-catalog.json"
@@ -69,7 +75,7 @@ sync_sietch_config_from_db() {
   local db_json=""
 
   if docker_postgres_running; then
-    db_rows="$(docker exec dune-postgres psql -U postgres -d dune -At -F $'\t' -c "
+    db_rows="$(dune_psql -At -F $'\t' -c "
       select partition_id,
              map,
              dimension_index,
@@ -375,6 +381,7 @@ Usage:
   dune sietches show <map-name>
   dune sietches dimensions <map-name> [--active-only] [--numbered|--labels|--ids|--partition-at=N]
   dune sietches set-max <map-name> <count>
+  dune sietches ensure-pool <map-name> <count>
   dune sietches set-active <map-name> <count> [--defer-start]
   dune sietches set-display <partition-id> <display-name>
   dune sietches set-password <partition-id> [password]
@@ -501,16 +508,12 @@ docker_postgres_running() {
   docker ps --format '{{.Names}}' 2>/dev/null | grep -x dune-postgres >/dev/null
 }
 
-psql_value() {
-  docker exec dune-postgres psql -U postgres -d dune -Atc "$1"
-}
-
 python_common() {
   local db_rows=""
   local db_json=""
 
   if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx dune-postgres; then
-    db_rows="$(docker exec dune-postgres psql -U postgres -d dune -At -F $'\t' -c "
+    db_rows="$(dune_psql -At -F $'\t' -c "
       select partition_id, map, dimension_index, coalesce(label, ''), blocked, coalesce(server_id, '')
       from dune.world_partition
       order by partition_id;
@@ -721,18 +724,32 @@ map_default_overrides = {
 }
 memory = env.get(env_key(name)) or map_default_overrides.get(name) or catalog_memory or env.get("DUNE_MEMORY_DEFAULT") or "default"
 
-partition_config = config.get("partitions", {})
 def default_display_name(row):
     label = str(row.get("label") or "").strip()
     if not label:
         return "(unset)"
     return label if label.lower().startswith("sietch ") else f"Sietch {label}"
 
-display_values = [
-    partition_config.get(str(row.get("id")), {}).get("display_name") or default_display_name(row)
-    for row in rows
-]
-password_set = [bool(partition_config.get(str(row.get("id")), {}).get("password")) for row in rows]
+import subprocess
+server_engine_values = {}
+partition_ids = [str(row.get("id")) for row in rows]
+if partition_ids:
+    try:
+        proc = subprocess.run(
+            ["python3", "runtime/scripts/usersettings.py", "partition-engine-values-many", name, *partition_ids],
+            capture_output=True, text=True, timeout=10,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            server_engine_values = json.loads(proc.stdout)
+    except Exception:
+        pass
+
+display_values = []
+password_set = []
+for row in rows:
+    values = server_engine_values.get(str(row.get("id")), {}) or {}
+    display_values.append(str(values.get("server_display_name") or "").strip() or default_display_name(row))
+    password_set.append(bool(values.get("server_login_password")))
 display_summary = "(mixed)" if len(set(display_values)) > 1 else display_values[0]
 password_summary = "(set)" if any(password_set) else "(unset)"
 
@@ -808,7 +825,6 @@ else:
 if active_only:
     rows = rows[:max(0, active_dimensions)]
 
-partition_config = config.get("partitions", {})
 def default_display_name(row):
     label = str(row.get("label") or "").strip()
     if not label:
@@ -821,7 +837,7 @@ def default_display_name(row):
 # into this same field). It must win over the legacy sietch-config.json mirror and
 # the DB-label-derived generic name below.
 import subprocess
-server_display_names = {}
+server_engine_values = {}
 partition_ids = [str(row.get("id")) for row in rows]
 if partition_ids:
     try:
@@ -831,17 +847,21 @@ if partition_ids:
         )
         if proc.returncode == 0 and proc.stdout.strip():
             for pid, values in json.loads(proc.stdout).items():
-                name = str((values or {}).get("server_display_name") or "").strip()
-                if name:
-                    server_display_names[pid] = name
+                values = values or {}
+                server_engine_values[pid] = {
+                    "display_name": str(values.get("server_display_name") or "").strip(),
+                    "password": str(values.get("server_login_password") or ""),
+                }
     except Exception:
         pass
 
-def resolved_display_name(row, cfg):
-    configured = server_display_names.get(str(row.get("id")))
-    if configured:
-        return configured
-    return cfg.get("display_name") or default_display_name(row)
+def resolved_display_name(row):
+    identity = server_engine_values.get(str(row.get("id")), {})
+    return identity.get("display_name") or default_display_name(row)
+
+def resolved_password_state(row):
+    identity = server_engine_values.get(str(row.get("id")), {})
+    return "(set)" if identity.get("password") else "(unset)"
 
 if mode == "--ids":
     for row in rows:
@@ -853,27 +873,21 @@ elif mode.startswith("--partition-at="):
     print(rows[index - 1].get("id"))
 elif mode == "--numbered":
     for idx, row in enumerate(rows, 1):
-        pid = str(row.get("id"))
-        cfg = partition_config.get(pid, {})
-        display = resolved_display_name(row, cfg)
-        password = "(set)" if cfg.get("password") else "(unset)"
+        display = resolved_display_name(row)
+        password = resolved_password_state(row)
         print(f"{idx}) {row.get('map')} Dimension {row.get('dimension', 0)}")
         print(f"   Display Name: {display}")
         print(f"   Password: {password}")
 elif mode == "--labels":
     for row in rows:
-        pid = str(row.get("id"))
-        cfg = partition_config.get(pid, {})
-        display = resolved_display_name(row, cfg)
-        password = "(set)" if cfg.get("password") else "(unset)"
+        display = resolved_display_name(row)
+        password = resolved_password_state(row)
         print(f"{row.get('map')} Dimension {row.get('dimension', 0)}  Display Name: {display}  Password: {password}")
 else:
     print(f"{'DIMENSION':<10} {'DISPLAY NAME':<32} PASSWORD")
     for row in rows:
-        pid = str(row.get("id"))
-        cfg = partition_config.get(pid, {})
-        display = resolved_display_name(row, cfg)
-        password = "(set)" if cfg.get("password") else "(unset)"
+        display = resolved_display_name(row)
+        password = resolved_password_state(row)
         print(f"{str(row.get('dimension', 0)):<10} {display:<32} {password}")
 PY
 }
@@ -915,15 +929,15 @@ catalog_max = len(maps[name])
 maps_cfg = config.setdefault("maps", {})
 entry = maps_cfg.setdefault(name, {})
 max_dimensions = int(entry.get("max_dimensions") or catalog_max)
+raw = next((server.get("raw", {}) for server in servers if str(server.get("map", "")).lower() == name.lower()), {})
 if name == "Overmap":
     print("Overmap must remain at one dimension.", file=sys.stderr)
     raise SystemExit(1)
 if key == "active_dimensions":
-    raw = next((server.get("raw", {}) for server in servers if str(server.get("map", "")).lower() == name.lower()), {})
     if raw.get("dedicatedScaling") and name != "DeepDesert_1":
         print(f"{name} has dedicated scaling enabled; active dimensions are managed at runtime.", file=sys.stderr)
         raise SystemExit(1)
-can_create_dimensions = name in {"Survival_1", "DeepDesert_1"}
+can_create_dimensions = name in {"Survival_1", "DeepDesert_1"} or bool(raw.get("dedicatedScaling"))
 if value > catalog_max and not (
     (key == "max_dimensions" and can_create_dimensions)
     or (key == "active_dimensions" and can_create_dimensions and value <= max_dimensions)
@@ -953,23 +967,22 @@ sync_partition_catalog_from_db() {
     return 0
   fi
 
-  python3 - <<'PY'
+  local db_rows
+  db_rows="$(dune_psql -At -F $'\t' -c "
+select partition_id, map, dimension_index, blocked, partition_definition::text
+from dune.world_partition
+order by partition_id;
+")"
+
+  DUNE_PARTITION_CATALOG_ROWS="$db_rows" python3 - <<'PY'
 import json
-import subprocess
+import os
 from pathlib import Path
 
-out = subprocess.check_output([
-    "docker", "exec", "dune-postgres", "psql",
-    "-U", "postgres", "-d", "dune", "-At", "-F", "\t",
-    "-c",
-    "select partition_id, map, dimension_index, blocked, partition_definition::text "
-    "from dune.world_partition order by partition_id;"
-], text=True)
-
 rows = []
-for line in out.splitlines():
+for line in os.environ["DUNE_PARTITION_CATALOG_ROWS"].splitlines():
     if not line.strip():
-      continue
+        continue
     partition_id, map_name, dimension_index, blocked, definition = line.split("\t", 4)
     payload = json.loads(definition)
     box = payload.get("box", {})
@@ -1053,7 +1066,7 @@ for partition_id in expected:
 
   # Labels are globally unique. Move all managed rows through temporary
   # partition-specific labels and assign the resolved values in one transaction.
-  docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+  dune_psql -v ON_ERROR_STOP=1 -c "
 begin;
 update dune.world_partition
 set label = 'DualDeepDesert_' || partition_id::text
@@ -1162,7 +1175,7 @@ relocate_survival_port_conflicts() {
   first_igw=$((igw_base + 2))
   last_igw=$((igw_base + target))
 
-  conflicts="$(docker exec dune-postgres psql -U postgres -d dune -At -F $'\t' -c "
+  conflicts="$(dune_psql -At -F $'\t' -c "
 select
   wp.partition_id,
   wp.map,
@@ -1304,7 +1317,7 @@ apply_survival_sietch_labels_from_config() {
   while IFS=$'\t' read -r partition_id display_name; do
     [ -n "${partition_id:-}" ] || continue
     [ -n "${display_name:-}" ] || continue
-    docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+    dune_psql -v ON_ERROR_STOP=1 -c "
 update dune.world_partition
 set label = '${display_name//\'/\'\'}'
 where partition_id = ${partition_id}
@@ -1357,14 +1370,34 @@ refresh_survival_control_plane_state() {
 refresh_survival_sietch_metadata_state() {
   sync_survival_usersettings_state
   apply_survival_sietch_labels_from_config
+  # The selected map has already been restarted with the canonical identity.
+  # Forward its new state through the existing publisher: the running Director
+  # consumes it and publishes FLS settings/heartbeats, while Gateway discovers
+  # server replacements through its live DB monitor. Replacing Director here
+  # unnecessarily replaces primary Survival_1 too and invalidates registrations.
+  # Keep coordinated Director recovery in restart-director.sh, not this path.
   refresh_survival_browser_state
-  refresh_survival_director_state
-  refresh_survival_gateway_state
 }
 
 sync_survival_sietch_topology_state() {
   sync_survival_usersettings_state
   apply_survival_sietch_labels_from_config
+}
+
+refresh_survival_topology_publication() {
+  local removed_partitions="${1:-0}"
+
+  sync_survival_sietch_topology_state
+  if [ "$removed_partitions" = "1" ]; then
+    # Director retains Server references in pending FLS declarations. Removing
+    # a partition clears their LastServerState but does not remove those pending
+    # references; subsequent heartbeat preparation fails indefinitely. Rebuild
+    # its registry after contraction using the existing coordinated lifecycle,
+    # which also re-registers primary Survival_1. Additions and identity updates
+    # do not need this topology reset. Gateway discovers removals from the DB.
+    refresh_survival_director_state
+  fi
+  refresh_survival_browser_state
 }
 
 restart_survival_server_if_running() {
@@ -1535,7 +1568,7 @@ ensure_map_partitions() {
   [ -n "$next_dim" ] || next_dim=0
 
   while [ "$current" -lt "$wanted" ]; do
-    docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+    dune_psql -v ON_ERROR_STOP=1 -c "
 set search_path = dune, public;
 
 with template as (
@@ -1580,10 +1613,52 @@ select dune.update_partition_labels(true);
   fi
 }
 
+ensure_dynamic_partition_pool() {
+  local map="$1"
+  local wanted="$2"
+  local safe_map lock_file dedicated_scaling
+
+  validate_positive_integer "$wanted" || {
+    echo "Instance pool size must be a positive integer." >&2
+    return 1
+  }
+  safe_map="$(printf '%s' "$map" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')"
+  [ -n "$safe_map" ] || return 1
+  mkdir -p runtime/generated
+  lock_file="runtime/generated/dynamic-instance-pool-${safe_map}.lock"
+  exec 8>"$lock_file"
+  flock 8
+
+  ensure_config
+  dedicated_scaling="$(python3 - "$map" "$SERVER_CATALOG" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+target = sys.argv[1].lower()
+path = Path(sys.argv[2])
+if not path.exists():
+    print("0")
+    raise SystemExit
+for server in json.loads(path.read_text()):
+    if str(server.get("map", "")).lower() == target:
+        print("1" if bool((server.get("raw") or {}).get("dedicatedScaling")) else "0")
+        raise SystemExit
+print("0")
+PY
+)"
+  if [ "$dedicated_scaling" != "1" ]; then
+    echo "$map is not a dedicated-scaling map." >&2
+    return 1
+  fi
+  ensure_map_partitions "$map" "$wanted"
+}
+
 reconcile_map_dimensions() {
   local map="$1"
   local safe_map target target_state target_explicit available base_partition assigned_count initial_assigned_count
   local topology_changed=0
+  local topology_removed=0
 
   ensure_config
 
@@ -1659,6 +1734,7 @@ PY
 
     if [ "$assigned_count" -lt "$target" ] && [ "$map" != "Survival_1" ] && [ -z "$base_server_id" ]; then
       runtime/scripts/spawn-server.sh "$base_partition"
+      log_sietch_lifecycle "reconcile_spawn" "{\"map\":\"$map\",\"partition\":$base_partition,\"role\":\"base\"}"
       assigned_count=$((assigned_count + 1))
       topology_changed=1
     fi
@@ -1679,6 +1755,7 @@ PY
         continue
       fi
       runtime/scripts/spawn-server.sh "$next_partition"
+      log_sietch_lifecycle "reconcile_spawn" "{\"map\":\"$map\",\"partition\":$next_partition,\"role\":\"dimension\"}"
       assigned_count=$((assigned_count + 1))
       topology_changed=1
     done
@@ -1706,7 +1783,7 @@ PY
         limit 1;
       " | tr -d '[:space:]')"
       if [ -n "$base_server_id" ]; then
-        docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+        dune_psql -v ON_ERROR_STOP=1 -c "
 update dune.encrypted_player_state
 set
   server_id = '$base_server_id',
@@ -1717,11 +1794,13 @@ where previous_server_partition_id = $remove_partition
 " >/dev/null
       fi
       runtime/scripts/despawn-server.sh "$remove_partition"
+      log_sietch_lifecycle "reconcile_despawn" "{\"map\":\"$map\",\"partition\":$remove_partition}"
       assigned_count=$((assigned_count - 1))
       topology_changed=1
+      topology_removed=1
     done
 
-    if [ "$target_explicit" = "1" ] && docker exec dune-postgres psql -U postgres -d dune -Atc "
+    if [ "$target_explicit" = "1" ] && dune_psql -Atc "
 with ranked as (
   select
     partition_id,
@@ -1736,10 +1815,11 @@ where ord > $target
   and server_id = '';
 " | grep -qv '^0$'; then
       topology_changed=1
+      topology_removed=1
     fi
 
     if [ "$target_explicit" = "1" ]; then
-      docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+      dune_psql -v ON_ERROR_STOP=1 -c "
 set search_path = dune, public;
 
 with ranked as (
@@ -1765,7 +1845,7 @@ select dune.update_partition_labels(true);
       echo "Preserving inactive $map partition rows because the active target was not explicitly saved."
     fi
   else
-    docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+    dune_psql -v ON_ERROR_STOP=1 -c "
 with ranked as (
   select
     partition_id,
@@ -1782,16 +1862,16 @@ where wp.partition_id = ranked.partition_id;
 
   sync_partition_catalog_from_db
   sync_sietch_config_from_db "reconcile-$map" >/dev/null || true
+  log_sietch_lifecycle "reconcile" "{\"map\":\"$map\",\"target\":$target,\"assigned_before\":$initial_assigned_count,\"assigned_after\":$assigned_count}"
+
   if [ "$map" = "Survival_1" ] && [ "$topology_changed" -eq 1 ] && [ "$target" -gt "$initial_assigned_count" ] 2>/dev/null; then
     wait_for_survival_topology_settle "$target" 90 || true
     sync_sietch_config_from_db "reconcile-$map-settled" >/dev/null || true
     sync_survival_sietch_topology_state
   fi
   if [ "$map" = "Survival_1" ] && [ "$topology_changed" -eq 1 ]; then
-    # Running Director and primary Survival_1 receive server-state changes
-    # dynamically. A count change must not replace either one: additions can
-    # register directly, and removals are withdrawn by despawning/deleting the
-    # secondary before publishing the final topology.
+    # Additions register dynamically. Contraction must reset Director's pending
+    # FLS references after the removed partitions are gone from the database.
     (
       topology_maintenance_file="runtime/generated/sietch-topology-maintenance"
       mkdir -p "$(dirname "$topology_maintenance_file")"
@@ -1800,8 +1880,7 @@ where wp.partition_id = ranked.partition_id;
       # be mistaken for stale browser state immediately after reconciliation.
       trap 'touch "$topology_maintenance_file"' EXIT
 
-      sync_survival_sietch_topology_state
-      refresh_survival_browser_state
+      refresh_survival_topology_publication "$topology_removed"
       runtime/scripts/publish-sietch-overrides.sh once >/dev/null 2>&1 || true
     )
   fi
@@ -1866,7 +1945,7 @@ set_partition_label_if_possible() {
   local label="$2"
 
   docker_postgres_running || return 0
-  docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+  dune_psql -v ON_ERROR_STOP=1 -c "
 update dune.world_partition
 set label = '${label//\'/\'\'}'
 where partition_id = ${partition_id};
@@ -1902,7 +1981,7 @@ reset_partition_label_if_possible() {
   fi
 
   if [ -n "$default_label" ]; then
-    docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+    dune_psql -v ON_ERROR_STOP=1 -c "
 update dune.world_partition
 set label = '${default_label//\'/\'\'}'
 where partition_id = ${partition_id};
@@ -1910,7 +1989,7 @@ where partition_id = ${partition_id};
     return 0
   fi
 
-  docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+  dune_psql -v ON_ERROR_STOP=1 -c "
 set search_path = dune, public;
 update dune.world_partition
 set label = null
@@ -1964,11 +2043,8 @@ import os
 import sys
 from pathlib import Path
 
-config_path = Path(sys.argv[3])
 partition_id = str(sys.argv[5])
 partition_path = Path(sys.argv[1])
-config = json.loads(config_path.read_text()) if config_path.exists() else {"maps": {}, "partitions": {}}
-entry = config.get("partitions", {}).get(partition_id, {})
 db_partitions = os.environ.get("SIETCH_DB_PARTITIONS_JSON")
 partitions = json.loads(db_partitions) if db_partitions else (json.loads(partition_path.read_text()) if partition_path.exists() else [])
 row = next((item for item in partitions if str(item.get("id")) == partition_id), {})
@@ -1982,32 +2058,34 @@ def default_display_name(partition_row):
         return ""
     return label if label.lower().startswith("sietch ") else f"Sietch {label}"
 
-def effective_display_name(map_name, pid):
-    # The merged Bgd.ServerDisplayName (partition -> map -> global UserEngine.ini)
-    # already reflects any per-partition name set via "sietches set-display", so it
-    # must win over the legacy sietch-config.json mirror and the DB-label fallback.
+def effective_identity(map_name, pid):
+    # Resolve both identity fields from the same merged UserEngine.ini source that
+    # is materialized for the game server. This keeps restart arguments aligned
+    # with the global -> map -> partition precedence shown in the Console.
     import subprocess
+    values = {}
     try:
         proc = subprocess.run(
             ["python3", "runtime/scripts/usersettings.py", "partition-engine-values", map_name, pid],
             capture_output=True, text=True, timeout=10,
         )
         if proc.returncode != 0:
-            return ""
+            return values
         for line in proc.stdout.splitlines():
             key, _, value = line.partition("\t")
-            if key == "server_display_name":
-                return value.strip()
+            if key in {"server_display_name", "server_login_password"}:
+                values[key] = value
     except Exception:
         pass
-    return ""
+    return values
 
 args = []
-display_name = effective_display_name(sys.argv[4], partition_id) or entry.get("display_name") or default_display_name(row)
+identity = effective_identity(sys.argv[4], partition_id)
+display_name = str(identity.get("server_display_name") or "").strip() or default_display_name(row)
 if display_name:
     args.append(f"-ServerDisplayName={ini_quote(display_name)}")
-if entry.get("password"):
-    password = ini_quote(entry['password'])
+if identity.get("server_login_password"):
+    password = ini_quote(identity["server_login_password"])
     args.append(f"-ServerLoginPassword={password}")
     args.append(f"-ServerPassword={password}")
 
@@ -2144,6 +2222,12 @@ case "$cmd" in
       echo "dune-postgres is not running; saved max dimensions and will create missing rows on next start/reconcile."
     fi
     echo "Max dimensions for $2 set to $count."
+    ;;
+  ensure-pool)
+    [ "$#" -eq 3 ] || { usage; exit 2; }
+    count="$(sanitize_positive_integer_arg "$3")"
+    validate_positive_integer "$count" || { echo "Instance pool size must be a positive integer."; exit 1; }
+    ensure_dynamic_partition_pool "$2" "$count"
     ;;
   set-active)
     [ "$#" -eq 3 ] || { [ "$#" -eq 4 ] && [ "$4" = "--defer-start" ]; } || { usage; exit 2; }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Task } from "../../api/setup";
 import { gameUpdateTerminalStatus, isDetachedStackUpdateTask, isUpdatedConsoleReady, summarizeStackUpdateProgress } from "./UpdatesPanel";
-import { parseUpdateTask } from "./updateUtils";
+import { gameAssetsMissing, gameAssetsMissingInText, parseUpdateTask, preferKnownVersions, stackVersionButtonLabel, updateDisplayValue, withInstalledVersion } from "./updateUtils";
 
 function detachedTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -108,5 +108,83 @@ describe("game update terminal status", () => {
       latest: "25351779",
       reason: "Database update exited with status 1."
     });
+  });
+});
+
+describe("missing game files", () => {
+  // A host with no game files fails the Steam check outright, so every
+  // "is an update available" condition is false exactly when the operator most
+  // needs the install control. The marker is what distinguishes that state from
+  // an ordinary check failure.
+  it("recognizes the marker in a check failure's reason", () => {
+    expect(gameAssetsMissing({
+      status: "Check Failed",
+      current: "",
+      latest: "",
+      reason: "DUNE_GAME_ASSETS_MISSING\nCannot start Postgres: the Funcom database image is not installed on this host."
+    })).toBe(true);
+  });
+
+  it("does not fire on an ordinary check failure", () => {
+    expect(gameAssetsMissing({
+      status: "Check Failed",
+      current: "",
+      latest: "",
+      reason: "SteamCMD could not retrieve the current app information."
+    })).toBe(false);
+  });
+
+  it("reads a task log as well as a status reason", () => {
+    expect(gameAssetsMissingInText("Restoring database...\nDUNE_GAME_ASSETS_MISSING\n")).toBe(true);
+    expect(gameAssetsMissingInText("Database restore failed (exit 1).")).toBe(false);
+    expect(gameAssetsMissingInText(undefined)).toBe(false);
+  });
+});
+
+describe("a check that outlives the poll window", () => {
+  it("is reported as an outcome, so the sidebar badge cannot stay on Checking", () => {
+    const status = parseUpdateTask(detachedTask({ operation: "selfUpdateCheck", status: "running", logLines: [] }));
+    expect(status.status).toBe("Check Failed");
+    expect(status.reason).toMatch(/did not finish in time/);
+    expect(stackVersionButtonLabel(status)).toBe("Version");
+  });
+});
+
+describe("sidebar badge falls back to the installed version", () => {
+  it.each([
+    ["a timed-out check", parseUpdateTask(detachedTask({ operation: "selfUpdateCheck", status: "running", logLines: [] }))],
+    ["an unreachable check", { status: "Unavailable", current: "", latest: "" }]
+  ])("shows the installed version after %s", (_name, status) => {
+    expect(stackVersionButtonLabel(withInstalledVersion(status, "1.4.44"))).toBe("v1.4.44");
+  });
+
+  it("keeps Checking while the check is in flight, and prefers what a check reported", () => {
+    expect(stackVersionButtonLabel(withInstalledVersion({ status: "Checking", current: "", latest: "" }, "1.4.44"))).toBe("Checking");
+    expect(stackVersionButtonLabel(withInstalledVersion({ status: "Update Available", current: "v1.4.43", latest: "v1.4.44" }, "1.4.40"))).toBe("v1.4.43 > v1.4.44");
+  });
+});
+
+describe("installed-version fallback during a console update", () => {
+  it("leaves the Updating placeholder alone", () => {
+    const updating = { status: "Updating", current: "", latest: "" };
+    expect(updateDisplayValue(withInstalledVersion(updating, "1.4.44"), "current")).toBe("Updating...");
+  });
+});
+
+describe("two console checks finishing out of order", () => {
+  const known = { status: "Update Available", current: "v1.4.43", latest: "v1.4.44" };
+
+  it.each([
+    ["timed out", parseUpdateTask(detachedTask({ operation: "selfUpdateCheck", status: "running", logLines: [] }))],
+    ["could not reach the console", { status: "Unavailable", current: "", latest: "" }]
+  ])("keeps a known result when a later check %s", (_name, late) => {
+    expect(preferKnownVersions(known, late)).toBe(known);
+  });
+
+  it("takes any result over Checking, and a newer known result over an older one", () => {
+    const failed = { status: "Unavailable", current: "", latest: "" };
+    expect(preferKnownVersions({ status: "Checking", current: "", latest: "" }, failed)).toBe(failed);
+    const latest = { status: "Latest", current: "v1.4.44", latest: "v1.4.44" };
+    expect(preferKnownVersions(known, latest)).toBe(latest);
   });
 });

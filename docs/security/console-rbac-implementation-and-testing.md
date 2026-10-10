@@ -12,7 +12,7 @@ Access Control in the Server Control tab. See implementation files:
 `4a2993d` (unified-RBAC Phase 1: multi-tenant `isCommandAllowed()`/`isAdminActor()`
 now honor owner/moderator tiers; `canWrite()` resolves tiers from `guild_roles`;
 setup wizard enrolls all four tiers; `player` is the user-facing label for the
-DB `observer` tier).
+DB `observer` tier, since removed: `observer` is now only an alias for `player`, see console-iam.md).
 
 ---
 
@@ -28,7 +28,7 @@ adapter requests, not console users.
 The unified four-tier model agreed with the operator:
 
 ```
-player (== "observer" internally)  <  moderator  <  admin  <  owner
+player (strict, own-record only; legacy "observer" is aliased to it)  <  moderator  <  admin  <  owner
 ```
 
 must gate **areas of the console** (tabs/routes) and, on the bot side, **Discord

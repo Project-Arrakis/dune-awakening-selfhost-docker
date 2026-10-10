@@ -2,6 +2,9 @@
 
 Every security scanner this repo runs, what it catches, where it runs (local pre-commit vs. CI), and why it exists. Added 2026-08-20 alongside four new CI gates (`govulncheck`, `hadolint`, `osv-scanner`, `trivy-image-scan`) that closed real, previously-undetected gaps -- see "What Each Gate Has Actually Caught" below for the concrete findings that justified each one, not just the theoretical case for it.
 
+The `security-checks` job (gitleaks, trivy, shellcheck, whitespace), its scan modes and how to accept a finding are
+described in [CI security checks](ci-security-checks.md); this page is the inventory of everything else.
+
 ## The Full Tool Inventory
 
 | Tool | Catches | Runs |
@@ -19,6 +22,15 @@ Every security scanner this repo runs, what it catches, where it runs (local pre
 | **`trivy` (image scanner)** | CVEs in the built runtime image itself -- base OS packages, not just application dependencies | **New: `trivy-image-scan` CI job** (promotes issue #54 from a one-off manual check to a standing gate) |
 
 Three different secret scanners (gitleaks, ggshield, trivy-secret) is intentional redundancy, not an oversight -- each has a different detection signature set and false-negative profile; running all three costs little and catches more than any one alone.
+
+## Scan scope: pull requests versus main
+
+`tests/security-pr-checks.sh` (the `security-checks` job) has two modes, chosen by `SCAN_MODE`:
+
+- **`changed`** (pull requests): gitleaks and trivy scan only the files the branch changed relative to `origin/main`.
+- **`full`** (every other trigger: pushes to `main`, `integration/**` and `release/**`, manual dispatch): they scan every tracked file. On a push to `main` the changed set is empty by construction (HEAD is the base), so without this mode the job reported success after scanning nothing; the hourly monitor flagged it as "a scanner may have silently skipped". A full scan of the whole tree takes a few seconds. It refuses to report a clean result if it staged no files. The `git diff --check` whitespace/conflict-marker check runs in both modes (on a push to `main` the diff is empty, so it passes trivially; on `integration/**` and `release/**` pushes it checks the branch against `origin/main`).
+
+Known, accepted trivy misconfigurations for the full scan are listed in `.trivyignore-fs.yaml`: path-scoped, justified, and expiring, so they are re-triaged rather than forgotten. Never add a bare rule ID there.
 
 ## Why Each New Gate, Specifically
 

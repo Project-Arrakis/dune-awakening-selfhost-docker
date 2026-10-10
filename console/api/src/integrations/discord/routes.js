@@ -370,8 +370,26 @@ export async function handleDiscordAdapterRoute({
       // this route directly, so the real login password is only included
       // when the CALLING ACTOR's own roles are independently checked here
       // against an explicit allowlist, never inferred from channel setup.
+      //
+      // [CRITICAL fix, Layer 2 audit, 2026-09-28] The role check above is
+      // only trustworthy when DUNE_DISCORD_ACTOR_SECRET is configured.
+      // readJsonWithActorSignature() above verifies the signature when a
+      // secret exists, but is deliberately lenient when one doesn't
+      // (actorSignatureRequired(config) === false) -- in that real,
+      // documented deployment mode, actor.roleIds is an UNVERIFIED,
+      // self-reported claim from the request body: anyone holding the
+      // shared bearer token could set roleIds to an allowlisted ID and get
+      // the real plaintext password with no real role at all. Requiring
+      // actorSignatureRequired(config) here closes that: when a secret IS
+      // configured, reaching this line without readJsonWithActorSignature
+      // throwing already proves the signature was checked and valid (its
+      // own catch block re-throws on any invalid/missing signature
+      // whenever actorSignatureRequired(config) is true) -- so roleIds is
+      // only ever trusted here once it's already been cryptographically
+      // verified, never merely because the caller claimed it.
       const atlasPasswordRoleIds = csv(process.env.DUNE_ATLAS_PASSWORD_ROLE_IDS);
-      const includePasswords = atlasPasswordRoleIds.length > 0
+      const includePasswords = actorSignatureRequired(config)
+        && atlasPasswordRoleIds.length > 0
         && Array.isArray(actor.roleIds)
         && actor.roleIds.some((roleId) => atlasPasswordRoleIds.includes(String(roleId)));
       return json(res, 200, await sietchAtlasProvider(config, db, { buildAtlas: sietchAtlasBuilder, includePasswords }));

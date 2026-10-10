@@ -237,6 +237,75 @@ class GameFieldOverridePrecedenceTests(ProfilePathTestCase):
         }
         self.assertEqual(project_defaults, official_defaults)
 
+    def test_server_custom_metadata_exposes_funcom_choices_and_bounds(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(usersettings.metadata(), 0)
+        fields = {field["id"]: field for field in json.loads(output.getvalue())["serverCustom"]}
+
+        self.assertEqual(fields["pvp_mode"]["options"], ["NoPVP", "Limited", "FullPVP"])
+        self.assertEqual(fields["drop_equipment_on_death"]["options"], ["All", "Backpack", "Default", "None"])
+        self.assertEqual((fields["gathering_amount"]["minimum"], fields["gathering_amount"]["maximum"]), (0.1, 10.0))
+        self.assertEqual((fields["crafting_time_multiplier"]["minimum"], fields["crafting_time_multiplier"]["maximum"]), (0.0, 5.0))
+        self.assertEqual(fields["fiefdom_limit"]["type"], "integer")
+        self.assertEqual((fields["fiefdom_limit"]["minimum"], fields["fiefdom_limit"]["maximum"]), (0, 10))
+        self.assertEqual(
+            (fields["building_piece_limit_multiplier"]["minimum"], fields["building_piece_limit_multiplier"]["maximum"]),
+            (0.1, None),
+        )
+        self.assertEqual(
+            (
+                fields["building_piece_limit_multiplier"]["recommendedMinimum"],
+                fields["building_piece_limit_multiplier"]["recommendedMaximum"],
+            ),
+            (0.1, 10.0),
+        )
+
+    def test_server_custom_bulk_save_validates_and_canonicalizes_values(self):
+        payload = {
+            "pvp_mode": "fullpvp",
+            "gathering_amount": "0.1",
+            "crafting_time_multiplier": "5",
+            "fiefdom_limit": "10",
+            "building_piece_limit_multiplier": "20",
+            "allow_dynamic_building_damage": "false",
+        }
+        self.assertEqual(usersettings.bulk_save("serverCustomMap", MAP_NAME, "", _encode_bulk_save_payload(payload)), 0)
+        saved = usersettings.PROFILE_PATH.read_text(encoding="utf-8")
+        self.assertIn("PVPMode=FullPVP", saved)
+        self.assertIn("GatheringAmount=0.1", saved)
+        self.assertIn("CraftingTimeMultiplier=5", saved)
+        self.assertIn("FiefdomLimit=10", saved)
+        self.assertIn("BuildingPieceLimitMultiplier=20", saved)
+        self.assertIn("bAllowDynamicBuildingDamage=False", saved)
+
+    def test_invalid_server_custom_values_are_rejected_before_profile_write(self):
+        usersettings.bulk_save(
+            "serverCustomMap",
+            MAP_NAME,
+            "",
+            _encode_bulk_save_payload({"gathering_amount": "2.0"}),
+        )
+        original = usersettings.PROFILE_PATH.read_bytes()
+        invalid_values = {
+            "pvp_mode": "Sometimes",
+            "gathering_amount": "0.09",
+            "building_piece_limit_multiplier": "0.09",
+            "crafting_time_multiplier": "5.1",
+            "fiefdom_limit": "3.5",
+            "allow_dynamic_building_damage": "maybe",
+            "base_backup_tool_time_restriction": "NaN",
+        }
+        for field_id, value in invalid_values.items():
+            with self.subTest(field_id=field_id), self.assertRaises(SystemExit):
+                usersettings.bulk_save(
+                    "serverCustomMap",
+                    MAP_NAME,
+                    "",
+                    _encode_bulk_save_payload({field_id: value}),
+                )
+            self.assertEqual(usersettings.PROFILE_PATH.read_bytes(), original)
+
 
 class RetiredModifierAndCoriolisMetadataTests(ProfilePathTestCase):
     RETIRED_IDS = {
@@ -246,6 +315,7 @@ class RetiredModifierAndCoriolisMetadataTests(ProfilePathTestCase):
         "global_harvest_health_multiplier",
         "cutteray_hem_multiplier_per_node_tier_table",
         "global_damage_to_npcs_multiplier",
+        "base_backup_tool_time_restriction_seconds",
     }
 
     def test_retired_controls_are_absent_from_schema_and_generated_ini(self):
@@ -274,6 +344,91 @@ class RetiredModifierAndCoriolisMetadataTests(ProfilePathTestCase):
         saved = usersettings.PROFILE_PATH.read_text(encoding="utf-8")
         self.assertNotIn("m_GlobalFameMultiplier", saved)
         self.assertIn("m_DefaultReconnectGracePeriodSeconds=600", saved)
+
+    def test_legacy_base_backup_cooldown_is_migrated_to_native_hours(self):
+        profile = usersettings.parse_profile_text(
+            f"[Global:{usersettings.BUILDING_SETTINGS_SECTION}]\n"
+            "m_BaseBackupToolTimeRestrictionInSeconds=7200\n"
+        )
+
+        usersettings.migrate_legacy_base_backup_cooldown(profile)
+        values = usersettings.server_custom_values(profile, MAP_NAME, include_materialized=False)
+        self.assertEqual(values["base_backup_tool_time_restriction"], "2")
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=7200", usersettings.compiled_usergame_ini(profile, MAP_NAME))
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=7200", usersettings.client_game_ini(profile, MAP_NAME))
+
+        usersettings.write_profile(profile)
+        saved = usersettings.PROFILE_PATH.read_text(encoding="utf-8")
+        self.assertNotIn("m_BaseBackupToolTimeRestrictionInSeconds", saved)
+        self.assertIn("BaseBackupToolTimeRestriction=2", saved)
+
+    def test_legacy_base_backup_cooldown_is_clamped_to_the_game_minimum(self):
+        profile = usersettings.parse_profile_text(
+            f"[Global:{usersettings.BUILDING_SETTINGS_SECTION}]\n"
+            "m_BaseBackupToolTimeRestrictionInSeconds=60\n"
+        )
+
+        usersettings.migrate_legacy_base_backup_cooldown(profile)
+        values = usersettings.server_custom_values(profile, MAP_NAME, include_materialized=False)
+        self.assertEqual(values["base_backup_tool_time_restriction"], "0.2")
+
+    def test_explicit_native_base_backup_cooldown_wins_over_legacy_value(self):
+        profile = usersettings.parse_profile_text(
+            f"[Global:{usersettings.BUILDING_SETTINGS_SECTION}]\n"
+            "m_BaseBackupToolTimeRestrictionInSeconds=7200\n"
+            f"\n[ServerCustomGlobal:{usersettings.SERVER_CUSTOM_SETTINGS_SECTION}]\n"
+            "BaseBackupToolTimeRestriction=3\n"
+        )
+
+        usersettings.migrate_legacy_base_backup_cooldown(profile)
+        values = usersettings.server_custom_values(profile, MAP_NAME, include_materialized=False)
+        self.assertEqual(values["base_backup_tool_time_restriction"], "3")
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=10800", usersettings.compiled_usergame_ini(profile, MAP_NAME))
+
+    def test_native_base_backup_cooldown_mirrors_only_explicit_scoped_values(self):
+        profile = usersettings.empty_profile()
+        self.assertNotIn("m_BaseBackupToolTimeRestrictionInSeconds", usersettings.compiled_usergame_ini(profile, MAP_NAME))
+        self.assertNotIn("m_BaseBackupToolTimeRestrictionInSeconds", usersettings.client_game_ini(profile, MAP_NAME))
+
+        section = usersettings.SERVER_CUSTOM_SETTINGS_SECTION
+        usersettings.profile_set_key(profile, "server_custom_global", section, "BaseBackupToolTimeRestriction", "0.2")
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=720", usersettings.compiled_usergame_ini(profile, MAP_NAME))
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=720", usersettings.client_game_ini(profile, MAP_NAME))
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=720", usersettings.client_game_ini(profile, ""))
+
+        usersettings.profile_set_key(profile, "server_custom_map", section, "BaseBackupToolTimeRestriction", "2", MAP_NAME)
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=7200", usersettings.compiled_usergame_ini(profile, MAP_NAME))
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=7200", usersettings.client_game_ini(profile, MAP_NAME))
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=720", usersettings.client_game_ini(profile, ""))
+
+        usersettings.profile_set_key(profile, "server_custom_partition", section, "BaseBackupToolTimeRestriction", "0.5", MAP_NAME, "3")
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=1800", usersettings.compiled_usergame_ini(profile, MAP_NAME, "3"))
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=1800", usersettings.client_game_ini(profile, MAP_NAME, "3"))
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=7200", usersettings.client_game_ini(profile, MAP_NAME, "4"))
+
+    def test_native_base_backup_cooldown_metadata_exposes_hours_and_minimum(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(usersettings.metadata(), 0)
+        payload = json.loads(output.getvalue())
+        game_ids = {row["id"] for row in payload["game"]}
+        field = next(row for row in payload["serverCustom"] if row["id"] == "base_backup_tool_time_restriction")
+
+        self.assertNotIn("base_backup_tool_time_restriction_seconds", game_ids)
+        self.assertEqual(field["label"], "Base Reconstruction Cooldown (Hours)")
+        self.assertEqual((field["minimum"], field["maximum"]), (0.2, None))
+        self.assertEqual(field["clientFile"], "Game.ini")
+        self.assertIn("12 minutes", field["description"])
+
+    def test_native_base_backup_cooldown_rejects_values_below_game_minimum(self):
+        with self.assertRaises(SystemExit):
+            usersettings.bulk_save(
+                "serverCustomGlobal",
+                "",
+                "",
+                _encode_bulk_save_payload({"base_backup_tool_time_restriction": "0"}),
+            )
+        self.assertFalse(usersettings.PROFILE_PATH.exists())
 
     def test_coriolis_restart_metadata_names_its_map_process_scope(self):
         output = io.StringIO()
@@ -596,7 +751,7 @@ class ClientGameIniAllowlistTests(ProfilePathTestCase):
         self.assertIn("m_WaterConsumptionRate=2.0", rendered)
         self.assertIn("m_MaxNumLandclaimSegments=20", rendered)
         self.assertIn("m_bBuildingRestrictionLimitsEnabled=False", rendered)
-        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=60", rendered)
+        self.assertNotIn("m_BaseBackupToolTimeRestrictionInSeconds", rendered)
         self.assertNotIn("m_DefaultReconnectGracePeriodSeconds", rendered)
         self.assertNotIn("UnknownCommunitySetting", rendered)
         self.assertNotIn(usersettings.LANDSRAAD_SETTINGS_SECTION, rendered)
@@ -622,6 +777,8 @@ class ClientGameIniAllowlistTests(ProfilePathTestCase):
                 continue
             if field_id == "building_restriction_limits_enabled":
                 key = "m_bBuildingRestrictionLimitsEnabled"
+            elif field_id == "base_backup_tool_time_restriction":
+                key = "m_BaseBackupToolTimeRestrictionInSeconds"
             else:
                 _section, key, _default = usersettings.MAP_FIELDS[field_id]
             self.assertNotIn(f"{key}=", rendered)
@@ -830,6 +987,136 @@ class PartitionEngineValuesManyCommandTests(ProfilePathTestCase):
 
         result = self._run_command(MAP_NAME, [PARTITION_ID])
         self.assertEqual(result[PARTITION_ID][self.FIELD_ID], "The Kulon Show")
+
+
+class ProfileBlankLineHygieneTests(ProfilePathTestCase):
+    """Blank lines inside a profile block must never accumulate.
+
+    parse_profile_text() attributes the blank line separating a block from the
+    next one to that block's own lines. profile_set_key() used to append new
+    keys after it, so serialize_profile() wrote a fresh separator and the old
+    one stayed trapped inside the block; profile_remove_key() then dropped only
+    the key line, leaving the blank behind. Every add/remove cycle on an array
+    entry (the PvP/PvE partition selectors, the Deep Desert matchmaker
+    override) therefore grew its block by one permanent blank line, and those
+    orphans rode through append_profile_unknown_lines() into the deployed INI.
+    """
+
+    PVP_SECTION = "/Script/DuneSandbox.PvpPveSettings"
+    STORM_SECTION = "/Script/DuneSandbox.SandStormConfig"
+
+    def _save_global(self, values: dict) -> None:
+        usersettings.bulk_save("global", MAP_NAME, "", _encode_bulk_save_payload(values))
+
+    def _block_lines(self, scope: str, section: str) -> list[str]:
+        """A block's lines with any trailing blank dropped.
+
+        Reading back from disk re-attributes the separator blank before the next
+        [Header] to this block, so one trailing blank is normal parse output
+        rather than accumulation -- write_profile() strips it again on the next
+        write. Accumulation shows up as blanks *between* content lines, which is
+        what these assertions pin down.
+        """
+        block = usersettings.find_profile_section(usersettings.read_profile(), scope, section)
+        lines = list(block["lines"]) if block else []
+        while lines and not lines[-1].strip():
+            lines.pop()
+        return lines
+
+    def _global_block_lines(self, section: str) -> list[str]:
+        return self._block_lines("global", section)
+
+    def test_appending_a_key_does_not_trap_the_block_separator_blank(self):
+        # A block that sorts AFTER this one is what gives it a trailing separator
+        # to trip over -- the last block in the file has nothing to trap. Save it
+        # first so the separator is already there by the second write.
+        self._save_global({"outlaw_criminal_score": "9"})
+        self._save_global({"sandstorm_damage_frames_per_overlap_interval": "16"})
+        self._save_global({"sandstorm_auto_spawn_enabled": "False"})
+
+        self.assertEqual(self._global_block_lines(self.STORM_SECTION), [
+            "m_DamageFramesPerOverlapInterval=16",
+            "m_bAutoSpawnEnabled=False",
+        ])
+
+    def test_repeated_array_add_and_remove_does_not_grow_the_block(self):
+        self._save_global({"guild_creation_cost": "500"})
+        self._save_global({"sandstorm_auto_spawn_enabled": "False"})
+        self._save_global({"global_pvp_enabled_partition_add": "60"})
+        settled = self._global_block_lines(self.PVP_SECTION)
+
+        for _ in range(6):
+            self._save_global({"global_pvp_enabled_partition_add": "8"})
+            self._save_global({"global_pvp_enabled_partition_remove": "8"})
+            # Back to exactly the pre-cycle content, not that content plus a blank.
+            self.assertEqual(self._global_block_lines(self.PVP_SECTION), settled)
+
+        self._save_global({"global_pvp_enabled_partition_add": "8"})
+        self.assertEqual(self._global_block_lines(self.PVP_SECTION), [
+            "+m_PvpEnabledPartitions=60",
+            "+m_PvpEnabledPartitions=8",
+        ])
+
+    def test_orphan_blank_runs_from_older_releases_are_collapsed_on_write(self):
+        # What profiles written before the fix actually look like on disk.
+        usersettings.write_profile_text("\n".join([
+            "; UserGame.ini managed by Docker.",
+            "",
+            f"[Global:{self.PVP_SECTION}]",
+            "",
+            "",
+            "+m_PvpEnabledPartitions=60",
+            "",
+            "",
+            "",
+            "+m_PvpEnabledPartitions=8",
+            "",
+            "",
+            f"[Global:{self.STORM_SECTION}]",
+            "m_bAutoSpawnEnabled=False",
+            "",
+        ]) + "\n")
+
+        usersettings.write_profile(usersettings.read_profile())
+
+        # The run collapses to the single blank an admin could legitimately have
+        # typed there -- normalize_profile_blank_lines() deliberately stops short
+        # of removing that last one (see its docstring); what matters is that it
+        # can no longer grow, which the add/remove test above covers.
+        self.assertEqual(self._global_block_lines(self.PVP_SECTION), [
+            "+m_PvpEnabledPartitions=60",
+            "",
+            "+m_PvpEnabledPartitions=8",
+        ])
+        self.assertEqual(self._global_block_lines(self.STORM_SECTION), ["m_bAutoSpawnEnabled=False"])
+        # Values are untouched: only blank lines were ever removed.
+        self.assertEqual(
+            usersettings.profile_global_values(usersettings.read_profile())["sandstorm_auto_spawn_enabled"],
+            "False",
+        )
+
+    def test_a_single_blank_between_comment_paragraphs_survives(self):
+        # The UserEngine Advanced tab renders comment paragraphs separated by one
+        # blank line; collapsing runs must not flatten that deliberate grouping.
+        usersettings.write_profile_text("\n".join([
+            "[Engine:ConsoleVariables]",
+            "; Mining multipliers",
+            "Dune.GlobalMiningOutputMultiplier=2.4",
+            "",
+            "; Durability damage multiplier for vehicles",
+            "dw.VehicleDurabilityDamageMultiplier=0.5",
+        ]) + "\n")
+
+        usersettings.write_profile(usersettings.read_profile())
+
+        block = usersettings.find_profile_section(usersettings.read_profile(), "engine", "ConsoleVariables")
+        self.assertEqual(block["lines"], [
+            "; Mining multipliers",
+            "Dune.GlobalMiningOutputMultiplier=2.4",
+            "",
+            "; Durability damage multiplier for vehicles",
+            "dw.VehicleDurabilityDamageMultiplier=0.5",
+        ])
 
 
 if __name__ == "__main__":

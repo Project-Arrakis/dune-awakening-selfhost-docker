@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { appendBoundedOutput, buildDuneArgs, dockerContainerForLogService, isReadOnlySql, parseVehicleList, runDockerCurrentGameLog, runDockerLogs, validateServiceName } from "../src/runner.js";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { spawn } from "node:child_process";
+import { CURRENT_GAME_LOG_SCRIPT, appendBoundedOutput, buildDuneArgs, dockerContainerForLogService, isReadOnlySql, parseVehicleList, runDockerCurrentGameLog, runDockerLogs, validateServiceName } from "../src/runner.js";
 import { redact } from "../src/redact.js";
 import { taskOperations } from "../src/tasks.js";
 
@@ -12,6 +16,14 @@ test("validates known service names and aliases", () => {
   assert.equal(dockerContainerForLogService("coriolis"), "dune-coriolis-coordinator");
   assert.equal(validateServiceName("dune-server-survival-1-43"), "dune-server-survival-1-43");
   assert.throws(() => validateServiceName("gateway; rm -rf /"));
+});
+
+test("Experimental Tanks require an explicit Hagga restart confirmation", () => {
+  assert.deepEqual(buildDuneArgs("experimentalTanksStatus"), ["experimental-tanks", "status"]);
+  assert.deepEqual(buildDuneArgs("experimentalTanksApply", { enabled: true, confirmRestart: true }), ["experimental-tanks", "apply", "true"]);
+  assert.deepEqual(buildDuneArgs("experimentalTanksApply", { enabled: false, confirmRestart: true }), ["experimental-tanks", "apply", "false"]);
+  assert.throws(() => buildDuneArgs("experimentalTanksApply", { enabled: true }));
+  assert.throws(() => buildDuneArgs("experimentalTanksApply", { enabled: "true", confirmRestart: true }));
 });
 
 test("bounds captured child-process output while retaining its newest tail", () => {
@@ -133,6 +145,7 @@ test("builds allowlisted command arguments without shell interpolation", () => {
   assert.deepEqual(buildDuneArgs("stopGameServersForDbWrites"), ["stop-game-servers-for-db-writes"]);
   assert.deepEqual(buildDuneArgs("adminAddXp", { playerId: "FLS_TEST", amount: 1000 }), ["admin", "award-xp", "FLS_TEST", "1000"]);
   assert.deepEqual(buildDuneArgs("updateApply"), ["update", "--yes"]);
+  assert.deepEqual(buildDuneArgs("updateInstallAssets"), ["update", "install-assets"]);
   assert.deepEqual(buildDuneArgs("updateAutoStatus"), ["update", "auto", "status"]);
   assert.deepEqual(buildDuneArgs("updateAutoEnable"), ["update", "auto", "enable", "60", "1", "1", "15,10,5,1", "0", "360"]);
   assert.deepEqual(buildDuneArgs("updateAutoEnable", {
@@ -419,4 +432,81 @@ test("redacts any *_TOKEN / *_SECRET / *_KEY assignment by shape", () => {
 test("leaves an error carrying no credential untouched, and is idempotent", () => {
   assert.equal(redact("connect ECONNREFUSED 127.0.0.1:15432"), "connect ECONNREFUSED 127.0.0.1:15432");
   assert.equal(redact(redact("amqp://admin:s3cret@rabbitmq:5672")), redact("amqp://admin:s3cret@rabbitmq:5672"));
+});
+
+// The Coriolis block is written once at startup, so it sits near the top of the
+// current session's log. Tailing that file found it only while the server was
+// young: on a live farm the log reached 24,539 lines with the block at 383-576,
+// so `tail -n 10000` started at 14,438 and returned none of it. Because an
+// active log that opens is treated as authoritative, the Deep Desert layout --
+// and with it the rendered terrain -- silently went missing after a few hours.
+test("reads the Coriolis block out of a log far too long to tail", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "dune-log-"));
+  try {
+    const logPath = path.join(dir, "DuneSandbox_PIDX-8.log");
+    const line = (n) => `[2026.09.19-15.13.05:243][  0][939]LogNet: routine chatter ${n}`;
+    const body = [
+      ...Array.from({ length: 382 }, (_, i) => line(i)),
+      "[2026.09.19-15.13.05:243][  0][939]LogCoriolis: Display: Current Coriolis World Seed: 6",
+      "[2026.09.19-15.13.05:243][  0][939]LogCoriolis: Display: Next Coriolis Cycle start date UTC: 2026.09.22-11.00.00",
+      ...Array.from({ length: 190 }, (_, i) => line(i)),
+      "[2026.09.19-15.13.35:072][104][939][8]LogWorldLayout: Display: BP_DuneGameState_C_2147481318: 'DA_DeepDesert_1_Layout_06' layout selected with 682 content blocks.",
+      // Far more than any tail window, exactly as a server up 32 hours produces.
+      ...Array.from({ length: 24000 }, (_, i) => line(i))
+    ];
+    await fs.writeFile(logPath, `${body.join("\n")}\n`);
+
+    // The real script, pointed at the fixture instead of the game's log dir.
+    const script = CURRENT_GAME_LOG_SCRIPT.replace(
+      "log_dir=/home/dune/server/DuneSandbox/Saved/Logs",
+      `log_dir=${dir}`
+    );
+    const run = (args) => new Promise((resolve) => {
+      const child = spawn("sh", ["-c", script, "dune-current-game-log", ...args]);
+      let stdout = "";
+      child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
+      child.on("close", (code) => resolve({ code, stdout }));
+    });
+
+    const { code, stdout } = await run(["10000"]);
+    assert.equal(code, 0);
+    assert.match(stdout, /Current Coriolis World Seed: 6/);
+    assert.match(stdout, /Next Coriolis Cycle start date UTC/);
+    assert.match(stdout, /DA_DeepDesert_1_Layout_06/);
+
+    // The block really is out of reach of the tail this replaced.
+    const tailed = await new Promise((resolve) => {
+      const child = spawn("sh", ["-c", `tail -n 10000 "${logPath}"`]);
+      let out = "";
+      child.stdout.on("data", (chunk) => { out += chunk.toString(); });
+      child.on("close", () => resolve(out));
+    });
+    assert.ok(!/DA_DeepDesert_1_Layout_06/.test(tailed));
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an active log with no Coriolis block succeeds empty rather than erroring", async () => {
+  // Upstream treats an open active log as authoritative even when it has no
+  // block yet, so a warming-up server cannot revive the previous cycle's seed
+  // from retained Docker output. Exiting non-zero here would break that.
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "dune-log-"));
+  try {
+    await fs.writeFile(path.join(dir, "DuneSandbox_PIDX-8.log"), "LogNet: nothing of interest\n");
+    const script = CURRENT_GAME_LOG_SCRIPT.replace(
+      "log_dir=/home/dune/server/DuneSandbox/Saved/Logs",
+      `log_dir=${dir}`
+    );
+    const { code, stdout } = await new Promise((resolve) => {
+      const child = spawn("sh", ["-c", script, "dune-current-game-log", "10000"]);
+      let out = "";
+      child.stdout.on("data", (chunk) => { out += chunk.toString(); });
+      child.on("close", (exit) => resolve({ code: exit, stdout: out }));
+    });
+    assert.equal(code, 0);
+    assert.equal(stdout.trim(), "");
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
 });

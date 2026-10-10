@@ -12,7 +12,8 @@ export function parseUpdateTask(task: Task) {
   const repository = firstVersionMatch(text, [/github repo\s*[:=]\s*([^\n]+)/i]);
   const versions = { current, latest, repository };
   if (task.status === "failed") return { status: "Check Failed", ...versions, reason: updateCheckFailureReason(task.errorMessage || "", text) };
-  if (task.status !== "succeeded") return { status: "Checking...", ...versions, reason: task.progressMessage || "" };
+  // Still running here means the caller's polling gave up; nothing re-checks.
+  if (task.status !== "succeeded") return { status: "Check Failed", ...versions, reason: "The check did not finish in time. Try again in a few minutes." };
   const updateAvailable = /update available|newer|can update|available update/i.test(text);
   const latestStatus = /up to date|already latest|no update|latest/i.test(text) && !updateAvailable;
   if (sameUpdateVersion(current, latest)) return { status: "Latest", ...versions, reason: summarizeCommandText(text) };
@@ -45,8 +46,11 @@ export function loadPersistedUpdateTask(key: string) {
 export function persistUpdateTask(key: string, task: Task | null) {
   if (typeof window === "undefined") return;
   try {
-    if (task && !isTerminalTaskStatus(task.status)) {
-      window.localStorage.setItem(key, JSON.stringify(task));
+    if (task && task.status !== "succeeded") {
+      // Preserve failed diagnostics across navigation/reloads, without keeping
+      // an unbounded Steam download log in browser storage.
+      const snapshot = { ...task, logLines: task.logLines.slice(-160).map((line) => ({ ...line, line: line.line.slice(-4096) })) };
+      window.localStorage.setItem(key, JSON.stringify(snapshot));
     } else {
       window.localStorage.removeItem(key);
     }
@@ -70,6 +74,18 @@ export function stackVersionButtonLabel(status: Record<string, string>) {
   return formatStackVersionLabel(current || latest) || "Version";
 }
 
+// A check that learned nothing still leaves the installed version known.
+export function withInstalledVersion(status: Record<string, string>, installed: string) {
+  if (status.current || !installed || /updating/i.test(status.status)) return status;
+  return { ...status, current: installed };
+}
+
+// The sidebar and the Updates page check independently and can finish in either order.
+export function preferKnownVersions(previous: Record<string, string>, next: Record<string, string>) {
+  const known = (status: Record<string, string>) => Boolean(status.current || status.latest);
+  return known(previous) && !known(next) ? previous : next;
+}
+
 export function stackVersionButtonTitle(status: Record<string, string>) {
   const current = String(status.current || "").trim();
   const latest = String(status.latest || "").trim();
@@ -89,6 +105,20 @@ export function formatStackVersionLabel(value: string) {
 
 export function canApplyUpdateStatus(status: Record<string, string>) {
   return status.status === "Update Available" && !sameUpdateVersion(status.current, status.latest);
+}
+
+// The shell emits this token on its own line when an operation needs the game
+// files and they are not installed. A token rather than a phrase: the wording
+// around it is operator-facing prose that will be reworded, and this is read by
+// two different panels off two different sources (a check's reason, a task log).
+export const GAME_ASSETS_MISSING_MARKER = "DUNE_GAME_ASSETS_MISSING";
+
+export function gameAssetsMissingInText(text: unknown) {
+  return String(text ?? "").includes(GAME_ASSETS_MISSING_MARKER);
+}
+
+export function gameAssetsMissing(status: Record<string, string>) {
+  return gameAssetsMissingInText(status.reason);
 }
 
 export function stackReleaseNotesUrl(status: Record<string, string>) {
@@ -123,8 +153,4 @@ export function firstVersionMatch(text: string, patterns: RegExp[]) {
     }
   }
   return "";
-}
-
-function isTerminalTaskStatus(status: string) {
-  return ["succeeded", "failed", "cancelled"].includes(status);
 }

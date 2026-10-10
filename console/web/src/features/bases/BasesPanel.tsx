@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { Boxes, ChevronDown, ChevronUp, Download, Droplet, Fuel, Grid3X3, KeyRound, Lock, Settings, Trash2, Users, X, Zap } from "lucide-react";
 import { BaseInventoryTab } from "./BaseInventoryTab";
 import { BaseChildPermissionsTab } from "./BaseChildPermissionsTab";
@@ -6,6 +6,9 @@ import { BaseLandClaimTab } from "./BaseLandClaimTab";
 import { BasePermissionsTab } from "./BasePermissionsTab";
 import { BaseWaterTab } from "./BaseWaterTab";
 import { AutoRefillSettingsOverlay } from "./AutoRefillSettingsOverlay";
+import { DownloadBaseDialog, type DownloadBaseTarget } from "./DownloadBaseDialog";
+import { PlayerAccessSelect } from "../../components/common/PlayerAccessSelect";
+import { PLAYER_ACCESS_DEFAULT, accessCountLabel, accessEmptyAdjective, describePlayerAccess, filterRowsByAccess, type PlayerAccessFilter } from "../../lib/playerAccess";
 import { basesApi, type AutoRefillBase, type AutoRefillWaterBase, type RefillDeviceResult, type RefillWaterDeviceResult } from "../../api/bases";
 import { friendlyMapName } from "../maps/mapNames";
 import { mapsApi } from "../../api/maps";
@@ -13,7 +16,6 @@ import { cachedInstanceNames, resolveInstanceNames } from "../maps/instanceNames
 import { InfoTooltip } from "../../components/common/DisplayPrimitives";
 import { serverApi } from "../../api/server";
 import { setupApi, type Task } from "../../api/setup";
-import { apiDownload } from "../../api/client";
 import { DataTable, type SortDirection } from "../../components/common/DataTable";
 import { QueueBadges, queueCountsSummary, queueCountsTotal, type QueueCounts } from "../../components/common/QueueBadges";
 import { childAccessPieceCountForPartition, pendingRefillCountForPartition, usePendingBaseDeletes, usePendingChildAccess, usePendingRefills, usePendingWaterRefills } from "../../lib/usePendingRefills";
@@ -28,12 +30,14 @@ type BasesPanelProps = {
   playerId?: string;
   playerName?: string;
   embedded?: boolean;
+  // The Bases page's "Bases | Base Backups" toggle (BasesPage), in the title.
+  viewSwitch?: ReactNode;
 };
 
 type SharedWithEntry = { name: string; rank: number; label: string };
 
 type GeneratorEntry = {
-  type: "fuel" | "spice" | "windTurbineOmni" | "windTurbineDirectional";
+  type: "fuel" | "spice" | "windTurbineOmni" | "windTurbineDirectional" | "windtrap" | "largeWindtrap";
   name: string;
   fuelName: string;
   fuelCells: number;
@@ -59,6 +63,9 @@ type BaseRow = Record<string, unknown> & {
   shared_with: SharedWithEntry[];
   generatorDataAvailable: boolean;
   generatorCount: number;
+  // Windtraps are refilled with generators but kept out of the generator
+  // totals above; this counts them for the refill button and confirm text.
+  windtrapCount?: number;
   fuelCells: number;
   generatorRuntimeSeconds: number;
   generatorUptimeMultiplier: number;
@@ -231,6 +238,17 @@ function queueRestartTarget(partitionMap: string, partitionId: number, dimension
   return { kind: "respawn", partitionId, label: `Restart ${partitionMap}` };
 }
 
+// Windtraps ride along with generator refill (their filters burn like fuel), but
+// their cards and copy talk about filters rather than generators and fuel.
+function isWindtrapType(type: string) {
+  return type === "windtrap" || type === "largeWindtrap";
+}
+
+// Every device a generator refill writes to: generators plus windtraps.
+function refillDeviceCount(base: BaseRow) {
+  return (Number(base.generatorCount) || 0) + (Number(base.windtrapCount) || 0);
+}
+
 // Report what actually changed per device rather than a generic "Action
 // completed." — "nothing was added" is a meaningful outcome here, not a failure.
 function summarizeRefill(response: {
@@ -247,7 +265,9 @@ function summarizeRefill(response: {
     .map((device) => `${device.label}: +${device.added} ${device.fuelName}${device.added === 1 ? "" : "s"}${device.capped ? " (capped by inventory space)" : ""}`)
     .join(" · ");
   const skipped = result.devices.filter((device) => device.skipped).length;
-  return `Added ${result.totalAdded} fuel unit${result.totalAdded === 1 ? "" : "s"} across ${changed.length} device${changed.length === 1 ? "" : "s"}. ${detail}${skipped ? ` · ${skipped} skipped (no inventory)` : ""}`;
+  const windtraps = changed.filter((device) => isWindtrapType(device.type)).length;
+  const unitName = windtraps === 0 ? "fuel unit" : windtraps === changed.length ? "filter unit" : "fuel and filter unit";
+  return `Added ${result.totalAdded} ${unitName}${result.totalAdded === 1 ? "" : "s"} across ${changed.length} device${changed.length === 1 ? "" : "s"}. ${detail}${skipped ? ` · ${skipped} skipped (no inventory)` : ""}`;
 }
 
 // Mirrors summarizeRefill. No fuelName/capped/skipped -- water refill is a
@@ -350,8 +370,28 @@ function renderBaseCell(row: Record<string, unknown>, column: string, instanceNa
   );
 }
 
-export function BasesPanel({ onError, confirmAction, restartGate, formatMutationResult, focusRequest, playerId = "", playerName = "", embedded = false }: BasesPanelProps) {
-  const scope = playerId ? `player:${playerId}` : "all";
+export function BasesPanel({ onError, confirmAction, restartGate, formatMutationResult, focusRequest, playerId = "", playerName = "", embedded = false, viewSwitch }: BasesPanelProps) {
+  // Per-player view only: which of the player's bases to list. The access level
+  // is part of the cache scope so each choice keeps its own cached view.
+  const [access, setAccess] = useState<PlayerAccessFilter>(PLAYER_ACCESS_DEFAULT);
+  const scope = playerId ? `player:${playerId}:${access}` : "all";
+  // Drop the previous level's rows at once so they cannot be acted on under the new level's header.
+  // The loading branch swaps in a separate header, so the select the user just used is unmounted;
+  // hand focus back to the live one once loading ends so keyboard users are not dropped on <body>.
+  const accessSelectRef = useRef<HTMLSelectElement>(null);
+  const refocusAccessSelect = useRef(false);
+  function changeAccess(next: PlayerAccessFilter) {
+    refocusAccessSelect.current = true;
+    setRows([]);
+    setTotalCount(0);
+    setTotalBases(0);
+    setTotalOwned(0);
+    setTotalShared(0);
+    setTotalPieces(0);
+    setTotalPlaceables(0);
+    setLoading(true);
+    setAccess(next);
+  }
   const initialCache = basesCache?.scope === scope ? basesCache : null;
   const [q, setQ] = useState(() => initialCache?.q ?? "");
   const [submittedQ, setSubmittedQ] = useState(() => initialCache?.q ?? "");
@@ -375,7 +415,13 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
   const [totalPieces, setTotalPieces] = useState(() => initialCache?.totalPieces ?? 0);
   const [totalPlaceables, setTotalPlaceables] = useState(() => initialCache?.totalPlaceables ?? 0);
   const [loading, setLoading] = useState(() => initialCache === null);
-  const [downloadingId, setDownloadingId] = useState("");
+  useEffect(() => {
+    if (!loading && refocusAccessSelect.current) {
+      refocusAccessSelect.current = false;
+      accessSelectRef.current?.focus();
+    }
+  }, [loading]);
+  const [downloadTarget, setDownloadTarget] = useState<DownloadBaseTarget | null>(null);
   const [refillingId, setRefillingId] = useState("");
   const [refillResult, setRefillResult] = useState(() => readCachedRefillStatus().text);
   // Drives the status line's styling: "running" keeps it on screen with a
@@ -411,6 +457,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
   // once rather than polled: it only changes when this panel changes it.
   const [autoRefillBases, setAutoRefillBases] = useState<Map<string, AutoRefillBase>>(new Map());
   const [autoRefillThreshold, setAutoRefillThreshold] = useState(50);
+  const [autoRefillWindtrapThreshold, setAutoRefillWindtrapThreshold] = useState(40);
   const [autoRefillIntervalHours, setAutoRefillIntervalHours] = useState(24);
   const [savingAutoRefillId, setSavingAutoRefillId] = useState("");
   // Distinct from "no bases enrolled": the enrollment read itself failed, so
@@ -465,9 +512,21 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
     const requestId = ++requestIdRef.current;
     if (!options.silent) onError("");
     try {
-      const result = playerId ? await basesApi.forPlayer(playerId, params) : await basesApi.list(params);
+      const result = playerId ? await basesApi.forPlayer(playerId, { ...params, access }) : await basesApi.list(params);
       if (requestIdRef.current !== requestId) return;
-      const nextRows = (result.rows || []).map(withCoordinates);
+      // The server applies the access filter. Re-checking it here also covers an
+      // older API that ignores the parameter; the endpoint is unpaginated for a
+      // player, so a client-side narrowing can derive the totals from the rows.
+      const allRows = (result.rows || []).map(withCoordinates);
+      const narrowed = Boolean(playerId) && access !== "all";
+      const nextRows = playerId ? filterRowsByAccess(allRows, access) : allRows;
+      // Only derive totals from the rows when the client had to drop some (an
+      // older API that ignored `access`); otherwise the server's totals stand.
+      const ownedOnlyTotals = narrowed && nextRows.length !== allRows.length ? {
+        count: nextRows.length,
+        pieces: nextRows.reduce((sum, row) => sum + (Number(row.piece_count) || 0), 0),
+        placeables: nextRows.reduce((sum, row) => sum + (Number(row.placeable_count) || 0), 0)
+      } : null;
       setRows(nextRows);
       setCanRefill(Boolean(result.capabilities?.generatorRefill));
       setCanQueue(Boolean(result.capabilities?.generatorRefillQueue));
@@ -478,12 +537,18 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
       setCanQueueWater(Boolean(result.capabilities?.waterRefillQueue));
       setCanDeleteBase(Boolean(result.capabilities?.baseDelete));
       setCanQueueDelete(Boolean(result.capabilities?.baseDeleteQueue));
-      setTotalCount(result.totalCount || 0);
-      setTotalBases(result.totalBases || 0);
-      setTotalOwned(result.totalOwned || 0);
-      setTotalShared(result.totalShared || 0);
-      setTotalPieces(result.totalPieces || 0);
-      setTotalPlaceables(result.totalPlaceables || 0);
+      const nextTotalCount = ownedOnlyTotals ? ownedOnlyTotals.count : result.totalCount || 0;
+      const nextTotalBases = ownedOnlyTotals ? ownedOnlyTotals.count : result.totalBases || 0;
+      const nextTotalOwned = ownedOnlyTotals ? (access === "owner" ? ownedOnlyTotals.count : 0) : result.totalOwned || 0;
+      const nextTotalShared = ownedOnlyTotals ? (access === "coowner" ? ownedOnlyTotals.count : 0) : result.totalShared || 0;
+      const nextTotalPieces = ownedOnlyTotals ? ownedOnlyTotals.pieces : result.totalPieces || 0;
+      const nextTotalPlaceables = ownedOnlyTotals ? ownedOnlyTotals.placeables : result.totalPlaceables || 0;
+      setTotalCount(nextTotalCount);
+      setTotalBases(nextTotalBases);
+      setTotalOwned(nextTotalOwned);
+      setTotalShared(nextTotalShared);
+      setTotalPieces(nextTotalPieces);
+      setTotalPlaceables(nextTotalPlaceables);
       basesCache = {
         scope,
         q: params.q,
@@ -492,12 +557,12 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
         sortColumn: params.sortColumn,
         sortDirection: params.sortDirection,
         rows: nextRows,
-        totalCount: result.totalCount || 0,
-        totalBases: result.totalBases || 0,
-        totalOwned: result.totalOwned || 0,
-        totalShared: result.totalShared || 0,
-        totalPieces: result.totalPieces || 0,
-        totalPlaceables: result.totalPlaceables || 0,
+        totalCount: nextTotalCount,
+        totalBases: nextTotalBases,
+        totalOwned: nextTotalOwned,
+        totalShared: nextTotalShared,
+        totalPieces: nextTotalPieces,
+        totalPlaceables: nextTotalPlaceables,
         lastFetchedAt: Date.now()
       };
       // Re-run the instance-name effect on the same cycle. Its own dependency
@@ -510,7 +575,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
     } finally {
       if (requestIdRef.current === requestId) setLoading(false);
     }
-  }, [onError, playerId, scope]);
+  }, [onError, playerId, scope, access]);
 
   useEffect(() => {
     let cancelled = false;
@@ -619,32 +684,12 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
     return () => window.clearTimeout(timer);
   }, [refillStatus, refillResult]);
 
-  async function handleDownloadBlueprint(row: BaseRow) {
-    const id = String(row.base_id);
-    setDownloadingId(id);
-    try {
-      const response = await apiDownload(`/api/bases/${encodeURIComponent(id)}/export`);
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      const responseFilename = response.headers.get("content-disposition")?.match(/filename="([^"]+)"/)?.[1];
-      anchor.download = responseFilename
-        || `${String(row.owner_name || "unknown_player").replace(/[^a-zA-Z0-9_-]/g, "_")}_base_${id}.json`;
-      anchor.click();
-      URL.revokeObjectURL(url);
-    } catch (error) {
-      onError(errorText(error));
-    } finally {
-      setDownloadingId("");
-    }
-  }
-
   async function handleRefillGenerators(base: BaseRow) {
     const id = String(base.base_id);
-    const count = Number(base.generatorCount) || 0;
+    const count = refillDeviceCount(base);
+    const hasWindtraps = (Number(base.windtrapCount) || 0) > 0;
     const confirmed = await confirmAction(
-      `Refill ${count} power device${count === 1 ? "" : "s"} at "${base.name || `base ${id}`}" to full fuel?`,
+      `Refill ${count} power device${count === 1 ? "" : "s"} at "${base.name || `base ${id}`}" to full ${hasWindtraps ? "fuel and filters" : "fuel"}?`,
       {
         title: "Refill Generators",
         confirmLabel: "Refill",
@@ -861,6 +906,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
       const state = await basesApi.autoRefill();
       setAutoRefillBases(new Map(state.bases.map((entry) => [String(entry.baseId), entry])));
       setAutoRefillThreshold(state.thresholdPercent);
+      setAutoRefillWindtrapThreshold(state.windtrapThresholdPercent ?? 40);
       setAutoRefillIntervalHours(state.intervalHours);
       setAutoRefillUnavailable(false);
     } catch {
@@ -906,7 +952,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
         {
           title: "Auto-Refill",
           confirmLabel: "Turn On",
-          warning: `Every ${autoRefillIntervalHours}h this base is checked, and a refill is queued if any generator holds less than ${autoRefillThreshold}% of its fuel cap. Queued refills are written the next time this base's map restarts or stops — auto-refill never restarts a map by itself.`
+          warning: `Every ${autoRefillIntervalHours}h this base is checked, and a refill is queued if any generator holds less than ${autoRefillThreshold}% of its fuel cap or any windtrap less than ${autoRefillWindtrapThreshold}% of its filters. Queued refills are written the next time this base's map restarts or stops — auto-refill never restarts a map by itself.`
         }
       );
       if (!confirmed) return;
@@ -1177,8 +1223,15 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
 
   if (loading) {
     return <section className={panelClassName}>
-      <div className="panel-title"><PanelHeading>Bases</PanelHeading></div>
-      <div className="loading-panel">
+      <div className="panel-title">
+        <div>
+          <PanelHeading>Bases</PanelHeading>
+          {playerId && <p className="playerAdmin_note">{describePlayerAccess("Bases", playerName, access)} Expand a row to use the same tools available on the main Bases page.</p>}
+        </div>
+        {viewSwitch}
+        {playerId && <div className="action-row players-filter-row"><PlayerAccessSelect value={access} onChange={changeAccess} disabled /></div>}
+      </div>
+      <div className="loading-panel" role="status">
         <span className="spinner" aria-hidden="true" />
         <strong className="loading-dots">Loading Bases</strong>
       </div>
@@ -1343,9 +1396,10 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
       <div className="panel-title">
         <div>
           <PanelHeading>Bases</PanelHeading>
-          {playerId && <p className="playerAdmin_note">Bases owned by or shared with {playerName}. Expand a row to use the same tools available on the main Bases page.</p>}
+          {playerId && <p className="playerAdmin_note">{describePlayerAccess("Bases", playerName, access)} Expand a row to use the same tools available on the main Bases page.</p>}
         </div>
-        <div className="action-row">
+        {viewSwitch}
+        <div className={playerId ? "action-row players-filter-row" : "action-row"}>
           {/* Hidden in the per-player embed -- that view is one player's lens
               and these settings are global -- and hidden without a refill
               queue, matching the per-base toggles. */}
@@ -1357,18 +1411,24 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
               onClick={() => setAutoRefillSettingsOpen(true)}
             ><Settings size={16} /></button>
           )}
+          {playerId && <PlayerAccessSelect value={access} onChange={changeAccess} selectRef={accessSelectRef} />}
           <button onClick={() => void load({ q: submittedQ, page, pageSize, sortColumn, sortDirection })}>Refresh</button>
         </div>
       </div>
       {playerId
         ? <div className="player-vehicles-summary player-bases-summary" aria-label="Player base totals">
-            <span><strong>{totalBases.toLocaleString()}</strong> Total</span>
-            <span><strong>{totalOwned.toLocaleString()}</strong> Owned</span>
-            <span><strong>{totalShared.toLocaleString()}</strong> Shared</span>
+            {access === "all"
+              ? <>
+                  <span><strong>{totalBases.toLocaleString()}</strong> Total</span>
+                  <span><strong>{totalOwned.toLocaleString()}</strong> Owned</span>
+                  <span><strong>{totalShared.toLocaleString()}</strong> Shared</span>
+                </>
+              : <span><strong>{totalBases.toLocaleString()}</strong> {accessCountLabel(access)}</span>}
             <span><strong>{totalPieces.toLocaleString()}</strong> Building Pieces</span>
             <span><strong>{totalPlaceables.toLocaleString()}</strong> Placeables</span>
           </div>
         : <p className="action-help-note">Total Bases: {totalBases.toLocaleString()} · Total Building Pieces: {totalPieces.toLocaleString()} · Total Placeables: {totalPlaceables.toLocaleString()}</p>}
+      {playerId && totalCount > rows.length && <p className="playerAdmin_note danger" role="status">This player has more bases than can be listed here; some bases may be missing.</p>}
       {!playerId && stalledCombinedCount > 0 && <div className="bases-stalled-banner" role="alert">
         <p className="bases-stalled-banner-title">
           {stalledCombinedCount.toLocaleString()} base{stalledCombinedCount === 1 ? " has" : "s have"} stalled auto-refill
@@ -1472,7 +1532,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
         action={(row) => {
           const base = row as BaseRow;
           const id = String(base.base_id);
-          const refillable = canRefill && base.generatorDataAvailable && (Number(base.generatorCount) || 0) > 0;
+          const refillable = canRefill && base.generatorDataAvailable && refillDeviceCount(base) > 0;
           // Auto-refill is shown by restyling this button rather than by adding a
           // control: the column is a fixed width and already holds one button per
           // refillable resource. The button stays clickable when enrolled, so
@@ -1482,9 +1542,12 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
           const autoRefillStalled = Boolean(autoRefillEntryForRow?.stalledAt);
           const refillTitle = !canRefill ? "Refill is unsupported on this database"
             : !base.generatorDataAvailable ? "Generator data is unavailable for this base"
-            : !refillable ? "No generators at this base"
+            : !refillable ? "No generators or windtraps at this base"
             : autoRefillStalled ? `Auto-refill has stalled after ${autoRefillEntryForRow?.consecutiveQueues || 3} refills that did not raise the fuel. Click to refill now.`
             : autoRefillOn ? `Auto-refill is on — checked every ${autoRefillIntervalHours}h below ${autoRefillThreshold}%. Click to refill now.`
+            // The accessible name stays "Refill Generators" for every base; only
+            // this visible tooltip names what a windtrap-only base will get.
+            : (Number(base.generatorCount) || 0) === 0 ? "Refill Windtrap Filters"
             : "Refill Generators";
           // Water isn't bundled into this row's data (fetched on demand in the
           // Water tab instead), so there is no per-row "has water storage"
@@ -1545,7 +1608,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
                   disabled={deletePending || !canRefillWater || refillingWaterId === id}
                   onClick={(event) => { event.stopPropagation(); void handleRefillWater(base); }}
                 ><Droplet size={16} /></button>}
-            <button className="icon-toggle-button" title="Download Base as Blueprint" aria-label="Download Base as Blueprint" disabled={downloadingId === id} onClick={(event) => { event.stopPropagation(); void handleDownloadBlueprint(base); }}><Download size={16} /></button>
+            <button className="icon-toggle-button" title="Download Base" aria-label="Download Base" onClick={(event) => { event.stopPropagation(); setDownloadTarget({ id, name: String(base.name || ""), ownerName: String(base.owner_name || "") }); }}><Download size={16} /></button>
             {canDeleteBase && (deletePending
               ? <span className="bases-queued-delete" title="Delete queued — applies when this map next restarts or stops">
                   <Trash2 size={16} aria-label="Delete queued for this base" />
@@ -1693,7 +1756,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
           const renderPower = () => {
           if (!base.generatorDataAvailable) return <p className="muted">Generator data is currently unavailable.</p>;
           const generators = base.generators ?? [];
-          if (!generators.length) return <p className="muted">No generators built at this base.</p>;
+          if (!generators.length) return <p className="muted">No generators or windtraps built at this base.</p>;
           const autoRefillEntry = autoRefillBases.get(id);
           const savingAutoRefill = savingAutoRefillId === id;
           const lastChecked = autoRefillEntry?.lastCheckedAt ? formatAgo(autoRefillEntry.lastCheckedAt) : "";
@@ -1705,7 +1768,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
           // InfoTooltip's popover is absolutely positioned with its own fixed
           // max-width, so it has no such constraint -- and it matches the
           // rest of the app rather than a bare native title attribute.
-          const autoRefillTooltip = `Checked every ${autoRefillIntervalHours}h. Queues a refill when any generator drops below ${autoRefillThreshold}%.`
+          const autoRefillTooltip = `Checked every ${autoRefillIntervalHours}h. Queues a refill when any generator drops below ${autoRefillThreshold}% or any windtrap below ${autoRefillWindtrapThreshold}%.`
             + (autoRefillEntry && lastChecked ? ` Last checked ${lastChecked}${autoRefillEntry.lastLowestPercent === null ? "" : ` — lowest ${autoRefillEntry.lastLowestPercent}%`}.` : "")
             + (autoRefillEntry && !lastChecked ? " Not checked yet." : "")
             + (autoRefillUnavailable ? " Last known state — the latest read failed." : "");
@@ -1742,7 +1805,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
                   {/* Giving up has to be visible, or the operator believes fuel is
                       being handled while this base quietly stays empty. */}
                   {autoRefillEntry?.stalledAt && <p className="bases-auto-refill-stalled" role="alert">
-                    Paused after {autoRefillEntry.consecutiveQueues} refills that did not raise this base's fuel. Refill manually to check why, or turn auto-refill off and on to resume.
+                    Paused after {autoRefillEntry.consecutiveQueues} refills that did not raise this base's fuel or filters. Refill manually to check why, or turn auto-refill off and on to resume.
                   </p>}
                 </>}
               </div>}
@@ -1750,13 +1813,15 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
                 {QUEUED_RESERVE_EXPLANATION}
               </p>
               <div className="bases-card-grid">
-              {generators.map((generator, index) => (
+              {generators.map((generator, index) => {
+                const windtrap = isWindtrapType(generator.type);
+                return (
                 <div className="bases-card" key={`${generator.type}-${index}`}>
                   <div className="bases-card-title">{generator.name}</div>
                   <dl className="bases-card-stats">
-                    <dt>Generators</dt>
+                    <dt>{windtrap ? "Windtraps" : "Generators"}</dt>
                     <dd>{generator.generatorCount.toLocaleString()}</dd>
-                    <dt>Fuel Queued</dt>
+                    <dt>{windtrap ? "Filters Queued" : "Fuel Queued"}</dt>
                     <dd>{generator.fuelCells.toLocaleString()} {generator.fuelName}{generator.fuelCells === 1 ? "" : "s"}</dd>
                     {!hasNoQueuedFuel(generator.unstockedCount, generator.generatorCount) ? (
                       <>
@@ -1766,13 +1831,14 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
                     ) : null}
                     {generator.unstockedCount ? (
                       <>
-                        <dt>No Queued Fuel</dt>
+                        <dt>{windtrap ? "No Queued Filters" : "No Queued Fuel"}</dt>
                         <dd>{generator.unstockedCount.toLocaleString()} of {generator.generatorCount.toLocaleString()}</dd>
                       </>
                     ) : null}
                   </dl>
                 </div>
-              ))}
+                );
+              })}
               </div>
             </div>
           );
@@ -1859,7 +1925,9 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
             </div>
           );
         }}
-        emptyMessage="No bases have been found yet."
+        emptyMessage={playerId
+          ? `${playerName || "This player"} has no ${accessEmptyAdjective(access)}bases.${access === "all" ? "" : " Try another Permission level."}`
+          : "No bases have been found yet."}
       />
       {!playerId && <div className="panel-title bases-pagination-footer">
         <p className="action-help-note">
@@ -1886,6 +1954,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
         onSaved={() => { void refreshAutoRefill(); void refreshAutoRefillWater(); }}
         onError={onError}
       />}
+      {downloadTarget && <DownloadBaseDialog base={downloadTarget} onClose={() => setDownloadTarget(null)} />}
     </section>
   );
 }

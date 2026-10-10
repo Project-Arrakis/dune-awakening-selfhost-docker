@@ -2,7 +2,7 @@ runtime/rabbitmq-game/certs/
 
 # --- console runtime image (trivy-image-scan CI gate) -----------------------
 # Findings accepted below were re-triaged 2026-08-21 against the CURRENT
-# console/api/Dockerfile (node:24-trixie-slim, Docker CLI 29.7.2, Docker
+# console/api/Dockerfile (node:24-trixie-slim, Docker CLI 29.7.2 at that time, Docker
 # Compose v5.5.0 -- all confirmed the latest available release of each at
 # triage time) after the standing trivy-image-scan gate was added, replacing
 # issue #54's stale June 2026 residual list (whose base image/CLI/Compose
@@ -14,15 +14,21 @@ runtime/rabbitmq-game/certs/
 # resolves a finding first (a real version bump beats a suppression every
 # time), then group new entries under the correct heading below with the
 # same triage-date/re-verify discipline.
+#
+# Every entry carries `exp:2027-01-07` (the date of the standing re-triage in #1180), so nothing in this
+# file hides a finding for ever. Entries triaged before 2026-10-09 were given that date mechanically on
+# 2026-10-09 (review #1197); that was not a fresh triage of each one. At the expiry date each entry must
+# be re-checked against a newer base image, Docker CLI, Compose and Debian tracker, or renewed with a
+# stated reason.
 
 # Debian 13.6 (trixie) OS packages -- fix-deferred or not-yet-published by
 # Debian security for this exact package/version at triage time. Re-check
 # on the next `apt-get update` layer rebuild (i.e. every image build, since
 # no explicit apt version pins exist here -- see .hadolint.yaml).
-CVE-2025-69720  # libncursesw6/ncurses-base/libtinfo6
-CVE-2026-12064  # curl/libcurl4t64
-CVE-2026-13221  # perl-base
-CVE-2026-14456  # libssl3t64/openssl
+CVE-2025-69720 exp:2027-01-07  # libncursesw6/ncurses-base/libtinfo6
+CVE-2026-12064 exp:2027-01-07  # curl/libcurl4t64
+CVE-2026-13221 exp:2027-01-07  # perl-base
+CVE-2026-14456 exp:2027-01-07  # libssl3t64/openssl
 # Added 2026-08-26 (issue #498). Two SQLite advisories published between
 # 2026-08-25T23:49Z (when main last passed this gate) and 2026-08-26T01:44Z,
 # both with no Debian fix available at triage time. libsqlite3-0 ships in the
@@ -35,26 +41,35 @@ CVE-2026-14456  # libssl3t64/openssl
 # CVEs require the process to parse attacker-influenced SQLite/FTS5 data. The
 # library is linked in transitively and never called. Re-check on the next
 # base-image bump.
-CVE-2026-11822  # libsqlite3-0 -- FTS5 arbitrary code execution; no fix in Debian
-CVE-2026-11824  # libsqlite3-0 -- arbitrary code execution/crash; no fix in Debian
-CVE-2026-24882  # dirmngr
-CVE-2026-41992  # gzip
-CVE-2026-42496  # perl-base
-CVE-2026-42497  # perl-base
-CVE-2026-48962  # perl-base
-CVE-2026-53612  # util-linux family (bsdutils/libblkid1/liblastlog2-2/libmount1/libsmartcols1/libuuid1/login/mount/util-linux)
-CVE-2026-53613  # util-linux family, same packages as above
-CVE-2026-53614  # util-linux family, same packages as above
-CVE-2026-53615  # util-linux family, same packages as above
-CVE-2026-54369  # libacl1
-CVE-2026-57432  # perl-base
-CVE-2026-57433  # perl-base
-CVE-2026-58050  # libssh2-1t64
-CVE-2026-8286   # curl/libcurl4t64
-CVE-2026-8376   # perl-base
-CVE-2026-8458   # curl/libcurl4t64
-CVE-2026-8927   # curl/libcurl4t64
-CVE-2026-9538   # perl-base
+CVE-2026-11822 exp:2027-01-07  # libsqlite3-0 -- FTS5 arbitrary code execution; no fix in Debian
+CVE-2026-11824 exp:2027-01-07  # libsqlite3-0 -- arbitrary code execution/crash; no fix in Debian
+# Added 2026-10-06. python3.13 (explicit python3 install, issue #489): Debian
+# trixie tracker marks CVE-2026-19445 "<no-dsa> (Minor issue)", no fixed version
+# (trivy shows "affected", empty fix column) as of triage, so a version bump is
+# not available. The flaw is a use-after-free in a Python TLS SERVER whose SNI
+# callback reassigns SSLSocket.context; TLS clients and servers that wrap their
+# listening socket are unaffected. Exposure is nil: the console runs Python only
+# as stdlib scripts spawned by runner.js, never a TLS server, and the console's
+# own HTTP listener is Node. Re-check on the next apt layer rebuild.
+CVE-2026-19445 exp:2027-01-07  # libpython3.13-minimal/libpython3.13-stdlib/python3.13/python3.13-minimal -- no fix in Debian
+CVE-2026-24882 exp:2027-01-07  # dirmngr
+CVE-2026-41992 exp:2027-01-07  # gzip
+CVE-2026-42496 exp:2027-01-07  # perl-base
+CVE-2026-42497 exp:2027-01-07  # perl-base
+CVE-2026-48962 exp:2027-01-07  # perl-base
+CVE-2026-53612 exp:2027-01-07  # util-linux family (bsdutils/libblkid1/liblastlog2-2/libmount1/libsmartcols1/libuuid1/login/mount/util-linux)
+CVE-2026-53613 exp:2027-01-07  # util-linux family, same packages as above
+CVE-2026-53614 exp:2027-01-07  # util-linux family, same packages as above
+CVE-2026-53615 exp:2027-01-07  # util-linux family, same packages as above
+CVE-2026-54369 exp:2027-01-07  # libacl1
+CVE-2026-57432 exp:2027-01-07  # perl-base
+CVE-2026-57433 exp:2027-01-07  # perl-base
+CVE-2026-58050 exp:2027-01-07  # libssh2-1t64
+CVE-2026-8286 exp:2027-01-07  # curl/libcurl4t64
+CVE-2026-8376 exp:2027-01-07  # perl-base
+CVE-2026-8458 exp:2027-01-07  # curl/libcurl4t64
+CVE-2026-8927 exp:2027-01-07  # curl/libcurl4t64
+CVE-2026-9538 exp:2027-01-07  # perl-base
 
 # Added 2026-08-28 (issue #580). Published after main last passed this gate
 # (2026-08-27T07:24Z); first failed on a docs-only PR (#579), so the diff is
@@ -70,7 +85,7 @@ CVE-2026-9538   # perl-base
 # "expat|xml2js|fast-xml|xmldom|DOMParser|import xml|from xml|xml\.etree"
 # -- console/api/src console/web runtime/scripts` is empty. Re-check on every
 # image rebuild and drop this line when Debian publishes a fixed libexpat1.
-CVE-2026-66046  # libexpat1 -- expat storeAtts() quadratic DoS; no fix in Debian
+CVE-2026-66046 exp:2027-01-07  # libexpat1 -- expat storeAtts() quadratic DoS; no fix in Debian
 
 # Added 2026-09-09 (issue #802). Two more libexpat1 HIGH advisories,
 # published after main's last passing run of this gate (2026-09-08T23:43:10Z,
@@ -85,8 +100,43 @@ CVE-2026-66046  # libexpat1 -- expat storeAtts() quadratic DoS; no fix in Debian
 # xml\.etree" -- console/api/src console/web runtime/scripts` check is still
 # empty. Re-check on every image rebuild and drop these when Debian ships a
 # fixed libexpat1.
-CVE-2026-76956  # libexpat1 -- hash-flooding denial of service; no fix in Debian
-CVE-2026-76957  # libexpat1 -- memory corruption allows RCE or DoS; no fix in Debian
+CVE-2026-76956 exp:2027-01-07  # libexpat1 -- hash-flooding denial of service; no fix in Debian
+CVE-2026-76957 exp:2027-01-07  # libexpat1 -- memory corruption allows RCE or DoS; no fix in Debian
+
+# Added 2026-10-09 (issue #1152). One more libexpat1 HIGH advisory, published
+# after main's last passing run of this gate (2026-10-07T16:41Z), first seen on
+# PR #1150 whose diff is not the cause. Same package and version already
+# tracked above (libexpat1 2.8.3-1~deb13u1). Per this file's policy a version
+# bump was checked FIRST and none exists: the Debian security tracker lists
+# trixie, trixie (security) and forky as vulnerable and only sid (2.9.0-1) as
+# fixed, so no base-image tag can resolve it. This one is a heap over-read in
+# XML_ParseBuffer (information disclosure), a different class from the three
+# above, but the exposure argument is the same: libexpat1 arrives only as a
+# transitive dependency of python3.13-stdlib's pyexpat (issue #489), and the
+# server side parses no XML. The check `git grep -iE "expat|xml2js|fast-xml|
+# xmldom|DOMParser|import xml|from xml|xml\.etree" -- console/api/src
+# console/web runtime/scripts` now returns one line,
+# console/web/src/api/client.ts, `new DOMParser().parseFromString(..., "text/html")`.
+# That is HTML parsing in the operator's browser, not in this image, so it does
+# not reach libexpat. Re-check on every image rebuild and drop this line when
+# Debian publishes a fixed libexpat1. Unlike the older entries above, this one carries trivy's own expiry
+# (`exp:`, verified with the pinned trivy 0.73: a future date hides the finding, a past date reports it again),
+# so the acceptance cannot outlive its triage: on 2027-01-07 trivy-image-scan fails until it is re-triaged
+# (same date as every .trivyignore-fs.yaml entry). Tracked in #1180, which stays open until it is re-triaged.
+CVE-2026-77214 exp:2027-01-07  # libexpat1 -- XML_ParseBuffer heap over-read; no fix in Debian
+
+# Added 2026-10-09 (found on PR #1194, unrelated to its diff: advisories published after main's last green run).
+# Each was checked for a fix first. All expire 2027-01-07, the date of the standing re-triage in #1180.
+#  - Docker CLI 29.7.2 -> 29.9.0 (Dockerfile): the CLI's own stdlib findings are gone (pinned trivy 0.73, no ignore file).
+#  - Docker Compose: v5.6.0 is the latest release and is still built with Go 1.26.8, so it carries the same two stdlib
+#    findings as the pinned v5.5.1 (both scanned directly; the fix is Go 1.26.9). It runs as a CLI per command against the
+#    local daemon, not as a listening server; the advisories are denial-of-service in the HTTP/TLS stack. Accepted, not analysed further.
+#  - libgnutls30t64: Debian lists both as "affected" with no fixed version for trixie. Which packages in the image use it
+#    was not analysed; this entry is a time-boxed acceptance, not a finding of non-exposure.
+CVE-2026-78667 exp:2027-01-07  # Go stdlib net/http in docker-compose; fix is Go 1.26.9, Compose has none yet
+CVE-2026-97031 exp:2027-01-07  # Go stdlib crypto/tls in docker-compose; same
+CVE-2026-88647 exp:2027-01-07  # libgnutls30t64 -- no Debian fix at triage time
+CVE-2026-88648 exp:2027-01-07  # libgnutls30t64 -- no Debian fix at triage time
 
 # Debian 13.6 (trixie) python3.13, added 2026-08-25 alongside issue #489's fix
 # (console/api/Dockerfile now installs python3 explicitly -- see that file's
@@ -111,9 +161,9 @@ CVE-2026-76957  # libexpat1 -- memory corruption allows RCE or DoS; no fix in De
 # JSON file (runtime/generated/usersettings.json) written by this same repo.
 # Re-check whenever Debian publishes a fixed python3.13, and drop these
 # entirely if issue #492 removes the python3 dependency.
-CVE-2026-11940  # libpython3.13-minimal/libpython3.13-stdlib/python3.13/python3.13-minimal -- tarfile extraction filter bypass; tarfile is never imported here
-CVE-2026-15308  # same python3.13 package set -- html.parser CPU DoS; html is never imported here
-CVE-2026-7210   # same python3.13 package set -- expat/XML DoS; no XML parsing here
+CVE-2026-11940 exp:2027-01-07  # libpython3.13-minimal/libpython3.13-stdlib/python3.13/python3.13-minimal -- tarfile extraction filter bypass; tarfile is never imported here
+CVE-2026-15308 exp:2027-01-07  # same python3.13 package set -- html.parser CPU DoS; html is never imported here
+CVE-2026-7210 exp:2027-01-07  # same python3.13 package set -- expat/XML DoS; no XML parsing here
 # Added 2026-09-15 (issue #934's trivy-image-scan run). Another tarfile
 # advisory in the same python3.13 package set (file modification/content
 # disclosure via crafted archives), same package/version already tracked
@@ -122,43 +172,39 @@ CVE-2026-7210   # same python3.13 package set -- expat/XML DoS; no XML parsing h
 # exposure-nil reasoning as CVE-2026-11940 above: tarfile is never imported
 # anywhere in runtime/scripts/*.py. Re-check whenever Debian publishes a
 # fixed python3.13.
-CVE-2026-82049  # same python3.13 package set -- tarfile file modification/content disclosure via crafted archives; tarfile is never imported here
+CVE-2026-82049 exp:2027-01-07  # same python3.13 package set -- tarfile file modification/content disclosure via crafted archives; tarfile is never imported here
+# Added 2026-10-06 (PR #1108's trivy-image-scan run). ssl `wrap_bio()` skips
+# hostname verification when `server_hostname` is omitted. Version bump checked
+# FIRST: Debian's tracker lists python3.13 (trixie 3.13.5-2+deb13u5) as
+# vulnerable/unfixed and `<no-dsa> (Minor issue)`; upstream fixed it in 3.13.16,
+# not yet packaged. Exposure nil here: `grep -lE "^\s*(import|from) +(ssl|asyncio|
+# socket|http|urllib)" runtime/scripts/*.py` returns nothing -- the console's
+# Python only reads a local JSON file. Re-check when Debian ships a fixed python3.13.
+CVE-2026-19553 exp:2027-01-07  # same python3.13 package set -- ssl wrap_bio() hostname-verification skip when server_hostname omitted; no ssl/network use here
 
 # npm CLI's own bundled node_modules -- shipped inside node:24-trixie-slim's
 # npm installation itself, not this project's application dependencies
 # (which are unaffected -- see `npm audit`/osv-scanner, both clean). No
 # lever to patch independently short of a newer Node point release; re-check
 # whenever the node:24-trixie-slim tag updates.
-CVE-2026-12151  # undici
-CVE-2026-13149  # brace-expansion
-CVE-2026-14257  # brace-expansion
-CVE-2026-59873  # tar
-CVE-2026-59874  # tar
-CVE-2026-69152  # brace-expansion
-CVE-2026-69192  # ip-address
-CVE-2026-73566  # tar (issue #466; latest published npm, 12.0.2, still bundles 7.5.19)
-
-# Docker CLI 29.7.2's own embedded Go standard library -- confirmed the
-# latest available release at triage time (curl -sI against
-# download.docker.com). Re-check whenever a newer Docker CLI release ships.
-CVE-2026-33818  # encoding/asn1 (stdlib)
-CVE-2026-39821  # golang.org/x/net/idna (stdlib)
-CVE-2026-46600  # stdlib
-CVE-2026-56853  # net/http (stdlib)
-CVE-2026-56858  # html/template (stdlib)
-CVE-2026-56859  # encoding/xml (stdlib)
-CVE-2026-56860  # net/url (stdlib)
-CVE-2026-56862  # crypto/tls (stdlib)
+CVE-2026-12151 exp:2027-01-07  # undici
+CVE-2026-13149 exp:2027-01-07  # brace-expansion
+CVE-2026-14257 exp:2027-01-07  # brace-expansion
+CVE-2026-59873 exp:2027-01-07  # tar
+CVE-2026-59874 exp:2027-01-07  # tar
+CVE-2026-69152 exp:2027-01-07  # brace-expansion
+CVE-2026-69192 exp:2027-01-07  # ip-address
+CVE-2026-73566 exp:2027-01-07  # tar (issue #466; latest published npm, 12.0.2, still bundles 7.5.19)
 
 # Docker Compose v5.5.0's own embedded Go dependencies -- confirmed the
 # latest available release at triage time (git ls-remote against
 # github.com/docker/compose). Re-check whenever a newer Compose release
 # ships.
-CVE-2026-34040  # github.com/docker/docker
-CVE-2026-41567  # github.com/docker/docker
-CVE-2026-42306  # github.com/docker/docker
-CVE-2026-56864  # golang.org/x/mod
-CVE-2026-56865  # golang.org/x/mod
+CVE-2026-34040 exp:2027-01-07  # github.com/docker/docker
+CVE-2026-41567 exp:2027-01-07  # github.com/docker/docker
+CVE-2026-42306 exp:2027-01-07  # github.com/docker/docker
+CVE-2026-56864 exp:2027-01-07  # golang.org/x/mod
+CVE-2026-56865 exp:2027-01-07  # golang.org/x/mod
 # Added 2026-09-01 (issue #658). golang.org/x/crypto/ssh CRITICAL advisory
 # CVE-2026-56854 (auth bypass via unenforced source-address restriction).
 # Per this file's policy a version bump was checked FIRST: v5.5.0 (published
@@ -178,7 +224,7 @@ CVE-2026-56865  # golang.org/x/mod
 # it never runs as an SSH server accepting authenticated connections.
 # Re-check whenever a newer Compose release ships, and drop this line once
 # one does.
-CVE-2026-56854  # golang.org/x/crypto/ssh -- see note above; fixed upstream on main, not yet released
+CVE-2026-56854 exp:2027-01-07  # golang.org/x/crypto/ssh -- see note above; fixed upstream on main, not yet released
 
 # Added 2026-09-06 (issue #691, PR #692). Per this file's policy a version
 # bump was checked FIRST: Docker Compose v5.5.1 (published after v5.5.0) is
@@ -198,17 +244,17 @@ CVE-2026-56854  # golang.org/x/crypto/ssh -- see note above; fixed upstream on m
 # bsdutils/libblkid1/liblastlog2-2/libmount1/libsmartcols1/libuuid1/login/
 # mount/util-linux -- just a newer round). Re-check on the next apt-get
 # update layer rebuild.
-CVE-2026-76642  # util-linux family -- failed external mount helper still runs privileged X-mount post-hooks
-CVE-2026-78408  # util-linux family -- nsenter --join-cgroup leaks root cgroup migration authority
-CVE-2026-78409  # util-linux family -- X-mount.subdir detached-tree resolution can escape via intermediate symlinks
-CVE-2026-78410  # util-linux family -- restricted bind mounts do not pin the source, allowing X-mount.owner/group/mode changes
+CVE-2026-76642 exp:2027-01-07  # util-linux family -- failed external mount helper still runs privileged X-mount post-hooks
+CVE-2026-78408 exp:2027-01-07  # util-linux family -- nsenter --join-cgroup leaks root cgroup migration authority
+CVE-2026-78409 exp:2027-01-07  # util-linux family -- X-mount.subdir detached-tree resolution can escape via intermediate symlinks
+CVE-2026-78410 exp:2027-01-07  # util-linux family -- restricted bind mounts do not pin the source, allowing X-mount.owner/group/mode changes
 # libsystemd0's CVE-2026-16742 (systemd-homed local privilege escalation via
 # missing home-record signature verification) does not apply to this image:
 # systemd itself never runs in this container (no init system, no PID 1
 # systemd, no systemd-homed service) -- libsystemd0 is a linked shared
 # library pulled in transitively, never an active daemon. No Debian fix
 # available at triage time regardless.
-CVE-2026-16742  # libsystemd0 -- systemd-homed privesc; systemd-homed never runs in this container
+CVE-2026-16742 exp:2027-01-07  # libsystemd0 -- systemd-homed privesc; systemd-homed never runs in this container
 
 # Added 2026-09-23 (found on PR #1026's write-bridge CI run). Per this
 # file's policy a version bump was checked first: node:24-trixie-slim is a
@@ -233,4 +279,4 @@ CVE-2026-16742  # libsystemd0 -- systemd-homed privesc; systemd-homed never runs
 # matches. No code path in this image ever parses XML, let alone
 # attacker-influenced UTF-16 XML. Re-check on the next base-image bump or
 # apt index refresh that might carry a trixie-security fix.
-CVE-2026-93990  # libexpat1 -- XML injection via malformed UTF-16 surrogate pairs; unreachable, nothing here parses XML
+CVE-2026-93990 exp:2027-01-07  # libexpat1 -- XML injection via malformed UTF-16 surrogate pairs; unreachable, nothing here parses XML

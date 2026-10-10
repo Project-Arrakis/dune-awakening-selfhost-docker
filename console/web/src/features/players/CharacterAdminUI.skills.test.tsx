@@ -2,12 +2,14 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { adminApi } from "../../api/admin";
 import { playersApi } from "../../api/players";
+import type { Task } from "../../api/setup";
 import { CharacterAdminUI } from "./CharacterAdminUI";
 
 vi.mock("../../api/admin", () => ({
   adminApi: {
     itemCatalog: vi.fn(),
-    skillModules: vi.fn()
+    skillModules: vi.fn(),
+    structuredVehicles: vi.fn()
   }
 }));
 
@@ -18,7 +20,8 @@ vi.mock("../../api/players", () => ({
     giveItems: vi.fn(),
     addCurrency: vi.fn(),
     setSkillModule: vi.fn(),
-    setSkillPoints: vi.fn()
+    setSkillPoints: vi.fn(),
+    spawnVehicle: vi.fn()
   }
 }));
 
@@ -42,12 +45,57 @@ const baseProps = {
 beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(adminApi.itemCatalog).mockResolvedValue({ rows: [] });
+  vi.mocked(adminApi.structuredVehicles).mockResolvedValue({ vehicles: [] });
   vi.mocked(adminApi.skillModules).mockResolvedValue({
     stdout: "Energy Capsule [Trooper]\n  id: Skills.Ability.EnergyCapsule\n  max level: 1"
   });
   vi.mocked(playersApi.inventory).mockResolvedValue({} as Awaited<ReturnType<typeof playersApi.inventory>>);
   vi.mocked(playersApi.specs).mockResolvedValue({ rows: [], skillModules: [], capabilities: {} });
   vi.mocked(playersApi.addCurrency).mockResolvedValue({ supported: true, result: {} });
+});
+
+describe("CharacterAdminUI Tank catalog", () => {
+  it("uses the standard spawn confirmation and honors cancellation", async () => {
+    const confirm = vi.fn().mockResolvedValue(false);
+    vi.mocked(adminApi.structuredVehicles).mockResolvedValue({ vehicles: [{ id: "Tank", name: "Tank", templates: ["T0"] }] });
+    render(<CharacterAdminUI {...baseProps} confirmAction={confirm} detail={{ player: { actual_online_status: "Online" } }} />);
+    fireEvent.click(screen.getByRole("button", { name: "Admin" }));
+    await screen.findByRole("option", { name: "Tier 6 Booster Dart" });
+    fireEvent.click(screen.getByRole("button", { name: "Spawn" }));
+    await waitFor(() => expect(confirm).toHaveBeenCalled());
+    expect(confirm.mock.calls[0][0]).toBe("Spawn Regis Tank / Tier 6 Booster Dart 20 meters in front of OfflinePlayer?");
+    expect(playersApi.spawnVehicle).not.toHaveBeenCalled();
+  });
+
+  it("replaces the standard spawning message with success when the task completes", async () => {
+    let complete!: (task: Task) => void;
+    const waiting = vi.fn(() => new Promise<Task>((resolve) => { complete = resolve; }));
+    const task: Task = { id: "tank-spawn", type: "admin", operation: "adminSpawnVehicle", status: "running", currentStep: "Running", progressMessage: "", logLines: [], warnings: [], startedAt: "2026-10-04T19:50:00Z", finishedAt: null, errorMessage: null };
+    vi.mocked(adminApi.structuredVehicles).mockResolvedValue({ vehicles: [{ id: "Tank", name: "Tank", templates: ["T0"] }] });
+    vi.mocked(playersApi.spawnVehicle).mockResolvedValue({ task });
+    const confirm = vi.fn().mockResolvedValue(true);
+    render(<CharacterAdminUI {...baseProps} confirmAction={confirm} waitForTask={waiting} detail={{ player: { actual_online_status: "Online" } }} />);
+    fireEvent.click(screen.getByRole("button", { name: "Admin" }));
+    await screen.findByRole("option", { name: "Tier 6 Booster Dart" });
+    fireEvent.click(screen.getByRole("button", { name: "Spawn" }));
+    expect(await screen.findByText("Spawning Regis Tank for OfflinePlayer")).toBeInTheDocument();
+    await waitFor(() => expect(waiting).toHaveBeenCalled());
+    complete({ ...task, status: "succeeded" });
+    expect(await screen.findByText("Regis Tank (Tier 6 Booster Dart) was spawned 20 meters in front of OfflinePlayer.")).toBeInTheDocument();
+    expect(screen.queryByText("Spawning Regis Tank for OfflinePlayer")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Spawn" })).toBeEnabled();
+  });
+
+  it("shows Regis Tank and six presets when enabled, even without a profile map", async () => {
+    vi.mocked(adminApi.structuredVehicles).mockResolvedValue({ vehicles: [{ id: "Tank", name: "Tank", templates: ["T0", "T6_CombatDart", "T6_CombatFire", "T6_DartInventory", "T6_RocketInventory", "T6_FireInventory"] }] });
+    render(<CharacterAdminUI {...baseProps} detail={{ player: { online_status: "Offline" } }} />);
+    fireEvent.click(screen.getByRole("button", { name: "Admin" }));
+    expect(await screen.findByRole("option", { name: "Regis Tank" })).toBeInTheDocument();
+    expect(await screen.findByRole("option", { name: "Tier 6 Booster Dart" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Tier 6 Booster Rocket" })).toBeInTheDocument();
+    expect(screen.getAllByRole("option").filter((option) => option.textContent?.startsWith("Tier 6 "))).toHaveLength(6);
+    expect(screen.getByRole("button", { name: "Spawn" })).toBeDisabled();
+  });
 });
 
 describe("CharacterAdminUI currency schema", () => {
@@ -72,7 +120,7 @@ describe("CharacterAdminUI currency schema", () => {
       amount: 100,
       confirmation: "ADD CURRENCY"
     }));
-    expect(screen.getByText("OfflinePlayer's House Credit was updated. Relog required.")).toBeInTheDocument();
+    expect(await screen.findByText("OfflinePlayer's House Credit was updated. Relog required.")).toBeInTheDocument();
   });
 });
 

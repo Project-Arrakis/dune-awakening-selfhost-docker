@@ -317,13 +317,13 @@ describe("VehicleStorageOverlay deletion", () => {
       ...STORAGE,
       deleteSafety: {
         safe: false, known: true, state: "VehicleRecovery",
-        reason: "This vehicle is currently VehicleRecovery and its cargo cannot be changed until that clears. Try again once the vehicle is no longer mid-transit or pending recovery."
+        reason: "This vehicle is Stored for Recovery and its cargo cannot be changed until that clears."
       }
     });
     renderOverlay();
     await loaded();
     await toList();
-    expect(document.body.textContent).toContain("This vehicle is currently VehicleRecovery");
+    expect(document.body.textContent).toContain("This vehicle is Stored for Recovery and its cargo cannot be changed");
     expect((screen.getByRole("button", { name: "Delete Jasmium Crystal from slot 0" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("checkbox", { name: /Bulk Delete Controls/i }) as HTMLInputElement).disabled).toBe(true);
   });

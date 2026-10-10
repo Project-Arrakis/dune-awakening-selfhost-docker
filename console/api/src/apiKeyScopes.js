@@ -25,6 +25,42 @@ export const KEY_DENIED_NAMESPACES = new Set(["settings", "database", "setup"]);
 // reads a stored "write" here as "read".
 export const KEY_WRITE_DENIED_NAMESPACES = new Set(["updates", "addons"]);
 
+// Actions no LEVEL ever covers -- they can only be granted by naming them in
+// the explicit action-list form of a scope.
+//
+// Levels deliberately auto-cover actions added later, which is right for a
+// namespace whose blast radius is stable. `backups` is not one: it grew from
+// "database dumps" to include an archive of runtime/secrets (the console's own
+// admin password, the session secret, api-keys.json) and
+// runtime/generated/iam-policies.json. Without this, every key already stored
+// as { "backups": "write" } -- minted when that meant pg_dump -- silently
+// gained whole-host takeover and full credential exfil on upgrade, with no
+// re-save and nothing to review.
+//
+// create-system and delete-system are not here: they neither read an archive
+// back nor write one into the host. Same line drawn for the admin tier in
+// policy.js.
+//
+// bases:import-backup creates a whole base -- actors, pieces and every stored
+// item in it -- from an uploaded file, bases:edit-backup can hand an existing
+// one to another player, bases:export-backup downloads it for import anywhere,
+// and bases:delete-backup irreversibly removes the backup and everything in it.
+// A key stored as { "bases": "write" } was granted for per-base knobs; it must
+// not gain any of these on upgrade.
+//
+// vehicles:stored-delete deletes a vehicle a player can still recover; a key
+// stored as { "vehicles": "write" } predates it.
+export const LEVEL_EXCLUDED_ACTIONS = new Set([
+  "backups:download-system",
+  "backups:import-system",
+  "backups:restore-system",
+  "bases:import-backup",
+  "bases:edit-backup",
+  "bases:export-backup",
+  "bases:delete-backup",
+  "vehicles:stored-delete"
+]);
+
 // POST-shaped but read-only in effect, so reachable by a "read" grant. Keep
 // this tiny: anything unrecognised defaults to "write", which fails closed.
 //
@@ -183,6 +219,9 @@ export function scopeAllowsAction(namespace, value, action) {
     return !KEY_WRITE_DENIED_NAMESPACES.has(namespace) || isReadAction(action);
   }
   if (value !== "read" && value !== "write") return false;
+  // Checked before the write branch, which is what a stored "write" would
+  // otherwise ride into these actions without the operator ever naming them.
+  if (LEVEL_EXCLUDED_ACTIONS.has(action)) return false;
   if (value === "write" && !KEY_WRITE_DENIED_NAMESPACES.has(namespace)) return true;
   return isReadAction(action);
 }
