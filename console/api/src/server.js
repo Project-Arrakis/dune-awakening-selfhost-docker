@@ -13,6 +13,7 @@ import { scopeCatalog } from "./apiKeyScopes.js";
 import { createBridgeRateLimiter } from "./bridgeRateLimit.js";
 import { buildSelfUpdateHelperDockerArgs, detectDockerSocketGid, mapWriteFlushTimeoutMs, TaskManager, publicTask } from "./tasks.js";
 import { preflight } from "./preflight.js";
+import { playerAccessParam } from "./playerAccessParam.js";
 import { buildDuneArgs, isDynamicServerService, parseVehicleList, runDockerLogs, runDune, validateServiceName } from "./runner.js";
 // isReadOnlySql comes from db.js, NOT runner.js. runner's copy tests the raw
 // string, so a read-only SELECT behind a leading `-- note` or `/* */` header
@@ -21,7 +22,6 @@ import { buildDuneArgs, isDynamicServerService, parseVehicleList, runDockerLogs,
 // space so it cannot fuse tokens or hide a leading `delete`. Sharing one
 // classifier with duneDb.runSql also keeps the authorization decision and the
 // execution decision from diverging.
-import { playerAccessParam } from "./playerAccessParam.js";
 import { createDb, hasExecutableStatement, isReadOnlySql, quoteIdentifier } from "./db.js";
 import * as duneDb from "./duneDb.js";
 import { audit, recordAdminHistory } from "./audit.js";
@@ -55,7 +55,7 @@ import { fetchWithTimeoutAndRetry } from "./services/httpWithRetry.js";
 import { createHandoff } from "./integrations/discord/handoff.js";
 import { actionForRoute, ROUTE_ACTIONS, NAMESPACES } from "./actions.js";
 import { resolvePlayerScope } from "./playerScope.js";
-import { evaluate, loadPolicies, getAllPolicies, setPolicies, resolveAllowedActions, allKnownActions, resolveSessionTier, normalizeTier } from "./policy.js";
+import { evaluate, loadPolicies, getAllPolicies, getPolicyNotices, policyRevision, setPolicies, resolveAllowedActions, allKnownActions, resolveSessionTier, normalizeTier } from "./policy.js";
 import { classifyPlayerTierRequest, PLAYER_TIER_ACTIONS } from "./playerTierGate.js";
 import { discordAdapterEnabled, discordWritesEnabled } from "./integrations/discord/adapter.js";
 // [Layer 3 integration audit fix, LOW, issue #1043] The 5 header constants
@@ -164,7 +164,13 @@ try {
 }
 const policyLoad = loadPolicies(config.repoRoot);
 if (policyLoad.invalid) {
-  console.warn(`IAM policy file at ${policyLoad.path} is not a valid policy store; using built-in defaults.`);
+  console.warn(`IAM policy file at ${policyLoad.path} is not a valid policy store${policyLoad.reason ? ` (${policyLoad.reason})` : ""}; using built-in defaults.`);
+}
+if ((policyLoad.addedDefaultDenies || []).length > 0) {
+  console.warn(`IAM policy notice: the saved policy predates ${policyLoad.addedDefaultDenies.map((d) => `${d.tier} ${d.action}`).join(", ")}; the shipped Deny for each was added in memory (a saved Allow naming the action exactly would have been kept). Save the policy from Settings to persist it.`);
+}
+if ((policyLoad.keptExactAllows || []).length > 0) {
+  console.warn(`IAM policy notice: ${policyLoad.keptExactAllows.map((d) => `${d.tier} ${d.action}`).join(", ")} ${policyLoad.keptExactAllows.length === 1 ? "is" : "are"} allowed by name in the saved policy, so the shipped Deny was not added. That is kept as your explicit choice, and it lets that tier read every credential on this host through a system backup. Remove the Allow in Settings to restore the Deny.`);
 }
 if ((policyLoad.playerCappedActions || []).length > 0) {
   console.warn(`IAM policy notice: the saved player policy grants ${policyLoad.playerCappedActions.length} action(s) the strict player tier can never use (it is capped at players:read and guilds:read): ${policyLoad.playerCappedActions.slice(0, 8).join(", ")}${policyLoad.playerCappedActions.length > 8 ? ", ..." : ""}. Grant them to moderator instead.`);
@@ -1704,12 +1710,35 @@ async function handleApi(req, res, path) {
       policies,
       actions: [...allKnownActions()].sort(),
       actionMap: ROUTE_ACTIONS,
-      namespaces: NAMESPACES
+      namespaces: NAMESPACES,
+      // Why a tier's effective policy differs from the saved file (issue #1160).
+      notices: getPolicyNotices(),
+      // Send it back as If-Match on a save so a concurrent change is refused (issue #1193).
+      revision: policyRevision()
     });
   }
   if (path === "/api/settings/iam/policy" && req.method === "PUT") {
     const body = await readJson(req);
-    const result = setPolicies(body, config.repoRoot);
+    // If-Match carries the revision from GET /api/settings/iam/policies. Absent: unconditional (older clients).
+    // Present but empty is refused rather than treated as absent, so a client whose revision variable was empty
+    // does not silently overwrite. "*" means any existing store, i.e. unconditional. A list of tags is not
+    // supported and never matches.
+    const rawIfMatch = req.headers["if-match"];
+    let ifMatch;
+    let wildcard = false;
+    if (rawIfMatch !== undefined) {
+      const bare = String(rawIfMatch).trim();
+      // Only the bare * is the wildcard (RFC 9110); a quoted "*" is an ordinary tag and never matches.
+      wildcard = bare === "*";
+      ifMatch = wildcard ? bare : bare.replace(/^W\//, "").replace(/^"|"$/g, "");
+      if (!ifMatch) return json(res, 400, { error: "If-Match must carry the revision from GET /api/settings/iam/policies." });
+    }
+    const result = setPolicies(body, config.repoRoot, ifMatch && !wildcard ? { baseRevision: ifMatch } : {});
+    if (result.conflict) {
+      audit(config, req, "iam.policy-conflict", { baseRevision: String(ifMatch).slice(0, 64) });
+      return json(res, 409, result);
+    }
+    if (result.persistFailed) return json(res, 500, result);
     if (!result.ok) return json(res, 400, result);
     audit(config, req, "iam.policy-set", { tiers: Object.keys(body) });
     return json(res, 200, result);

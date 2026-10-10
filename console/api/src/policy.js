@@ -23,6 +23,7 @@
 //   if action matches statement AND Effect=Allow → mark ALLOWED
 //   if no statement matched                        → DENY (default)
 
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { ROUTE_ACTIONS, REGEX_ACTIONS, REGEX_ACTIONS_BY_METHOD, REGEX_ACTIONS_BY_METHOD_PATTERN, CONTENT_CONDITIONAL_ACTIONS, REMOVED_ACTION_ALIASES } from "./actions.js";
@@ -153,6 +154,48 @@ export function playerCappedActions(docs) {
   return capped;
 }
 
+// Security denials the shipped defaults carry for actions added AFTER an operator may
+// have saved iam-policies.json. A saved file replaces the defaults wholesale, so without
+// this an upgraded install keeps admin's "backups:*" allow and silently gains these
+// actions (issue #1117). Added on load only when the saved tier neither denies the action
+// nor names it in an Allow (an explicit, exact-name Allow is the operator's choice and wins).
+const SHIPPED_DEFAULT_DENIES = Object.freeze({
+  admin: ["backups:download-system", "backups:import-system", "backups:restore-system"],
+});
+
+function reconcileShippedDenies(store) {
+  const added = [];
+  const kept = [];
+  let next = store;
+  for (const [tier, actions] of Object.entries(SHIPPED_DEFAULT_DENIES)) {
+    const document = store[tier];
+    if (!document) continue;
+    const patternsOf = (statement) => (Array.isArray(statement.Action) ? statement.Action : [statement.Action]);
+    const denied = (action) => document.statements.some((statement) => statement.Effect === "Deny"
+      && patternsOf(statement).some((pattern) => matchAction(pattern, action)));
+    const namedInAllow = (action) => document.statements.some((statement) => statement.Effect === "Allow"
+      && patternsOf(statement).includes(action));
+    // An exact-name Allow is the operator's choice and wins, but it must not be silent:
+    // these actions let that tier read every credential on the host (system backups).
+    kept.push(...actions.filter((action) => !denied(action) && namedInAllow(action)).map((action) => ({ tier, action })));
+    const missing = actions.filter((action) => !denied(action) && !namedInAllow(action));
+    if (missing.length === 0) continue;
+    next = { ...next, [tier]: { ...document, statements: [...document.statements, { Effect: "Deny", Action: missing }] } };
+    added.push(...missing.map((action) => ({ tier, action })));
+  }
+  return { store: next, added, kept };
+}
+
+// What the last load or save decided about the shipped Denies, for the Settings page: an operator
+// whose admin tier silently lost (or deliberately kept) a system-backup action should not have to
+// read container logs to find out why (issue #1160).
+const emptyNotices = () => ({ addedDefaultDenies: [], keptExactAllows: [] });
+let _notices = emptyNotices();
+
+export function getPolicyNotices() {
+  return { addedDefaultDenies: [..._notices.addedDefaultDenies], keptExactAllows: [..._notices.keptExactAllows] };
+}
+
 export function resolveSessionTier(session) {
   if (!session) return "";
   const tier = typeof session.tier === "string" ? normalizeTier(session.tier) : "";
@@ -182,18 +225,28 @@ export function loadPolicies(repoRoot = null) {
     : resolve(process.cwd(), "../..", "runtime/generated/iam-policies.json");
 
   _allowedActions = {};
+  _notices = emptyNotices();
 
   if (existsSync(filePath)) {
     try {
       const raw = readFileSync(filePath, "utf8");
       const parsed = sanitizePolicyStore(JSON.parse(raw));
       if (validPolicyStore(parsed)) {
-        _policies = parsed;
+        const reconciled = reconcileShippedDenies(parsed);
+        // The same invariant setPolicies enforces on save. A hand-edited file whose owner cannot write
+        // settings would leave nobody able to open the policy editor to fix it; the defaults are the
+        // recoverable state, and the startup warning names the file so the operator can correct it.
+        if (!evaluate({ tier: "owner" }, "settings:write", reconciled.store)) {
+          _policies = DEFAULT_POLICIES;
+          return { source: "defaults", path: filePath, invalid: true, reason: "the owner policy does not allow settings:write", unknownActions: [], deprecatedActions: [] };
+        }
+        _policies = reconciled.store;
+        _notices = { addedDefaultDenies: reconciled.added, keptExactAllows: reconciled.kept };
         // Reported, not rejected: discarding the document would silently
         // revert the operator's whole policy to defaults, a bigger surprise
         // than the dead pattern. setPolicies refuses these on save, so a stored
         // file can only acquire one by hand-editing. The caller logs this.
-        return { source: "file", path: filePath, unknownActions: unknownActions(parsed), deprecatedActions: deprecatedActions(parsed), playerCappedActions: playerCappedActions(parsed) };
+        return { source: "file", path: filePath, unknownActions: unknownActions(parsed), deprecatedActions: deprecatedActions(parsed), playerCappedActions: playerCappedActions(reconciled.store), addedDefaultDenies: reconciled.added, keptExactAllows: reconciled.kept };
       }
       _policies = DEFAULT_POLICIES;
       return { source: "defaults", path: filePath, invalid: true, unknownActions: [], deprecatedActions: [] };
@@ -256,6 +309,24 @@ export function getAllPolicies(policies = null) {
   return { ...store };
 }
 
+// Key order must not change the revision, or a hand-edited file would look like someone else's save.
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    // JSON.stringify drops undefined properties; the hash must too, or it would differ from the saved file.
+    const keys = Object.keys(value).filter((key) => value[key] !== undefined).sort();
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+// Identifies the policy store the console is enforcing right now (issue #1193). The Settings page
+// sends the revision it loaded with a save; setPolicies refuses the save if the store has changed
+// since, so two admins cannot silently overwrite each other.
+export function policyRevision(policies = null) {
+  return createHash("sha256").update(canonicalJson(getAllPolicies(policies))).digest("hex");
+}
+
 // Every Action pattern that matches NO action in the catalog, as
 // [{ tier, pattern }]. Dead weight in an Allow; a silent lie in a Deny.
 // "Deny players:reset-progression" is the shape -- no route resolves to it
@@ -283,7 +354,23 @@ export function unknownActions(docs) {
   return dead;
 }
 
-export function setPolicies(inputDocs, repoRoot = null) {
+// options.baseRevision (optional): the revision the caller last read. When given and it no longer
+// matches, nothing is written and the result is { ok: false, conflict: true } with the current store,
+// so the caller can show what changed. Omitted keeps the old replace-the-store behaviour for
+// scripts and clients that predate revisions.
+export function setPolicies(inputDocs, repoRoot = null, options = {}) {
+  const baseRevision = options?.baseRevision;
+  const currentRevision = policyRevision();
+  if (baseRevision != null && baseRevision !== currentRevision) {
+    return {
+      ok: false,
+      conflict: true,
+      error: "The policies changed since you loaded them. Review the current policies and save again.",
+      policies: getAllPolicies(),
+      notices: getPolicyNotices(),
+      revision: currentRevision
+    };
+  }
   const docs = sanitizePolicyStore(inputDocs);
   if (!validPolicyStore(docs)) {
     return { ok: false, error: "Policies must contain valid tier documents and Allow/Deny statements." };
@@ -321,12 +408,35 @@ export function setPolicies(inputDocs, repoRoot = null) {
       unknownActions: dead
     };
   }
-  _policies = docs;
+  // The same reconcile as a load, so a save cannot leave the tier less restricted than the next
+  // restart would make it. Without this, removing the exact-name Allow that kept a shipped Deny
+  // away (which the Settings page tells the operator to do) left the Deny out until a restart,
+  // while the warning disappeared (review of PR #1174).
+  const reconciled = reconcileShippedDenies(docs);
+  // Write before enforcing: if the disk write fails, the policy in force must stay the one that is
+  // saved, not a loosened one that silently reverts at the next restart (review #1197).
+  if (repoRoot) {
+    try {
+      writeJsonAtomic(resolve(repoRoot, "runtime/generated/iam-policies.json"), reconciled.store, 0o600);
+    } catch {
+      return { ok: false, persistFailed: true, error: "The policy could not be written to disk, so nothing was changed." };
+    }
+  }
+  _policies = reconciled.store;
   _allowedActions = {};
-  if (repoRoot) writeJsonAtomic(resolve(repoRoot, "runtime/generated/iam-policies.json"), docs, 0o600);
+  // What is saved now carries the Denies, so "added" is empty; a kept exact-name Allow stays visible.
+  _notices = { addedDefaultDenies: [], keptExactAllows: reconciled.kept };
   // A grant beyond players:read/guilds:read on `player` is accepted but inert (playerTierGate
   // caps it); say so, as loadPolicies does at startup, so the save does not look effective.
-  return { ok: true, policies: getAllPolicies(), playerCappedActions: playerCappedActions(docs) };
+  // addedDefaultDenies is what THIS save added, so the caller can tell the operator.
+  return {
+    ok: true,
+    policies: getAllPolicies(),
+    playerCappedActions: playerCappedActions(reconciled.store),
+    addedDefaultDenies: reconciled.added,
+    notices: getPolicyNotices(),
+    revision: policyRevision()
+  };
 }
 
 function validPolicyStore(value) {

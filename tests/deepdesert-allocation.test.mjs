@@ -14,6 +14,7 @@ function body(file, name) {
 }
 const demand = body('runtime/scripts/autoscaler.sh', 'handle_demand');
 const response = body('runtime/scripts/autoscaler.sh', 'scan_deepdesert_loading_responses');
+const directorLogs = body('runtime/scripts/autoscaler.sh', 'director_logs');
 const binding = body('runtime/scripts/spawn-server.sh', 'bind_partition_to_live_server');
 const autoscalerSource = readFileSync(new URL('runtime/scripts/autoscaler.sh', root), 'utf8');
 
@@ -39,7 +40,7 @@ for (const [destination, expected, disabled = false] of [[35, '35'], [8, '8'], [
   test(`Deep Desert demand allocates only response destination ${destination ?? 'fallback'} (disabled=${disabled})`, () => fixture(dir => {
     const payload = { Code: 1, MapName: 'DeepDesert_1', ServerState: 0, RequestID: 'test-flow', DestinationPartitionId: destination };
     writeFileSync(join(dir, 'director.log'), `Notified player(s) "test-player" of travel response Overmap2: ${JSON.stringify(payload)}\n`);
-    const result = bash(dir, `${demand}\n${response}
+    const result = bash(dir, `${demand}\n${directorLogs}\n${response}
       demand_event_seen(){ return 1; }
       remember_map_demand(){ :; }
       remember_demand_event(){ :; }
@@ -51,6 +52,7 @@ for (const [destination, expected, disabled = false] of [[35, '35'], [8, '8'], [
       origin_server_id_for_origin_id(){ echo test-origin; }
       deepdesert_target_json(){ return 1; }
       director_heal_due(){ return 0; }
+      director_logs_or_defer(){ return 0; }
       docker(){ cat director.log; }
       SINCE=10m
       DEEPDESERT_LOADING_SCAN_SECONDS=15
@@ -68,6 +70,7 @@ test('binding reports success only when PostgreSQL returns an assigned row', () 
     const run = bash(dir, `${binding}
       psql_value(){ echo server-a; }
       docker(){ printf '%s' "$BIND_RESULT"; return "$BIND_STATUS"; }
+      dune_psql(){ docker "$@"; }
       bind_partition_to_live_server 35 DeepDesert_1 7783 7894 1 0
     `, { BIND_RESULT: result, BIND_STATUS: String(status) });
     assert.equal(run.status === 0, expected);
@@ -80,6 +83,7 @@ test('assignment SQL rejects occupied IDs and preserves existing assignments', {
   bash(dir, `${binding}
     psql_value(){ echo server-a; }
     docker(){ printf '%s' "\${!#}" > "$SQL_PATH"; }
+    dune_psql(){ docker "$@"; }
     bind_partition_to_live_server 35 DeepDesert_1 7783 7894 1 0
   `, { SQL_PATH: sqlPath });
   const sql = readFileSync(sqlPath, 'utf8');

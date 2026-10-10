@@ -72,6 +72,14 @@ describe("PlayerVehiclesTab", () => {
     vi.mocked(vehiclesApi.forPlayer).mockResolvedValue(response({ totalCount: 250 }));
     render(<PlayerVehiclesTab playerId="42" playerName="Kovalt" confirmAction={confirmAction} />);
     expect(await screen.findByText(/more vehicles than can be listed here/)).toBeInTheDocument();
+    // Announced to a screen reader, not just drawn in red (issue #1166).
+    expect(screen.getByText(/more vehicles than can be listed here/)).toHaveAttribute("role", "status");
+  });
+
+  it("announces the loading state of a player's vehicle list", async () => {
+    vi.mocked(vehiclesApi.forPlayer).mockReturnValue(new Promise(() => {}));
+    render(<PlayerVehiclesTab playerId="42" playerName="Kovalt" confirmAction={confirmAction} />);
+    expect(screen.getByRole("status")).toHaveTextContent("Loading Vehicles");
   });
 
   it("keeps the Owner column, but not the Access column, on the co-owner filter", async () => {
@@ -87,10 +95,22 @@ describe("PlayerVehiclesTab", () => {
     expect(screen.queryByRole("columnheader", { name: "Access" })).not.toBeInTheDocument();
   });
 
+  it("words the empty state for every level, with the hint everywhere but All levels", async () => {
+    vi.mocked(vehiclesApi.forPlayer).mockResolvedValue(response({ rows: [], totalCount: 0 }));
+    render(<PlayerVehiclesTab playerId="42" playerName="Kovalt" confirmAction={confirmAction} />);
+    expect(await screen.findByText("Kovalt has no owned vehicles. Try another Permission level.")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Permission"), { target: { value: "coowner" } });
+    expect(await screen.findByText("Kovalt has no co-owned vehicles. Try another Permission level.")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Permission"), { target: { value: "all" } });
+    expect(await screen.findByText("Kovalt has no vehicles.")).toBeInTheDocument();
+  });
+
   it("refreshes the filtered list on demand", async () => {
     vi.mocked(vehiclesApi.forPlayer).mockResolvedValue(response({ rows: [], totalCount: 0 }));
     render(<PlayerVehiclesTab playerId="42" playerName="Kovalt" confirmAction={confirmAction} />);
-    expect(await screen.findByText("Kovalt has no owned vehicles.")).toBeInTheDocument();
+    expect(await screen.findByText("Kovalt has no owned vehicles. Try another Permission level.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     await waitFor(() => expect(vehiclesApi.forPlayer).toHaveBeenCalledTimes(2));
   });

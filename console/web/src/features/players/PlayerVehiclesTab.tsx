@@ -72,20 +72,20 @@ export function PlayerVehiclesTab({ playerId, playerName, confirmAction }: Playe
           </div>
         </div>
         {loading
-          ? <div className="loading-panel"><span className="spinner" aria-hidden="true" /><strong className="loading-dots">Loading Vehicles</strong></div>
+          ? <div className="loading-panel" role="status"><span className="spinner" aria-hidden="true" /><strong className="loading-dots">Loading Vehicles</strong></div>
           : message
             ? <p className={`playerAdmin_note${supported ? " danger" : ""}`}>{message}</p>
             : <>
                 <div className="player-vehicles-summary" aria-label="Player vehicle totals">
                   <span><strong>{rows.length}</strong> {accessCountLabel(access)}</span>
                 </div>
-                {truncated && <p className="playerAdmin_note danger">This player has more vehicles than can be listed here; some owned vehicles may be missing.</p>}
+                {truncated && <p className="playerAdmin_note danger" role="status">This player has more vehicles than can be listed here; some vehicles may be missing.</p>}
                 <VehicleTable
                   rows={rows}
                   context="player"
                   showAccessColumns={access === "all"}
                   showOwnerColumn={access === "coowner"}
-                  emptyMessage={`${playerName} has no ${accessEmptyAdjective(access)}vehicles.`}
+                  emptyMessage={`${playerName || "This player"} has no ${accessEmptyAdjective(access)}vehicles.${access === "all" ? "" : " Try another Permission level."}`}
                   canEditPermissions={canEditPermissions}
                   storageSupported={storageSupported}
                   confirmAction={confirmAction}

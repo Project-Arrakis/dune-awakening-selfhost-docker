@@ -231,3 +231,64 @@ test("real PostgreSQL: the list reports the stored-delete capability on this sch
     assert.equal(older.capabilities.vehicleStoredDelete, false);
   });
 });
+
+// The ?access filter on a player's Vehicles tab, against real rows. The vehicle
+// "owner" is its account owner OR a rank-1 roster holder; "co-owner" is rank 2 and
+// not the account owner (the owner wins). Rank 3 is only in the unfiltered list.
+test("real PostgreSQL: the access filter partitions a player's vehicles by owner, co-owner and associate", async (t) => {
+  await withDatabase(t, async (db, pool) => {
+    const SHARED_RANK1 = 601;      // Duncan rank 1
+    const SHARED_RANK2 = 602;      // Duncan rank 2, owned by Gurney's account
+    const OWNER_AND_RANK2 = 603;   // Duncan's account owns it AND he holds rank 2: owner wins
+    const SHARED_RANK3 = 604;      // Duncan rank 3 (associate)
+    const NOT_DUNCANS = 605;       // Gurney only
+    // The player resolver reads the character's pawn actor through player_state.player_pawn_id.
+    const DUNCAN_PAWN = 21, GURNEY_PAWN = 22;
+    await pool.query(`
+      alter table dune.encrypted_player_state add column player_pawn_id bigint;
+      create or replace view dune.player_state as
+        select id, account_id, player_controller_id, character_name, online_status, player_pawn_id
+        from dune.encrypted_player_state where character_state = 'Active';
+      insert into dune.actors (id, class, owner_account_id) values
+        (${DUNCAN_PAWN}, '/Game/Characters/BP_PlayerCharacter.BP_PlayerCharacter_C', ${DUNCAN.account}),
+        (${GURNEY_PAWN}, '/Game/Characters/BP_PlayerCharacter.BP_PlayerCharacter_C', ${GURNEY.account});
+      update dune.encrypted_player_state set player_pawn_id = ${DUNCAN_PAWN} where id = ${DUNCAN.character};
+      update dune.encrypted_player_state set player_pawn_id = ${GURNEY_PAWN} where id = ${GURNEY.character};
+    `);
+    await pool.query(`
+      ${vehicle(SHARED_RANK1, "Sandbike", "Default")}
+      ${vehicle(SHARED_RANK2, "Buggy", "Default")}
+      ${vehicle(OWNER_AND_RANK2, "Buggy", "Default")}
+      ${vehicle(SHARED_RANK3, "Sandbike", "Default")}
+      ${vehicle(NOT_DUNCANS, "Sandbike", "Default")}
+      update dune.actors set owner_account_id = ${GURNEY.account} where id = ${SHARED_RANK2};
+      update dune.actors set owner_account_id = ${DUNCAN.account} where id = ${OWNER_AND_RANK2};
+      insert into dune.permission_actor (actor_id, actor_name) values
+        (${SHARED_RANK1}, 'a'), (${SHARED_RANK2}, 'b'), (${OWNER_AND_RANK2}, 'c'), (${SHARED_RANK3}, 'd'), (${NOT_DUNCANS}, 'e');
+      insert into dune.permission_actor_rank (permission_actor_id, player_id, rank) values
+        (${SHARED_RANK1}, ${DUNCAN.controller}, 1),
+        (${SHARED_RANK2}, ${DUNCAN.controller}, 2),
+        (${OWNER_AND_RANK2}, ${DUNCAN.controller}, 2),
+        (${SHARED_RANK3}, ${DUNCAN.controller}, 3),
+        (${NOT_DUNCANS}, ${GURNEY.controller}, 1);
+    `);
+    const mine = async (player, access) =>
+      ids(await listed(db, { playerId: String(player === DUNCAN ? DUNCAN_PAWN : GURNEY_PAWN), pageSize: 200, ...(access ? { access } : {}) }))
+        .filter((id) => id >= 600).sort((a, b) => a - b);
+
+    assert.deepEqual(await mine(DUNCAN), [601, 602, 603, 604], "default is every roster rank");
+    assert.deepEqual(await mine(DUNCAN, "all"), [601, 602, 603, 604]);
+    assert.deepEqual(await mine(DUNCAN, "owner"), [601, 603], "account owner or rank 1");
+    assert.deepEqual(await mine(DUNCAN, "coowner"), [602], "rank 2, and not a vehicle the account owns");
+    assert.deepEqual(await mine(DUNCAN, "bogus"), [601, 602, 603, 604], "an unknown level means all");
+
+    const owner = await listed(db, { playerId: String(DUNCAN_PAWN), pageSize: 200, access: "owner" });
+    assert.ok(owner.rows.filter((r) => Number(r.id) >= 600).every((r) => r.relationship === "Owner"));
+    const co = await listed(db, { playerId: String(DUNCAN_PAWN), pageSize: 200, access: "coowner" });
+    assert.ok(co.rows.every((r) => r.relationship === "Co-Owner"));
+
+    // Another player's rows never leak in, and the filter is per player.
+    assert.deepEqual(await mine(GURNEY, "owner"), [602, 605], "Gurney's account owns 602; rank 1 on 605");
+    assert.deepEqual(await mine(GURNEY, "coowner"), []);
+  });
+});
