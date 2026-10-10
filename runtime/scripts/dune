@@ -11,12 +11,18 @@ cd "$(dirname "$0")/../.."
 DUNE_COMPOSE_PROJECT_NAME="$(dune_resolve_compose_project_name "$(pwd -P)")"
 export DUNE_COMPOSE_PROJECT_NAME
 export COMPOSE_PROJECT_NAME="$DUNE_COMPOSE_PROJECT_NAME"
-if [ -f .env ] && [ -w .env ]; then
-  dune_persist_compose_project_name "$(pwd -P)" "$DUNE_COMPOSE_PROJECT_NAME"
-fi
-
 cmd="${1:-help}"
 target="${2:-}"
+
+case "$cmd:$target" in
+  console:status|console:url|console:help|console:--help|console:-h|console:|web:status|web:url|web:help|web:--help|web:-h|web:)
+    ;; # Console inspection does not need to persist configuration.
+  *)
+    if [ -f .env ] && [ -w .env ]; then
+      dune_persist_compose_project_name "$(pwd -P)" "$DUNE_COMPOSE_PROJECT_NAME"
+    fi
+    ;;
+esac
 
 auto_repair_stack_git_state() {
   local version tag_commit head backup_dir remote
