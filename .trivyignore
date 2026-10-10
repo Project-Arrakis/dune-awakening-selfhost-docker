@@ -205,6 +205,16 @@ CVE-2026-41567 exp:2027-01-07  # github.com/docker/docker
 CVE-2026-42306 exp:2027-01-07  # github.com/docker/docker
 CVE-2026-56864 exp:2027-01-07  # golang.org/x/mod
 CVE-2026-56865 exp:2027-01-07  # golang.org/x/mod
+# Added 2026-10-10 (issue #1199). CVE-2026-78669 (HTTP/2 SETTINGS flood DoS) in
+# golang.org/x/net v0.58.0 and Go stdlib 1.26.8, both inside the Compose binary.
+# A version bump was checked first: Compose v5.6.0 (2026-10-02, the latest
+# release) is still built with go1.26.8 and embeds x/net v0.58.0 (checked with
+# `go version -m` on the release binary). The fix (x/net v0.60.0) is on
+# Compose's main branch but in no tagged release. Exposure is nil: this image
+# only runs `docker compose` as a local CLI plugin against the host's Docker
+# socket and never serves HTTP/2. Drop this line when a Compose release built
+# with x/net >= 0.60.0 and Go >= 1.26.9 ships.
+CVE-2026-78669 exp:2027-01-07  # golang.org/x/net + stdlib (Docker Compose v5.6.0 still embeds x/net v0.58.0, go1.26.8)
 # Added 2026-09-01 (issue #658). golang.org/x/crypto/ssh CRITICAL advisory
 # CVE-2026-56854 (auth bypass via unenforced source-address restriction).
 # Per this file's policy a version bump was checked FIRST: v5.5.0 (published
