@@ -23,11 +23,15 @@ export function liveItemGrantPublished(result = {}) {
 }
 
 export function customizationGrantOutcome(result = {}) {
-  const verified = result.ok === true;
-  const deliveryRequested = !verified && result.published === true;
+  const inventoryVerified = result.ok === true;
+  const deliveryRequested = !inventoryVerified && result.published === true;
   return {
-    ok: verified || deliveryRequested,
-    verified,
+    ok: inventoryVerified || deliveryRequested,
+    // Inventory delivery is observable; persistent cosmetic ownership is
+    // controlled by Funcom/Steam entitlements and is not stored in this DB.
+    verified: false,
+    inventoryVerified,
+    ownershipVerified: false,
     deliveryRequested
   };
 }

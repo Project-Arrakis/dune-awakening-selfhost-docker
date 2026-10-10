@@ -41,10 +41,14 @@ assert 'republish_age\" -lt \"$DIRECTOR_HEAL_REPUBLISH_GRACE_SECONDS' in scan_bo
 assert "battlegroup_effective_player_count" in scan_body
 assert "browser_restart_deferred" in scan_body
 assert "browser_restart_pending" in scan_body
-assert 'director_heal_set browser_restart_pending "$now"' in scan_body
+assert 'director_heal_set browser_restart_pending "$now"' not in scan_body
 assert "director_heal_clear browser_restart_pending" in scan_body
 assert 'online_players="unknown"' in scan_body
 assert scan_body.index("action=republish") < scan_body.index("restart-director.sh")
+online_guard = scan_body.index('online_players="$(battlegroup_effective_player_count')
+defer_guard = scan_body.index('if [ "$online_players" = "unknown" ] || [ "$online_players" -gt 0 ]; then')
+assert online_guard < defer_guard < scan_body.index("restart-director.sh")
+assert 'if [ -n "$restart_pending" ]' not in scan_body
 
 core_ready = text.index("core_maps_ready_for_browser_heal()")
 core_ready_end = text.index("scan_director_browser_state()", core_ready)

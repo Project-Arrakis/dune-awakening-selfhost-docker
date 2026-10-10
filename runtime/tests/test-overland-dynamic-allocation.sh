@@ -41,6 +41,8 @@ def function(name, next_name):
 selected = [
     function("director_map_max_parties", "map_requires_isolated_party_dimension"),
     function("map_requires_isolated_party_dimension", "map_exists"),
+    function("max_dimensions_for_map", "ensure_dynamic_instance_partitions"),
+    function("ensure_dynamic_instance_partitions", "active_dimensions_for_map"),
     function("handle_demand", "handle_idle_row"),
     function("scan_travel_demand", "follow_director_travel_demand"),
 ]
@@ -53,10 +55,19 @@ printf '%s\n' "$1" >>"$SPAWN_LOG"
 SH
 chmod +x "$test_root/runtime/scripts/spawn-server.sh"
 
-SPAWN_LOG="$test_root/spawns" TEST_ROOT="$test_root" bash <<'SH'
+SPAWN_LOG="$test_root/spawns" POOL_LOG="$test_root/pools" TEST_ROOT="$test_root" bash <<'SH'
 set -euo pipefail
 cd "$TEST_ROOT"
 source "$TEST_ROOT/functions.sh"
+
+mkdir -p runtime/generated
+printf '{"maps":{}}\n' >runtime/generated/sietch-config.json
+map_uses_dedicated_scaling() { echo 1; }
+[ "$(max_dimensions_for_map CB_Dungeon_Hephaestus)" = "5" ]
+DUNE_DYNAMIC_INSTANCE_MAX_DIMENSIONS=7
+[ "$(max_dimensions_for_map CB_Story_Hephaestus)" = "7" ]
+printf '{"maps":{"CB_Dungeon_Hephaestus":{"max_dimensions":3}}}\n' >runtime/generated/sietch-config.json
+[ "$(max_dimensions_for_map CB_Dungeon_Hephaestus)" = "3" ]
 
 ASSIGNED=1
 RUNNING=1
@@ -75,6 +86,7 @@ map_assigned_count() { echo "$ASSIGNED"; }
 container_count_for_map() { echo "$RUNNING"; }
 occupied_dimensions_for_map() { echo "$OCCUPIED"; }
 max_dimensions_for_map() { echo "$MAX_DIMENSIONS"; }
+ensure_dynamic_instance_partitions() { printf '%s|%s\n' "$1" "$2" >>"$POOL_LOG"; }
 map_uses_dedicated_scaling() { echo "$DEDICATED"; }
 
 map_requires_isolated_party_dimension CB_Overland_S_06
@@ -87,14 +99,18 @@ if map_requires_isolated_party_dimension CB_Overland_S_04; then
 fi
 
 : >"$SPAWN_LOG"
+: >"$POOL_LOG"
 handle_demand CB_Overland_S_07 1 second-request request
 [ "$(cat "$SPAWN_LOG")" = "CB_Overland_S_07" ]
+[ "$(cat "$POOL_LOG")" = "CB_Overland_S_07|2" ]
 
 # Smuggler's Run also needs a new dimension when another independent player
 # arrives, while retaining its separate immediate fresh-process retirement.
 : >"$SPAWN_LOG"
+: >"$POOL_LOG"
 handle_demand CB_Overland_S_06 1 second-smugglers-request request
 [ "$(cat "$SPAWN_LOG")" = "CB_Overland_S_06" ]
+[ "$(cat "$POOL_LOG")" = "CB_Overland_S_06|2" ]
 
 # The second dimension is warming. Repeated queue summaries must not start a
 # third instance while one occupied dimension plus one waiter needs only two.
@@ -136,8 +152,10 @@ for map in \
   CB_Dungeon_ThePit \
   CB_Story_BanditFortress01; do
   : >"$SPAWN_LOG"
+  : >"$POOL_LOG"
   handle_demand "$map" 1 "classical-$map" request ClassicalInstancing
   [ "$(cat "$SPAWN_LOG")" = "$map" ]
+  [ "$(cat "$POOL_LOG")" = "$map|2" ]
 done
 
 # Dimension-routed and ordinary dedicated requests must retain their existing

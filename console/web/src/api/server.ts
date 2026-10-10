@@ -51,7 +51,63 @@ export type RestartQueueResponse = {
   playersOnlineSupported: boolean;
 };
 
+export type RestartHistoryRow = {
+  id: string;
+  startedAt: string;
+  finishedAt: string;
+  durationSeconds: number;
+  scope: "battlegroup" | "map" | "service";
+  target: string;
+  map: string;
+  partitionId: string;
+  source: string;
+  reason: string;
+  result: "Succeeded" | "Failed";
+};
+
+export type RestartHistoryResponse = {
+  rows: RestartHistoryRow[];
+  lastBattlegroupRestart: RestartHistoryRow | null;
+};
+
 export type RestartQueueTarget = { partitionId?: string | number; map?: string };
+
+export type ServerStatusResponse = {
+  operation: string;
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+  schemaVersion: 1;
+  ok: boolean;
+  data: {
+    summary: {
+      overall: string | null;
+      title: string | null;
+      region: string | null;
+      mode: string | null;
+      serverIp: string | null;
+      battlegroup: string | null;
+      population: { current: number | null; capacity: number | null };
+    };
+    containers: Array<{ name: string; status: string }>;
+    listeners: Array<{ name: string; port: number | null; protocol: string; status: string }>;
+    database: { worldPartitions: number | null };
+    gameServers: Array<{ map: string; status: string; uptime: string }>;
+    automation: { autoscaler: string | null; autoUpdates: string | null };
+    rabbitmq: {
+      directorConnections: number | null;
+      gameServerConnections: number | null;
+      textRouterConnections: number | null;
+      details: string | null;
+    };
+    fls: {
+      directorHeartbeat: string | null;
+      populationDeclaration: string | null;
+      maxCapacityDeclaration: string | null;
+      gatewayDbMonitoring: string | null;
+    };
+  };
+};
 
 // The backend now merges a partial body onto the currently persisted
 // settings (see restartQueue.js saveSettings), so every field here is
@@ -81,13 +137,18 @@ function immediateQuery(immediate?: boolean) {
 }
 
 export const serverApi = {
-  status: () => api<{ stdout: string }>("/api/server/status"),
+  status: () => api<ServerStatusResponse>("/api/server/status"),
   performance: () => api<PerformanceSnapshot>("/api/server/performance"),
+  restartHistory: () => api<RestartHistoryResponse>("/api/server/restart-history"),
   readiness: () => api<{ stdout: string; stderr?: string; exitCode?: number }>("/api/server/readiness"),
   ports: () => api<{ stdout: string }>("/api/server/ports"),
   services: () => api<{ stdout: string }>("/api/server/services"),
   doctor: () => api<{ stdout: string; stderr?: string; exitCode?: number }>("/api/server/doctor"),
   fixNetworkBinding: () => post<{ task: Task }>("/api/server/network-bind/fix"),
+  // Recreates the Console container so it reads a changed .env. The request
+  // is answered before the container goes away; the caller then waits for the
+  // Console to answer again rather than for a task result.
+  reloadConsole: () => post<{ task: Task }>("/api/console/reload"),
   cleanupDockerImages: () => post<{ task: Task }>("/api/server/storage/cleanup-images", { confirmation: "CLEAN OBSOLETE DUNE IMAGES" }),
   cleanupDockerBuildCache: () => post<{ task: Task }>("/api/server/storage/cleanup-build-cache", { confirmation: "CLEAN DOCKER BUILD CACHE" }),
   start: () => post<{ task: Task }>("/api/server/start"),

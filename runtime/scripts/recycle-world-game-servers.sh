@@ -11,13 +11,12 @@ source runtime/scripts/image-tags.sh
 # shellcheck source=runtime/scripts/landsraad-instance-cleanup.sh
 source runtime/scripts/landsraad-instance-cleanup.sh
 
+# shellcheck source=runtime/scripts/lib/postgres.sh
+source runtime/scripts/lib/postgres.sh
+
 ACTION="${1:-remove-stale}"
 TARGET_IMAGE="$(resolve_game_server_image)"
 SERVER_ID_MAP_FILE="runtime/generated/autoscaler-server-ids.tsv"
-
-psql_value() {
-  docker exec dune-postgres psql -U postgres -d dune -Atc "$1"
-}
 
 is_world_game_container() {
   local name="$1"
@@ -57,7 +56,7 @@ cleanup_partition_assignment() {
   server_id="$(psql_value "select coalesce(server_id, '') from dune.world_partition where partition_id = $partition_id limit 1;")"
   map_name="$(psql_value "select coalesce(map, '') from dune.world_partition where partition_id = $partition_id limit 1;")"
 
-  docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+  dune_psql -v ON_ERROR_STOP=1 -c "
 begin;
 update dune.world_partition
 set server_id = null
@@ -96,13 +95,20 @@ remove_container() {
 }
 
 remove_stale() {
-  local found=0
+  local found=0 map_name expected actual
   while IFS=$'\t' read -r name image; do
     [ -n "$name" ] || continue
     is_world_game_container "$name" || continue
-    if [ "$image" != "$TARGET_IMAGE" ]; then
+    map_name=""
+    case "$name" in
+      dune-server-survival-1|dune-server-survival-1-[0-9]*) map_name="Survival_1" ;;
+    esac
+    expected="$(resolve_game_server_image "$map_name")"
+    actual="$(docker inspect --format '{{.Image}}' "$name")"
+    expected="$(docker image inspect --format '{{.Id}}' "$expected")"
+    if [ "$actual" != "$expected" ]; then
       found=1
-      echo "Stale world server image detected: $name ($image != $TARGET_IMAGE)"
+      echo "Stale world server image detected: $name [$image] ($actual != $expected)"
       remove_container "$name"
     fi
   done < <(docker ps -a --format '{{.Names}}\t{{.Image}}')

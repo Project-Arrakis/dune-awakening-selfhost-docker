@@ -55,6 +55,9 @@ current_image_refs() {
 
 protected_image_ids() {
   local container ref
+  if [ -f runtime/generated/experimental-tanks.json ]; then
+    runtime/scripts/experimental-tanks.sh resolve Survival_1
+  fi
 
   while IFS= read -r container; do
     [ -n "$container" ] || continue

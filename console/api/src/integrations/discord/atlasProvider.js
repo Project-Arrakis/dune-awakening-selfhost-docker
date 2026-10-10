@@ -5,7 +5,7 @@ import { buildSietchAtlas } from "../../services/sietchAtlas.js";
 // around the existing buildSietchAtlas() -- reused, not reimplemented, so
 // this stays in agreement with the general (non-Discord) combat-state/
 // Coriolis/sandstorm services it's built from.
-export async function sietchAtlasProvider(config, db, { buildAtlas = buildSietchAtlas } = {}) {
-  const atlas = await buildAtlas(config, db);
+export async function sietchAtlasProvider(config, db, { buildAtlas = buildSietchAtlas, includePasswords = false } = {}) {
+  const atlas = await buildAtlas(config, db, { includePasswords });
   return { ok: true, ...atlas };
 }

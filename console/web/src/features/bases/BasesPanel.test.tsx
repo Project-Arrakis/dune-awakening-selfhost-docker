@@ -121,18 +121,104 @@ describe("BasesPanel player scope", () => {
     await waitFor(() => expect(basesApi.forPlayer).toHaveBeenCalledWith("42", expect.objectContaining({ page: 0, pageSize: 5000 })));
     expect(basesApi.list).not.toHaveBeenCalled();
     expect(await screen.findByText("Owned Home")).toBeInTheDocument();
-    expect(screen.getByText("Shared Workshop")).toBeInTheDocument();
+    // Bases merely shared with the player are not listed, and the totals
+    // describe only the owned set (10 pieces / 4 placeables of the one base).
+    expect(screen.queryByText("Shared Workshop")).not.toBeInTheDocument();
     const summary = screen.getByLabelText("Player base totals");
-    expect(summary).toHaveTextContent("2 Total");
     expect(summary).toHaveTextContent("1 Owned");
-    expect(summary).toHaveTextContent("1 Shared");
-    expect(summary).toHaveTextContent("20 Building Pieces");
-    expect(summary).toHaveTextContent("8 Placeables");
-    expect(screen.getByText(/Bases owned by or shared with Chani/)).toBeInTheDocument();
+    expect(summary).not.toHaveTextContent("Shared");
+    expect(summary).toHaveTextContent("10 Building Pieces");
+    expect(summary).toHaveTextContent("4 Placeables");
+    expect(screen.getByText(/Bases owned by Chani/)).toBeInTheDocument();
     expect(screen.queryByRole("combobox", { name: "Rows" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "First" })).not.toBeInTheDocument();
     expect(screen.queryByText(/Page 1 of/)).not.toBeInTheDocument();
     expect(screen.queryByPlaceholderText("Search ID, name, type, or owner")).not.toBeInTheDocument();
+    expect(document.querySelector(".player-bases-panel .bases-table")).toBeInTheDocument();
+    expect(screen.getByText("Owned Home").closest("td")).toHaveAttribute("data-label", "Base Name");
+    const download = screen.getAllByRole("button", { name: "Download Base" })[0];
+    expect(download.closest("td")).toHaveAttribute("data-label", "Actions");
+    // Opens the format choice for that base rather than downloading.
+    fireEvent.click(download);
+    const dialog = screen.getByRole("dialog", { name: "Download Base" });
+    expect(dialog).toHaveTextContent("Owned Home");
+    expect(within(dialog).getByRole("button", { name: /Download Blueprint/ })).toBeEnabled();
+    expect(within(dialog).getByRole("button", { name: /Download Base Backup/ })).toBeEnabled();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog", { name: "Download Base" })).not.toBeInTheDocument();
+  });
+
+  it("switches Permission levels: asks the server, drops stale rows while loading, and words the empty state", async () => {
+    const empty = { capabilities: { bases: true }, totalCount: 0, totalBases: 0, totalOwned: 0, totalShared: 0, totalPieces: 0, totalPlaceables: 0, rows: [] };
+    vi.mocked(basesApi.forPlayer).mockResolvedValueOnce({
+      ...empty, totalCount: 1, totalBases: 1, totalOwned: 1, totalPieces: 10, totalPlaceables: 4,
+      rows: [{ ...commonRow, base_id: "4101", name: "Owned Home", relationship: "Owner", generatorDataAvailable: false, generatorCount: 0 }]
+    });
+    renderPanel({ playerId: "42", playerName: "Chani", embedded: true });
+    expect(await screen.findByText("Owned Home")).toBeInTheDocument();
+
+    let release!: (value: typeof empty) => void;
+    vi.mocked(basesApi.forPlayer).mockReturnValueOnce(new Promise<typeof empty>((resolve) => { release = resolve; }) as never);
+    fireEvent.change(screen.getByLabelText("Permission"), { target: { value: "coowner" } });
+
+    await waitFor(() => expect(basesApi.forPlayer).toHaveBeenLastCalledWith("42", expect.objectContaining({ access: "coowner" })));
+    // In flight: the previous level's rows are gone, and the dropdown stays visible but locked.
+    expect(screen.queryByText("Owned Home")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Permission")).toBeDisabled();
+
+    release(empty);
+    expect(await screen.findByText("Chani has no co-owned bases. Try another Permission level.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Permission")).toBeEnabled();
+    // The loading branch unmounted the select the user used; focus must come back to the live one.
+    await waitFor(() => expect(screen.getByLabelText("Permission")).toHaveFocus());
+
+    // "All levels" is the one level with no hint: the player has no bases at all.
+    vi.mocked(basesApi.forPlayer).mockResolvedValueOnce(empty);
+    fireEvent.change(screen.getByLabelText("Permission"), { target: { value: "all" } });
+    expect(await screen.findByText("Chani has no bases.")).toBeInTheDocument();
+  });
+
+  it("does not bring back the previous level's rows when the new level fails to load", async () => {
+    const owned = {
+      capabilities: { bases: true }, totalCount: 1, totalBases: 1, totalOwned: 1, totalShared: 0, totalPieces: 10, totalPlaceables: 4,
+      rows: [{ ...commonRow, base_id: "4101", name: "Owned Home", relationship: "Owner", generatorDataAvailable: false, generatorCount: 0 }]
+    };
+    vi.mocked(basesApi.forPlayer).mockResolvedValueOnce(owned);
+    const props = renderPanel({ playerId: "42", playerName: "Chani", embedded: true });
+    expect(await screen.findByText("Owned Home")).toBeInTheDocument();
+
+    vi.mocked(basesApi.forPlayer).mockRejectedValueOnce(new Error("database unavailable"));
+    fireEvent.change(screen.getByLabelText("Permission"), { target: { value: "coowner" } });
+
+    await waitFor(() => expect(props.onError).toHaveBeenCalledWith(expect.stringContaining("database unavailable")));
+    // Loading has ended, so the old level's rows are not what keeps the table empty: they were dropped.
+    await waitFor(() => expect(screen.getByLabelText("Permission")).toBeEnabled());
+    expect(screen.queryByText("Owned Home")).not.toBeInTheDocument();
+    const summary = screen.getByLabelText("Player base totals");
+    expect(summary).toHaveTextContent("0 Co-owned");
+    expect(summary).toHaveTextContent("0 Building Pieces");
+    expect(summary).toHaveTextContent("0 Placeables");
+  });
+
+  it("warns when a player's base list is capped instead of silently implying every base is shown", async () => {
+    vi.mocked(basesApi.forPlayer).mockResolvedValue({
+      capabilities: { bases: true }, totalCount: 5001, totalBases: 5001, totalOwned: 5001,
+      totalShared: 0, totalPieces: 50010, totalPlaceables: 20004,
+      rows: [{ ...commonRow, base_id: "4101", name: "Owned Home", relationship: "Owner", generatorDataAvailable: false, generatorCount: 0 }]
+    });
+    renderPanel({ playerId: "42", playerName: "Chani", embedded: true });
+    expect(await screen.findByText(/more bases than can be listed here/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Player base totals")).toHaveTextContent("5,001 Owned");
+    // Announced to a screen reader, not just drawn in red (issue #1166).
+    expect(screen.getByText(/more bases than can be listed here/)).toHaveAttribute("role", "status");
+  });
+
+  it("announces the loading state of a player's base list", async () => {
+    vi.mocked(basesApi.forPlayer).mockReturnValue(new Promise(() => {}));
+    // A player id no earlier test used: the panel caches its last view per scope, and a cached
+    // view would render the list straight away instead of the loading state.
+    renderPanel({ playerId: "loading-state-player", playerName: "Chani", embedded: true });
+    expect(screen.getByRole("status")).toHaveTextContent("Loading Bases");
   });
 });
 
@@ -282,6 +368,42 @@ describe("BasesPanel generator details", () => {
     expect(screen.getByText("1 of 1")).toBeInTheDocument();
   });
 
+  it("shows windtraps in the Power tab with filter wording", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue({
+      capabilities: { bases: true },
+      totalCount: 1,
+      totalBases: 1,
+      totalPieces: 10,
+      totalPlaceables: 3,
+      rows: [
+        {
+          ...commonRow,
+          base_id: "1010",
+          name: "Sietch Traps",
+          generatorDataAvailable: true,
+          generatorCount: 1,
+          windtrapCount: 2,
+          generatorRuntimeSeconds: 3600,
+          generatorUnstockedCount: 1,
+          generatorAllUnstocked: false,
+          generators: [
+            { type: "fuel", name: "Fuel-Powered Generator", fuelName: "Fuel Cell", fuelCells: 1, generatorCount: 1, runtimeSeconds: 3600, unstockedCount: 0 },
+            { type: "windtrap", name: "Windtrap", fuelName: "Filter", fuelCells: 0, generatorCount: 1, runtimeSeconds: 0, unstockedCount: 1 },
+            { type: "largeWindtrap", name: "Large Windtrap", fuelName: "Filter", fuelCells: 4, generatorCount: 1, runtimeSeconds: 345600, unstockedCount: 0 }
+          ]
+        }
+      ]
+    });
+
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Show details for Sietch Traps" }));
+
+    const card = (title: string) => screen.getByText(title, { selector: ".bases-card-title" }).closest(".bases-card");
+    expect(card("Windtrap")?.textContent).toContain("Windtraps1Filters Queued0 FiltersNo Queued Filters1 of 1");
+    expect(card("Large Windtrap")?.textContent).toContain("Windtraps1Filters Queued4 Filters");
+    expect(card("Fuel-Powered Generator")?.textContent).toContain("Generators1Fuel Queued1 Fuel Cell");
+  });
+
   it("reports when every generator has no queued fuel without claiming active burns stopped", async () => {
     vi.mocked(basesApi.list).mockResolvedValue({
       capabilities: { bases: true },
@@ -416,6 +538,53 @@ describe("BasesPanel generator refill", () => {
     fireEvent.click(await awaitFreshRows("Sietch Full"));
 
     expect(await screen.findByText("All 1 device was already full. Nothing added.")).toBeInTheDocument();
+  });
+
+  it("refills a windtrap-only base without counting its windtraps as generators", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue(listResponse({ bases: true, generatorRefill: true }, {
+      base_id: "2006",
+      name: "Sietch Windtraps",
+      generatorDataAvailable: true,
+      // The backend keeps windtraps out of the generator totals.
+      generatorCount: 0,
+      windtrapCount: 2,
+      generatorRuntimeSeconds: 0,
+      generators: [
+        { type: "windtrap", name: "Windtrap", fuelName: "Filter", fuelCells: 3, generatorCount: 2, runtimeSeconds: 28800, unstockedCount: 1 }
+      ]
+    }));
+
+    vi.mocked(basesApi.refillGenerators).mockResolvedValue({
+      supported: true,
+      result: {
+        ok: true,
+        baseId: 2006,
+        totalAdded: 3,
+        devices: [
+          { placeableId: "93001", type: "windtrap", label: "Windtrap", fuelName: "Standard Filter", before: 2, after: 5, added: 3, capped: false },
+          { placeableId: "93002", type: "windtrap", label: "Windtrap", fuelName: "Standard Filter", before: 5, after: 5, added: 0, capped: false }
+        ]
+      }
+    });
+
+    const props = renderPanel();
+    const refill = await awaitFreshRows("Sietch Windtraps");
+    // The accessible name stays "Refill Generators"; the tooltip says what it does here.
+    expect(refill).toHaveAttribute("title", "Refill Windtrap Filters");
+    // The Generators column has nothing to report, but the filters still refill.
+    const row = screen.getByText("Sietch Windtraps").closest("tr");
+    expect(row?.querySelector(".bases-generator-summary")).toBeNull();
+    expect(refill).toBeEnabled();
+
+    fireEvent.click(refill);
+
+    await waitFor(() => expect(props.confirmAction).toHaveBeenCalledWith(
+      'Refill 2 power devices at "Sietch Windtraps" to full fuel and filters?',
+      expect.objectContaining({ title: "Refill Generators" })
+    ));
+    // Only filters were added, so the summary must not claim fuel.
+    expect(await screen.findByText(/Added 3 filter units across 1 device\./)).toBeInTheDocument();
+    expect(screen.getByText(/Windtrap: \+3 Standard Filters/)).toBeInTheDocument();
   });
 
   it("disables refill when the database cannot support it or the base has no generators", async () => {
@@ -674,6 +843,7 @@ describe("BasesPanel auto-refill", () => {
     return {
       supported: true,
       thresholdPercent: 50,
+      windtrapThresholdPercent: 40,
       intervalHours: 24,
       nextRunAt: "2026-07-31T12:00:00.000Z",
       lastRunAt: "",
@@ -685,12 +855,12 @@ describe("BasesPanel auto-refill", () => {
   }
 
   function autoRefillSettingsState() {
-    const keys = ["thresholdPercent", "intervalHours", "waterThresholdPercent", "waterIntervalHours"] as const;
+    const keys = ["thresholdPercent", "windtrapThresholdPercent", "intervalHours", "waterThresholdPercent", "waterIntervalHours"] as const;
     const byKey = <T,>(value: T) => Object.fromEntries(keys.map((key) => [key, value])) as Record<typeof keys[number], T>;
     return {
-      settings: { thresholdPercent: 50, intervalHours: 24, waterThresholdPercent: 50, waterIntervalHours: 24 },
+      settings: { thresholdPercent: 50, windtrapThresholdPercent: 40, intervalHours: 24, waterThresholdPercent: 50, waterIntervalHours: 24 },
       sources: byKey("default" as const),
-      defaults: { thresholdPercent: 50, intervalHours: 24, waterThresholdPercent: 50, waterIntervalHours: 24 },
+      defaults: { thresholdPercent: 50, windtrapThresholdPercent: 40, intervalHours: 24, waterThresholdPercent: 50, waterIntervalHours: 24 },
       limits: byKey({ min: 1, max: 168 }),
       envNames: byKey("ADMIN_AUTO_REFILL_THRESHOLD_PERCENT")
     };
@@ -761,7 +931,7 @@ describe("BasesPanel auto-refill", () => {
     // The rule explanation lives in an InfoTooltip (the same component Maps
     // uses for Host Memory Protection etc.), not as visible text -- the row's
     // grid column can be as narrow as 240px.
-    expect(screen.getByRole("tooltip")).toHaveTextContent("Checked every 24h. Queues a refill when any generator drops below 50%.");
+    expect(screen.getByRole("tooltip")).toHaveTextContent("Checked every 24h. Queues a refill when any generator drops below 50% or any windtrap below 40%.");
 
     const listCallsBefore = vi.mocked(basesApi.list).mock.calls.length;
     fireEvent.click(screen.getByText("Auto-Refill"));
@@ -1578,7 +1748,7 @@ describe("BasesPanel combined fuel/water queue and stalled banners", () => {
   beforeEach(() => {
     vi.mocked(basesApi.pendingRefills).mockResolvedValue({ supported: true, total: 0, pending: [], byTarget: [] });
     vi.mocked(basesApi.autoRefill).mockResolvedValue({
-      supported: true, thresholdPercent: 50, intervalHours: 24, nextRunAt: "", lastRunAt: "", lastRunStatus: "", lastRunDetail: "", total: 0, bases: []
+      supported: true, thresholdPercent: 50, windtrapThresholdPercent: 40, intervalHours: 24, nextRunAt: "", lastRunAt: "", lastRunStatus: "", lastRunDetail: "", total: 0, bases: []
     });
   });
 

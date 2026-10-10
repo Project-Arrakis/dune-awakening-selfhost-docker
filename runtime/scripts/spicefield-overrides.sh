@@ -2,6 +2,10 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
+
+[ -f .env ] && . ./.env
+# shellcheck source=runtime/scripts/lib/postgres.sh
+source runtime/scripts/lib/postgres.sh
 SCRIPT_PATH="$PWD/runtime/scripts/spicefield-overrides.sh"
 
 OVERRIDES_FILE="${SPICEFIELD_OVERRIDES_FILE:-runtime/generated/spicefield-overrides.json}"
@@ -130,9 +134,10 @@ select count(*)::int as changed_rows from updated;
 PY
 }
 
+# The generated statements below print a single count; stop on the first error
+# rather than reporting a reconcile that silently changed nothing.
 psql_scalar() {
-  local sql="$1"
-  docker exec -i dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -At <<<"$sql" | tail -n 1 | tr -d '[:space:]'
+  dune_psql -v ON_ERROR_STOP=1 -Atc "$1" | tail -n 1 | tr -d '[:space:]'
 }
 
 spicefield_table_present() {

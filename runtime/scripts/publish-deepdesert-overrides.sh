@@ -5,7 +5,16 @@ set -euo pipefail
 export PYTHONDONTWRITEBYTECODE="${PYTHONDONTWRITEBYTECODE:-1}"
 
 cd "$(dirname "$0")/../.."
+
+# POSTGRES_PORT and DUNE_PSQL_TRANSPORT from here configure the Postgres seam.
+# Exported because this script's queries run in embedded Python, which reads
+# them from its environment; a bare `. ./.env` would keep them invisible to any
+# child process.
+[ -f .env ] && . ./.env
+export POSTGRES_PORT DUNE_PSQL_TRANSPORT
 source runtime/scripts/host-file-ownership.sh
+# shellcheck source=runtime/scripts/lib/rabbitmq.sh
+source runtime/scripts/lib/rabbitmq.sh
 
 PID_FILE="runtime/generated/deepdesert-overrides.pid"
 LOG_FILE="runtime/generated/deepdesert-overrides.log"
@@ -201,10 +210,27 @@ rmq_admin() {
     [ "${#rmq_creds[@]}" -ge 2 ] || return 1
     rmq_user="${rmq_creds[0]}"
     rmq_password="${rmq_creds[1]}"
-    if timeout --kill-after=2s "${RMQ_TIMEOUT_SECONDS}s" docker exec dune-rmq-admin rabbitmqadmin -q -u "$rmq_user" -p "$rmq_password" "$@"; then
+    # The verbs on the hot paths go straight to the management API that
+    # rabbitmqadmin would have called anyway; lib/rabbitmq.sh returns
+    # RMQ_HTTP_UNSUPPORTED for the rest, which falls through to the exec below.
+    # Either way a real failure retries once with freshly read credentials.
+    # rc is captured rather than left to propagate: under `set -e` a plain
+    # failure here -- a 401 from stale credentials, which is routine, since
+    # these are scraped from rotating director logs -- would kill the caller
+    # before either the credential refresh below or the exec fallback could
+    # run. publish_payload calls this bare from a `while read` loop, so that
+    # abort took the whole publisher down.
+    rc=0
+    dune_rmq_http_try "$rmq_user" "$rmq_password" "$@" || rc=$?
+    if [ "$rc" -ne "$RMQ_HTTP_UNSUPPORTED" ]; then
+      if [ "$rc" -eq 0 ]; then
+        return 0
+      fi
+    elif timeout --kill-after=2s "${RMQ_TIMEOUT_SECONDS}s" docker exec dune-rmq-admin rabbitmqadmin -q -u "$rmq_user" -p "$rmq_password" "$@"; then
       return 0
+    else
+      rc=$?
     fi
-    rc=$?
     rm -f "$RMQ_CREDS_FILE"
   done
   return "$rc"
@@ -264,6 +290,7 @@ import time
 
 sys.path.insert(0, "runtime/scripts")
 import usersettings  # noqa: E402
+import dune_psql  # noqa: E402
 
 query = """
 select wp.partition_id,
@@ -280,16 +307,7 @@ where wp.map = 'DeepDesert_1'
 order by wp.dimension_index, wp.partition_id;
 """
 
-result = subprocess.run(
-    [
-        "docker", "exec", "dune-postgres",
-        "psql", "-U", "postgres", "-d", "dune",
-        "-At", "-F", "\t", "-c", query,
-    ],
-    check=True,
-    text=True,
-    capture_output=True,
-)
+rows_raw = dune_psql.query_tsv(query)
 
 usersettings_config = usersettings.load_config()
 
@@ -366,7 +384,7 @@ def gameplay_settings_for_partition(partition_id: str, display_name: str) -> dic
     }
 
 
-for line in result.stdout.splitlines():
+for line in rows_raw.splitlines():
     if not line.strip():
         continue
     partition_id, server_id, game_addr, game_port, ready, alive, label = line.split("\t")

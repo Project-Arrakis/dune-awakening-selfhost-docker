@@ -45,6 +45,22 @@ export function getBridgeRequestSummary(now = Date.now()) {
 export function principalOf(session) {
   if (!session) return null;
   if (session.apiKeyId) return { type: "api-key", id: session.apiKeyId };
+  // [Layer 3 integration audit fix, HIGH, issue #1041, STRIDE Repudiation]
+  // resolveWriteBridgePrincipal() (writeBridgeCredential.js) sets
+  // source:"discord-write-bridge" specifically so a write-bridge-triggered
+  // mutation can be told apart from a real interactive session -- before
+  // this branch, this function only ever read .apiKeyId/.tier/.userId, so
+  // the two produced byte-identical audit rows. This is deliberately a
+  // SEPARATE branch from the generic "session" one below (not merged into
+  // it): a regular Discord-OAuth console login session also carries
+  // tier+userId with no apiKeyId, and test/audit.test.js already locks in
+  // that that case stays type:"session" -- only the write-bridge's own
+  // principal object carries this specific .source marker.
+  if (session.source === "discord-write-bridge") {
+    const principal = { type: "discord-write-bridge", tier: session.tier || "" };
+    if (session.userId) principal.userId = session.userId;
+    return principal;
+  }
   const principal = { type: "session", tier: session.tier || "" };
   if (session.userId) principal.userId = session.userId;
   return principal;

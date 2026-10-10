@@ -15,8 +15,8 @@ describe("vehiclesApi.list", () => {
   });
 
   it("serializes every provided param into the query string in order", () => {
-    vehiclesApi.list({ q: "worm", page: 2, pageSize: 100, sortColumn: "owner", sortDirection: "desc" });
-    expect(api).toHaveBeenCalledWith("/api/vehicles?q=worm&page=2&pageSize=100&sortColumn=owner&sortDirection=desc");
+    vehiclesApi.list({ q: "worm", page: 2, pageSize: 100, sortColumn: "owner", sortDirection: "desc", status: "backup" });
+    expect(api).toHaveBeenCalledWith("/api/vehicles?q=worm&page=2&pageSize=100&sortColumn=owner&sortDirection=desc&status=backup");
   });
 
   it("omits an empty search term and a falsy page (0)", () => {
@@ -85,6 +85,20 @@ describe("vehiclesApi.storage", () => {
     expect(api).toHaveBeenCalledWith("/api/vehicles/2008/storage/all-items", {
       method: "DELETE",
       body: JSON.stringify({ confirmation: "DELETE ALL ITEMS" })
+    });
+  });
+});
+
+describe("vehiclesApi.deleteStoredVehicle", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("uses the stored route with its own confirmation phrase", () => {
+    vehiclesApi.deleteStoredVehicle("vehicle/1");
+    expect(api).toHaveBeenCalledWith("/api/vehicles/vehicle%2F1/stored", {
+      method: "DELETE",
+      body: JSON.stringify({ confirmation: "DELETE STORED VEHICLE" })
     });
   });
 });

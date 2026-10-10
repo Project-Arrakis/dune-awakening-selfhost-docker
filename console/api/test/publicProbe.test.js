@@ -47,11 +47,24 @@ test("public probe image runs as an unprivileged dedicated user", () => {
   // dependent on whatever the floating tag happens to resolve to on a given
   // day). Bump this pin (and go.mod's `go` directive alongside it) forward
   // together whenever govulncheck finds a new reachable stdlib CVE.
-  assert.match(dockerfile, /FROM golang:1\.25\.13-alpine AS build/);
+  assert.match(dockerfile, /FROM golang:1\.26\.9-alpine AS build/);
   assert.match(dockerfile, /USER probe/);
   assert.match(dockerfile, /CGO_ENABLED=0/);
   assert.match(dockerfile, /RUN go test \.\/\.\.\./);
   assert.match(dockerfile, /HEALTHCHECK .*kill -0 1/);
+});
+
+test("public probe Dockerfile and go.mod name the same Go version", () => {
+  // The comment above says to bump them together; nothing else ties them. The CI govulncheck job
+  // reads go.mod and the image is built from the Dockerfile, so a drift would scan one toolchain
+  // and ship another.
+  const dockerfile = readFileSync(resolve(repoRoot, "runtime/public-probe/Dockerfile"), "utf8");
+  const goMod = readFileSync(resolve(repoRoot, "runtime/public-probe/go.mod"), "utf8");
+  const tag = dockerfile.match(/^FROM golang:(\d+\.\d+\.\d+)-alpine AS build/m);
+  const directive = goMod.match(/^go (\d+\.\d+\.\d+)$/m);
+  assert.ok(tag, "the build stage must pin an exact golang:<major.minor.patch>-alpine tag");
+  assert.ok(directive, "go.mod must carry an exact `go <major.minor.patch>` directive");
+  assert.equal(tag[1], directive[1]);
 });
 
 test("public probe lifecycle script is executable and supports clean shutdown", () => {

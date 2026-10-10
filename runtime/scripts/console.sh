@@ -18,10 +18,13 @@ usage() {
   cat <<'EOF'
 Usage:
   dune console restart
+  dune console reload
   dune console status
 
 Commands:
   restart   Rebuild and restart the Dune Docker Console safely.
+  reload    Recreate the Console container without rebuilding the image, so it
+            picks up a changed .env. Seconds rather than minutes.
   status    Show the Dune Docker Console container and URL.
 EOF
 }
@@ -134,6 +137,84 @@ restart_console() {
   print_url
 }
 
+# Recreates the container without rebuilding the image. The console reads .env
+# at startup and Docker fixes a container's environment at creation, so a
+# restored configuration needs a new container -- but not a new image, which is
+# what restart_console spends minutes producing. Nothing here touches the image.
+running_console_env_value() {
+  # Value of one environment variable of the RUNNING Console container, read
+  # with `docker inspect`. Used when a detached helper container recreates the
+  # Console: the helper has the Docker socket but not the age identity, so the
+  # container being replaced is the only place the hosted-bot OAuth client
+  # secret is still reachable. The value is only ever piped, never printed.
+  local key="$1"
+  command -v docker >/dev/null 2>&1 || return 1
+  docker inspect "$WEB_SERVICE" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
+    | sed -n "s/^${key}=//p" | head -n 1
+}
+
+reload_console() {
+  require_compose
+  prepare_docker_socket_gid
+  prepare_host_user_ids
+  # dune-awakening-selfhost-docker#1118: like restart_console, this recreates
+  # the Console, so the hosted-bot wizard's Discord OAuth client secret has to
+  # be resolved first or the new container starts with an empty value and
+  # hosted-bot OAuth silently stops working (the plaintext .txt is gone once
+  # an operator has run cleanup-legacy). Two differences from restart_console:
+  #  - POST /api/console/reload and the Settings restore wizard reach this
+  #    through a detached helper container that cannot read the age identity,
+  #    where the resolver fails closed (returns 1). That must NOT abort the
+  #    reload before the Console is recreated, so the failure is recorded
+  #    (resolver_failed) instead of propagating.
+  #  - so the secret is then taken from the container about to be replaced,
+  #    and a warning says so (a silent fallback would revive a rotated secret).
+  # shellcheck disable=SC1091
+  . runtime/scripts/lib/console-secrets-env.sh
+  local resolver_failed=0 resolved resolver_status=0 forwarded_oauth_secret
+  if [ -z "${DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET:-}" ]; then
+    # Call the resolver itself, NOT export_discord_hosted_bot_oauth_client_secret: bash ignores
+    # `set -e` for the whole body of a function that is the left side of `||`, so that wrapper
+    # swallows a failed resolver and returns 0 (its last statement is an `if`). The one case
+    # these warnings exist for would then never be reported (review of PR #1168).
+    resolved="$(resolve_discord_hosted_bot_oauth_client_secret)" || resolver_status=$?
+    if [ "$resolver_status" != 0 ]; then
+      resolver_failed=1
+    elif [ -n "$resolved" ]; then
+      export DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET="$resolved"
+    fi
+    unset resolved
+  fi
+  # Only when the resolver FAILED. A resolver that succeeds with nothing means "not configured" (no
+  # migration history, no legacy file): if the operator removed or cleared the secret, copying the old
+  # value out of the running container would keep a removed credential alive, in plaintext, with no
+  # warning (#1181). The fallback exists for the detached helper, which cannot read the age identity
+  # and so gets a failure, not an empty answer.
+  if [ "$resolver_failed" = 1 ] && [ -z "${DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET:-}" ]; then
+    # Read BEFORE the `docker rm -f` below: afterwards the container is gone and
+    # so is the only copy of the secret this helper can reach.
+    forwarded_oauth_secret="$(running_console_env_value DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET || true)"
+    if [ -n "$forwarded_oauth_secret" ]; then
+      export DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET="$forwarded_oauth_secret"
+      # While the Console runs, the secret is therefore plaintext in its
+      # environment (visible to anyone with Docker socket access), exactly as
+      # after `restart_console`. Say so, because a rotated or revoked secret would
+      # otherwise be silently revived.
+      echo "Warning: the hosted-bot Discord OAuth client secret could not be read from the secrets store; reusing the value from the running Console. If it was rotated or removed, run 'dune console restart' on the host." >&2
+    else
+      echo "Warning: the hosted-bot Discord OAuth client secret could not be read from the secrets store and the running Console has none; the recreated Console will start without it and hosted-bot Discord OAuth will not work until it is set again (run 'dune console restart' on the host)." >&2
+    fi
+    unset forwarded_oauth_secret
+  fi
+  export ADMIN_BIND_PORT="${ADMIN_WEB_PORT:-${ADMIN_BIND_PORT:-}}"
+  mkdir -p runtime/generated
+  echo "Recreating the Dune Docker Console container..."
+  docker rm -f "$WEB_SERVICE" >/dev/null 2>&1 || true
+  COMPOSE_PROJECT_NAME="$PROJECT_NAME" DUNE_COMPOSE_PROJECT_NAME="$MAIN_PROJECT_NAME" DUNE_HOST_REPO_ROOT="$HOST_ROOT" docker compose -f "$WEB_COMPOSE" up -d "$WEB_SERVICE"
+  echo "Dune Docker Console reloaded."
+  print_url
+}
+
 status_console() {
   require_compose
   prepare_docker_socket_gid
@@ -147,6 +228,9 @@ cmd="${1:-help}"
 case "$cmd" in
   restart|rebuild)
     restart_console
+    ;;
+  reload|recreate)
+    reload_console
     ;;
   status|url)
     status_console

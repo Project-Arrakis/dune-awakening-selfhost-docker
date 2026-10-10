@@ -44,7 +44,17 @@ Session tier and identity stay in the in-memory session store; they are not plac
 
 ## Policies
 
-The default policies preserve full owner access and provide conservative defaults for future admin, moderator, player, and observer sessions. Password logins and `ADMIN_AUTH_DISABLED=1` create owner sessions, so existing Console installations keep their current behavior.
+The default policies preserve full owner access and provide conservative defaults for admin, moderator and player sessions. Password logins and `ADMIN_AUTH_DISABLED=1` create owner sessions, so existing Console installations keep their current behavior.
+
+**Saved policies and newer default Denies.** A saved `iam-policies.json` replaces the defaults wholesale, so a Deny added to the defaults later would not reach an install that had saved its policy. For the three system-backup actions (`backups:download-system`, `backups:import-system`, `backups:restore-system`) the console re-adds the shipped Deny to a saved `admin` tier on every load, unless that tier already denies them or lists one in an Allow by exact name. The Settings page shows a notice above the policy editor when it added a Deny (the tier now gets a 403 for those actions; save the policy to keep the change), and a warning when an exact-name Allow kept the Deny away, because those actions let a tier read every credential on the host through a system backup. Saving applies the same rule: the policy that is stored and enforced is the one with the shipped Deny added, and the page says what the save added, so removing an exact-name Allow takes effect at once instead of at the next restart. The same facts are logged at startup, and `GET /api/settings/iam/policies` returns them as `notices`. The reconcile covers the `admin` tier only; a saved `moderator` or `player` document that grants `backups:*` or `*` is the operator's own grant and is not changed. Policy statements have no `Condition` or `Resource`, so any matching Deny, including a narrow one, counts as already denying the action.
+
+### The `player` tier is strict, and `observer` no longer exists
+
+`player` is own-record-scoped and read-only: a player sees their own characters and items, and the guild they belong to, and nothing else. The default `player` policy therefore grants only `players:read` and `guilds:read`; `server`, `maps`, `bases`, `storage`, `vehicles`, `blueprints`, `exchange` and `landsraad` reads are not granted, because none of them is scoped to the caller yet.
+
+On top of the policy, a second gate (`console/api/src/playerTierGate.js`) applies to every player-tier session **whatever iam-policies.json says**: the session may only ever hold `players:read` and `guilds:read`; `GET /api/players`, `/online` and `/search` return only the caller's linked characters; `GET /api/players/{id}` and its `inventory`, `vehicles`, `bases`, `currency` and `solaris-coin` sub-resources work only when `{id}` is one of the caller's own characters; `GET /api/guilds` lists only the caller's own guild and `GET /api/guilds/{id}/members` works only for it (names and ranks only). Every other path under `/api/players/` and `/api/guilds/`, and every non-GET method, answers 404. A caller with no linked character sees nothing, and so does a failed lookup.
+
+`observer` was the earlier name of this tier, with the same broad read grants. It is removed. For compatibility it is aliased, never honoured as its own tier: an old session or a signed Discord handoff that says `observer` becomes `player`, and a saved iam-policies.json that still contains an `observer` document loads with that key dropped (your other tiers are kept; a missing `player` is filled from the strict defaults). **Upgrade note:** people who signed in as `observer`/`player` and used to browse server-wide Bases, Storage, Vehicles or Maps now see only their own data; to give a tier more, grant it to `moderator`, not `player`.
 
 Policy documents use this shape:
 
@@ -83,7 +93,7 @@ A file at `runtime/generated/iam-policies.json` that already names a dead action
 The policy API is owner-only under the default policy:
 
 - `GET /api/settings/iam/policies` returns the active policy store plus `actions`, the full catalog of valid action names.
-- `PUT /api/settings/iam/policy` validates and atomically saves the complete policy store to `runtime/generated/iam-policies.json`.
+- `PUT /api/settings/iam/policy` validates and atomically saves the complete policy store to `runtime/generated/iam-policies.json`. `GET /api/settings/iam/policies` returns a `revision` of the store; send it back as `If-Match` and a save is refused with `409` (current `policies`, `notices` and `revision` in the body, nothing written, audited as `iam.policy-conflict`) if the store changed since you read it. Without `If-Match` (or with a bare `*`) the save replaces the store unconditionally, as before; an empty `If-Match` is refused with `400`, and a quoted `"*"` or a list of tags is an ordinary tag that never matches. The policy is written to disk before it is enforced: if the write fails the save returns `500` and the policy in force is unchanged. At startup a saved file whose owner policy does not allow `settings:write` is not loaded (the built-in defaults are used and the log says why), so a hand edit cannot leave nobody able to open this editor. The Settings editor re-reads the store before saving: if the tier you are saving changed since the page showed it, it sends nothing and tells you (with a button to show the current policy); a change to a different tier does not stop the save. It sends the revision it just read, so only a save landing between that read and the write is refused with `409`; the editor keeps your text then. If the Console returned no revision (an older Console), the editor sends no `If-Match` and the save is unconditional.
 - `POST /api/settings/iam/policy/test` evaluates an action for a tier without changing policy, and reports whether the action exists (`known`).
 
 Updates that remove the owner's `settings:write` access are rejected so the local-password recovery path remains available.
@@ -95,6 +105,7 @@ Updates that remove the owner's `settings:write` access are rejected so the loca
 | Action | Covers |
 |---|---|
 | `players:moderate` | kick, ban, unban |
+| `players:configure-list` | change the inactive-player visibility threshold |
 | `players:teleport` | teleport |
 | `players:give-item` | give-item(s), give-item-id, augment-item, spawn-vehicle |
 | `players:grant` | currency, XP, intel, faction reputation, faction, skill points/module, building & customization & recipe & research unlocks, specialization XP/grant-max/keystones, journey & tutorial completion |
@@ -104,7 +115,7 @@ Updates that remove the owner's `settings:write` access are rejected so the loca
 | `players:repair` | gear, faction reputation, landsraad quests, login queue, vehicle decay, refuel, refill water |
 | `players:recover` | character recovery |
 
-**`players:mutate` is no longer in the catalog, but it still means what it meant.** See [Upgrading a policy that names a removed action](#upgrading-a-policy-that-names-a-removed-action) below. Shipped defaults are unchanged — `owner` (`*`) and `admin` (`players:*`) still reach everything, and `moderator`/`player`/`observer` are untouched.
+**`players:mutate` is no longer in the catalog, but it still means what it meant.** See [Upgrading a policy that names a removed action](#upgrading-a-policy-that-names-a-removed-action) below. Shipped defaults are unchanged — `owner` (`*`) and `admin` (`players:*`) still reach everything, and `moderator`/`player` are untouched.
 
 `guilds:mutate` was split for the same reason. `DELETE /api/guilds/{guildId}` is **disband** — it destroys the guild — and it shared one action with promoting a member, so a roster fix and a deletion were the same grant.
 
@@ -116,7 +127,7 @@ Updates that remove the owner's `settings:write` access are rejected so the loca
 
 Add and remove stay one action deliberately: two directions of the same roster knob. Both `DELETE` patterns are anchored regexes rather than prefix rules, because `/api/guilds/{id}` and `/api/guilds/{id}/members/{playerId}` share a prefix and the variable segment comes before the part that distinguishes them — the same reason `bases:delete` needs a real regex.
 
-`bases:mutate` keeps the per-base knobs — refills, permissions, custodian, auto-refill enrollment, queue cancellations — and everything below was carved out of it for consequence or consent. Unlike the namespaces above, `bases:mutate` still exists and is still the bucket most base routes resolve to.
+`bases:mutate` keeps the per-base knobs — refills (generator fuel and, since windtraps joined the generator refill, windtrap filters too), permissions, custodian, auto-refill enrollment, queue cancellations — and everything below was carved out of it for consequence or consent. Unlike the namespaces above, `bases:mutate` still exists and is still the bucket most base routes resolve to.
 
 | Action | Covers |
 |---|---|
@@ -127,8 +138,14 @@ Add and remove stay one action deliberately: two directions of the same roster k
 | `bases:give-item` | give-item, give-items |
 | `bases:fill-item` | fill an existing stack to its cap |
 | `bases:write-config` | the auto-refill thresholds and scan intervals |
+| `bases:export-backup` | download a base backup file: an existing backup, or a live base as a backup |
+| `bases:import-backup` | import a base backup file as a new backup for a player |
+| `bases:edit-backup` | reassign a picked-up base to another player, rename it, or move it to another map |
+| `bases:delete-backup` | permanently delete a picked-up base and everything stored in it |
 
-`bases:write-config` is the consent case rather than the blast-radius one: every other action here acts on one base and is reversible on that base, whereas the thresholds and intervals govern the automation for *every* enrolled base at once. An operator granted `bases:mutate` agreed to enroll bases, not to retune the policy behind all of them. It follows the per-feature settings convention (`exchange:write-config`, `maps:write-config`). Shipped defaults are unchanged: `owner` (`*`) and `admin` (`bases:*`) reach it, and `moderator`/`player`/`observer` keep `bases:read` only, so they can read the settings but not save them.
+`bases:write-config` is the consent case rather than the blast-radius one: every other action here acts on one base and is reversible on that base, whereas the thresholds and intervals govern the automation for *every* enrolled base at once. An operator granted `bases:mutate` agreed to enroll bases, not to retune the policy behind all of them. It follows the per-feature settings convention (`exchange:write-config`, `maps:write-config`). Shipped defaults are unchanged: `owner` (`*`) and `admin` (`bases:*`) reach it, and `moderator` keeps `bases:read` only, so it can read the settings but not save them (`player` no longer holds `bases:read`).
+
+`bases:import-backup` is a consent action: import creates a whole base (actors, pieces, stored items) for a player, so no `bases:read` or `bases:mutate` grant is read as consent to it; owner (`*`) and admin (`bases:*`) reach it, moderator/player/observer do not. `bases:edit-backup` is split out on the same grounds: reassigning hands a player a whole base. `bases:export-backup` is too: the file carries every item stored in the base and imports as a whole base on any server, so a `bases:read` grant is not consent to it. Listing base backups and the blueprint download stay under `bases:read`.
 
 `blueprints:mutate` and `addons:mutate` were split on the same grounds.
 

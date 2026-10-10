@@ -69,21 +69,28 @@ export function createDb(config) {
     }
   }
 
-  async function transaction(fn) {
+  // options.queryTimeoutMs replaces the pool's client-side query_timeout for the
+  // statements of this one transaction (node-pg takes it per query). Work that
+  // legitimately outlasts the 15 s pool default, such as a large base export,
+  // sets its own bound instead of loosening it for every console query.
+  async function transaction(fn, options = {}) {
     if (databaseRestoreMaintenanceActive(repoRoot)) throw new Error(DATABASE_RESTORE_MAINTENANCE_MESSAGE);
+    const queryTimeoutMs = Number(options?.queryTimeoutMs);
     const client = await pool.connect();
     try {
       await client.query("begin");
       const tx = {
         config: publicDbConfig(dbConfig),
-        query: (text, values = []) => client.query(text, values)
+        query: Number.isFinite(queryTimeoutMs) && queryTimeoutMs > 0
+          ? (text, values = []) => client.query({ text, values, query_timeout: queryTimeoutMs })
+          : (text, values = []) => client.query(text, values)
       };
       const result = await fn(tx);
       await client.query("commit");
       return result;
     } catch (error) {
       try { await client.query("rollback"); } catch {}
-      throw new Error(redactDbError(error));
+      throw transactionError(error);
     } finally {
       client.release();
     }
@@ -193,4 +200,13 @@ export function rowsResult(result) {
     rowCount: normalized?.rowCount ?? rows.length,
     command: normalized?.command || ""
   };
+}
+
+// What a failed transaction rethrows: the redacted message, plus the `code` of an
+// application error (e.g. stored_owner_online) so callers can still branch on it.
+// A Postgres error is recognised by its `severity` and keeps no code, as before.
+export function transactionError(error) {
+  const wrapped = new Error(redactDbError(error));
+  if (typeof error?.code === "string" && error.severity === undefined) wrapped.code = error.code;
+  return wrapped;
 }

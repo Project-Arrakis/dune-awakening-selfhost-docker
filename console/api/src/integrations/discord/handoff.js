@@ -17,6 +17,8 @@
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 
+// "observer" is the pre-rename name of the player tier. A bot that still signs it
+// is accepted and resolved to "player" (below) rather than locking those users out.
 const VALID_TIERS = new Set(["owner", "admin", "moderator", "player", "observer"]);
 const USER_SNOWFLAKE_RE = /^\d{17,19}$/;
 const MAX_HANDOFF_AGE_MS = 30_000;
@@ -151,7 +153,8 @@ function liveHandoff(config) {
     if (payloadCheck.payload.userId !== userId) return { tier: "", reason: "user_mismatch" };
     if (payloadCheck.payload.guildId !== homeGuildId) return { tier: "", reason: "guild_mismatch" };
 
-    return { tier: payloadCheck.payload.tier, reason: "" };
+    const tier = payloadCheck.payload.tier === "observer" ? "player" : payloadCheck.payload.tier;
+    return { tier, reason: "" };
   }
 
   return { enabled: true, resolveTier };
