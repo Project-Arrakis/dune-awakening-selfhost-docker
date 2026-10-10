@@ -336,7 +336,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          # Same source as the govulncheck job: osv-scanner runs govulncheck on the probe module and
+          # needs at least the Go version its go.mod declares (setup-go 6+ no longer auto-upgrades).
+          go-version-file: runtime/public-probe/go.mod
       - name: Install osv-scanner
         run: go install github.com/google/osv-scanner/v2/cmd/osv-scanner@v2.5.1
       - name: Scan source dependencies
