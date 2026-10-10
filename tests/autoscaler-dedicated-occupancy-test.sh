@@ -21,11 +21,31 @@ end = source.index("\ncontainer_count_for_map() {", start)
 Path(sys.argv[1]).write_text(source[start:end].rstrip() + "\n", encoding="utf-8")
 PY
 
-docker run -d --rm \
+# Captured (not discarded) and checked explicitly: a `docker run` failure
+# here previously surfaced only as a bare, unexplained "exit code 2" under
+# set -e, with the actual reason -- whatever `docker run` printed -- silently
+# swallowed by the old `>/dev/null` redirect (which only discards stdout;
+# some docker CLI versions print startup errors there rather than stderr).
+if ! run_output="$(docker run -d --rm \
   --name "$container" \
   -e POSTGRES_PASSWORD=postgres \
-  postgres:17-alpine >/dev/null
+  postgres:17-alpine 2>&1)"; then
+  echo "docker run failed to start the postgres container:" >&2
+  echo "$run_output" >&2
+  exit 1
+fi
 
+# Real root cause found via the diagnostic hardening above:
+# a bare `pg_isready` loop races the official postgres image's own
+# entrypoint: it briefly starts a TEMPORARY server during initdb, which
+# `pg_isready` cannot distinguish from the real, final server -- confirmed
+# directly, this exact race produced "psql: error: connection ... failed:
+# No such file or directory" immediately after `pg_isready` reported ready,
+# because the temporary server had already shut down by the time the very
+# next `docker exec ... psql` command ran. tests/postgres-bootstrap-test.sh
+# already defends against this identical race by waiting for the SECOND
+# "database system is ready to accept connections" marker in the container's
+# own logs before ever trusting `pg_isready`; this script had no such guard.
 ready=0
 for _ in $(seq 1 60); do
   # A fresh official PostgreSQL container starts a temporary server for initdb,
@@ -41,9 +61,9 @@ for _ in $(seq 1 60); do
   fi
   sleep 1
 done
-if [ "$ready" != "1" ]; then
-  echo "Disposable PostgreSQL did not reach its final ready state." >&2
-  docker logs "$container" >&2 || true
+if [ "$ready" -ne 1 ]; then
+  echo "postgres container never became ready within 60s; container logs:" >&2
+  docker logs "$container" >&2 2>&1 || true
   exit 1
 fi
 
