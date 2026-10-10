@@ -108,6 +108,8 @@ services:
       # write/execute round trip succeed against its live Core instance for
       # the first time.
       DUNE_DISCORD_WRITES_ENABLED: "${DUNE_DISCORD_WRITES_ENABLED:-}"
+      # Where the optional MapViewer3D position agent listens (Realtime Data). Empty means http://127.0.0.1:8796.
+      DUNE_REALTIME_AGENT_URL: "${DUNE_REALTIME_AGENT_URL:-}"
       DUNE_DISCORD_ACTOR_SECRET: "${DUNE_DISCORD_ACTOR_SECRET:-}"
       DUNE_DISCORD_ACTOR_SECRET_FILE: "${DUNE_DISCORD_ACTOR_SECRET_FILE:-}"
       # Hosted-bot console-initiated OAuth registration (Tasks 2/3/6, #739):
