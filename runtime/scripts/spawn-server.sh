@@ -3,6 +3,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
+# shellcheck source=runtime/scripts/lib/postgres.sh
+source runtime/scripts/lib/postgres.sh
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -90,10 +93,6 @@ if ! docker ps --format '{{.Names}}' | grep -qx dune-postgres; then
   exit 1
 fi
 
-psql_value() {
-  docker exec dune-postgres psql -U postgres -d dune -Atc "$1"
-}
-
 container_name_for_map_partition() {
   local map="$1"
   local partition_id="$2"
@@ -108,7 +107,7 @@ rebuild_port_reservation_file() {
   local rows partition_id map game_port igw_port container_name
 
   : >"$output_path"
-  rows="$(docker exec dune-postgres psql -U postgres -d dune -At -F '|' -c "
+  rows="$(dune_psql -At -F '|' -c "
     select
       wp.partition_id,
       wp.map,
@@ -233,7 +232,7 @@ purge_stale_farm_rows_for_map() {
   local safe_map
   safe_map="${map//\'/\'\'}"
 
-  docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+  dune_psql -v ON_ERROR_STOP=1 -c "
 begin;
 delete from dune.farm_state fs
 where fs.map = '$safe_map'
@@ -266,7 +265,7 @@ clear_dead_partition_assignment() {
     return 1
   fi
 
-  docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+  dune_psql -v ON_ERROR_STOP=1 -c "
 begin;
 update dune.world_partition
 set server_id = null
@@ -307,7 +306,7 @@ bind_partition_to_live_server() {
     " | tr -d '\r[:space:]')"
 
     if [ -n "$live_server_id" ]; then
-      if live_server_id="$(docker exec dune-postgres psql -U postgres -d dune -Atq -v ON_ERROR_STOP=1 -c "
+      if live_server_id="$(dune_psql -Atq -v ON_ERROR_STOP=1 -c "
 begin;
 set local lock_timeout = '5s';
 lock table dune.world_partition in share row exclusive mode;
@@ -686,7 +685,7 @@ if [ "$MAP_NAME" != "Survival_1" ]; then
           break
         fi
 
-        if docker exec dune-postgres psql -U postgres -d dune -Atc "
+        if dune_psql -Atc "
           select exists (
             select 1
             from dune.world_partition wp

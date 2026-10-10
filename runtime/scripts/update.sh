@@ -319,8 +319,10 @@ EOF
 Description=Run Dune Awakening self-host auto update
 
 [Timer]
-OnBootSec=5min
-OnUnitActiveSec=${interval_minutes}min
+# Anchor the first check to enabling the timer, not an old host boot.
+OnActiveSec=5min
+# Count the interval after completion so long update jobs cannot exhaust it.
+OnUnitInactiveSec=${interval_minutes}min
 AccuracySec=1min
 Persistent=true
 Unit=$AUTO_SERVICE_NAME
@@ -372,8 +374,8 @@ EOF
 Description=Run Dune Awakening self-host auto update
 
 [Timer]
-OnBootSec=5min
-OnUnitActiveSec=${DUNE_AUTO_UPDATE_INTERVAL_MINUTES}min
+OnActiveSec=5min
+OnUnitInactiveSec=${DUNE_AUTO_UPDATE_INTERVAL_MINUTES}min
 AccuracySec=1min
 Persistent=true
 Unit=dune-awakening-auto-update.service
@@ -383,6 +385,8 @@ WantedBy=timers.target
 EOF
       chroot /host /bin/systemctl daemon-reload
       chroot /host /bin/systemctl enable --now dune-awakening-auto-update.timer
+      # Re-arm an already-enabled, elapsed timer without stopping its service.
+      chroot /host /bin/systemctl restart dune-awakening-auto-update.timer
     '
 }
 
@@ -427,6 +431,13 @@ show_auto_timer_status_via_docker() {
         timer_active="$(chroot /host /bin/systemctl is-active dune-awakening-auto-update.timer 2>/dev/null || true)"
         if [ "$timer_active" = "active" ]; then
           echo "Systemd timer: active"
+          timer_sub_state="$(chroot /host /bin/systemctl show dune-awakening-auto-update.timer --property=SubState --value 2>/dev/null || true)"
+          service_active="$(chroot /host /bin/systemctl show dune-awakening-auto-update.service --property=ActiveState --value 2>/dev/null || true)"
+          case "$timer_sub_state:$service_active" in
+            elapsed:inactive|elapsed:failed)
+              echo "WARN Auto-update timer has no future check scheduled. Save Auto Game Updates again to repair it."
+              ;;
+          esac
         else
           echo "Systemd timer: inactive"
         fi
@@ -459,7 +470,7 @@ show_auto_timer_status_via_docker() {
 }
 
 show_auto_timer_status() {
-  local load_state timer_active working_directory exec_start
+  local load_state timer_active timer_sub_state service_active working_directory exec_start
 
   load_state="$(systemctl show "$AUTO_TIMER_NAME" --property=LoadState --value 2>/dev/null || true)"
   if [ -z "$load_state" ] || [ "$load_state" = "not-found" ]; then
@@ -470,6 +481,13 @@ show_auto_timer_status() {
   timer_active="$(systemctl is-active "$AUTO_TIMER_NAME" 2>/dev/null || true)"
   if [ "$timer_active" = "active" ]; then
     echo "Systemd timer: active"
+    timer_sub_state="$(systemctl show "$AUTO_TIMER_NAME" --property=SubState --value 2>/dev/null || true)"
+    service_active="$(systemctl show "$AUTO_SERVICE_NAME" --property=ActiveState --value 2>/dev/null || true)"
+    case "$timer_sub_state:$service_active" in
+      elapsed:inactive|elapsed:failed)
+        echo "WARN Auto-update timer has no future check scheduled. Save Auto Game Updates again to repair it."
+        ;;
+    esac
   else
     echo "Systemd timer: inactive"
   fi
@@ -559,6 +577,9 @@ handle_auto_update() {
       systemctl daemon-reload
       systemctl enable --now "$AUTO_TIMER_NAME"
       write_auto_state 1 "$interval_minutes" "$apply_enabled" "$notify_enabled" "$notify_minutes" "$wait_empty" "$max_wait_minutes" 1
+      # enable --now does not re-arm an already-active elapsed timer. Restart
+      # only the timer: a countdown or installation already running is kept.
+      systemctl restart "$AUTO_TIMER_NAME"
 
       echo "Auto updates enabled."
       echo "Check interval: every $interval_minutes minutes"
@@ -1076,6 +1097,21 @@ if [ "$cmd" != "run" ] && [ "$cmd" != "apply" ] && [ "$cmd" != "install" ]; then
   exit 2
 fi
 
+# Own the same lifecycle lock as startup, shutdown and automatic recovery for
+# the entire update, including its final startup. Stopping the Autoscaler alone
+# does not stop recovery already running in the Coriolis Coordinator.
+if [ "${DUNE_BATTLEGROUP_LIFECYCLE_LOCK_HELD:-0}" != "1" ]; then
+  lifecycle_lock="${DUNE_BATTLEGROUP_LIFECYCLE_LOCK_FILE:-runtime/generated/battlegroup-lifecycle.lock}"
+  mkdir -p "$(dirname "$lifecycle_lock")"
+  if flock -n -E 75 -o "$lifecycle_lock" env DUNE_BATTLEGROUP_LIFECYCLE_LOCK_HELD=1 "$0" "$@"; then
+    exit 0
+  else
+    rc=$?
+    [ "$rc" -ne 75 ] || echo "Another Battlegroup operation is running. Wait for it to finish, then retry the game update. No update files were changed." >&2
+    exit "$rc"
+  fi
+fi
+
 if [ "$skip_preflight" = "1" ]; then
   echo
   echo "=== Bootstrap/install mode ==="
@@ -1372,6 +1408,7 @@ set -euo pipefail
 # real; the orchestrator never sets it.
 images_dir="${DUNE_ASSET_IMAGES_DIR:-/srv/dune/server/images}"
 mapfile -t tarballs < <(find "$images_dir" -type f \( -name "*.tar" -o -name "*.tar.gz" -o -name "*.tgz" \) | sort)
+[ "${#tarballs[@]}" -gt 0 ] || { echo "No downloaded game image archives found; update cannot continue." >&2; exit 1; }
 loaded=0
 for tar in "${tarballs[@]}"; do
   loaded=$((loaded + 1))
@@ -1392,7 +1429,7 @@ fi
 echo
 echo "DUNE_GAME_ASSETS_PHASE=Detecting image tags"
 echo "=== Detect loaded image tags ==="
-runtime/scripts/detect-image-tags.sh
+runtime/scripts/detect-image-tags.sh --from-bundle
 
 echo
 echo "=== Current tags ==="
@@ -1495,5 +1532,16 @@ else
   echo "Update finished."
   echo
   echo "Restarting Dune stack..."
-  runtime/scripts/start-all.sh
+  history_started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  history_started_epoch="$(date +%s)"
+  restart_result=Succeeded
+  restart_rc=0
+  runtime/scripts/start-all.sh || { restart_rc=$?; restart_result=Failed; }
+  history_finished="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  # Record the real lifecycle branch, not merely a successful download/task.
+  # This covers Console, CLI and automatic updates without duplicate entries.
+  runtime/scripts/restart-history.sh record battlegroup Battlegroup "Game Update" \
+    "Game update" "$restart_result" "$history_started" "$history_finished" \
+    "$(( $(date +%s) - history_started_epoch ))" || echo "WARN Game update restart history could not be recorded." >&2
+  [ "$restart_rc" -eq 0 ] || exit "$restart_rc"
 fi

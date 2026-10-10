@@ -12,6 +12,9 @@ source runtime/scripts/runtime-env.sh
 source runtime/scripts/image-tags.sh
 source runtime/scripts/sietch-login-password-args.sh
 source runtime/scripts/fake-k8s-serviceaccount.sh
+
+# shellcheck source=runtime/scripts/lib/postgres.sh
+source runtime/scripts/lib/postgres.sh
 IMAGE="$(resolve_game_server_image)"
 
 TOKEN_FILE="runtime/secrets/funcom-token.txt"
@@ -50,10 +53,6 @@ RMQ_ADMIN_HOST="$(resolve_rmq_admin_host)"
 mapfile -t GAME_EXTERNAL_ADDRESS_ENV < <(game_external_address_override_env_args)
 validate_game_external_address_override_env_args "${GAME_EXTERNAL_ADDRESS_ENV[@]}"
 
-psql_value() {
-  docker exec dune-postgres psql -U postgres -d dune -Atc "$1"
-}
-
 bind_partition_to_live_server() {
   local partition_id="$1"
   local map_name="$2"
@@ -76,7 +75,7 @@ bind_partition_to_live_server() {
     " | tr -d '\r[:space:]')"
 
     if [ -n "$live_server_id" ]; then
-      docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+      dune_psql -v ON_ERROR_STOP=1 -c "
 begin;
 update dune.world_partition
 set server_id = '$live_server_id'
@@ -165,7 +164,7 @@ docker rm -f dune-server-overmap 2>/dev/null || true
 runtime/scripts/repair-map-settings-permissions.sh overmap
 python3 runtime/scripts/usersettings.py materialize Overmap "$PWD/runtime/game/overmap/Saved" "$PARTITION_ID"
 
-docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+dune_psql -v ON_ERROR_STOP=1 -c "
 begin;
 update dune.world_partition
 set server_id = null

@@ -4,6 +4,9 @@
 # Use Funcom's own map-name conversion and actor cleanup routine so a stopped
 # instance cannot retain dropped items or other ownerless transient actors.
 
+# shellcheck source=runtime/scripts/lib/postgres.sh
+source runtime/scripts/lib/postgres.sh
+
 landsraad_instance_requires_cleanup() {
   case "$1" in
     CB_Overland_S_07|CB_Overland_S_08) return 0 ;;
@@ -41,7 +44,7 @@ cleanup_landsraad_instance_after_shutdown() {
   [ -n "$cleanup_sql" ] || return 0
 
   echo "Cleaning transient Landsraad actors for $world_map partition $partition_id"
-  if ! docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+  if ! dune_psql -v ON_ERROR_STOP=1 -c "
 begin;
 $cleanup_sql
 commit;
