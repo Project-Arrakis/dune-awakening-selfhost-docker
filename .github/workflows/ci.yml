@@ -378,8 +378,9 @@ jobs:
       # www.gnu.org intermittently times out from GitHub-hosted runners
       # (observed twice in this repo's own CI, independently confirmed
       # live via direct curl both times) -- excluded as a known-flaky
-      # external domain rather than a real dead link.
-      exclude: 'github\.com/Project-Arrakis/(mentat|mentat-link|meta)(/|$)|www\.gnu\.org'
+      # external domain rather than a real dead link. man7.org times out
+      # the same way (main's CI went red on it 2026-10-10, #1206).
+      exclude: 'github\.com/Project-Arrakis/(mentat|mentat-link|meta)(/|$)|www\.gnu\.org|man7\.org'
 
   docs-review:
     if: github.event_name == 'pull_request'
