@@ -518,6 +518,14 @@ export const COMMAND_METADATA = Object.freeze({
     capability: DISCORD_CAPABILITIES.INVENTORY_READ,
     params: []
   },
+  // meta#64 "Chronicles of Kanly" / mentat#364: powers /profile's playtime +
+  // last-seen fields. Self-scoped, same tier as PLAYERS_FACTION above.
+  [DISCORD_ADAPTER_ROUTES.PLAYERS_PLAYTIME]: {
+    group: "player", subcommand: "playtime",
+    description: "Show your total tracked playtime and when you were last seen.",
+    capability: DISCORD_CAPABILITIES.INVENTORY_READ,
+    params: []
+  },
   // Fan-out pair (shared with upstream PR #171/issue #358): the bot
   // registers ONE real "storage" subcommand under group "player"
   // (commands.js) with a scope choice ("owned"/"guild"); at runtime it
