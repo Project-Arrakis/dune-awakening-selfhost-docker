@@ -2748,7 +2748,9 @@ function realtimeStreamRoute(req, res) {
   const principal = req.authApiKey ? `apikey:${req.authApiKey.id}` : `session:${req.authSession?.id || "unknown"}`;
   const current = () => {
     if (!req.authApiKey) {
-      const session = auth.readSession(req);
+      // peekSession does not renew the idle expiry: an open stream must not
+      // keep an abandoned browser login alive.
+      const session = auth.peekSession(req);
       return session ? { session, key: null } : null;
     }
     const bearer = apiKeys.authenticate(req);
@@ -2759,7 +2761,9 @@ function realtimeStreamRoute(req, res) {
     if (!now || !evaluate(now.session, action)) return false;
     return !now.key || apiKeys.allows(now.key, action);
   };
-  audit(config, req, "realtime.stream-open", { principal });
+  // The session id is half of the login cookie: never write it to the audit log.
+  // audit() already records who the caller is; a key's id is not a secret.
+  audit(config, req, "realtime.stream-open", req.authApiKey ? { apiKey: req.authApiKey.id } : {});
   realtime.stream(req, res, {
     principal,
     allowPlayers: () => may("players:read"),

@@ -19,12 +19,17 @@ const SNAP = {
 const POS = { gen: 1, t: 2, d: [[1, 10, 20, 30], [3, 70, 80, 90]], r: [] };
 
 // Stand-in for mvagent on loopback.
-async function fakeAgent() {
+async function fakeAgent({ streamBody } = {}) {
   const server = http.createServer((req, res) => {
     if (req.url === "/healthz") return res.end(JSON.stringify({ ok: true, ready: 1, sources: SNAP.sources }));
     if (req.url.startsWith("/api/objects")) {
       const kinds = new URL(req.url, "http://x").searchParams.get("kinds").split(",");
       return res.end(JSON.stringify({ ...SNAP, objects: SNAP.objects.filter((o) => kinds.includes(o.k)) }));
+    }
+    if (req.url === "/stream" && streamBody) {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      streamBody(res, req);
+      return undefined;
     }
     if (req.url === "/stream") {
       res.writeHead(200, { "content-type": "text/event-stream" });
@@ -204,4 +209,86 @@ test("the stream re-checks the key while it is open", () => {
   assert.match(route, /apiKeys\.authenticate\(req\)/);
   assert.match(route, /stillAllowed: \(\) => may\("realtime:read"\)/);
   assert.match(route, /allowPlayers: \(\) => may\("players:read"\)/);
+});
+
+test("a comment line in front of an event cannot skip the player filter", async () => {
+  const leak = { gen: 1, t: 3, d: [[3, 1, 1, 1], [1, 2, 2, 2]], r: [] };
+  const agent = await fakeAgent({
+    streamBody(res, req) {
+      res.write(`event: snap\ndata: ${JSON.stringify(SNAP)}\n\n`);
+      const tick = setInterval(() => res.write(`: hb\nevent: pos\ndata: ${JSON.stringify(leak)}\n\n`), 20);
+      req.on("close", () => clearInterval(tick));
+    }
+  });
+  const realtime = createRealtime({ agentUrl: agent.url });
+  const { front, events } = await openStream(realtime, { principal: "apikey:c", allowPlayers: () => false, stillAllowed: () => true });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const pos = events.filter((e) => e.name === "pos");
+    assert.ok(pos.length > 0, "the allowed object must still arrive");
+    assert.ok(pos.every((e) => e.data.d.every((d) => d[0] !== 3)), "a player position leaked through a comment line");
+  } finally {
+    front.closeAllConnections(); front.close(); agent.server.close();
+  }
+});
+
+test("CRLF line endings from the agent are framed like LF, also when split across chunks", async () => {
+  const agent = await fakeAgent({
+    streamBody(res, req) {
+      const snap = JSON.stringify(SNAP);
+      res.write(`event: snap\r\ndata: ${snap}\r\n\r\n`);
+      // a CRLF cut in the middle must not turn into two block ends
+      res.write(`event: pos\r\ndata: ${JSON.stringify(POS)}\r`);
+      setTimeout(() => res.write("\n\r"), 20);
+      setTimeout(() => res.write("\n"), 40);
+      req.on("close", () => {});
+    }
+  });
+  const realtime = createRealtime({ agentUrl: agent.url });
+  const { front, events } = await openStream(realtime, { principal: "apikey:crlf", allowPlayers: () => false, stillAllowed: () => true });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.equal(events.filter((e) => e.name === "snap").length, 1);
+    const pos = events.filter((e) => e.name === "pos");
+    assert.equal(pos.length, 1);
+    assert.deepEqual(pos[0].data.d.map((d) => d[0]), [1]);
+  } finally {
+    front.closeAllConnections(); front.close(); agent.server.close();
+  }
+});
+
+test("a bad agent address does not stop the Console: only Realtime Data answers with the reason", async () => {
+  let realtime;
+  assert.doesNotThrow(() => { realtime = createRealtime({ agentUrl: "http://10.0.0.5:8796" }); });
+  await assert.rejects(realtime.health(), (error) => error instanceof RealtimeError && /127\.0\.0\.1/.test(error.message));
+  await assert.rejects(realtime.objects({ allowPlayers: false }), RealtimeError);
+  const front = http.createServer((req, res) => realtime.stream(req, res, { principal: "apikey:bad", allowPlayers: () => false, stillAllowed: () => true }));
+  await new Promise((resolve) => front.listen(0, "127.0.0.1", resolve));
+  try {
+    const answer = await new Promise((resolve) => http.get(`http://127.0.0.1:${front.address().port}/`, (res) => {
+      let body = "";
+      res.on("data", (c) => { body += c; });
+      res.on("end", () => resolve({ status: res.statusCode, body: JSON.parse(body) }));
+    }));
+    assert.equal(answer.status, 500);
+    assert.equal(answer.body.available, false);
+    assert.equal(realtime.openStreams(), 0);
+  } finally {
+    front.close();
+  }
+});
+
+test("the stock Compose file and .env.example pass the agent address through", () => {
+  const compose = readFileSync(new URL("../../../docker-compose.web.yml", import.meta.url), "utf8");
+  assert.match(compose, /^\s+DUNE_REALTIME_AGENT_URL: "\$\{DUNE_REALTIME_AGENT_URL:-\}"$/m);
+  assert.match(readFileSync(new URL("../../../.env.example", import.meta.url), "utf8"), /^DUNE_REALTIME_AGENT_URL=$/m);
+});
+
+test("the stream recheck does not renew a browser session; the audit entry has no session id", () => {
+  const server = readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const start = server.indexOf("function realtimeStreamRoute");
+  const body = server.slice(start, server.indexOf("async function apiKeyCreateRoute", start));
+  assert.doesNotMatch(body, /readSession/, "the recheck must not slide the session expiry");
+  assert.match(body, /peekSession/);
+  assert.doesNotMatch(body, /audit\([^)]*\{ principal \}/, "session id in the audit log");
 });
