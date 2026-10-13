@@ -108,6 +108,7 @@ HOST_ROOT="$work"
 require_compose() { :; }
 prepare_docker_socket_gid() { :; }
 prepare_host_user_ids() { :; }
+dune_persist_compose_project_name() { :; }  # upstream moved this call inside restart_console/reload_console
 print_url() { :; }
 $read_stub
 . "$fn_file"

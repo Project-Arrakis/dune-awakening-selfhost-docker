@@ -311,6 +311,7 @@ SERVER_CUSTOM_FIELD_CATEGORIES = {
 }
 
 ENGINE_FIELDS = {
+    "battleye_enabled": ("ConsoleVariables", "BattlEye.Enabled", "False"),
     "port": ("URL", "Port", "7777"),
     "igw_port": ("URL", "IGWPort", "7888"),
     "server_display_name": ("ConsoleVariables", "Bgd.ServerDisplayName", None),
@@ -426,6 +427,7 @@ def schema_comment_lines_by_section(comments: dict[str, tuple[str, ...]], fields
 # generic section-derived category logic the console uses for UserGame fields
 # can't distinguish them. This gives each one an explicit, functional grouping.
 ENGINE_FIELD_CATEGORIES = {
+    "battleye_enabled": "Server Security",
     "sandstorm_enabled": "Sandstorm",
     "sandstorm_treasure_enabled": "Sandstorm",
     "sandworm_enabled": "Sandworm",
@@ -465,6 +467,7 @@ ENGINE_FIELD_CATEGORIES = {
 # Free-text field descriptions shown in the console UI. Only populated for
 # fields as they're documented; metadata() falls back to "" for the rest.
 FIELD_DESCRIPTIONS = {
+    "battleye_enabled": "Controls the native server BattlEye anti-cheat setting. Apply globally and restart the Battlegroup after saving. The current Docker game image defaults to disabled. A BattlEye launch argument takes precedence over this setting.",
     "staking_unit_vertical_extension_default_times": "Seconds required for every vertical Staking Unit extension level (0.1-604800). Leave empty to use Funcom's progressively longer defaults.",
     "staking_unit_extension_default_times": "Seconds required for every horizontal Staking Unit extension level (0.1-604800). Leave empty to use Funcom's progressively longer defaults.",
     "server_display_name": "Display name shown for this server instance. Used as the Dimension name when the server is a Dimension server.",
@@ -524,6 +527,7 @@ FIELD_DESCRIPTIONS = {
 }
 
 FIELD_LABELS = {
+    "battleye_enabled": "BattlEye Anti-Cheat",
     "restart_server_on_coriolis_cycle_end": "Restart Game Farm At Coriolis Cycle End",
     "coriolis_cycle_start_year": "Cycle Start Year",
     "coriolis_cycle_start_month": "Cycle Start Month",
