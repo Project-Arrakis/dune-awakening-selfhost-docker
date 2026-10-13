@@ -76,8 +76,13 @@ export function createAutoInvitePendingStateStore({
 
   function issue(state) {
     if (typeof state !== "string" || state.length === 0) return null;
+    const timestamp = now();
+    // Abandoned callbacks must not exhaust capacity after their TTL expires.
+    for (const [key, entry] of pending) {
+      if (timestamp - entry.createdAt > ttlMs) pending.delete(key);
+    }
     if (pending.size >= maxEntries) return null;
-    pending.set(state, { createdAt: now(), used: false });
+    pending.set(state, { createdAt: timestamp, used: false });
     return { state };
   }
 

@@ -78,9 +78,14 @@ export function createPendingRegistrationStore({
   const pending = new Map();
 
   function issue({ accessToken, ownedGuildIds, userId }) {
+    const timestamp = now();
+    // Also release the access tokens of expired, abandoned registrations.
+    for (const [key, entry] of pending) {
+      if (timestamp - entry.createdAt > ttlMs) pending.delete(key);
+    }
     if (pending.size >= maxEntries) return null;
     const handle = randomBytes(24).toString("base64url");
-    pending.set(handle, { createdAt: now(), used: false, accessToken, ownedGuildIds, userId });
+    pending.set(handle, { createdAt: timestamp, used: false, accessToken, ownedGuildIds, userId });
     return { handle };
   }
 

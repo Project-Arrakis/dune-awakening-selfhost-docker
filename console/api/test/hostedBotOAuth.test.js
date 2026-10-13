@@ -59,6 +59,23 @@ test("pending-registration store enforces a capacity cap", () => {
   assert.equal(second, null);
 });
 
+test("pending-registration store releases expired abandoned handles and preserves live ones", () => {
+  let clock = 0;
+  const store = createPendingRegistrationStore({ now: () => clock, ttlMs: 10, maxEntries: 2 });
+  const abandoned = store.issue({ accessToken: "expired", ownedGuildIds: [], userId: "u1" });
+  clock = 5;
+  const live = store.issue({ accessToken: "live", ownedGuildIds: [], userId: "u2" });
+  clock = 10;
+  assert.equal(store.issue({ accessToken: "new", ownedGuildIds: [], userId: "u3" }), null);
+  clock = 11;
+  const fresh = store.issue({ accessToken: "new", ownedGuildIds: [], userId: "u3" });
+  assert.ok(fresh);
+  assert.equal(store.size(), 2);
+  assert.equal(store.consume(abandoned.handle, abandoned.handle).ok, false);
+  assert.equal(store.consume(live.handle, live.handle).entry.accessToken, "live");
+  assert.equal(store.consume(fresh.handle, fresh.handle).entry.accessToken, "new");
+});
+
 test("hostedBotOAuthStateCookie and hostedBotRegistrationHandleCookie use distinct, path-scoped, HttpOnly cookies", () => {
   const stateCookie = hostedBotOAuthStateCookie("abc123");
   assert.match(stateCookie, /^hosted_bot_oauth_state=abc123/);

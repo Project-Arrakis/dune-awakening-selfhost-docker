@@ -113,6 +113,22 @@ test("issue() enforces a capacity cap", () => {
   assert.equal(store.issue("state-b"), null);
 });
 
+test("issue() releases expired abandoned states without evicting live states", () => {
+  let clock = 0;
+  const store = createAutoInvitePendingStateStore({ now: () => clock, ttlMs: 10, maxEntries: 2 });
+  store.issue("abandoned");
+  clock = 5;
+  store.issue("live");
+  clock = 10;
+  assert.equal(store.issue("new"), null, "the TTL boundary must match consume()");
+  clock = 11;
+  assert.deepEqual(store.issue("new"), { state: "new" });
+  assert.equal(store.size(), 2);
+  assert.equal(store.consume("abandoned", "abandoned").ok, false);
+  assert.equal(store.consume("live", "live").ok, true);
+  assert.equal(store.consume("new", "new").ok, true);
+});
+
 test("autoInviteStateCookie and clearAutoInviteStateCookie use a distinct name/path from the OLD hosted-bot OAuth flow's own state cookie", () => {
   const cookie = autoInviteStateCookie("some-state-value", true);
   assert.match(cookie, /^auto_invite_state=some-state-value/);
