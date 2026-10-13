@@ -4646,6 +4646,52 @@ test("playerPlaytimeSummary does not add elapsed time for an offline player with
   assert.equal(result.lastSeenAt, null);
 });
 
+test("playerPlaytimeSummary counts a just-ended session the tracker has not rolled up yet (#1208)", async () => {
+  // player_state already says Offline, but the tracker only closes the session on its next tick; the summary must
+  // add what that tick will add (last observation minus session start) instead of dropping the whole session.
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("to_regclass")) {
+        const name = String(values[0] || "");
+        return { rows: [{ exists: ["dune.player_state", "dune.console_player_playtime"].includes(name) }] };
+      }
+      if (text.includes("information_schema.columns")) {
+        return { rows: [{ column_name: "account_id" }, { column_name: "online_status" }] };
+      }
+      if (text.includes("from dune.player_state ps")) {
+        return { rows: [{ account_id: 204, online_status: "Offline", last_seen_at: "2026-09-15T11:30:00.000Z" }] };
+      }
+      if (text.includes("from dune.console_player_playtime")) {
+        return { rows: [{ total_seconds: "4200", session_started_at: "2026-09-15T11:00:00.000Z", last_observed_at: "2026-09-15T11:30:00.000Z" }] };
+      }
+      return assert.fail(`unexpected query in just-ended-session path: ${text}`);
+    }
+  };
+  const result = await playerPlaytimeSummary(db, "1000");
+  assert.equal(result.totalPlaytimeSeconds, 4200 + 1800);
+});
+
+test("playerPlaytimeSummary treats a bigint-string account_id of 0 as unlinked (#1208)", async () => {
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("to_regclass")) {
+        const name = String(values[0] || "");
+        return { rows: [{ exists: ["dune.player_state", "dune.console_player_playtime"].includes(name) }] };
+      }
+      if (text.includes("information_schema.columns")) {
+        return { rows: [{ column_name: "account_id" }, { column_name: "online_status" }] };
+      }
+      if (text.includes("from dune.player_state ps")) {
+        return { rows: [{ account_id: "0", online_status: "Offline", last_seen_at: "2026-09-15T00:00:00.000Z" }] };
+      }
+      return assert.fail(`playtime must not be queried for an unlinked player: ${text}`);
+    }
+  };
+  const result = await playerPlaytimeSummary(db, "1001");
+  assert.equal(result.capabilities.playtime, false);
+  assert.equal(result.totalPlaytimeSeconds, 0);
+});
+
 test("playerPlaytimeSummary reports playtime unsupported (but still returns last-seen) when console_player_playtime doesn't exist", async () => {
   const db = {
     query: async (text, values = []) => {
