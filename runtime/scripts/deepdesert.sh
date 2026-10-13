@@ -3,6 +3,12 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
+# POSTGRES_PORT and DUNE_PSQL_TRANSPORT from here configure the Postgres seam.
+[ -f .env ] && . ./.env
+
+# shellcheck source=runtime/scripts/lib/postgres.sh
+source runtime/scripts/lib/postgres.sh
+
 OVERRIDE_FILE="${DUNE_DEEPDESERT_OVERRIDE_FILE:-runtime/generated/director-deepdesert-dual.ini}"
 
 usage() {
@@ -57,14 +63,6 @@ confirm() {
   case "$answer" in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
 }
 
-psql() {
-  docker exec dune-postgres psql -U postgres -d dune "$@"
-}
-
-psql_value() {
-  docker exec dune-postgres psql -U postgres -d dune -At -c "$1"
-}
-
 deepdesert_mode() {
   if [ -x runtime/scripts/map-modes.sh ]; then
     runtime/scripts/map-modes.sh mode DeepDesert_1 2>/dev/null | awk '{print $2}'
@@ -96,7 +94,7 @@ clear_stale_deepdesert_assignments() {
       runtime/scripts/despawn-server.sh "$partition_id" --force >/dev/null
     else
       echo "Clearing stale Deep Desert assignment for dormant partition $partition_id."
-      psql -v ON_ERROR_STOP=1 -c "
+      dune_psql -v ON_ERROR_STOP=1 -c "
 begin;
 update dune.world_partition
 set server_id = null
@@ -170,7 +168,7 @@ print(cfg.get("active_dimensions", ""))
 PY
 )"
   echo "=== DeepDesert_1 partitions ==="
-  psql -P pager=off -c "
+  dune_psql -P pager=off -c "
     select
       wp.dimension_index,
       wp.partition_id,
@@ -539,7 +537,7 @@ apply_partition_labels() {
   third="$(partition_id_for_dimension 2)"
   third_label="PvE 2"
   [ "$third_role" = "pvp" ] && third_label="PvP 2"
-  psql -v ON_ERROR_STOP=1 -c "
+  dune_psql -v ON_ERROR_STOP=1 -c "
 -- Labels are globally unique. Move every managed row through a partition-specific temporary label so
 -- reversing an existing PvP/PvE pair cannot hit a transient duplicate-key violation.
 update dune.world_partition
@@ -568,7 +566,7 @@ ensure_partitions() {
   fi
 
   echo "Ensuring DeepDesert_1 has $count managed dimension(s), using partition $primary as the template."
-  psql -v ON_ERROR_STOP=1 -c "
+  dune_psql -v ON_ERROR_STOP=1 -c "
 do \$\$
 declare
   next_id bigint;
@@ -854,7 +852,7 @@ remove_layout_dimensions() {
   for partition_id in "${removed_ids[@]}"; do
     python3 runtime/scripts/usersettings.py map-set Global global_pvp_enabled_partition_remove "$partition_id" >/dev/null 2>&1 || true
     python3 runtime/scripts/usersettings.py map-set Global global_pve_enabled_partition_remove "$partition_id" >/dev/null 2>&1 || true
-    psql -v ON_ERROR_STOP=1 -c "delete from dune.world_partition where partition_id = $partition_id and map = 'DeepDesert_1'; drop table if exists dune.event_log_p${partition_id};" >/dev/null
+    dune_psql -v ON_ERROR_STOP=1 -c "delete from dune.world_partition where partition_id = $partition_id and map = 'DeepDesert_1'; drop table if exists dune.event_log_p${partition_id};" >/dev/null
   done
   prune_sietch_dimension_config "$target" "${removed_ids[@]}"
 }
@@ -1013,7 +1011,7 @@ disable_dual() {
   echo "Removing DeepDesert_1 extra dimensions/config..."
   while IFS='|' read -r partition_id dimension_index server_id connected_players; do
     [ -n "${partition_id:-}" ] || continue
-    psql -v ON_ERROR_STOP=1 -c "delete from dune.world_partition where partition_id = $partition_id and map = 'DeepDesert_1'; drop table if exists dune.event_log_p${partition_id};" >/dev/null
+    dune_psql -v ON_ERROR_STOP=1 -c "delete from dune.world_partition where partition_id = $partition_id and map = 'DeepDesert_1'; drop table if exists dune.event_log_p${partition_id};" >/dev/null
   done <<< "$rows"
   primary="$(primary_partition_id)"
   original_display_name="$(managed_primary_display_name)"

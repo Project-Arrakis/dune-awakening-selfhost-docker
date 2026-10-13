@@ -7,7 +7,7 @@ export const COMMUNITY_ADDONS_INDEX_URL = "https://raw.githubusercontent.com/Red
 
 const MAX_COMMUNITY_ADDONS = 200;
 const MAX_ADDON_ARCHIVE_BYTES = 50 * 1024 * 1024;
-const COMMUNITY_CACHE_TTL_MS = 5 * 60 * 1000;
+const COMMUNITY_CACHE_TTL_MS = 60 * 60 * 1000;
 const COMMUNITY_CACHE_STALE_MS = 24 * 60 * 60 * 1000;
 const GITHUB_API_VERSION = "2022-11-28";
 const GITHUB_USER_AGENT = "redblink-dune-docker-console";
@@ -38,7 +38,11 @@ export async function fetchCommunityAddons(fetchImpl = globalThis.fetch, indexUr
   if (typeof fetchImpl !== "function") throw new Error("Fetch is unavailable in this runtime.");
   const cache = communityCatalogCache(fetchImpl, indexUrl);
   const now = Date.now();
-  if (cache.value && cache.expiresAt > now) return cache.value;
+  if (cache.value && cache.expiresAt > now && cache.staleUntil > now) return cache.value;
+  if (cache.error && cache.retryAt > now) {
+    if (cache.value && cache.staleUntil > now && isTransientCommunityFetchError(cache.error)) return cache.value;
+    throw cache.error;
+  }
   if (cache.inFlight) return cache.inFlight;
 
   cache.inFlight = refreshCommunityAddons(fetchImpl, indexUrl, cache);
@@ -55,6 +59,8 @@ async function refreshCommunityAddons(fetchImpl, indexUrl, cache) {
   try {
     const response = await fetchCommunityJson(fetchImpl, indexUrl, { signal: controller.signal, etag: cache.etag });
     if (response?.status === 304 && cache.value) {
+      cache.value = await enrichCommunityAddonSourceUrls(cache.index, fetchImpl, controller.signal, cache.manifests);
+      cache.error = null;
       cache.expiresAt = Date.now() + COMMUNITY_CACHE_TTL_MS;
       cache.staleUntil = Date.now() + COMMUNITY_CACHE_STALE_MS;
       return cache.value;
@@ -62,15 +68,18 @@ async function refreshCommunityAddons(fetchImpl, indexUrl, cache) {
     if (!response?.ok) throw communityFetchError("Community addons index", response);
     const data = await response.json();
     const index = normalizeCommunityAddonsIndex(data, indexUrl);
-    const value = await enrichCommunityAddonSourceUrls(index, fetchImpl, controller.signal);
+    const value = await enrichCommunityAddonSourceUrls(index, fetchImpl, controller.signal, cache.manifests);
+    cache.index = index;
+    cache.error = null;
     cache.value = value;
     cache.etag = responseHeader(response, "etag");
     cache.expiresAt = Date.now() + COMMUNITY_CACHE_TTL_MS;
     cache.staleUntil = Date.now() + COMMUNITY_CACHE_STALE_MS;
     return value;
   } catch (error) {
+    cache.error = error;
+    cache.retryAt = Date.now() + Math.min(COMMUNITY_CACHE_STALE_MS, Math.max(60_000, retryDelayMs(error)));
     if (cache.value && cache.staleUntil > Date.now() && isTransientCommunityFetchError(error)) {
-      cache.expiresAt = Date.now() + Math.min(COMMUNITY_CACHE_TTL_MS, retryDelayMs(error));
       return cache.value;
     }
     throw error;
@@ -79,28 +88,37 @@ async function refreshCommunityAddons(fetchImpl, indexUrl, cache) {
   }
 }
 
-async function enrichCommunityAddonSourceUrls(index, fetchImpl, signal) {
+async function enrichCommunityAddonSourceUrls(index, fetchImpl, signal, manifests) {
+  const ids = new Set(index.addons.map(addon => addon.id));
+  for (const id of manifests.keys()) if (!ids.has(id)) manifests.delete(id);
   const addons = await Promise.all(index.addons.map(async (addon) => {
     if (addon.sourceUrl && addon.permissions.length) return addon;
+    const previous = manifests.get(addon.id);
+    const entry = previous?.version === addon.version && previous?.manifestUrl === addon.manifestUrl ? previous : null;
+    const enriched = (manifest) => manifest ? {
+      ...addon, sourceUrl: manifest.sourceUrl, permissions: manifest.permissions,
+      provenance: communityAddonProvenance(index.sourceUrl, addon, manifest)
+    } : addon;
+    if (entry && entry.expiresAt > Date.now()) return enriched(entry.manifest);
     try {
-      const response = await fetchCommunityJson(fetchImpl, addon.manifestUrl, { signal });
-      if (!response?.ok) {
-        const error = communityFetchError("Addon manifest", response);
-        if (isTransientCommunityFetchError(error)) throw error;
-        return addon;
+      const response = await fetchCommunityJson(fetchImpl, addon.manifestUrl, { signal, etag: entry?.etag || "" });
+      if (response?.status === 304 && entry?.manifest) {
+        entry.expiresAt = Date.now() + COMMUNITY_CACHE_TTL_MS;
+        return enriched(entry.manifest);
       }
+      if (!response?.ok) throw communityFetchError("Addon manifest", response);
       const manifest = normalizeCommunityAddonManifest(await response.json());
-      return manifest.id === addon.id
-        ? {
-          ...addon,
-          sourceUrl: manifest.sourceUrl,
-          permissions: manifest.permissions,
-          provenance: communityAddonProvenance(index.sourceUrl, addon, manifest)
-        }
-        : addon;
+      if (manifest.id !== addon.id || manifest.version !== addon.version) throw new Error("Addon manifest does not match its catalog entry.");
+      manifests.set(addon.id, { version: addon.version, manifestUrl: addon.manifestUrl, manifest,
+        etag: responseHeader(response, "etag"), expiresAt: Date.now() + COMMUNITY_CACHE_TTL_MS });
+      return enriched(manifest);
     } catch (error) {
-      if (isTransientCommunityFetchError(error)) throw error;
-      return addon;
+      // Optional catalog enrichment must not discard the valid index and all
+      // other addons. Installation still fetches and validates its manifest.
+      const manifest = isTransientCommunityFetchError(error) ? entry?.manifest : null;
+      manifests.set(addon.id, { version: addon.version, manifestUrl: addon.manifestUrl, manifest,
+        etag: manifest ? entry.etag : "", expiresAt: Date.now() + Math.max(60_000, retryDelayMs(error)) });
+      return enriched(manifest);
     }
   }));
   return { ...index, addons };
@@ -114,25 +132,42 @@ function communityCatalogCache(fetchImpl, indexUrl) {
   }
   let cache = caches.get(indexUrl);
   if (!cache) {
-    cache = { value: null, etag: "", expiresAt: 0, staleUntil: 0, inFlight: null };
+    cache = { value: null, index: null, manifests: new Map(), etag: "", expiresAt: 0,
+      staleUntil: 0, inFlight: null, error: null, retryAt: 0 };
     caches.set(indexUrl, cache);
   }
   return cache;
 }
 
-function fetchCommunityJson(fetchImpl, url, { signal, etag = "" } = {}) {
+async function fetchCommunityJson(fetchImpl, url, { signal, etag = "" } = {}) {
   const githubUrl = githubContentsApiUrl(url);
-  const headers = githubUrl
+  const token = String(process.env.DUNE_SELF_UPDATE_TOKEN || "").trim();
+  const useApi = Boolean(githubUrl && token);
+  const headers = useApi
     ? {
       accept: "application/vnd.github.raw+json",
       "user-agent": GITHUB_USER_AGENT,
       "x-github-api-version": GITHUB_API_VERSION
     }
     : { accept: "application/json" };
-  const token = String(process.env.DUNE_SELF_UPDATE_TOKEN || "").trim();
-  if (githubUrl && token) headers.authorization = `Bearer ${token}`;
+  if (useApi) headers.authorization = `Bearer ${token}`;
   if (etag) headers["if-none-match"] = etag;
-  return fetchImpl(githubUrl || url, { headers, signal });
+  const response = await fetchImpl(useApi ? githubUrl : url, { headers, signal });
+  if (githubUrl && [403, 429].includes(response?.status)) {
+    // One alternative host only; ETags and credentials never cross hosts.
+    const fallbackHeaders = useApi ? { accept: "application/json" } : {
+      accept: "application/vnd.github.raw+json", "user-agent": GITHUB_USER_AGENT,
+      "x-github-api-version": GITHUB_API_VERSION
+    };
+    try {
+      const fallback = await fetchImpl(useApi ? url : githubUrl, { headers: fallbackHeaders, signal });
+      if (fallback?.ok) return fallback;
+    } catch {
+      // The primary response still carries useful retry/reset advice.
+    }
+    // Preserve the primary provider's reset/retry advice for backoff.
+  }
+  return response;
 }
 
 function githubContentsApiUrl(value) {

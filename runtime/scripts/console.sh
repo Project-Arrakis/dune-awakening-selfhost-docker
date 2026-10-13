@@ -6,7 +6,6 @@ cd "$(dirname "$0")/../.."
 . runtime/scripts/compose-project.sh
 MAIN_PROJECT_NAME="$(dune_resolve_compose_project_name "$(pwd -P)")"
 export DUNE_COMPOSE_PROJECT_NAME="$MAIN_PROJECT_NAME"
-dune_persist_compose_project_name "$(pwd -P)" "$MAIN_PROJECT_NAME"
 
 WEB_COMPOSE="docker-compose.web.yml"
 WEB_SERVICE="redblink-dune-docker-console"
@@ -104,6 +103,7 @@ require_compose() {
 restart_console() {
   local previous_image_id current_image_id
   require_compose
+  dune_persist_compose_project_name "$(pwd -P)" "$MAIN_PROJECT_NAME"
   prepare_docker_socket_gid
   prepare_host_user_ids
   export ADMIN_BIND_PORT="${ADMIN_WEB_PORT:-${ADMIN_BIND_PORT:-}}"
@@ -133,6 +133,7 @@ restart_console() {
 # what restart_console spends minutes producing. Nothing here touches the image.
 reload_console() {
   require_compose
+  dune_persist_compose_project_name "$(pwd -P)" "$MAIN_PROJECT_NAME"
   prepare_docker_socket_gid
   prepare_host_user_ids
   export ADMIN_BIND_PORT="${ADMIN_WEB_PORT:-${ADMIN_BIND_PORT:-}}"
@@ -146,9 +147,6 @@ reload_console() {
 
 status_console() {
   require_compose
-  prepare_docker_socket_gid
-  prepare_host_user_ids
-  export ADMIN_BIND_PORT="${ADMIN_WEB_PORT:-${ADMIN_BIND_PORT:-}}"
   docker ps -a --filter "name=^/${WEB_SERVICE}$" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
   print_url
 }

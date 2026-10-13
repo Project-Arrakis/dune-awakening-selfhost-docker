@@ -3,6 +3,13 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
+# POSTGRES_PORT and DUNE_PSQL_TRANSPORT from here configure the Postgres seam.
+# Exported because this script's queries run in embedded Python, which reads
+# them from its environment; a bare `. ./.env` would keep them invisible to any
+# child process.
+[ -f .env ] && . ./.env
+export POSTGRES_PORT DUNE_PSQL_TRANSPORT
+
 failures=0
 
 ok() { printf 'OK   %s\n' "$*"; }
@@ -226,22 +233,20 @@ if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx dune-postgres; then
 
   python3 <<'PY' || fail "live Survival_1 active-dimensions state"
 import json
-import subprocess
+import sys
 from pathlib import Path
+
+sys.path.insert(0, "runtime/scripts")
+import dune_psql  # noqa: E402
 
 config = json.loads(Path("runtime/generated/sietch-config.json").read_text())
 usersettings = json.loads(Path("runtime/generated/usersettings.json").read_text()) if Path("runtime/generated/usersettings.json").exists() else {"partitions": {}}
 target = int(config.get("maps", {}).get("Survival_1", {}).get("active_dimensions") or 1)
 
-rows_raw = subprocess.check_output([
-    "docker", "exec", "dune-postgres", "psql",
-    "-U", "postgres", "-d", "dune", "-At", "-F", "\t",
-    "-c",
-    "select wp.partition_id, wp.dimension_index, coalesce(wp.server_id, ''), coalesce(wp.label, '') "
+rows_raw = dune_psql.query_tsv("select wp.partition_id, wp.dimension_index, coalesce(wp.server_id, ''), coalesce(wp.label, '') "
     "from dune.world_partition wp "
     "where lower(wp.map)=lower('Survival_1') "
-    "order by wp.dimension_index, wp.partition_id;"
-], text=True)
+    "order by wp.dimension_index, wp.partition_id;")
 rows = []
 for line in rows_raw.splitlines():
     if not line.strip():

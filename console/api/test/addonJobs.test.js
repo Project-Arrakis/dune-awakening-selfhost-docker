@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isReadOnlySql } from "../src/db.js";
+import { MARKET_BOT_DISABLE_BACKUPS_PHRASE, saveMarketBotSettings } from "../src/services/marketBotSettings.js";
 import {
   ADDON_SCHEDULED_RUN_RATE_SCOPE,
   EDA_EXCHANGE_BOT_ADDON_ID,
@@ -832,6 +833,32 @@ test("eligible run takes exactly one backup before the sweep and audits the resu
       [audits[0].action, audits[0].detail.status, audits[0].detail.purchased, audits[0].detail.trigger, audits[0].detail.ok],
       ["addons.scheduled-job", "swept", 4, "schedule", true]
     );
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("eligible run skips the backup but still sweeps when safety backups are disabled", async () => {
+  const repoRoot = makeRepoRoot();
+  const config = { repoRoot, mockMode: false };
+  try {
+    saveMarketBotSettings(config, { safetyBackups: false, confirmation: MARKET_BOT_DISABLE_BACKUPS_PHRASE });
+    const db = fakeDb({ eligible: "4", sweepRow: { purchased: "4", total_units: "40", total_solari: "1234" } });
+    const { scheduler, backups, audits, state } = makeScheduler(config, { db });
+    saveBuybackSchedule(config, { enabled: true, exchangeId: "42", intervalMinutes: 10, maxBuys: 50 }, { now: () => state.clock });
+
+    await scheduler.tick(); // arms
+    state.clock += 10 * 60000;
+    await scheduler.tick();
+
+    assert.equal(db.sweeps.length, 1, "the sweep still runs");
+    assert.equal(backups.length, 0, "no backup while disabled");
+    const persisted = readBuybackSchedule(config);
+    assert.equal(persisted.lastRunStatus, "swept");
+    assert.match(persisted.lastRunDetail, /Safety backup skipped: disabled in Market Bot settings\./);
+    assert.equal(audits.length, 1);
+    assert.equal(audits[0].detail.backupSkipped, true, "the audit entry records the skipped backup");
+    assert.match(readBuybackLog(config).batches[0].note, /safety backup skipped \(disabled\)/);
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
   }

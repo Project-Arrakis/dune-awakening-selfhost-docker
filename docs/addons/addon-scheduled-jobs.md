@@ -32,7 +32,9 @@ by count, not age: after every successful Market Bot backup only the 5 newest
 remain (override with `DUNE_MARKET_BOT_BACKUP_KEEP`). Candidates are matched by
 the sidecar's `backup_origin`, so unlabeled Market Bot backups from earlier
 releases are pruned too. Manual, automatic, and safety backups are never
-touched. Seed and buyback share a running lock, so they cannot mutate the exchange
+touched. When **Safety Backups** is turned off in the Market Bot settings, none
+of these backups are taken (the write still runs) and the run detail and audit
+entry record `backupSkipped`. Seed and buyback share a running lock, so they cannot mutate the exchange
 at the same time. Player listings are never removed by reseeding.
 
 The SQL is built server-side from validated schedule parameters. SQL text from a

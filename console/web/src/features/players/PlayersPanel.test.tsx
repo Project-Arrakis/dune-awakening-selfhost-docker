@@ -10,6 +10,8 @@ vi.mock("../../api/maps", () => ({ mapsApi: { sietchDimensions: vi.fn() } }));
 vi.mock("../../api/players", () => ({
   playersApi: {
     list: vi.fn(),
+    listSettings: vi.fn(),
+    saveListSettings: vi.fn(),
     profile: vi.fn(),
     deletedCharacters: vi.fn()
   }
@@ -40,6 +42,20 @@ beforeEach(() => {
     totalPlayers: 1,
     capabilities: { statusFilterApplied: true }
   });
+  vi.mocked(playersApi.listSettings).mockResolvedValue({
+    settings: { inactiveWeeks: null },
+    defaults: { inactiveWeeks: null },
+    limits: { inactiveWeeks: { min: 1, max: 8 } },
+    source: "default",
+    canConfigure: true
+  });
+  vi.mocked(playersApi.saveListSettings).mockResolvedValue({
+    settings: { inactiveWeeks: null },
+    defaults: { inactiveWeeks: null },
+    limits: { inactiveWeeks: { min: 1, max: 8 } },
+    source: "console",
+    canConfigure: true
+  });
   vi.mocked(playersApi.profile).mockResolvedValue({ player: bannedPlayer });
   vi.mocked(playersApi.deletedCharacters).mockResolvedValue({
     supported: true,
@@ -64,7 +80,80 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+describe("PlayersPanel profile loading", () => {
+  it("reports a failed profile load and never shows the previous player's profile", async () => {
+    const onError = vi.fn();
+    const other = { ...bannedPlayer, actor_id: "90", character_name: "Other" };
+    vi.mocked(playersApi.list).mockResolvedValue({ rows: [bannedPlayer, other], totalCount: 2, totalPlayers: 2, capabilities: { statusFilterApplied: true } });
+    vi.mocked(playersApi.profile).mockResolvedValueOnce({ player: bannedPlayer }).mockRejectedValueOnce(new Error("db down"));
+    const seen: Array<{ id: string; detail: unknown }> = [];
+    render(<PlayersPanel onError={onError} renderCharacterAdmin={(props) => { seen.push({ id: props.dbPlayerId, detail: props.detail }); return null; }} />);
+
+    fireEvent.click(await screen.findByText("Vixen"));
+    await waitFor(() => expect(seen.some((entry) => entry.id === "82" && entry.detail)).toBe(true));
+    fireEvent.click(await screen.findByText("Other"));
+    await waitFor(() => expect(onError).toHaveBeenCalledWith(expect.stringContaining("db down")));
+    expect(seen.filter((entry) => entry.id === "90").every((entry) => entry.detail === null)).toBe(true);
+  });
+});
+
 describe("PlayersPanel persistent bans", () => {
+  it("shows inactive players by default", async () => {
+    render(<PlayersPanel onError={vi.fn()} renderCharacterAdmin={() => null} />);
+
+    await waitFor(() => expect(playersApi.list).toHaveBeenLastCalledWith(expect.objectContaining({ recentOnly: false })));
+    expect(screen.getByLabelText("Hide Inactive Players After")).toHaveValue("never");
+    expect(screen.getByRole("option", { name: "3 Weeks" })).toHaveValue("3");
+  });
+
+  it("applies a new inactive-player threshold immediately", async () => {
+    vi.mocked(playersApi.saveListSettings).mockResolvedValueOnce({
+      settings: { inactiveWeeks: 4 },
+      defaults: { inactiveWeeks: null },
+      limits: { inactiveWeeks: { min: 1, max: 8 } },
+      source: "console",
+      canConfigure: true
+    });
+    render(<PlayersPanel onError={vi.fn()} renderCharacterAdmin={() => null} />);
+
+    const filter = await screen.findByLabelText("Hide Inactive Players After");
+    await waitFor(() => expect(filter).toBeEnabled());
+    fireEvent.change(filter, { target: { value: "4" } });
+    await waitFor(() => expect(playersApi.saveListSettings).toHaveBeenCalledWith(4));
+    await waitFor(() => expect(playersApi.list).toHaveBeenLastCalledWith(expect.objectContaining({ page: 0, recentOnly: true })));
+    expect(screen.getByLabelText("Hide Inactive Players After")).toHaveValue("4");
+  });
+
+  it("refreshes the player list when changing between inactive thresholds", async () => {
+    vi.mocked(playersApi.listSettings).mockResolvedValueOnce({
+      settings: { inactiveWeeks: 4 },
+      defaults: { inactiveWeeks: null },
+      limits: { inactiveWeeks: { min: 1, max: 8 } },
+      source: "console",
+      canConfigure: true
+    });
+    vi.mocked(playersApi.saveListSettings).mockResolvedValueOnce({
+      settings: { inactiveWeeks: 8 },
+      defaults: { inactiveWeeks: null },
+      limits: { inactiveWeeks: { min: 1, max: 8 } },
+      source: "console",
+      canConfigure: true
+    });
+    render(<PlayersPanel onError={vi.fn()} renderCharacterAdmin={() => null} />);
+
+    const filter = await screen.findByLabelText("Hide Inactive Players After");
+    await waitFor(() => expect(filter).toHaveValue("4"));
+    await waitFor(() => expect(filter).toBeEnabled());
+    await waitFor(() => expect(playersApi.list).toHaveBeenLastCalledWith(expect.objectContaining({ recentOnly: true })));
+    vi.mocked(playersApi.list).mockClear();
+
+    fireEvent.change(filter, { target: { value: "8" } });
+
+    await waitFor(() => expect(playersApi.saveListSettings).toHaveBeenCalledWith(8));
+    await waitFor(() => expect(playersApi.list).toHaveBeenCalledWith(expect.objectContaining({ page: 0, recentOnly: true })));
+    expect(filter).toHaveValue("8");
+  });
+
   it("shows the configured Sietch name next to the player's game map", async () => {
     vi.mocked(mapsApi.sietchDimensions).mockImplementation((_map?: string, wantIds?: boolean) => Promise.resolve({
       stdout: wantIds
