@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,6 +19,8 @@ function fixture() {
     copyFileSync(join(repoRoot, "runtime/scripts", name), join(scripts, name));
     chmodSync(join(scripts, name), 0o755);
   }
+  // This fork's console.sh sources lib/console-secrets-env.sh (and, through it, lib/secrets.sh) on the restart/reload paths.
+  cpSync(join(repoRoot, "runtime/scripts/lib"), join(scripts, "lib"), { recursive: true });
   writeFileSync(join(root, "docker-compose.web.yml"), "services: {}\n");
   const calls = join(scratch, "docker-calls");
   writeFileSync(join(bin, "docker"), `#!/bin/sh
