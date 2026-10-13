@@ -134,6 +134,8 @@ jobs:
         run: python3 runtime/scripts/test_userengine_ini_comments.py
       - name: Test Global/Map/Partition override precedence
         run: python3 runtime/scripts/test_profile_override_precedence.py
+      - name: Test native BattlEye settings and client-export isolation
+        run: bash runtime/tests/test-battleye-settings.sh
       - name: Test Spice Fields settings schema
         run: python3 runtime/scripts/test_spicefield_settings_schema.py
       - name: Test multi-server config helper
