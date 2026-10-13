@@ -104,7 +104,7 @@ namespace" rule, so Create stays disabled until something is selected.
 
 | Namespace | Read grants | Read+write additionally grants |
 |---|---|---|
-| `players` | `players:read` | `kick-all`, `moderate`, `teleport` |
+| `players` | `players:read` | `configure-list`, `kick-all`, `moderate`, `teleport` |
 | `bases` | `bases:read` | `add-item`, `bulk-delete-items`, `delete`, `delete-item`, `fill-item`, `give-item`, `delete-backup`, `edit-backup`, `export-backup`, `import-backup`, `mutate`, `write-config` — **the four base-backup actions require explicit grants; see below** |
 | `vehicles` | `vehicles:read` | `bulk-delete-items`, `delete`, `delete-item`, `mutate`, `stored-delete` — **the stored-vehicle delete requires an explicit grant; see below** |
 | `guilds` | `guilds:read` | `disband`, `membership`, `rank`, `unclassified` |

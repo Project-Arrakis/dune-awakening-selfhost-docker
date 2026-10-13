@@ -870,7 +870,6 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
           </div>
         </div>}
       </div>}
-      <RuntimeSettingsSummary settings={settings} />
       <div className={`playerAdmin_toggle settings-server-startup-toggle ${serverStartupOpen ? "open" : ""}`}>
         <button className="playerAdmin_toggleHeader" aria-label={serverStartupOpen ? "Collapse Server Startup" : "Expand Server Startup"} onClick={() => setServerStartupOpen(!serverStartupOpen)}>
           {serverStartupOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}

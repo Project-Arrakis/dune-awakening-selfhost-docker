@@ -1812,6 +1812,29 @@ test("listPlayers without onlyPlayerControllerId adds no own-record filter (owne
   assert.doesNotMatch(playerQuery.text, /player_controller_id::text = \$/);
 });
 
+test("listPlayers combines own-record scoping with the optional inactivity filter", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("information_schema.columns")) {
+        return { rows: ["online_status", "last_avatar_activity"].map((column_name) => ({ column_name })) };
+      }
+      if (text.includes("count(distinct dedupe_key)")) return { rows: [{ total_players: 1 }] };
+      return { rows: [{ actor_id: 82, total_count: 1 }] };
+    }
+  };
+
+  await listPlayers(db, { inactiveWeeks: 2, onlyPlayerControllerId: "9001" });
+  const playerQuery = calls.find((call) => call.text.includes("from dune.actors") && !call.text.includes("count(distinct dedupe_key)"));
+
+  assert.ok(playerQuery);
+  assert.match(playerQuery.text, /current_timestamp - \(\$2::int \* interval '1 week'\)/);
+  assert.match(playerQuery.text, /ps\.player_controller_id::text = \$3/);
+  assert.deepEqual(playerQuery.values.slice(0, 3), [[], 2, "9001"]);
+});
+
 test("players sorted by last online rank current players ahead of stored timestamps", async () => {
   const calls = [];
   const db = {
