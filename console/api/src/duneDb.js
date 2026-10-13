@@ -1639,17 +1639,24 @@ export async function playerPlaytimeSummary(db, playerControllerId) {
     limit 1`, [String(playerControllerId)]);
   const row = result.rows[0];
   if (!row) return { capabilities: { playtime: hasPlayerPlaytime }, totalPlaytimeSeconds: 0, lastSeenAt: null };
-  if (!hasPlayerPlaytime || !row.account_id) {
+  // node-pg returns bigint columns as strings, so the coalesced 0 of an unlinked player is the truthy string "0".
+  if (!hasPlayerPlaytime || !Number(row.account_id)) {
     return { capabilities: { playtime: false }, totalPlaytimeSeconds: 0, lastSeenAt: row.last_seen_at || null };
   }
   const playtime = await db.query(`
-    select total_seconds, session_started_at
+    select total_seconds, session_started_at, last_observed_at
     from dune.console_player_playtime
     where account_id = $1`, [row.account_id]);
   const tracked = playtime.rows[0];
   let totalPlaytimeSeconds = Number(tracked?.total_seconds || 0);
-  if (tracked?.session_started_at && row.online_status === "Online") {
-    totalPlaytimeSeconds += Math.max(0, Math.floor((Date.now() - new Date(tracked.session_started_at).getTime()) / 1000));
+  if (tracked?.session_started_at) {
+    const startedAt = new Date(tracked.session_started_at).getTime();
+    // Online: the session is still running. Offline with a session still open: player_state flipped before the
+    // tracker's next tick closed it (#1208), so add what that tick will add (last observation minus start).
+    const endedAt = row.online_status === "Online"
+      ? Date.now()
+      : new Date(tracked.last_observed_at || tracked.session_started_at).getTime();
+    totalPlaytimeSeconds += Math.max(0, Math.floor((endedAt - startedAt) / 1000));
   }
   return {
     capabilities: { playtime: true },
