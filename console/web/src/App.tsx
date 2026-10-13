@@ -519,6 +519,7 @@ export function App() {
         setSetupMode(state.scope);
         setServerPorts(state.config?.ports);
         setAdminPort(state.config?.port);
+        setInstalledVersion(String(state.config?.version || ""));
         return;
       }
       setAuth(state.authenticated);
