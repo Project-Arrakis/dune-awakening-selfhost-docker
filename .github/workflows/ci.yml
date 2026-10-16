@@ -161,6 +161,8 @@ jobs:
           runtime/tests/test-deepdesert-layout-apply-safety.sh
           runtime/tests/test-map-despawn-lifecycle.sh
           runtime/tests/test-director-log-id-normalization.sh
+          runtime/tests/test-director-story-admission.sh
+          runtime/tests/test-overland-dynamic-allocation.sh
           runtime/tests/test-game-epic-config-permissions.sh
           tests/fls-signals-test.sh
           tests/steamcmd-signals-test.sh
