@@ -200,6 +200,8 @@ jobs:
         run: |
           runtime/tests/test-compose-project-name-portability.sh
           runtime/tests/test-compose-project-resolution.sh
+      - name: Test Console SELinux mount and write-denial diagnostics
+        run: bash runtime/tests/test-console-selinux-mount.sh
       - name: Test age-based secrets library (AEAD primitive, shell seam, cross-language round-trip)
         run: |
           python3 runtime/scripts/lib/test_secrets_aead.py -v

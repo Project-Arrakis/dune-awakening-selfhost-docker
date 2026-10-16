@@ -36,6 +36,12 @@ You do not need to be a Linux expert. The installer checks the basics and prepar
 | Storage | 200 GB or more |
 | Funcom token | Entered securely during browser setup |
 
+On SELinux hosts such as Fedora and Bazzite, the Console's project mount uses
+shared SELinux labeling automatically. After upgrading an existing installation,
+run `dune console reload` to recreate only the Console and apply the mount label.
+SELinux can remain enabled. Docker must already be installed if its automatic
+installer does not support your distribution.
+
 <details>
 <summary>Memory & CPU Guidance</summary>
 
