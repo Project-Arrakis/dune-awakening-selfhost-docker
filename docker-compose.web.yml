@@ -18,6 +18,11 @@ services:
     # Host networking lets the console reach local Dune services and bind
     # ADMIN_BIND_PORT directly.
     network_mode: host
+    # The Console manages the host Docker daemon through its socket. Default
+    # container_t confinement blocks that access on SELinux hosts. Disable label
+    # confinement only for this trusted management container, not for the host.
+    security_opt:
+      - label=disable
     group_add:
       - "${DOCKER_SOCKET_GID:-0}"
     environment:

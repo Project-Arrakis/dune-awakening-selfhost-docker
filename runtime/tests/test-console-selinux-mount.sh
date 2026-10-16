@@ -28,6 +28,8 @@ for host_root in (None, str(custom)):
         'config', '--format', 'json',
     ], env=env, capture_output=True, text=True, check=True)
     service = json.loads(result.stdout)['services']['redblink-dune-docker-console']
+    assert service.get('security_opt') == ['label=disable'], 'Console needs SELinux access to the Docker socket'
+    assert not service.get('privileged', False), 'Socket access must not enable privileged mode'
     mounts = {mount['target']: mount for mount in service['volumes']}
     project = mounts['/repo']
     assert project['type'] == 'bind'
@@ -38,7 +40,7 @@ for host_root in (None, str(custom)):
     for target in ('/var/run/docker.sock', '/etc/localtime'):
         assert not mounts[target].get('bind', {}).get('selinux'), target
     assert mounts['/etc/localtime']['read_only']
-print('PASS: default and custom project paths use shared SELinux labeling')
+print('PASS: default and custom project paths retain shared labeling and Console-only socket access')
 PY
 
 mkdir -p "$fixture/bin"
