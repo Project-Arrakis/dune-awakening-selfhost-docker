@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { grantAddonItem, normalizeAddonItemGrant } from "../src/addonItemGrants.js";
+import { addonItemDeliveryResult, grantAddonItem, normalizeAddonItemGrant } from "../src/addonItemGrants.js";
 
 test("normalizes a narrowly scoped addon item grant", () => {
   assert.deepEqual(normalizeAddonItemGrant({
@@ -120,4 +120,26 @@ test("refuses grants when receipt state is corrupt", async () => {
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
   }
+});
+
+test("an addon item delivery reports what a clamped database grant actually gave", () => {
+  const payload = { type: "item", itemId: "HealthPack_Channeled", amount: 100, quality: 1 };
+  const clamped = addonItemDeliveryResult(payload, { ok: true, result: { clamped: true, given: 40, message: "HealthPack_Channeled x40 was added at Grade 1. Only 40 of the requested 100 could be granted." } });
+  assert.equal(clamped.ok, true);
+  assert.equal(clamped.amount, 40);
+  assert.equal(clamped.requested, 100);
+  assert.equal(clamped.clamped, true);
+  assert.match(clamped.message, /Only 40 of the requested 100/);
+  // no message from the grant: one is written
+  const bare = addonItemDeliveryResult(payload, { ok: true, result: { clamped: true, given: 0 } });
+  assert.equal(bare.amount, 0);
+  assert.match(bare.message, /Only 0 of the requested 100/);
+  // a nonsense given never claims a delivery
+  assert.equal(addonItemDeliveryResult(payload, { ok: true, result: { clamped: true, given: "x" } }).amount, 0);
+});
+
+test("an addon item delivery that was not clamped reports the requested amount as before", () => {
+  const payload = { type: "item", itemId: "WaterBottle_1", amount: 2, quality: 0 };
+  assert.deepEqual(addonItemDeliveryResult(payload, { ok: true, result: { clamped: false, given: 2 } }), { ok: true, type: "item", itemId: "WaterBottle_1", amount: 2, quality: 0 });
+  assert.deepEqual(addonItemDeliveryResult(payload, { ok: true, operation: "adminGiveItemId" }), { ok: true, type: "item", itemId: "WaterBottle_1", amount: 2, quality: 0 });
 });

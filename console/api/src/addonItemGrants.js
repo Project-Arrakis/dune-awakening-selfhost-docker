@@ -118,3 +118,22 @@ function publicReceipt(receipt, duplicate) {
     grantedAt: receipt.grantedAt
   };
 }
+
+// What an addon item reward reports as delivered. A database grant (graded items, quality 1-5) is planned against the item's stack limit and the
+// player's free slots, and comes back clamped -- result.clamped, with result.given the amount actually inserted -- when the player has too few
+// slots. The delivery must state what arrived, not echo the requested amount (the give-items route and the care package already surface the same
+// clamp). A grant that was not clamped reports the requested amount, as before.
+export function addonItemDeliveryResult(payload, grant) {
+  const delivered = { ok: true, type: payload.type, itemId: payload.itemId, amount: payload.amount, quality: payload.quality };
+  const database = grant?.result;
+  if (!database?.clamped) return delivered;
+  const given = Number(database.given);
+  const amount = Number.isFinite(given) && given >= 0 ? Math.trunc(given) : 0;
+  return {
+    ...delivered,
+    amount,
+    requested: payload.amount,
+    clamped: true,
+    message: String(database.message || `Only ${amount} of the requested ${payload.amount} could be granted (limited by the player's free inventory slots and the item's stack size).`)
+  };
+}
