@@ -82,7 +82,7 @@ import { readSteamBuildId } from "./services/steamBuild.js";
 import { getCommunityBlueprint, getCommunityBlueprintPreview, listCommunityBlueprints } from "./services/blueprintCatalog.js";
 import { createZipArchive } from "./services/zipArchive.js";
 import { resolveMapCombatState } from "./services/mapCombatState.js";
-import { grantAddonItem } from "./addonItemGrants.js";
+import { addonItemDeliveryResult, grantAddonItem } from "./addonItemGrants.js";
 import { deleteAddonData, listAddonData, readAddonData, writeAddonData } from "./addonDataStore.js";
 import { createAddonDeliveryService, deferAddonDelivery } from "./addonDeliveries.js";
 import { EDA_EXCHANGE_BOT_ADDON_ID, ADDON_SCHEDULER_PERMISSION, createAddonJobScheduler, probeBuybackEligibility, refreshBuybackLog, readBuybackLog, clearBuybackLog, readBuybackSchedule, saveBuybackSchedule, readSeedSchedule, saveSeedSchedule } from "./addonJobs.js";
@@ -5806,7 +5806,7 @@ async function deliverAddonPayload(payload, { addonId, requestId } = {}) {
       quality: payload.quality
     }, target);
     if (!result.ok) throw new Error(result.warning || "The game did not verify the item reward.");
-    return { ok: true, type: payload.type, itemId: payload.itemId, amount: payload.amount, quality: payload.quality };
+    return addonItemDeliveryResult(payload, result);
   }
   if (payload.type === "xp") {
     if (!target.online) deferAddonDelivery("Player is offline; the XP reward will be delivered after they connect.");
