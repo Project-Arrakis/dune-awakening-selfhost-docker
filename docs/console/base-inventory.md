@@ -625,6 +625,18 @@ already-live, already-tested system is its own separately-verified decision, not
 Current provenance of the five seeded items, all confirmed against dune.gaming.tools's `maxStackSize` field
 as of 2026-08-20: `MelangeSpice` 500, `Oil` 500, `SpicedFuelCell` 500, both lubricants 100.
 
+**Stackable items without a `stackSize` (issue #1217, 2026-10-17):** 55 more items now carry one: every item
+with a game limit above 1 that had none. The source is the game's own item data, the `DT_BaseItems_*` tables
+(`StackAndDurability.MaxStackSize` of each row), read from a running game. It was checked against the 104
+values already curated: 103 are identical, and the one difference, `T2MuaddibComponent` (operator-stated 1,
+the table says 500), is left as it was. The additions include `SolarisCoin` 50000, `WeldingMaterial` and its two
+variants 500, `HeavyAmmo` and `Ammo` 1000, the `SpiceAddictionConsumable` foods and drinks 200, the healkit and
+heat packs 20, and the Landsraad contract items 3 to 6; `T4ShieldWallComponent` and
+`ExperimentalWindTurbineComponent`, which 404ed against the earlier external source, are 500. **Items whose game
+limit is 1** (about 2,000 weapons, clothing, vehicles and schematics) were deliberately left without a
+`stackSize`: giving several of them still makes one row with the whole quantity, and giving each its own
+row would change what a give of several does, so that is a separate decision.
+
 **Stack size correlates strongly with resource type, not per-item uniqueness** — an operator hypothesis
 tested 2026-08-20 by externally resolving all 96 (of 99) `raw_resource`/`refined_resource`/`component`
 catalog items against the same source. **500 is the default for 82/96 (85%)**, spanning raw ore, refined

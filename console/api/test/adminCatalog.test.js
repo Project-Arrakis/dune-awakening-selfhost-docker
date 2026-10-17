@@ -405,19 +405,45 @@ test("bulk-curated catalog carries the verified stack size for a representative 
 });
 
 // Coverage sentinel: every raw_resource/refined_resource/component item
-// must now carry a curated stackSize EXCEPT the two still awaiting live-game
-// verification (issue #441). Catches a future catalog edit silently
+// must carry a curated stackSize. Catches a future catalog edit silently
 // dropping a curated value, or a new item added to these groups without
-// stackSize curation being remembered.
-test("every fillable-group item has a curated stackSize except the two still under verification", () => {
+// stackSize curation being remembered. (The two items that 404ed against
+// the external source, T4ShieldWallComponent and
+// ExperimentalWindTurbineComponent, were resolved from the game's own item
+// tables -- see the next test -- so no exception remains.)
+test("every fillable-group item has a curated stackSize", () => {
   const items = JSON.parse(readFileSync(join(REAL_REPO_ROOT, "runtime/data/admin-items.json"), "utf8"));
-  const stillUnverified = new Set(["T4ShieldWallComponent", "ExperimentalWindTurbineComponent"]);
   const missing = items
     .filter((item) => ["raw_resource", "refined_resource", "component"].includes(item.group))
-    .filter((item) => !stillUnverified.has(item.id))
     .filter((item) => !(Number.isInteger(item.stackSize) && item.stackSize > 0))
     .map((item) => item.id);
   assert.deepEqual(missing, []);
+});
+
+// Stackable items without a curated stackSize (issue #1217): a give or fill of
+// one of these used to insert a single row holding the whole quantity, past
+// what the game allows. The limits are the game's own: the largest stack in
+// its item tables (DT_BaseItems_*, StackAndDurability.MaxStackSize). Checked
+// against the catalog's 104 earlier curated values: 103 identical. Spot-check
+// one item per distinct limit.
+test("stackable items that had no stackSize carry the game's own limit", () => {
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "SolarisCoin"), 50000);
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "EventRaiderToken"), 50000);
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "AtreidesReputation"), 10000);
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "HeavyAmmo"), 1000);
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "Ammo"), 1000);
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "Dew"), 1000);
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "WeldingMaterial"), 500);
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "T4ShieldWallComponent"), 500);
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "RocketAmmo"), 250);
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "SpiceAddictionConsumable_01"), 200);
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "HealthPack_Channeled"), 20);
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "MissionariaProtectivaDoc3"), 10);
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "LandsraadMiningLaser"), 6);
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "SaphoJuice"), 5);
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "JourneyElaccaShipment"), 3);
+  // an earlier operator-stated value is left alone where the game's table disagrees
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "T2MuaddibComponent"), 1);
 });
 
 // Volume placeholder correction (issue #440, 2026-08-20): every
