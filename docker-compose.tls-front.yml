@@ -21,8 +21,9 @@ services:
       MV_TLS_ALLOW: "${DUNE_TLS_FRONT_ALLOW:-}"
       MV_TLS_STATE: /data
     volumes:
-      # key and certificate; the Console reads only the certificate to show the fingerprint
-      - "${DUNE_HOST_REPO_ROOT:?DUNE_HOST_REPO_ROOT is required}/runtime/generated/tls-front:/data"
+      # Shared SELinux label: this directory is also inside the Console's /repo mount.
+      # Keep the private state writable by the front door on enforcing hosts.
+      - "${DUNE_HOST_REPO_ROOT:?DUNE_HOST_REPO_ROOT is required}/runtime/generated/tls-front:/data:z"
     read_only: true
     security_opt:
       - no-new-privileges:true

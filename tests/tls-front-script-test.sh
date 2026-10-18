@@ -17,6 +17,34 @@ cp "$repo_root/runtime/scripts/tls-front-config.py" "$work/runtime/scripts/"
 cp "$repo_root/docker-compose.tls-front.yml" "$work/"
 cp "$repo_root/runtime/tls-front/Dockerfile" "$repo_root/runtime/tls-front/go.mod" "$repo_root/runtime/tls-front/main.go" "$work/runtime/tls-front/"
 
+# Parse the actual Compose file before substituting the lifecycle mock. The
+# nested state mount must share the Console project's SELinux label, not use a
+# private label that would make the two containers relabel each other's files.
+python3 - "$repo_root" "$work" <<'PY'
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+repo, work = map(Path, sys.argv[1:])
+root = work / 'shared project'
+root.mkdir()
+env = dict(os.environ, DUNE_HOST_REPO_ROOT=str(root))
+result = subprocess.run([
+    'docker', 'compose', '--project-directory', str(work), '--env-file', '/dev/null',
+    '-f', str(repo / 'docker-compose.tls-front.yml'), 'config', '--format', 'json',
+], env=env, capture_output=True, text=True, check=True)
+service = json.loads(result.stdout)['services']['dune-tls-front']
+state = next(mount for mount in service['volumes'] if mount['target'] == '/data')
+assert state['source'] == str(root / 'runtime/generated/tls-front'), state
+assert state['type'] == 'bind' and not state.get('read_only', False), state
+assert state.get('bind', {}).get('selinux') == 'z', state
+assert service['read_only'] and not service.get('privileged', False), service
+assert 'ALL' in service['cap_drop'], service
+print('PASS: TLS identity state uses a writable shared SELinux bind mount')
+PY
+
 # sha256sum is not on every development machine; the script only needs a stable hash.
 if ! command -v sha256sum >/dev/null 2>&1; then
   printf '#!/bin/sh\nshasum -a 256 "$@"\n' >"$work/bin/sha256sum"
