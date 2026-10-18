@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { ApiKeysSection } from "./ApiKeysSection";
 import type { ApiKey, ScopeCatalogEntry } from "../../api/apiKeys";
@@ -78,7 +78,7 @@ test("lists keys with their scopes and status", async () => {
   ]);
   expect(await screen.findByText("Grafana")).toBeVisible();
   expect(screen.getByText("Bases RW, Players R")).toBeVisible();
-  expect(screen.getByText("Active")).toBeVisible();
+  expect(screen.getByText("Enabled")).toBeVisible();
   expect(screen.getByText("Disabled")).toBeVisible();
   // Expiry comes from the server's own verdict, so the UI can never disagree
   // with what the API will actually do with the key.
@@ -96,7 +96,7 @@ describe("the create form", () => {
       expect(within(group).getByLabelText(`Read ${namespace}`)).not.toBeChecked();
     }
 
-    expect(screen.getByText(/Grant at least one namespace first/i)).toBeVisible();
+    expect(screen.getByText(/Choose at least one permission/i)).toBeVisible();
     const submit = screen.getAllByRole("button", { name: /^create key$/i }).at(-1)!;
     expect(submit).toBeDisabled();
   });
@@ -111,7 +111,7 @@ describe("the create form", () => {
 
     fireEvent.click(screen.getByLabelText("Read players"));
     await waitFor(() => expect(submit()).toBeEnabled());
-    expect(screen.queryByText(/Grant at least one namespace first/i)).toBeNull();
+    expect(screen.queryByText(/Choose at least one permission/i)).toBeNull();
   });
 
   test("offers no write segment for a namespace that has no write actions", async () => {
@@ -179,7 +179,7 @@ describe("the create form", () => {
 
     await waitFor(() => expect(screen.getByLabelText(/no access to players/i)).toBeChecked());
     expect(screen.getByLabelText(/no access to bases/i)).toBeChecked();
-    expect(screen.getByText(/Grant at least one namespace first/i)).toBeVisible();
+    expect(screen.getByText(/Choose at least one permission/i)).toBeVisible();
   });
 
   test("offers no bulk-grant control", async () => {
@@ -378,12 +378,14 @@ test("toggling a key enabled sends only the enabled flag", async () => {
 // a mounted resultKey, and these outcomes were keyed by key.id, which nothing
 // mounts -- so they silently rendered nothing at all.
 
-test("a toggle outcome is shown to the operator, not swallowed", async () => {
+test("the key button shows the saved state without a success message", async () => {
   renderSection([makeKey({ name: "Grafana", enabled: true })]);
   mocked.update.mockResolvedValue({ key: makeKey({ enabled: false }) });
 
   fireEvent.click(await screen.findByRole("button", { name: "Disable Grafana" }));
-  expect(await screen.findByText(/Grafana disabled/i)).toBeVisible();
+  expect(await screen.findByRole("button", { name: "Enable Grafana" })).toHaveTextContent("Disabled");
+  expect(screen.queryByText(/Grafana disabled/i)).toBeNull();
+  expect(screen.queryByRole("columnheader", { name: "Status" })).toBeNull();
 });
 
 test("a failed toggle surfaces the server's reason", async () => {
@@ -462,15 +464,45 @@ test("a refresh failure after a successful revoke still says the key is gone", a
   expect(screen.getByText(/could not be refreshed/i)).toBeVisible();
 });
 
-test("a refresh failure after a successful toggle does not report the toggle as failed", async () => {
+test("a successful toggle uses the saved key without requesting the list again", async () => {
   renderSection([makeKey({ name: "Grafana", enabled: true })]);
   mocked.update.mockResolvedValue({ key: makeKey({ enabled: false }) });
   mocked.list.mockRejectedValue(new Error("Postgres is not running"));
 
   fireEvent.click(await screen.findByRole("button", { name: "Disable Grafana" }));
   await waitFor(() => expect(mocked.update).toHaveBeenCalled());
-  expect(await screen.findByText(/Grafana disabled/i)).toBeVisible();
-  expect(screen.getByText(/could not be refreshed/i)).toBeVisible();
+  expect(await screen.findByRole("button", { name: "Enable Grafana" })).toHaveTextContent("Disabled");
+  expect(mocked.list).toHaveBeenCalledTimes(1);
+  expect(screen.queryByText(/could not be refreshed/i)).toBeNull();
+});
+
+test("a failed toggle keeps the original key state", async () => {
+  renderSection([makeKey({ name: "Grafana" })]);
+  mocked.update.mockRejectedValue(new Error("Could not save this key."));
+  fireEvent.click(await screen.findByRole("button", { name: "Disable Grafana" }));
+  await screen.findByText("Could not save this key.");
+  expect(screen.getByRole("button", { name: "Disable Grafana" })).toHaveTextContent("Enabled");
+  expect(screen.getByRole("button", { name: "Disable Grafana" })).toBeEnabled();
+});
+
+test("expired keys show their actual state and cannot be re-enabled by the toggle", async () => {
+  renderSection([makeKey({ name: "Old bot", expired: true, enabled: false })]);
+  expect(await screen.findByRole("button", { name: "Expired Old bot" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Expired Old bot" })).toHaveTextContent("Expired");
+  expect(screen.getByRole("button", { name: "Revoke Old bot" })).toBeEnabled();
+});
+
+test("the key control shows progress until the saved state is returned", async () => {
+  renderSection([makeKey({ name: "Grafana" })]);
+  let finish!: (value: { key: ApiKey }) => void;
+  mocked.update.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+  fireEvent.click(await screen.findByRole("button", { name: "Disable Grafana" }));
+  expect(screen.getByRole("button", { name: "Disable Grafana" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Disable Grafana" })).toHaveTextContent("Updating");
+  expect(screen.getByRole("button", { name: "Disable Grafana" })).toHaveAttribute("aria-busy", "true");
+  await act(async () => { finish({ key: makeKey({ enabled: false }) }); });
+  expect(screen.getByRole("button", { name: "Enable Grafana" })).toHaveClass("is-disabled");
+  expect(screen.getByRole("button", { name: "Enable Grafana" })).toBeEnabled();
 });
 
 test("every segment's accessible name contains its visible label", async () => {
@@ -517,18 +549,18 @@ test("a catalog failure explains itself instead of leaving the form a dead end",
 });
 
 test("a catalog refresh failure says the list may be stale, not that nothing can be chosen", async () => {
-  // refresh() also runs after every mutation. A failure there leaves the
+  // Create/revoke refresh the catalog. A failure there leaves the
   // previously loaded catalog fully rendered, so claiming "no permissions can
   // be chosen" while 18 rows sit on screen with Create enabled is simply false.
   renderSection([makeKey({ name: "Grafana", enabled: true })]);
-  mocked.update.mockResolvedValue({ key: makeKey({ enabled: false }) });
+  mocked.revoke.mockResolvedValue({ ok: true });
 
   fireEvent.click(await screen.findByRole("button", { name: /create key/i }));
   await screen.findByLabelText("Access level for players");
 
   // Catalog starts healthy, then fails on the post-mutation refresh.
   mocked.catalog.mockRejectedValue(new Error("SIMULATED outage"));
-  fireEvent.click(screen.getByRole("button", { name: "Disable Grafana" }));
+  fireEvent.click(screen.getByRole("button", { name: "Revoke Grafana" }));
 
   expect(await screen.findByText(/could not be refreshed, so it may be out of date/i)).toBeVisible();
   expect(screen.queryByText(/no permissions can be chosen/i)).toBeNull();
@@ -565,4 +597,39 @@ test("Realtime Data is its own read-only row in the scope grid", async () => {
   expect(within(group).getByRole("radio", { name: /^None/ })).toBeInTheDocument();
   expect(within(group).getByRole("radio", { name: /^Read realtime/ })).toBeInTheDocument();
   expect(within(group).queryByRole("radio", { name: /Read\+Write/ })).toBeNull();
+});
+
+test("searching permissions preserves grants outside the visible results", async () => {
+  renderSection([]);
+  mocked.create.mockResolvedValue({ key: makeKey(), secret: "test-key-value" });
+  await openCreateForm();
+  fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Map Viewer" } });
+  fireEvent.click(screen.getByLabelText("Read players"));
+  fireEvent.change(screen.getByRole("searchbox", { name: "Search permissions" }), { target: { value: "BASES" } });
+  expect(screen.queryByLabelText("Access level for players")).toBeNull();
+  fireEvent.click(screen.getByLabelText(/Read\+write for bases/i));
+  expect(screen.getByText("2 of 4 selected")).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: /^Create Key$/i }));
+  await waitFor(() => expect(mocked.create).toHaveBeenCalledWith(expect.objectContaining({ scopes: { players: "read", bases: "write" } })));
+});
+
+test("an empty search can be cleared without losing permissions", async () => {
+  renderSection([]);
+  await openCreateForm();
+  fireEvent.click(screen.getByLabelText("Read players"));
+  fireEvent.change(screen.getByRole("searchbox", { name: "Search permissions" }), { target: { value: "no-such-permission" } });
+  expect(screen.getByText("No permissions match your search.")).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Clear Search" }));
+  expect(screen.getByLabelText("Read players")).toBeChecked();
+});
+
+test("Clear All also removes permissions hidden by a search", async () => {
+  renderSection([]);
+  await openCreateForm();
+  fireEvent.click(screen.getByLabelText("Read players"));
+  fireEvent.change(screen.getByRole("searchbox", { name: "Search permissions" }), { target: { value: "bases" } });
+  fireEvent.click(screen.getByRole("button", { name: "Clear All" }));
+  expect(screen.getByText("0 of 4 selected")).toBeVisible();
+  fireEvent.change(screen.getByRole("searchbox", { name: "Search permissions" }), { target: { value: "" } });
+  expect(screen.getByLabelText(/None.*no access to players/i)).toBeChecked();
 });

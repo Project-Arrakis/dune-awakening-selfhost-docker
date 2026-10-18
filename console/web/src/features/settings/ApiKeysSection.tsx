@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Ban, Check, Copy, Plus, Trash2 } from "lucide-react";
+import { AlertTriangle, Ban, Clock3, Copy, KeyRound, LoaderCircle, Plus, Search, Trash2 } from "lucide-react";
 import {
   apiKeysApi,
   describeScopes,
   grantedCount,
   endOfLocalDayIso,
-  keyStatus,
   grantableActions,
   scopeLabel,
   scopeValueOf,
@@ -37,12 +36,11 @@ function todayIso() {
   return [now.getFullYear(), String(now.getMonth() + 1).padStart(2, "0"), String(now.getDate()).padStart(2, "0")].join("-");
 }
 
-const COLUMNS = ["name", "prefix", "scopes", "status", "lastUsed", "expires"];
+const COLUMNS = ["name", "prefix", "scopes", "lastUsed", "expires"];
 const COLUMN_LABELS: Record<string, string> = {
   name: "Name",
   prefix: "Prefix",
-  scopes: "Scopes",
-  status: "Status",
+  scopes: "Permissions",
   lastUsed: "Last Used",
   expires: "Expires"
 };
@@ -59,6 +57,7 @@ export function ApiKeysSection({ confirmAction }: { confirmAction: ConfirmAction
   const [rateLimit, setRateLimit] = useState("60");
   // Every namespace starts at None. This map holds only what has been granted.
   const [draftScopes, setDraftScopes] = useState<ApiKeyScopes>({});
+  const [scopeQuery, setScopeQuery] = useState("");
   const [revealed, setRevealed] = useState<{ name: string; secret: string } | null>(null);
   const [copied, setCopied] = useState(false);
   // Tracked separately from `result`: the scope grid cannot be rendered
@@ -100,6 +99,10 @@ export function ApiKeysSection({ confirmAction }: { confirmAction: ConfirmAction
   }, [result]);
 
   const grants = grantedCount(draftScopes);
+  const visibleCatalog = useMemo(() => {
+    const query = scopeQuery.trim().toLowerCase();
+    return catalog.filter((entry) => `${scopeLabel(entry.namespace)} ${entry.namespace}`.toLowerCase().includes(query));
+  }, [catalog, scopeQuery]);
 
   // The mutation is already committed by the time the list refreshes, so a
   // refresh failure must never read as if the action failed.
@@ -118,6 +121,7 @@ export function ApiKeysSection({ confirmAction }: { confirmAction: ConfirmAction
     setExpiresAt("");
     setRateLimit("60");
     setDraftScopes({});
+    setScopeQuery("");
   }
 
   function setLevel(namespace: string, level: SegmentValue) {
@@ -185,15 +189,17 @@ export function ApiKeysSection({ confirmAction }: { confirmAction: ConfirmAction
 
   async function toggleEnabled(key: ApiKey) {
     setBusyId(key.id);
+    setResult(null);
     try {
-      await apiKeysApi.update(key.id, { enabled: !key.enabled });
+      const updated = await apiKeysApi.update(key.id, { enabled: !key.enabled });
+      // The update returns the saved key. Reflect that confirmed state in the
+      // control itself without a success banner or a second list request.
+      setKeys((current) => current?.map((entry) => entry.id === key.id ? updated.key : entry) ?? current);
     } catch (error) {
       setResult({ key: "list", tone: "danger", text: error instanceof Error ? error.message : String(error) });
+    } finally {
       setBusyId("");
-      return;
     }
-    await refreshAfterSuccess(`${key.name} ${key.enabled ? "disabled" : "enabled"}.`);
-    setBusyId("");
   }
 
   async function revokeKey(key: ApiKey) {
@@ -239,22 +245,37 @@ export function ApiKeysSection({ confirmAction }: { confirmAction: ConfirmAction
     id: key.id,
     name: key.name,
     prefix: key.prefix,
-    // The global `td { max-width: 360px }` ellipses this, and it is the column
-    // that says what the key can actually do -- without a title the grants
-    // become unreadable past about five namespaces.
+    // Keep a full-text tooltip as well as the wrapped permission summary.
     scopes: describeScopes(key.scopes),
-    status: keyStatus(key),
     lastUsed: key.lastUsedAt ? new Date(key.lastUsedAt).toLocaleString() : "Never",
     expires: key.expiresAt ? new Date(key.expiresAt).toLocaleDateString() : "Never"
   })), [keys]);
 
   const keyById = useMemo(() => new Map((keys || []).map((key) => [key.id, key])), [keys]);
 
+  function keyControl(key: ApiKey) {
+    const pending = busyId === key.id;
+    const state = key.expired ? "expired" : key.enabled ? "enabled" : "disabled";
+    const text = pending ? "Updating" : key.expired ? "Expired" : key.enabled ? "Enabled" : "Disabled";
+    const Icon = pending ? LoaderCircle : key.expired ? Clock3 : key.enabled ? KeyRound : Ban;
+    return <button type="button" className={`api-key-state-button is-${state}`} disabled={Boolean(busyId) || key.expired}
+      aria-busy={pending}
+      aria-label={key.expired ? `Expired ${key.name}` : `${key.enabled ? "Disable" : "Enable"} ${key.name}`}
+      title={key.expired ? "This key has expired. Create a new key to restore access." : `${key.enabled ? "Disable" : "Enable"} this key`}
+      onClick={() => { void toggleEnabled(key); }}>
+      <Icon size={16} aria-hidden="true" />
+      <span className="api-key-state-name">{key.name}</span>
+      <span className="api-key-state-label">{text}</span>
+    </button>;
+  }
+
   return <div className="api-keys-section">
-    <p className="muted">
-      Named keys for calling this console&apos;s HTTP API from outside the browser. Send one as
-      {" "}<code>Authorization: Bearer &lt;key&gt;</code>. Each key reaches only what you grant it below.
-    </p>
+    <div className="api-keys-header">
+      <p className="muted">Give external tools their own API keys, with only the permissions they need. You can disable or revoke a key at any time.</p>
+      {!formOpen && <button onClick={() => { resetForm(); setFormOpen(true); }}>
+        <Plus size={16} aria-hidden="true" /> Create Key
+      </button>}
+    </div>
 
     {/* role="alert" + aria-live: the secret cannot be recovered, so its
         appearance has to be announced rather than only shown. Focus moves to
@@ -283,13 +304,18 @@ export function ApiKeysSection({ confirmAction }: { confirmAction: ConfirmAction
 
     {keys === null
       ? <p className="muted">Loading API Keys...</p>
+      : keys.length === 0 ? <div className="api-keys-empty"><KeyRound size={24} aria-hidden="true" /><div><strong>No API keys yet.</strong><p className="muted">Create a key to connect an external tool.</p></div></div>
       : <DataTable
+        tableClassName="api-keys-table"
+        wrapClassName="api-keys-table-wrap"
         rows={rows}
         columns={COLUMNS}
         columnLabels={COLUMN_LABELS}
         renderCell={(row: Record<string, unknown>, col: string) =>
           col === "scopes"
-            ? <span title={String(row.scopes)}>{String(row.scopes)}</span>
+            ? <span className="api-key-scope-summary" title={String(row.scopes)}>{String(row.scopes)}</span>
+            : col === "name" && keyById.has(String(row.id)) ? keyControl(keyById.get(String(row.id))!)
+            : col === "prefix" ? <code>{String(row.prefix)}</code>
             : String(row[col] ?? "")}
         rowKey={(row: Record<string, unknown>) => String(row.id)}
         emptyMessage="No API keys yet. Create one to call this console from outside the browser."
@@ -302,15 +328,8 @@ export function ApiKeysSection({ confirmAction }: { confirmAction: ConfirmAction
           if (!key) return null;
           return <div className="icon-toggle-group">
             <button
-              className="icon-toggle-button"
-              disabled={busyId === key.id}
-              title={key.enabled ? "Disable this key" : "Enable this key"}
-              aria-label={`${key.enabled ? "Disable" : "Enable"} ${key.name}`}
-              onClick={(event) => { event.stopPropagation(); void toggleEnabled(key); }}
-            >{key.enabled ? <Ban size={16} /> : <Check size={16} />}</button>
-            <button
               className="icon-toggle-button danger"
-              disabled={busyId === key.id}
+              disabled={Boolean(busyId)}
               title="Revoke this key"
               aria-label={`Revoke ${key.name}`}
               onClick={(event) => { event.stopPropagation(); void revokeKey(key); }}
@@ -324,31 +343,28 @@ export function ApiKeysSection({ confirmAction }: { confirmAction: ConfirmAction
         could be arbitrarily stale by the time anyone opened the form. */}
     {catalogError && <p className="error">
       {catalog.length
-        ? `The list of grantable namespaces could not be refreshed, so it may be out of date. ${catalogError}`
-        : `The list of grantable namespaces could not be loaded, so no permissions can be chosen. ${catalogError}`}
+        ? `The permission list could not be refreshed, so it may be out of date. ${catalogError}`
+        : `The permission list could not be loaded, so no permissions can be chosen. ${catalogError}`}
     </p>}
 
-    <div className="action-row">
-      {!formOpen && <button onClick={() => { resetForm(); setFormOpen(true); }}>
-        <Plus size={16} aria-hidden="true" /> Create Key
-      </button>}
-      <InlineActionResult result={result} resultKey="list" />
-    </div>
+    <InlineActionResult result={result} resultKey="list" />
 
     {formOpen && <div className="api-key-form">
+      <div className="api-key-form-heading"><h3>Create API Key</h3><p className="muted">Name the key, choose its limits, then select its permissions.</p></div>
       <div className="settings-password-grid api-key-form-grid">
-        <label>Name<input value={name} disabled={creating} maxLength={64} placeholder="Grafana Dashboard" onChange={(event) => setName(event.target.value)} /></label>
-        <label>Expires<input type="date" min={todayIso()} value={expiresAt} disabled={creating} onChange={(event) => setExpiresAt(event.target.value)} /></label>
-        <label>Rate Limit / Min<input type="number" min="1" max="10000" value={rateLimit} disabled={creating} onChange={(event) => setRateLimit(event.target.value.replace(/[^\d]/g, ""))} /></label>
+        <div className="api-key-form-field"><label>Name<input aria-describedby="api-key-name-help" value={name} disabled={creating} maxLength={64} placeholder="e.g. Map Viewer" onChange={(event) => setName(event.target.value)} /></label><p id="api-key-name-help" className="muted">The tool or service that will use this key.</p></div>
+        <div className="api-key-form-field"><label>Expires<input aria-describedby="api-key-expiry-help" type="date" min={todayIso()} value={expiresAt} disabled={creating} onChange={(event) => setExpiresAt(event.target.value)} /></label><p id="api-key-expiry-help" className="muted">Optional. Leave blank for no expiry.</p></div>
+        <div className="api-key-form-field"><label>Requests per Minute<input aria-describedby="api-key-rate-help" type="number" min="1" max="10000" value={rateLimit} disabled={creating} onChange={(event) => setRateLimit(event.target.value.replace(/[^\d]/g, ""))} /></label><p id="api-key-rate-help" className="muted">The maximum request rate for this key.</p></div>
       </div>
 
       <div className="api-key-scope-header">
-        <span className="muted">Scope — Nothing Is Granted Until You Grant It</span>
-        <button disabled={creating || !grants} onClick={() => setDraftScopes({})}>Clear All</button>
+        <div><h3>Permissions</h3><p className="muted">Choose access for each area. Everything starts at None.</p></div>
+        <div className="api-key-scope-selection"><span aria-live="polite">{grants} of {catalog.length} selected</span><button disabled={creating || !grants} onClick={() => setDraftScopes({})}>Clear All</button></div>
       </div>
+      <label className="api-key-scope-search"><Search size={16} aria-hidden="true" /><input type="search" aria-label="Search permissions" placeholder="Search permissions..." value={scopeQuery} disabled={creating} onChange={(event) => setScopeQuery(event.target.value)} /></label>
 
       <div className="api-key-scope-grid">
-        {catalog.map((entry) => {
+        {visibleCatalog.map((entry) => {
           const stored = scopeValueOf(draftScopes, entry.namespace);
           const level: SegmentValue = Array.isArray(stored) ? "custom" : stored ?? "none";
           const chosen = Array.isArray(stored) ? stored : [];
@@ -389,7 +405,7 @@ export function ApiKeysSection({ confirmAction }: { confirmAction: ConfirmAction
                 {!chosen.length && " — tick at least one, or switch back to None"}
               </legend>
               {actions.map((action) => <label key={action} className="api-key-scope-action">
-                <input
+                <input aria-label={action}
                   type="checkbox"
                   checked={chosen.includes(action)}
                   disabled={creating}
@@ -401,13 +417,14 @@ export function ApiKeysSection({ confirmAction }: { confirmAction: ConfirmAction
           </div>;
         })}
       </div>
+      {scopeQuery.trim() && !visibleCatalog.length && <div className="api-key-scope-empty"><p className="muted">No permissions match your search.</p><button disabled={creating} onClick={() => setScopeQuery("")}>Clear Search</button></div>}
 
-      <div className="action-row">
+      <div className="action-row api-key-form-footer">
         <button disabled={creating || !name.trim() || !grants} onClick={() => { void createKey(); }}>
           {creating ? "Creating..." : "Create Key"}
         </button>
         <button disabled={creating} onClick={() => { setFormOpen(false); resetForm(); }}>Cancel</button>
-        {!grants && <span className="muted">Grant At Least One Namespace First</span>}
+        {!grants && <span className="muted">Choose at least one permission to continue.</span>}
         <InlineActionResult result={result} resultKey="create" />
       </div>
     </div>}
