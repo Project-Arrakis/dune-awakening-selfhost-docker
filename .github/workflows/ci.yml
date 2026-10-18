@@ -165,6 +165,8 @@ jobs:
           runtime/tests/test-deepdesert-layout-apply-safety.sh
           runtime/tests/test-map-despawn-lifecycle.sh
           runtime/tests/test-director-log-id-normalization.sh
+          runtime/tests/test-director-story-admission.sh
+          runtime/tests/test-overland-dynamic-allocation.sh
           runtime/tests/test-game-epic-config-permissions.sh
           tests/fls-signals-test.sh
           tests/steamcmd-signals-test.sh
@@ -202,6 +204,8 @@ jobs:
         run: |
           runtime/tests/test-compose-project-name-portability.sh
           runtime/tests/test-compose-project-resolution.sh
+      - name: Test Console SELinux mount and write-denial diagnostics
+        run: bash runtime/tests/test-console-selinux-mount.sh
       - name: Test age-based secrets library (AEAD primitive, shell seam, cross-language round-trip)
         run: |
           python3 runtime/scripts/lib/test_secrets_aead.py -v

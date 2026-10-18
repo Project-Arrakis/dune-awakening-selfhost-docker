@@ -105,6 +105,49 @@ PlayerHardCap=80
 QueueFailMap=Overmap
 QueueFailLocation=-32289.657183, -138433.689956, 500.000000
 
+; Preserve the stock solo-story admission rules. The global cap otherwise
+; lets another player enter an occupied story and immediately get sent back
+; by RemoveFromStory, even when an empty instance is available.
+[CB_Story_Hephaestus]
+PlayerHardCap=1
+KeepPartiesTogether=false
+NumExtraServers=0
+
+[CB_Story_Ecolab_Carthag]
+PlayerHardCap=1
+KeepPartiesTogether=false
+NumExtraServers=0
+
+[CB_Story_WaterFatManor]
+PlayerHardCap=1
+KeepPartiesTogether=false
+NumExtraServers=0
+
+[CB_Arrakis_Generic_Sietch_Room]
+PlayerHardCap=1
+KeepPartiesTogether=false
+NumExtraServers=0
+
+[CB_Arrakis_Story_Paranoid_PrayerRoom]
+PlayerHardCap=1
+KeepPartiesTogether=false
+NumExtraServers=0
+
+[CB_Arrakis_Story_Glutton_DiningRoom]
+PlayerHardCap=1
+KeepPartiesTogether=false
+NumExtraServers=0
+
+[CB_Story_DestroyedZanovar]
+PlayerHardCap=1
+KeepPartiesTogether=false
+NumExtraServers=0
+
+[CB_Story_OrbitalMonitor]
+PlayerHardCap=1
+KeepPartiesTogether=false
+NumExtraServers=0
+
 [CB_Dungeon_Hephaestus]
 NumExtraServers=0
 
