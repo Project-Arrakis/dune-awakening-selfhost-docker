@@ -52,13 +52,14 @@ func TestForwardingIdentity(t *testing.T) {
 }
 
 func TestHealthCheckRequiresReachableConsole(t *testing.T) {
-	base, _, _ := start(t, nil)
+	state := t.TempDir()
+	base, _, _ := start(t, map[string]string{"MV_TLS_STATE": state})
 	front, _ := url.Parse(base)
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden) // restrictive Console allowlist
 	}))
 	upstream, _ := url.Parse(backend.URL)
-	cfg := config{Addr: front.Host, Upstream: upstream}
+	cfg := config{Addr: front.Host, Upstream: upstream, State: state}
 	if healthcheck(cfg) != 0 {
 		t.Fatal("reachable restricted Console was unhealthy")
 	}
@@ -69,6 +70,11 @@ func TestHealthCheckRequiresReachableConsole(t *testing.T) {
 }
 
 func TestHealthCheckUsesConfiguredFrontAddress(t *testing.T) {
+	state := t.TempDir()
+	id, err := loadOrCreateIdentity(state, []string{"dune.example.org"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	front := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -78,6 +84,7 @@ func TestHealthCheckUsesConfiguredFrontAddress(t *testing.T) {
 		t.Fatal(err)
 	}
 	front.Listener = listener
+	front.TLS = &tls.Config{Certificates: []tls.Certificate{id}, MinVersion: tls.VersionTLS12}
 	front.StartTLS()
 	defer front.Close()
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -85,7 +92,7 @@ func TestHealthCheckUsesConfiguredFrontAddress(t *testing.T) {
 	}))
 	defer backend.Close()
 	upstream, _ := url.Parse(backend.URL)
-	if healthcheck(config{Addr: listener.Addr().String(), Upstream: upstream}) != 0 {
+	if healthcheck(config{Addr: listener.Addr().String(), Upstream: upstream, State: state}) != 0 {
 		t.Fatal("healthy front bound to a specific address was reported unhealthy")
 	}
 }
@@ -188,7 +195,7 @@ func TestKeyAndPinAreStableAndPrivate(t *testing.T) {
 	if err != nil || pinOf(c.Leaf) != pinOf(a.Leaf) {
 		t.Fatal("pin changed with the names")
 	}
-	if len(c.Leaf.DNSNames) != 1 || len(c.Leaf.IPAddresses) != 1 {
+	if len(c.Leaf.DNSNames) != 2 || len(c.Leaf.IPAddresses) != 1 {
 		t.Fatalf("names missing in the certificate: %v %v", c.Leaf.DNSNames, c.Leaf.IPAddresses)
 	}
 	if time.Until(c.Leaf.NotAfter) < 19*365*24*time.Hour {

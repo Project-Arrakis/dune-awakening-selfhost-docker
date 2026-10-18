@@ -251,11 +251,19 @@ func loadOrCreateIdentity(dir string, names []string) (tls.Certificate, error) {
 }
 
 func certNames(names []string) (dns []string, ips []net.IP) {
+	// A stable local identity lets health checks verify the certificate even
+	// when the listener is bound to a wildcard or a custom interface address.
+	dns = []string{"localhost"}
 	for _, n := range names {
 		if ip := net.ParseIP(n); ip != nil {
-			ips = append(ips, ip)
+			if !slices.ContainsFunc(ips, ip.Equal) {
+				ips = append(ips, ip)
+			}
 		} else {
-			dns = append(dns, strings.ToLower(n))
+			name := strings.ToLower(n)
+			if !slices.Contains(dns, name) {
+				dns = append(dns, name)
+			}
 		}
 	}
 	return dns, ips
@@ -555,10 +563,23 @@ func healthcheck(cfg config) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	c := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{
-		// the certificate is not for 127.0.0.1; this only asks the front door itself
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	certPEM, err := os.ReadFile(filepath.Join(cfg.State, "front-cert.pem"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "read health check certificate:", err)
+		return 1
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(certPEM) {
+		fmt.Fprintln(os.Stderr, "invalid health check certificate")
+		return 1
+	}
+	transport := &http.Transport{TLSClientConfig: &tls.Config{
+		RootCAs: roots, ServerName: "localhost", MinVersion: tls.VersionTLS12,
 	}}
+	defer transport.CloseIdleConnections()
+	c := &http.Client{Timeout: 5 * time.Second, Transport: transport,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
+	}
 	// Probe the configured listener, not an unrelated IPv4 loopback socket.
 	// Wildcard listeners have no connectable address of their own.
 	switch host {
@@ -581,7 +602,14 @@ func healthcheck(cfg config) int {
 	// is reachable. A 403 is valid here when the Console restricts client IPs;
 	// normal forwarded requests carry their independently signed client IP.
 	endpoint := cfg.Upstream.ResolveReference(&url.URL{Path: "/api/health"})
-	backend, err := c.Get(endpoint.String())
+	// The Console has its own identity: HTTPS upstreams must use normal system
+	// trust and hostname verification, not the front door's private trust root.
+	backendTransport := &http.Transport{}
+	defer backendTransport.CloseIdleConnections()
+	backendClient := &http.Client{Timeout: 5 * time.Second, Transport: backendTransport,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	backend, err := backendClient.Get(endpoint.String())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "console unreachable")
 		return 1
