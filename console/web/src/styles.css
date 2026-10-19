@@ -2944,6 +2944,12 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .map-display-name-primary svg { flex: 0 0 auto; color: #d8b15f; }
 .map-display-name-primary strong { min-width: 0; overflow-wrap: anywhere; line-height: 1.25; }
 .combat-status-badge { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; min-width: 38px; padding: 2px 7px; border: 1px solid currentColor; border-radius: 0; font-size: 10px; font-weight: 800; line-height: 1.25; letter-spacing: .02em; }
+.combat-settings-notice { display: grid; gap: 10px; padding: 14px 16px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--panel-muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.combat-settings-notice p { margin: 0; }
+.combat-settings-notice .attention-text { color: #ffd9a8; }
+.combat-settings-notice dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: 10px 20px; margin: 0; }
+.combat-settings-notice dt { color: var(--muted); }
+.combat-settings-notice dd { margin: 2px 0 0; font-weight: 700; }
 .combat-status-pve { color: #9be6bd; background: rgba(64, 173, 115, .12); }
 .combat-status-pvp { color: #ff9c8f; background: rgba(211, 76, 64, .12); }
 .combat-status-conflict { color: #ffd08a; background: rgba(216, 177, 95, .12); }

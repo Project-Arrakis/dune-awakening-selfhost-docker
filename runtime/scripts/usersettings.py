@@ -467,6 +467,11 @@ ENGINE_FIELD_CATEGORIES = {
 # Free-text field descriptions shown in the console UI. Only populated for
 # fields as they're documented; metadata() falls back to "" for the rest.
 FIELD_DESCRIPTIONS = {
+    "partition_pvp_enabled": "Adds this selected partition to UserGame's PvP list. This selects a whole server instance, not the northern Deep Desert zones. Do not also select the same partition in the PvE list. Zone boundaries are separate from this selector; Custom Settings also has PVPMode.",
+    "partition_pve_enabled": "Adds this selected partition to UserGame's PvE list. This is not the southern safe-zone switch. Selecting both lists produces a Console configuration warning; it does not confirm how the game resolves the overlap.",
+    "legacy_pvp_enabled": "Legacy UserGame game-mode flag (bPvPEnabled). The Console uses this only as a fallback when partition selectors are absent. It does not establish whether PvP is active in game or override Custom Settings by itself.",
+    "server_pve": "Legacy UserGame game-mode flag (bServerPVE). True alone is not proof that this instance is PvE: partition selectors and Custom Settings' PVPMode are separate controls. The Console does not verify their priority inside the game.",
+    "pvp_mode": "Custom Settings' PvP policy: NoPVP, Limited or FullPVP. UserGame has separate partition and legacy controls. Their priority is not verified across game builds; avoid contradictory settings and verify the result in game. The map badge describes UserGame configuration only.",
     "battleye_enabled": "Controls the native server BattlEye anti-cheat setting. Apply globally and restart the Battlegroup after saving. The current Docker game image defaults to disabled. A BattlEye launch argument takes precedence over this setting.",
     "staking_unit_vertical_extension_default_times": "Seconds required for every vertical Staking Unit extension level (0.1-604800). Leave empty to use Funcom's progressively longer defaults.",
     "staking_unit_extension_default_times": "Seconds required for every horizontal Staking Unit extension level (0.1-604800). Leave empty to use Funcom's progressively longer defaults.",
@@ -506,8 +511,8 @@ FIELD_DESCRIPTIONS = {
     "base_backup_max_extensions": "Maximum number of times a Base Backup can be extended.",
     "building_restriction_limits_enabled": "Enforces building restriction limits (e.g. disallowing construction inside dungeons/restricted areas).",
     "building_piece_limit_multiplier": "Scales building-piece limits, including lights. Values above Funcom's recommended range are supported, but may increase server and client load.",
-    "force_pvp_all_partitions": "If enabled, forces PvP on for every map partition regardless of each partition's individual PvP/PvE setting.",
-    "security_zones_enabled": "Master toggle for Security Zones. Disable to allow PvP and combat abilities everywhere on the map (no safe zones).",
+    "force_pvp_all_partitions": "UserGame force-PvP flag for all partitions within the selected scope. The Console flags an overlap with an explicit PvE selector. This is separate from Custom Settings' PVPMode; priority between the two systems is not verified.",
+    "security_zones_enabled": "Controls the Security Zones subsystem, which manages safe/restricted areas within a map. This does not select a PvP or PvE instance. Disabling zones may allow combat in previously protected areas; exact boundaries depend on the game build.",
     "coriolis_auto_spawn_enabled": "Whether Coriolis storms spawn automatically on their normal cycle.",
     "coriolis_cycle_start_year": "Base year shipped in the Coriolis configuration. Normally leave this unchanged when matching a regional schedule.",
     "coriolis_cycle_start_month": "Base month (1-12) shipped in the Coriolis configuration. Normally leave this unchanged when matching a regional schedule.",
@@ -527,6 +532,11 @@ FIELD_DESCRIPTIONS = {
 }
 
 FIELD_LABELS = {
+    "partition_pvp_enabled": "Partition PvP Selection",
+    "partition_pve_enabled": "Partition PvE Selection",
+    "legacy_pvp_enabled": "Legacy PvP Flag",
+    "server_pve": "Legacy Server PvE Flag",
+    "pvp_mode": "PvP Mode",
     "battleye_enabled": "BattlEye Anti-Cheat",
     "restart_server_on_coriolis_cycle_end": "Restart Game Farm At Coriolis Cycle End",
     "coriolis_cycle_start_year": "Cycle Start Year",
@@ -4100,7 +4110,7 @@ def resolve_partition_combat_state(values: dict) -> dict:
     Returns a dict with keys: state, source, securityZonesEnabled, warnings,
     unresolvedFields. `state` is one of PARTITION_COMBAT_STATES.
 
-    Precedence (highest to lowest):
+    Console selection precedence (not a live check of game-side priority):
       1. partition_pvp_enabled AND partition_pve_enabled       -> CONFLICT
       2. force_pvp_all_partitions AND partition_pve_enabled    -> CONFLICT
       3. force_pvp_all_partitions                              -> PVP
@@ -4318,8 +4328,20 @@ def partition_combat_state_payload(map_name: str, partition_id: str, profile: di
     target_map = canonical_map(map_name)
     target_partition = str(partition_id)
 
-    configured_values = profile_partition_values(profile if profile is not None else read_profile(), target_map, target_partition)
+    profile = profile if profile is not None else read_profile()
+    configured_values = profile_partition_values(profile, target_map, target_partition)
     configured_result = resolve_partition_combat_state(configured_values)
+
+    # Report Custom Settings alongside UserGame, without inventing precedence
+    # between Funcom's two systems or changing the partition-selection contract.
+    custom_section, custom_key, custom_default = SERVER_CUSTOM_FIELDS["pvp_mode"]
+    custom_path = saved_dir_for(target_map, target_partition) / "Config" / "LinuxServer" / "ServerCustomSettings.ini"
+    written_custom_mode = read_ini_value(custom_path, custom_section, custom_key)
+    profile_custom_mode, custom_configured = server_custom_profile_value(profile, "pvp_mode", target_map, target_partition)
+    custom_mode = str(profile_custom_mode if custom_configured else written_custom_mode if written_custom_mode is not None else custom_default)
+    warnings = list(configured_result["warnings"])
+    if (configured_result["state"], custom_mode) in (("PVP", "NoPVP"), ("PVE", "FullPVP")):
+        warnings.append(f"UserGame selects {configured_result['state']} while Custom Settings specifies {custom_mode}. The game priority between these controls is not verified; check the result in game.")
 
     materialized_values = materialized_partition_combat_values(target_map, target_partition)
     materialized_result = resolve_partition_combat_state(materialized_values) if materialized_values is not None else None
@@ -4336,10 +4358,13 @@ def partition_combat_state_payload(map_name: str, partition_id: str, profile: di
         "configuredSource": configured_result["source"],
         "materializedState": materialized_result["state"] if materialized_result else None,
         "materializedSource": materialized_result["source"] if materialized_result else None,
+        "customPvpMode": custom_mode,
+        "customPvpModeSource": "profile" if custom_configured else "runtime-file" if written_custom_mode is not None else "default",
+        "materializedCustomPvpMode": written_custom_mode,
         "securityZonesEnabled": configured_result["securityZonesEnabled"],
         "restartRequired": configuration_drift,
         "configurationDrift": configuration_drift,
-        "warnings": configured_result["warnings"],
+        "warnings": warnings,
         "unresolvedFields": configured_result["unresolvedFields"],
     }
 

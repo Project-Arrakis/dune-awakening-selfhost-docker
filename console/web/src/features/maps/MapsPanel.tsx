@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { AlertTriangle, ChevronDown, ChevronUp, Download, Grid2X2, Info, List, Lock, MapPin, RotateCcw } from "lucide-react";
 import { mapsApi, type ChoamTransform, type ChoamCaptureBaseline, type ActiveSpicefieldRow, type ChoamCapturedPlacement, type ChoamTerminalOverview, type ChoamTradeCenter, type LiveMapMemoryRow, type MapCombatStateResult, type MapRuntimeSettings, type MemoryBalancerState, type MemorySwapState, type PartitionCombatStateRow, type UserSettingField, type UserSettingsSchema } from "../../api/maps";
+import { CombatSettingsNotice } from "./CombatSettingsNotice";
 import { playersApi } from "../../api/players";
 import { runGatedRestart, type RestartGate, type RestartGateChoice } from "../server/restartQueueGuard";
 import { serverApi, type RestartHistoryResponse, type RestartHistoryRow, type RestartQueueTarget } from "../../api/server";
@@ -1487,6 +1488,9 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   // flicker the toggle, or worse, pin a draft from data that was never this
   // target's to begin with.
   const gameValuesReady = Boolean(userGameName) && gameValuesTargetKey === userGameTargetKey;
+  const selectedCombatSettings = !isUserGameGlobal && effectiveUserGamePartitionId
+    ? combatStateByMap[userGameName]?.partitions.find(row => row.partitionId === effectiveUserGamePartitionId)
+    : undefined;
   const coriolisHour = useCoriolisMatchRegion(CORIOLIS_CYCLE_START_HOUR_FIELD_ID, CORIOLIS_REGION_HOURS, schema, gameValues, gameDraft, setGameDraft, gameValuesReady, serverRegion, userGameTargetKey);
   const coriolisDay = useCoriolisMatchRegion(CORIOLIS_CYCLE_START_DAY_FIELD_ID, CORIOLIS_REGION_DAYS, schema, gameValues, gameDraft, setGameDraft, gameValuesReady, serverRegion, userGameTargetKey);
   const coriolisHourMatchRegionAvailable = coriolisHour.regionValue !== undefined && userGameFields.some((field) => field.id === CORIOLIS_CYCLE_START_HOUR_FIELD_ID);
@@ -2601,6 +2605,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
             </div>
           </div>
         </div>
+        {userGameName && filteredGameFields.some(field => ["partition_pvp_enabled", "partition_pve_enabled", "force_pvp_all_partitions", "legacy_pvp_enabled", "server_pve", "security_zones_enabled"].includes(field.id)) && <CombatSettingsNotice row={selectedCombatSettings} hasUnsavedChanges={gameDirty.length > 0} />}
         {userGameName && <SettingsCardGrid fields={filteredGameFields} values={gameDraft} onChange={(id, value) => setGameDraft({ ...gameDraft, [id]: value })} viewMode={modifierViewMode} emptyMessage={modifierEmptyMessage(!!schema, userGameFields.length, modifierFilter, activeGameCategory)} matchRegionControls={[
           { fieldId: CORIOLIS_CYCLE_START_HOUR_FIELD_ID, enabled: coriolisHour.matchesRegion, available: coriolisHourMatchRegionAvailable, regionLabel: serverRegion, regionValueLabel: coriolisHourRegionValueLabel(coriolisHour.regionValue), onToggle: coriolisHour.setManualOverride },
           { fieldId: CORIOLIS_CYCLE_START_DAY_FIELD_ID, enabled: coriolisDay.matchesRegion, available: coriolisDayMatchRegionAvailable, regionLabel: serverRegion, regionValueLabel: coriolisDayRegionValueLabel(coriolisDay.regionValue), onToggle: coriolisDay.setManualOverride }
@@ -2618,6 +2623,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
             </div>
           </div>
         </div>
+        {userGameName && filteredServerCustomFields.some(field => field.id === "pvp_mode") && <CombatSettingsNotice row={selectedCombatSettings} hasUnsavedChanges={serverCustomDirty.length > 0} />}
         {userGameName && <><p className="muted">Official Patch 1.5 settings stored in <code>Saved/Config/LinuxServer/ServerCustomSettings.ini</code>. Dune Docker keeps <code>DifficultyLevel=Custom</code> and preserves unmanaged file values.</p><SettingsCardGrid fields={filteredServerCustomFields} values={serverCustomDraft} onChange={(id, value) => setServerCustomDraft({ ...serverCustomDraft, [id]: value })} viewMode={modifierViewMode} emptyMessage={modifierEmptyMessage(!!schema, serverCustomFields.length, modifierFilter, activeServerCustomCategory)} /></>}
         {invalidServerCustomDirty.length > 0 && <p className="error">Enter a supported value within the displayed range before saving.</p>}
         <div className="action-row"><button disabled={!serverCustomDirty.length || !userGameName || invalidServerCustomDirty.length > 0} onClick={() => run(saveServerCustom)}>Save Custom Settings</button><button disabled={!serverCustomDirty.length} onClick={() => setServerCustomDraft(serverCustomValues)}>Discard Custom Settings Changes</button><button className="settings-reset-all-button" disabled={!userGameName || !serverCustomFields.length} title="Set every Server Setting on this tab back to its default value" onClick={() => setServerCustomDraft(Object.fromEntries(serverCustomFields.map((field) => [field.id, field.default ?? ""]))) }>Restore Custom Settings Defaults</button></div>
@@ -3266,12 +3272,12 @@ export function CombatStatusBadge({ state, restartRequired = false }: { state: P
   const normalized = state === "PVP" || state === "PVE" || state === "CONFLICT" ? state : "UNKNOWN";
   const label = normalized === "PVP" ? "PvP" : normalized === "PVE" ? "PvE" : normalized === "CONFLICT" ? "Conflict" : "Unknown";
   const detail = normalized === "UNKNOWN"
-    ? "The effective combat setting could not be determined."
+    ? "The saved UserGame combat selection could not be determined."
     : normalized === "CONFLICT"
-      ? "The effective PvP/PvE settings conflict."
-      : `Effective combat setting: ${label}.`;
+      ? "UserGame has overlapping PvP/PvE selections. This is a Console configuration warning, not a verified game error."
+      : `Saved UserGame selection: ${label}. Custom Settings' PVPMode is separate; this badge does not verify combat rules in game.`;
   const title = restartRequired ? `${detail} Restart required to apply the saved setting.` : detail;
-  return <span className={`combat-status-badge combat-status-${normalized.toLowerCase()}`} title={title} aria-label={`${label} combat status`}>{label}</span>;
+  return <span className={`combat-status-badge combat-status-${normalized.toLowerCase()}`} title={title} aria-label={`${label} combat configuration`}>{label} Config</span>;
 }
 
 export function MapRuntimeStatus({ value, detail }: { value: unknown; detail?: unknown }) {
