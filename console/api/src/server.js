@@ -49,7 +49,7 @@ import { parseMemorySwapStatus } from "./services/memorySwap.js";
 import { createDeathPoller } from "./deathPoller.js";
 import { updateEnvFileValue as updateEnvValue } from "./services/envFile.js";
 import { funcomAuthMismatchDetected, matchingFuncomAuthLines, saveFuncomTokenValue as writeFuncomToken, validDockerSince } from "./services/funcomAuth.js";
-import { readCharacterTransferSettings, saveCharacterTransferSettings } from "./services/characterTransferSettings.js";
+import { readCharacterTransferSettingsStatus, saveAndApplyCharacterTransferSettings } from "./services/characterTransferSettings.js";
 import { handleDiscordAdapterRoute, isDiscordAdapterRoute } from "./integrations/discord/routes.js";
 import { discordAdapterEnabled } from "./integrations/discord/adapter.js";
 import { initializeDiscordAdapterSchema } from "./integrations/discord/schema.js";
@@ -3385,14 +3385,13 @@ async function restartQueueRestartNowRoute(req, res) {
 }
 
 async function characterTransferSettingsRoute(req, res) {
-  if (req.method === "GET") return json(res, 200, readCharacterTransferSettings(config));
+  if (req.method === "GET") return json(res, 200, await readCharacterTransferSettingsStatus(config));
   if (req.method !== "POST") return json(res, 405, { error: "Method not allowed" });
   const body = await readJson(req);
   try {
-    const result = saveCharacterTransferSettings(config, body.settings || {}, { defaults: Boolean(body.restoreDefaults) });
-    const payload = { service: "director" };
+    const result = await saveAndApplyCharacterTransferSettings(config, body.settings || {}, { defaults: Boolean(body.restoreDefaults) });
     audit(config, req, "admin.character-transfer-settings.save", { restoreDefaults: Boolean(body.restoreDefaults), settings: result.settings });
-    return json(res, 202, { ok: true, settings: result.settings, path: result.path, task: tasks.create("server", "restartService", payload) });
+    return json(res, 200, { ok: true, ...result });
   } catch (error) {
     return json(res, error.statusCode || 500, { error: redact(error?.message || "Unexpected error.") });
   }
