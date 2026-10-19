@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { Fragment, useCallback, useEffect, useId, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { AlertTriangle, ChevronDown, ChevronUp, Download, Grid2X2, Info, List, Lock, MapPin, RotateCcw } from "lucide-react";
 import { mapsApi, type ChoamTransform, type ChoamCaptureBaseline, type ActiveSpicefieldRow, type ChoamCapturedPlacement, type ChoamTerminalOverview, type ChoamTradeCenter, type LiveMapMemoryRow, type MapCombatStateResult, type MapRuntimeSettings, type MemoryBalancerState, type MemorySwapState, type PartitionCombatStateRow, type UserSettingField, type UserSettingsSchema } from "../../api/maps";
 import { CombatSettingsNotice } from "./CombatSettingsNotice";
@@ -3269,6 +3269,7 @@ export function MapDisplayName({ mapId, instanceName, sietch, draft, combatState
 }
 
 export function CombatStatusBadge({ state, restartRequired = false }: { state: PartitionCombatStateRow["configuredState"]; restartRequired?: boolean }) {
+  const helpId = useId();
   const normalized = state === "PVP" || state === "PVE" || state === "CONFLICT" ? state : "UNKNOWN";
   const label = normalized === "PVP" ? "PvP" : normalized === "PVE" ? "PvE" : normalized === "CONFLICT" ? "Conflict" : "Unknown";
   const detail = normalized === "UNKNOWN"
@@ -3277,7 +3278,7 @@ export function CombatStatusBadge({ state, restartRequired = false }: { state: P
       ? "UserGame has overlapping PvP/PvE selections. This is a Console configuration warning, not a verified game error."
       : `Saved UserGame selection: ${label}. Custom Settings' PVPMode is separate; this badge does not verify combat rules in game.`;
   const title = restartRequired ? `${detail} Restart required to apply the saved setting.` : detail;
-  return <span className={`combat-status-badge combat-status-${normalized.toLowerCase()}`} title={title} aria-label={`${label} combat configuration`}>{label} Config</span>;
+  return <span className={`combat-status-badge combat-status-${normalized.toLowerCase()}`}>{label}<InfoTooltip id={helpId} label={`About ${label} combat settings`} portal>{title}</InfoTooltip></span>;
 }
 
 export function MapRuntimeStatus({ value, detail }: { value: unknown; detail?: unknown }) {

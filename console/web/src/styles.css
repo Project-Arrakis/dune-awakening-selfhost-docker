@@ -2949,7 +2949,8 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .map-display-name-primary { display: flex; align-items: center; gap: 7px; min-width: 0; color: #e9dcc8; }
 .map-display-name-primary svg { flex: 0 0 auto; color: #d8b15f; }
 .map-display-name-primary strong { min-width: 0; overflow-wrap: anywhere; line-height: 1.25; }
-.combat-status-badge { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; min-width: 38px; padding: 2px 7px; border: 1px solid currentColor; border-radius: 0; font-size: 10px; font-weight: 800; line-height: 1.25; letter-spacing: .02em; }
+.combat-status-badge { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; gap: 3px; min-width: 38px; padding: 2px 5px 2px 7px; border: 1px solid currentColor; border-radius: 0; font-size: 10px; font-weight: 800; line-height: 1.25; letter-spacing: .02em; }
+.combat-status-badge .memory-info-button, .combat-status-badge .memory-info-button svg { color: inherit; }
 .combat-settings-notice { display: grid; gap: 10px; padding: 14px 16px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--panel-muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
 .combat-settings-notice p { margin: 0; }
 .combat-settings-notice .attention-text { color: #ffd9a8; }
@@ -3113,7 +3114,8 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .memory-info-button { width: 26px; height: 26px; min-height: 26px; padding: 5px; border: 0; border-radius: 999px; color: var(--muted-warm); background: transparent; box-shadow: none; }
 .memory-info-button:hover, .memory-info-button:focus-visible { color: var(--title); border: 0; background: rgba(255, 255, 255, .05); box-shadow: none; }
 .memory-info-box { position: absolute; z-index: 30; top: calc(100% + 8px); right: 0; width: min(310px, 76vw); padding: 10px 12px; border: 1px solid var(--accent); border-radius: 7px; background: #111416; color: #e4d7c0; box-shadow: 0 10px 28px rgba(0, 0, 0, .45); font-size: 12px; line-height: 1.45; visibility: hidden; opacity: 0; transform: translateY(-3px); pointer-events: none; transition: opacity .14s ease, transform .14s ease; white-space: normal; }
-.memory-info-tooltip.open .memory-info-box { visibility: visible; opacity: 1; transform: translateY(0); }
+.memory-info-tooltip.open .memory-info-box, .memory-info-box.open { visibility: visible; opacity: 1; transform: translateY(0); }
+.memory-info-box.open { width: min(310px, calc(100vw - 28px)); font-weight: 400; letter-spacing: normal; }
 .memory-swap-panel { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 0 0 14px; padding: 12px; border: 1px solid #4b4031; border-radius: 8px; background: rgba(18, 20, 22, .72); }
 .memory-swap-copy { display: grid; gap: 3px; min-width: 230px; margin-right: auto; }
 .memory-swap-copy strong { color: var(--title); }
