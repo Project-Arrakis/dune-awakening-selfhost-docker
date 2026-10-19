@@ -9,6 +9,7 @@ import { conciseTaskError } from "../../lib/taskDisplay";
 import {
   canApplyUpdateStatus,
   gameAssetsMissing,
+  gameUpdateBlockReason,
   firstVersionMatch,
   formatStackVersionLabel,
   GAME_UPDATE_TASK_KEY,
@@ -327,7 +328,9 @@ export function UpdatesPanel({
   useEffect(() => {
     if (!gameUpdateTask || isTerminalTask(gameUpdateTask.status)) {
       persistUpdateTask(GAME_UPDATE_TASK_KEY, gameUpdateTask);
-      if (gameUpdateTask?.status === "failed" || gameUpdateTask?.status === "cancelled") {
+      if (gameUpdateTask && gameUpdateBlockReason(gameUpdateTask)) {
+        void refreshGameStatus();
+      } else if (gameUpdateTask?.status === "failed" || gameUpdateTask?.status === "cancelled") {
         setGameStatus((current) => gameUpdateTerminalStatus(gameUpdateTask, current));
       }
       return;
@@ -420,7 +423,7 @@ export function UpdatesPanel({
   }, [stackUpdateTask?.id, stackUpdateTask?.status, stackUpdateTask?.currentStep]);
 
   useEffect(() => {
-    if (!gameUpdateTask || gameUpdateTask.status !== "succeeded") return;
+    if (!gameUpdateTask || (gameUpdateTask.status !== "succeeded" && !gameUpdateBlockReason(gameUpdateTask))) return;
     const id = window.setTimeout(() => setGameUpdateTask(null), UPDATE_RESULT_DISMISS_MS);
     return () => window.clearTimeout(id);
   }, [gameUpdateTask?.id, gameUpdateTask?.status]);
@@ -618,6 +621,11 @@ function GameUpdateProgress({
   formatResultTitle,
   formatResultMessage
 }: { task: Task; repairTask: Task | null; onRetry: () => Promise<void>; onFixSteamcmd: () => Promise<void>; onDismiss: () => void; formatResultTitle: (value: unknown, pending?: boolean) => string; formatResultMessage: (value: unknown) => string }) {
+  const blockedReason = gameUpdateBlockReason(task);
+  if (blockedReason) return <div key={task.id} className="game-update-blocked-notice" role="status" style={{ animationDuration: `${UPDATE_RESULT_DISMISS_MS}ms` }}>
+    <ShieldCheck size={18} aria-hidden="true" />
+    <div><strong>Game Update Blocked</strong><p>{blockedReason}</p></div>
+  </div>;
   const progress = summarizeGameUpdateProgress(task);
   const running = !isTerminalTask(task.status);
   const repairRunning = Boolean(repairTask && !isTerminalTask(repairTask.status));

@@ -1094,7 +1094,13 @@ main { padding: 22px; min-width: 0; }
 .home-task-result.result-ok, .home-task-result.result-fail { animation: homeResultFadeOut .4s ease 10s forwards; }
 .game-update-progress, .stack-update-progress { margin-top: 12px; display: grid; gap: 10px; }
 .stack-update-refresh-line { align-items: center; }
-.game-update-progress.result-ok, .game-update-progress.result-fail, .stack-update-progress.result-ok, .stack-update-progress.result-fail { animation: homeResultFadeOut .4s ease 10s forwards; }
+/* React removes completed results; failures remain visible until dismissed.
+   Opacity-only fading left invisible panels and buttons occupying this space. */
+.game-update-blocked-notice { display: flex; align-items: flex-start; gap: 10px; margin-top: 12px; padding: 12px 14px; border: 1px solid var(--warning); border-radius: 8px; color: #ffd9a8; font-size: 13px; line-height: 1.5; animation: updateBlockedNoticeFade linear forwards; }
+.game-update-blocked-notice > svg { flex: 0 0 auto; margin-top: 2px; }
+.game-update-blocked-notice p { margin: 3px 0 0; }
+@keyframes updateBlockedNoticeFade { 0%, 90% { opacity: 1; transform: translateY(0); } 100% { opacity: 0; transform: translateY(-4px); } }
+@media (prefers-reduced-motion: reduce) { .game-update-blocked-notice { animation: none; } }
 .progress-row { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 12px; }
 .progress-track { height: 10px; overflow: hidden; border-radius: 999px; background: #0c0e10; border: 1px solid #302b25; }
 .progress-fill { height: 100%; border-radius: inherit; background: #c68b4a; transition: width .35s ease; }
