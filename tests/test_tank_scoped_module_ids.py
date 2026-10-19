@@ -151,5 +151,15 @@ class UpdatedBuildScopedModuleTests(ScopedModuleTests):
             scoped.build(b'wrong executable', {})
 
 
+class Build2156652ScopedModuleTests(UpdatedBuildScopedModuleTests):
+    def setUp(self):
+        global scoped
+        self.previous = scoped
+        spec = importlib.util.spec_from_file_location('scoped_2156652',
+            ROOT / 'patches/experimental-tanks/2156652/source/scoped_module_ids.py')
+        scoped = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(scoped)
+
+
 if __name__ == '__main__':
     unittest.main()
