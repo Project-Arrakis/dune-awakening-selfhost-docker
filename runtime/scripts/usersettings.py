@@ -69,8 +69,11 @@ BUILDING_SETTINGS_SECTION = "/Script/DuneSandbox.BuildingSettings"
 SERVER_CUSTOM_SETTINGS_SECTION = "/Script/DuneSandbox.UserServerCustomSettings"
 CORIOLIS_SUBSYSTEM_SECTION = "/Script/DuneSandbox.CoriolisSubsystem"
 LANDSRAAD_SETTINGS_SECTION = "/Script/DuneSandbox.LandsraadSettings"
-LANDSRAAD_DATA_KEY = "Data"
-LANDSRAAD_DATA_TEMPLATE = '(m_NumberOfWeeksTermRetention=4,m_NumberOfDecreesToNominate=3,m_NumberOfGuildsInHighscoreList=5,m_TermStartedMessage=(Name="LandsraadTermStarted"),m_VotingStartedMessage=(Name="LandsraadVotingStarted"),m_TaskProgressedMessage=(Name="LandsraadProgressNotification"),m_DecreeActivatedMessage=(Name="LandsraadDecreeActivated"),m_bIsPlayerVotingEnabled=True,m_bIsTerritoryControlEnabled=True,m_BoardLayouts=(/Script/DuneSandbox.BoardLayoutDataAsset\'"/Game/Dune/Systems/Landsraad/BoardLayouts/DefaultLandsraadBoardLayout.DefaultLandsraadBoardLayout"\'),m_LandsraadVotingPeriodDurationInSec=118500,m_LandsraadCycleDurationInSeconds=604800,m_LandsraadSuspendedPeriodDurationInSeconds=300,m_FirstTaskRevealDelayFromCompetitionStartInSeconds=0.000000,m_LandsraadRevealedTaskTimestampMinuteDifference=1,m_LandsraadTaskProgressUpdateFrequency=15.000000,m_LandsraadTaskDailyRevealFrequency=25.000000,m_LandsraadProgressFactionBalanceCurve=/Script/Engine.CurveFloat\'"/Game/Dune/Systems/Landsraad/Curve_LandsraadProgressFactionBalanceCurve.Curve_LandsraadProgressFactionBalanceCurve"\',m_LandsraadContractsPerVotingBlock=3,m_LandsraadContractsRepeatCooldownSeconds=14400,m_LandsraadContractsMaxActiveAmount=3,m_LandsraadContractsAbandonCooldownSeconds=2,m_LandsraadContractsDailyBonusPerDay=35,m_LandsraadContractsDailyBonusMax=35,m_LandsraadContractsDailyBonusReferenceTimestamp=1760572800,m_LandsraadContractsDailyBonusRefreshCycleLength=7200,m_LandsraadContractsTimeToShowRewardInteractiveNotification=30.000000,m_LandsraadContractsTimeToShowErrorNotification=70.000000,m_LandsraadContractsTimeToShowPendingClaimRewardTutorial=300,m_LandsraadTaskRewardsData="/Game/Dune/Systems/Landsraad/DA_TaskRewardsDataAsset.DA_TaskRewardsDataAsset",m_LandsraadHouseSelectContractDialogContentWidget="/Game/Dune/GUI/Widgets/Menus/Gameplay/PlayerMenu/Landsraad/W_LandsraadHouseSelectContractDialog.W_LandsraadHouseSelectContractDialog_C",m_LandsraadContractReportDialogContentWidget="/Game/Dune/GUI/Widgets/Menus/Gameplay/PlayerMenu/Landsraad/W_LandsraadContractReportDialog.W_LandsraadContractReportDialog_C",m_LandsraadClaimHouseRewardDialogWidget="/Game/Dune/GUI/Widgets/Menus/Gameplay/PlayerMenu/Landsraad/W_LandsraadHouseRewardClaimDialog.W_LandsraadHouseRewardClaimDialog_C",m_TaskGoalAmount=56000,m_ControlPointsPerCycle=2,m_LandsraadContractsUnlockGameplayTag=(TagName="Journey.LandsraadContractsUnlocked"),m_LandsraadContractsNewMarkerGameplayTags=(GameplayTags=((TagName="DialogueFlags.Factions.LandsraadOnboardingActive"))),m_ControlPointAreaMaterial="/Game/Dune/Systems/Landsraad/Materials/M_LandsRaadControlPointCapsule.M_LandsRaadControlPointCapsule")'
+LANDSRAAD_DATA_KEY = "DedicatedServerData"
+LEGACY_LANDSRAAD_DATA_KEY = "Data"
+# Packaged dedicated-server defaults from game build 2156652. Existing saved
+# structs are edited in place; this template is only used for a new override.
+LANDSRAAD_DATA_TEMPLATE = '(m_NumberOfWeeksTermRetention=4,m_NumberOfDecreesToNominate=3,m_bDecreeRerollingEnabled=True,m_DecreeRerollCost=1000,m_MaxRerollAttemptsPerTerm=5,m_NumberOfGuildsInHighscoreList=5,m_TermStartedMessage=(Name="LandsraadTermStarted"),m_VotingStartedMessage=(Name="LandsraadVotingStarted"),m_TaskProgressedMessage=(Name="LandsraadProgressNotification"),m_DecreeActivatedMessage=(Name="LandsraadDecreeActivated"),LandsraadBoardLimitedAccessMessage=LOCTABLE("/Game/Dune/Localization/ST_Localization_UI.ST_Localization_UI", "UI/Landsraad_BoardMenu_LimitedAccessMessage"),LandsraadVotingWarningMessage=LOCTABLE("/Game/Dune/Localization/ST_Localization_UI.ST_Localization_UI", "UI/Landsraad_DecreeMenu_VotingWarningMessage"),m_bIsPlayerVotingEnabled=True,m_bIsTerritoryControlEnabled=True,m_BoardLayouts=(/Script/DuneSandbox.BoardLayoutDataAsset\'"/Game/Dune/Systems/Landsraad/BoardLayouts/DefaultLandsraadBoardLayout.DefaultLandsraadBoardLayout"\'),m_LandsraadVotingPeriodDurationInSec=118500,m_LandsraadSuspendedPeriodDurationInSeconds=300,m_FirstTaskRevealDelayFromCompetitionStartInSeconds=0.000000,m_LandsraadRevealedTaskTimestampMinuteDifference=1,m_LandsraadTaskProgressUpdateFrequency=15.000000,m_LandsraadTaskDailyRevealFrequency=25.000000,m_LandsraadProgressFactionBalanceCurve=/Script/Engine.CurveFloat\'"/Game/Dune/Systems/Landsraad/Curve_LandsraadProgressFactionBalanceCurve.Curve_LandsraadProgressFactionBalanceCurve"\',m_LandsraadContractsPerVotingBlock=3,m_LandsraadContractsRepeatCooldownSeconds=57600,m_LandsraadContractsMaxActiveAmount=3,m_LandsraadContractsAbandonCooldownSeconds=3600,m_bLandsraadContractsShouldLimitDailyBonus=True,m_LandsraadContractsDailyBonusPerDay=5,m_LandsraadContractsDailyBonusMax=35,m_LandsraadContractsDailyBonusRefreshCycleLength=86400,m_LandsraadContractsTimeToShowRewardInteractiveNotification=30.000000,m_LandsraadContractsTimeToShowErrorNotification=70.000000,m_LandsraadContractsTimeToShowPendingClaimRewardTutorial=300,m_LandsraadTaskRewardsData="/Game/Dune/Systems/Landsraad/DA_TaskRewardsDataAsset.DA_TaskRewardsDataAsset",m_LandsraadHouseSelectContractDialogContentWidget="/Game/Dune/GUI/Widgets/Menus/Gameplay/PlayerMenu/Landsraad/W_LandsraadHouseSelectContractDialog.W_LandsraadHouseSelectContractDialog_C",m_LandsraadContractReportDialogContentWidget="/Game/Dune/GUI/Widgets/Menus/Gameplay/PlayerMenu/Landsraad/W_LandsraadContractReportDialog.W_LandsraadContractReportDialog_C",m_LandsraadClaimHouseRewardDialogWidget="/Game/Dune/GUI/Widgets/Menus/Gameplay/PlayerMenu/Landsraad/W_LandsraadHouseRewardClaimDialog.W_LandsraadHouseRewardClaimDialog_C",m_TaskGoalAmount=70000,m_ControlPointsPerCycle=2,m_LandsraadContractsUnlockGameplayTag=(TagName="Journey.LandsraadContractsUnlocked"),m_LandsraadContractsNewMarkerGameplayTags=(GameplayTags=((TagName="DialogueFlags.Factions.LandsraadOnboardingActive"))),m_ControlPointAreaMaterial="/Game/Dune/Systems/Landsraad/Materials/M_LandsRaadControlPointCapsule.M_LandsRaadControlPointCapsule",bIsLandsraadEnabled=True,m_LandsraadContractsDailyBonusReferenceTimestamp=1760572800,LandsraadMinimumTermDurationInSeconds=172800,LandsraadStartYear=2026,LandsraadStartMonth=3,LandsraadStartDay=3,LandsraadStartHour=4,LandsraadStartMinute=55,bUseCoriolisReferenceDate=True,m_LandsraadControlPointClassForCheats="/Game/Dune/Systems/Landsraad/BP_LandsraadControlPoint.BP_LandsraadControlPoint_C",m_LandsraadCycleDurationInSeconds=604800)'
 LANDSRAAD_DATA_TEMPLATE = LANDSRAAD_DATA_TEMPLATE.replace(
     "m_LandsraadVotingPeriodDurationInSec=118500,",
     "m_LandsraadVotingPeriodDurationInSec=118500,m_VotingPeriodStartBeforeCoriolisCycleInSec=118800,",
@@ -90,13 +93,13 @@ LANDSRAAD_DATA_FIELDS = {
     "landsraad_task_progress_update_seconds": ("m_LandsraadTaskProgressUpdateFrequency", "15", "number", 1, 3600),
     "landsraad_task_daily_reveal_frequency": ("m_LandsraadTaskDailyRevealFrequency", "25", "number", 1, 10080),
     "landsraad_contracts_per_voting_block": ("m_LandsraadContractsPerVotingBlock", "3", "integer", 1, 100),
-    "landsraad_contract_repeat_cooldown_seconds": ("m_LandsraadContractsRepeatCooldownSeconds", "14400", "integer", 0, 2592000),
+    "landsraad_contract_repeat_cooldown_seconds": ("m_LandsraadContractsRepeatCooldownSeconds", "57600", "integer", 0, 2592000),
     "landsraad_max_active_contracts": ("m_LandsraadContractsMaxActiveAmount", "3", "integer", 1, 100),
-    "landsraad_contract_abandon_cooldown_seconds": ("m_LandsraadContractsAbandonCooldownSeconds", "2", "integer", 0, 604800),
-    "landsraad_daily_contract_bonus": ("m_LandsraadContractsDailyBonusPerDay", "35", "integer", 0, 1000000),
+    "landsraad_contract_abandon_cooldown_seconds": ("m_LandsraadContractsAbandonCooldownSeconds", "3600", "integer", 0, 604800),
+    "landsraad_daily_contract_bonus": ("m_LandsraadContractsDailyBonusPerDay", "5", "integer", 0, 1000000),
     "landsraad_max_daily_contract_bonus": ("m_LandsraadContractsDailyBonusMax", "35", "integer", 0, 1000000),
-    "landsraad_daily_bonus_refresh_seconds": ("m_LandsraadContractsDailyBonusRefreshCycleLength", "7200", "integer", 60, 2592000),
-    "landsraad_task_goal_amount": ("m_TaskGoalAmount", "56000", "integer", 1, 2147483647),
+    "landsraad_daily_bonus_refresh_seconds": ("m_LandsraadContractsDailyBonusRefreshCycleLength", "86400", "integer", 60, 2592000),
+    "landsraad_task_goal_amount": ("m_TaskGoalAmount", "70000", "integer", 1, 2147483647),
     "landsraad_control_points_per_cycle": ("m_ControlPointsPerCycle", "2", "integer", 0, 1000000),
 }
 STAKING_EXTENSION_ARRAY_LENGTH = 10
@@ -473,8 +476,8 @@ FIELD_DESCRIPTIONS = {
     "server_pve": "Legacy UserGame game-mode flag (bServerPVE). True alone is not proof that this instance is PvE: partition selectors and Custom Settings' PVPMode are separate controls. The Console does not verify their priority inside the game.",
     "pvp_mode": "Custom Settings' PvP policy: NoPVP, Limited or FullPVP. UserGame has separate partition and legacy controls. Their priority is not verified across game builds; avoid contradictory settings and verify the result in game. The map badge describes UserGame configuration only.",
     "battleye_enabled": "Controls the native server BattlEye anti-cheat setting. Apply globally and restart the Battlegroup after saving. The current Docker game image defaults to disabled. A BattlEye launch argument takes precedence over this setting.",
-    "staking_unit_vertical_extension_default_times": "Seconds required for every vertical Staking Unit extension level (0.1-604800). Leave empty to use Funcom's progressively longer defaults.",
-    "staking_unit_extension_default_times": "Seconds required for every horizontal Staking Unit extension level (0.1-604800). Leave empty to use Funcom's progressively longer defaults.",
+    "staking_unit_vertical_extension_default_times": "Cooldown in seconds for each of the ten vertical Staking Unit extension levels. Leave empty to inherit a broader scope or use the game's progressive defaults. Server-only; applies after the affected maps restart.",
+    "staking_unit_extension_default_times": "Cooldown in seconds for each of the ten horizontal Staking Unit extension levels. Leave empty to inherit a broader scope or use the game's progressive defaults. Server-only; applies after the affected maps restart.",
     "server_display_name": "Display name shown for this server instance. Used as the Dimension name when the server is a Dimension server.",
     "server_login_password": "Password players must enter to join. Leave empty for no password.",
     "mining_output_multiplier": "Multiplier applied to personal mining output for all players.",
@@ -532,6 +535,8 @@ FIELD_DESCRIPTIONS = {
 }
 
 FIELD_LABELS = {
+    "staking_unit_extension_default_times": "Horizontal Staking Unit Cooldown (Seconds)",
+    "staking_unit_vertical_extension_default_times": "Vertical Staking Unit Cooldown (Seconds)",
     "partition_pvp_enabled": "Partition PvP Selection",
     "partition_pve_enabled": "Partition PvE Selection",
     "legacy_pvp_enabled": "Legacy PvP Flag",
@@ -1452,19 +1457,19 @@ def normalize_augment_jackpot_roll_percentage(value: str) -> str:
     return raw
 
 
+def landsraad_data_override(profile: dict, scope: str, map_name: str = "", partition_id: str = "") -> str | None:
+    # A native Advanced override wins over the old, ineffective Console key.
+    # Do not fill an existing struct with template values: preserve every
+    # supplied member, including newer game fields and custom schedules.
+    for key in (LANDSRAAD_DATA_KEY, LEGACY_LANDSRAAD_DATA_KEY):
+        value = profile_get_key(profile, scope, LANDSRAAD_SETTINGS_SECTION, key, map_name, partition_id)
+        if value:
+            return value
+    return None
+
+
 def landsraad_data_for_scope(profile: dict, scope: str, map_name: str = "", partition_id: str = "") -> str:
-    value = profile_get_key(profile, scope, LANDSRAAD_SETTINGS_SECTION, LANDSRAAD_DATA_KEY, map_name, partition_id)
-    if not value:
-        return LANDSRAAD_DATA_TEMPLATE
-    current_parts = split_unreal_struct(value)
-    current_members = unreal_struct_values(value)
-    for part in split_unreal_struct(LANDSRAAD_DATA_TEMPLATE):
-        if "=" not in part:
-            continue
-        member = part.split("=", 1)[0].strip()
-        if member not in current_members:
-            current_parts.append(part)
-    return f"({','.join(current_parts)})"
+    return landsraad_data_override(profile, scope, map_name, partition_id) or LANDSRAAD_DATA_TEMPLATE
 
 
 def landsraad_virtual_values(data: str) -> dict[str, str]:
@@ -2059,6 +2064,7 @@ def set_profile_field(profile: dict, scope: str, map_name: str, partition_id: st
         member = LANDSRAAD_DATA_FIELDS[field_id][0]
         normalized = normalize_landsraad_data_value(field_id, value)
         current = landsraad_data_for_scope(profile, "global")
+        profile_remove_key(profile, "global", LANDSRAAD_SETTINGS_SECTION, LEGACY_LANDSRAAD_DATA_KEY)
         profile_set_key(
             profile,
             "global",
@@ -2220,7 +2226,7 @@ def profile_map_values(profile: dict, map_name: str) -> dict[str, str]:
         map_value = profile_get_key(profile, "map", section, ini_key, target_map)
         if map_value is not None:
             values[key] = map_value
-    global_data = profile_get_key(profile, "global", LANDSRAAD_SETTINGS_SECTION, LANDSRAAD_DATA_KEY)
+    global_data = landsraad_data_override(profile, "global")
     values.update(landsraad_virtual_values(global_data or LANDSRAAD_DATA_TEMPLATE))
     return sync_legacy_values(profile, values, "map", target_map)
 
@@ -2234,7 +2240,7 @@ def profile_global_values(profile: dict) -> dict[str, str]:
         global_value = profile_get_key(profile, "global", section, ini_key)
         if global_value is not None:
             values[key] = global_value
-    global_data = profile_get_key(profile, "global", LANDSRAAD_SETTINGS_SECTION, LANDSRAAD_DATA_KEY)
+    global_data = landsraad_data_override(profile, "global")
     values.update(landsraad_virtual_values(global_data or LANDSRAAD_DATA_TEMPLATE))
     return sync_legacy_values(profile, values, "global")
 
@@ -2486,6 +2492,8 @@ def metadata() -> int:
         recommended_minimum, recommended_maximum = (None, None)
         if field_id == "augment_jackpot_roll_percentage":
             minimum, maximum = AUGMENT_JACKPOT_ROLL_BOUNDS
+        if field_id in STAKING_EXTENSION_FIELDS:
+            minimum, maximum = 0.1, 604800
         if scope == "serverCustom":
             minimum, maximum = SERVER_CUSTOM_NUMERIC_BOUNDS.get(field_id, (None, None))
             recommended_minimum, recommended_maximum = SERVER_CUSTOM_RECOMMENDED_NUMERIC_BOUNDS.get(field_id, (None, None))
@@ -2502,6 +2510,7 @@ def metadata() -> int:
             "label": FIELD_LABELS.get(field_id, ""),
             "minimum": minimum,
             "maximum": maximum,
+            "allowEmpty": field_id in STAKING_EXTENSION_FIELDS,
             "recommendedMinimum": recommended_minimum,
             "recommendedMaximum": recommended_maximum,
             "options": list(SERVER_CUSTOM_ENUM_VALUES.get(field_id, ())) if scope == "serverCustom" else [],
@@ -2907,8 +2916,18 @@ def compiled_usergame_ini(profile: dict, map_name: str, partition_id: str | None
     # lines from profiles written by older releases without allowing unrelated
     # custom Advanced-editor values to be dropped.
     known = known_keys_by_section({**MAP_FIELDS, **RETIRED_USERGAME_FIELDS})
+    known.setdefault(LANDSRAAD_SETTINGS_SECTION, set()).update({LANDSRAAD_DATA_KEY, LEGACY_LANDSRAAD_DATA_KEY})
     known.setdefault("/Script/DuneSandbox.PvpPveSettings", set()).update({"m_PvpEnabledPartitions", "m_PveEnabledPartitions"})
     append_profile_unknown_lines(section_lines, profile, scopes, known)
+    for scope, scope_map, scope_partition in scopes:
+        data = landsraad_data_override(profile, scope, scope_map, scope_partition)
+        if data:
+            # Emit the most specific saved struct once, preserving its members.
+            # Never emit the obsolete Console Data key into game configuration.
+            section_lines[LANDSRAAD_SETTINGS_SECTION] = [
+                line for line in section_lines.get(LANDSRAAD_SETTINGS_SECTION, [])
+                if not line.startswith(f"{LANDSRAAD_DATA_KEY}=")
+            ] + [f"{LANDSRAAD_DATA_KEY}={data}"]
     pvp_pve_section = "/Script/DuneSandbox.PvpPveSettings"
     if pvp_pve_section in section_lines:
         # A Global-scoped array line can now duplicate the same value emitted

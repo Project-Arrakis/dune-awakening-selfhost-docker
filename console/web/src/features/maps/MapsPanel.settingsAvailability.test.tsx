@@ -73,6 +73,35 @@ beforeEach(() => {
 });
 
 describe("MapsPanel modifier availability", () => {
+  it("exposes both staking cooldowns and allows clearing a saved duration", async () => {
+    const api = mapsApi as unknown as Record<string, ReturnType<typeof vi.fn>>;
+    const fields = [
+      { id: "staking_unit_extension_default_times", key: "m_StakingUnitExtensionDefaultTimes", label: "Horizontal Staking Unit Cooldown (Seconds)" },
+      { id: "staking_unit_vertical_extension_default_times", key: "m_StakingUnitVerticalExtensionDefaultTimes", label: "Vertical Staking Unit Cooldown (Seconds)" }
+    ].map((field) => ({ ...field, scope: "game", section: "/Script/DuneSandbox.BuildingSettings", default: "", type: "number", minimum: 0.1, maximum: 604800, allowEmpty: true, clientFile: "", category: "", description: "Applies to every extension level. Leave empty to use inherited or game defaults." }));
+    api.status.mockResolvedValue({ maps: { stdout: "" }, services: { stdout: "" }, readiness: { stdout: "" } });
+    api.userSettingsSchema.mockResolvedValue({ engine: [], mapEngine: [], partitionEngine: [], game: fields, partition: fields, serverCustom: [] });
+    api.userGame.mockResolvedValue({ stdout: "staking_unit_extension_default_times\t1.000000\nstaking_unit_vertical_extension_default_times\t1.000000\n" });
+    renderMapsPanel();
+    const modifiers = await screen.findByRole("button", { name: "Expand Interactive Modifiers" });
+    await waitFor(() => expect(modifiers).toBeEnabled());
+    fireEvent.click(modifiers);
+    fireEvent.click(screen.getByRole("tab", { name: "UserGame" }));
+    fireEvent.change(screen.getByLabelText("Target"), { target: { value: "__global__::" } });
+    const horizontal = await screen.findByLabelText("Horizontal Staking Unit Cooldown (Seconds)");
+    await waitFor(() => expect(horizontal).toHaveValue(1));
+    expect(screen.getByLabelText("Vertical Staking Unit Cooldown (Seconds)")).toHaveValue(1);
+    expect(horizontal).toHaveAttribute("min", "0.1");
+    expect(horizontal).toHaveAttribute("max", "604800");
+    fireEvent.change(horizontal, { target: { value: "0" } });
+    expect(screen.getByText(/supported value within the displayed range/i)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
+    fireEvent.change(horizontal, { target: { value: "" } });
+    expect(screen.queryByText(/supported value within the displayed range/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
+    expect(horizontal).toHaveAttribute("placeholder", "Use inherited or game defaults");
+  });
+
   it("shows the selected partition's saved UserGame and Custom modes on both tabs without changing them", async () => {
     const api = mapsApi as unknown as Record<string, ReturnType<typeof vi.fn>>;
     const previousCombat = api.combatState.getMockImplementation();

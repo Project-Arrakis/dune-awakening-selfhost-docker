@@ -1565,6 +1565,10 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   const filteredEngineFields = filterSettingsFields(activeEngineFields, modifierFilter);
   const engineDirty = changedKeys(engineValues, engineDraft, engineFields);
   const gameDirty = changedKeys(gameValues, gameDraft, userGameFields);
+  const invalidGameDirty = gameDirty.filter((fieldId) => {
+    const field = userGameFields.find((candidate) => candidate.id === fieldId);
+    return Boolean(field && !settingValueIsValid(field, gameDraft[fieldId] ?? field.default ?? ""));
+  });
   const serverCustomDirty = changedKeys(serverCustomValues, serverCustomDraft, serverCustomFields);
   const invalidServerCustomDirty = serverCustomDirty.filter((fieldId) => {
     const field = serverCustomFields.find((candidate) => candidate.id === fieldId);
@@ -2079,7 +2083,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     await runTaskAndRefresh(() => mapsApi.spawn(partitionId, "SPAWN MAP"), `Spawning ${label}`, `${label} Spawned`, { resultTarget: mapResultTarget("DeepDesert_1", partitionId) });
   }
   async function saveGame() {
-    if (!userGameName) return;
+    if (!userGameName || invalidGameDirty.length) return;
     const scope = isUserGameGlobal ? "global" : effectiveUserGamePartitionId ? "partition" : "map";
     const map = isUserGameGlobal ? "Survival_1" : userGameName;
     const partitionId = isUserGameGlobal ? undefined : effectiveUserGamePartitionId || undefined;
@@ -2610,7 +2614,8 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
           { fieldId: CORIOLIS_CYCLE_START_HOUR_FIELD_ID, enabled: coriolisHour.matchesRegion, available: coriolisHourMatchRegionAvailable, regionLabel: serverRegion, regionValueLabel: coriolisHourRegionValueLabel(coriolisHour.regionValue), onToggle: coriolisHour.setManualOverride },
           { fieldId: CORIOLIS_CYCLE_START_DAY_FIELD_ID, enabled: coriolisDay.matchesRegion, available: coriolisDayMatchRegionAvailable, regionLabel: serverRegion, regionValueLabel: coriolisDayRegionValueLabel(coriolisDay.regionValue), onToggle: coriolisDay.setManualOverride }
         ]} />}
-        <div className="action-row"><button disabled={!gameDirty.length || !userGameName} onClick={() => run(saveGame)}>Save</button><button disabled={!gameDirty.length} onClick={() => setGameDraft(gameValues)}>Discard Changes</button><button className="settings-reset-all-button" disabled={!userGameName || !userGameFields.length} title="Set every UserGame setting on this tab back to its default value" onClick={() => run(() => resetAllToDefaults("game"))}>Restore Defaults</button></div>
+        {invalidGameDirty.length > 0 && <p className="error">Enter a supported value within the displayed range before saving.</p>}
+        <div className="action-row"><button disabled={!gameDirty.length || !userGameName || invalidGameDirty.length > 0} onClick={() => run(saveGame)}>Save</button><button disabled={!gameDirty.length} onClick={() => setGameDraft(gameValues)}>Discard Changes</button><button className="settings-reset-all-button" disabled={!userGameName || !userGameFields.length} title="Set every UserGame setting on this tab back to its default value" onClick={() => run(() => resetAllToDefaults("game"))}>Restore Defaults</button></div>
       </> : settingsTab === "serverCustom" ? <>
         <div className="settings-selector-row">
           <label className="compact-select">Target<select value={userGameTargetKey} onChange={(event) => selectUserGameTarget(event.target.value)}><option value="">Select Map Or Partition</option>{userGameTargets.map((target) => <option key={target.key} value={target.key}>{target.label}</option>)}</select></label>
@@ -3174,7 +3179,7 @@ function SettingInput({ field, value, inputId, onChange, disabled }: { field: Us
     : field.type === "boolean"
     ? <select id={inputId} value={normalizeBooleanText(value)} disabled={disabled} onChange={(event) => onChange(event.target.value)}><option value="True">True</option><option value="False">False</option></select>
     : field.type === "integer" || field.type === "number"
-      ? <input id={inputId} type="number" step={field.type === "integer" ? "1" : "any"} min={field.minimum ?? undefined} max={field.maximum ?? undefined} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)} />
+      ? <input id={inputId} type="number" step={field.type === "integer" ? "1" : "any"} min={field.minimum ?? undefined} max={field.maximum ?? undefined} placeholder={field.allowEmpty ? "Use inherited or game defaults" : undefined} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)} />
       : String(value).length > 72 || value.includes("(")
         ? <textarea id={inputId} rows={3} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)} />
         : <input id={inputId} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)} />;
@@ -3197,7 +3202,7 @@ function SettingInput({ field, value, inputId, onChange, disabled }: { field: Us
   const aboveRecommendation = recommended && hasNumericValue && field.recommendedMaximum != null && numericValue > field.recommendedMaximum;
   return <>
     {input}
-    {bounded && <small className="muted settings-value-constraint">Allowed: {range}{field.type === "integer" ? " (whole numbers)" : ""}</small>}
+    {bounded && <small className="muted settings-value-constraint">Allowed: {range}{field.type === "integer" ? " (whole numbers)" : ""}{field.allowEmpty ? ". Leave empty to use inherited or game defaults." : ""}</small>}
     {recommended && <small className="muted settings-value-constraint">Recommended: {recommendedRange}</small>}
     {aboveRecommendation && <small className="settings-value-recommendation-warning">Above Funcom&apos;s recommended range. Higher values may increase server and client load.</small>}
     {belowRecommendation && <small className="settings-value-recommendation-warning">Below Funcom&apos;s recommended range. Lower values may produce unsupported gameplay behavior.</small>}
@@ -3366,6 +3371,7 @@ function normalizeBooleanText(value: string) {
 
 export function settingValueIsValid(field: UserSettingField, value: string) {
   const candidate = String(value ?? "").trim();
+  if (!candidate && field.allowEmpty) return true;
   if (field.options?.length) return field.options.includes(candidate);
   if (field.type === "boolean") return /^(true|false)$/i.test(candidate);
   if (field.type !== "integer" && field.type !== "number") return true;
