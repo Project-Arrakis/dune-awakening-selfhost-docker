@@ -95,10 +95,10 @@ describe("MapsPanel modifier availability", () => {
     expect(horizontal).toHaveAttribute("max", "604800");
     fireEvent.change(horizontal, { target: { value: "0" } });
     expect(screen.getByText(/supported value within the displayed range/i)).toBeVisible();
-    expect(screen.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^Save$/ })).toBeDisabled();
     fireEvent.change(horizontal, { target: { value: "" } });
     expect(screen.queryByText(/supported value within the displayed range/i)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /^Save$/ })).toBeEnabled();
     expect(horizontal).toHaveAttribute("placeholder", "Use inherited or game defaults");
   });
 
