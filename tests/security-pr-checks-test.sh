@@ -163,15 +163,17 @@ if [ -n "$real_gitleaks" ] && [ -n "$real_trivy" ]; then
   expect_rc "real scanners: a clean tree passes in full mode" 0
 
   vendor="$(new_repo realvendor)"
-  mkdir -p "$vendor/patches/experimental-tanks/2147284"
-  cp "$ROOT/patches/experimental-tanks/2147284/Dockerfile" "$vendor/patches/experimental-tanks/2147284/Dockerfile"
+  for build in 2147284 2156652 2160922; do
+    mkdir -p "$vendor/patches/experimental-tanks/$build"
+    cp "$ROOT/patches/experimental-tanks/$build/Dockerfile" "$vendor/patches/experimental-tanks/$build/Dockerfile"
+  done
   cp "$ROOT/.trivyignore-fs.yaml" "$vendor/.trivyignore-fs.yaml"
   git -C "$vendor" add -A
   git -C "$vendor" -c user.email=t@t -c user.name=t commit -q -m vendoroverlay
   run_script "$vendor" "$REAL:$TOOLS" SCAN_MODE=full CI=true
-  expect_rc "real scanners: the reviewed 2147284 vendor overlay has a scoped acceptance" 0
+  expect_rc "real scanners: reviewed vendor overlays have scoped acceptances for all supported rebases" 0
 
-  cp "$vendor/patches/experimental-tanks/2147284/Dockerfile" "$vendor/Dockerfile"
+  cp "$vendor/patches/experimental-tanks/2160922/Dockerfile" "$vendor/Dockerfile"
   git -C "$vendor" add Dockerfile
   git -C "$vendor" -c user.email=t@t -c user.name=t commit -q -m unrelatedoverlay
   run_script "$vendor" "$REAL:$TOOLS" SCAN_MODE=full CI=true

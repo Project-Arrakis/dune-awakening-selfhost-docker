@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer as createTcpServer } from "node:net";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -114,6 +115,52 @@ test("ADMIN_AUTH_DISABLED unset: no warning, no exit, unaffected by this guard",
   try {
     await waitForHealth(port);
     assert.doesNotMatch(consoleProc.logs(), /ADMIN_AUTH_DISABLED/);
+  } finally {
+    await stopProcess(consoleProc.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+// #1227: under compose only DUNE_CONFIGURED_ADMIN_ALLOWED_IPS is forwarded (the
+// console resolves the effective list through consoleAccess), so the guard must
+// look at the resolved list, not process.env.ADMIN_ALLOWED_IPS.
+test("compose path: a REVIEWED DUNE_CONFIGURED_ADMIN_ALLOWED_IPS satisfies the ADMIN_AUTH_DISABLED guard", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "auth-disabled-compose-reviewed-"));
+  mkdirSync(join(tempDir, "runtime", "generated"), { recursive: true });
+  const requested = ["127.0.0.1"];
+  writeFileSync(join(tempDir, "runtime", "generated", "console-access-review.json"), JSON.stringify({
+    fingerprint: createHash("sha256").update(JSON.stringify(requested)).digest("hex"),
+    allowedIps: requested
+  }));
+  const consoleProc = spawnConsole(port, tempDir, {
+    ADMIN_AUTH_DISABLED: "1",
+    ADMIN_BIND_HOST: "0.0.0.0",
+    ADMIN_ALLOWED_IPS: "",
+    DUNE_CONFIGURED_ADMIN_ALLOWED_IPS: "127.0.0.1"
+  });
+  try {
+    await waitForHealth(port);
+    assert.doesNotMatch(consoleProc.logs(), /FATAL/, "a reviewed allowlist must not trip the guard");
+  } finally {
+    await stopProcess(consoleProc.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("compose path: a configured but UNREVIEWED allowlist is not enforced, so the guard still refuses to start", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "auth-disabled-compose-pending-"));
+  const consoleProc = spawnConsole(port, tempDir, {
+    ADMIN_AUTH_DISABLED: "1",
+    ADMIN_BIND_HOST: "0.0.0.0",
+    ADMIN_ALLOWED_IPS: "",
+    DUNE_CONFIGURED_ADMIN_ALLOWED_IPS: "127.0.0.1"
+  });
+  try {
+    const code = await waitForExit(consoleProc.child);
+    assert.equal(code, 1);
+    assert.match(consoleProc.logs(), /FATAL.*ADMIN_AUTH_DISABLED/s);
   } finally {
     await stopProcess(consoleProc.child);
     rmSync(tempDir, { recursive: true, force: true });
