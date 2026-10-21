@@ -4230,7 +4230,7 @@ export async function liveMapBases(db, map = "") {
         from dune.permission_actor_rank par
         join dune.actors player_a on player_a.id = par.player_id
         join dune.player_state ps on ps.account_id = player_a.owner_account_id
-        where par.permission_actor_id = a.id
+        where par.permission_actor_id = a.id and par.rank = ${PERMISSION_OWNER_RANK}
         order by par.rank asc, ps.character_name asc
         limit 1
       ) owner on true
@@ -6133,7 +6133,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
           from dune.permission_actor_rank par
           join dune.actors player_a on player_a.id = par.player_id
           join dune.player_state ps on ps.account_id = player_a.owner_account_id
-          where par.permission_actor_id = a.id
+          where par.permission_actor_id = a.id and par.rank = ${PERMISSION_OWNER_RANK}
           order by par.rank asc, ps.character_name asc
           limit 1
         ) owner on true` : "";
@@ -6149,7 +6149,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
         from dune.permission_actor_rank par
         join dune.actors player_a on player_a.id = par.player_id
         join dune.player_state ps on ps.account_id = player_a.owner_account_id
-        where par.permission_actor_id = p.actor_id
+        where par.permission_actor_id = p.actor_id and par.rank = ${PERMISSION_OWNER_RANK}
         order by par.rank asc, ps.character_name asc
         limit 1
       ) owner on true`;
@@ -6478,7 +6478,7 @@ export async function exportBaseAsBlueprint(db, id) {
       from dune.permission_actor_rank par
       join dune.actors player_a on player_a.id = par.player_id
       join dune.player_state ps on ps.account_id = player_a.owner_account_id
-      where par.permission_actor_id = a.id
+      where par.permission_actor_id = a.id and par.rank = ${PERMISSION_OWNER_RANK}
       order by par.rank asc, ps.character_name asc
       limit 1
     ) owner on true

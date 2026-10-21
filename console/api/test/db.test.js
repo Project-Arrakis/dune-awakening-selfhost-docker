@@ -3981,7 +3981,8 @@ test("list bases resolves the owner via the base's actor id, not its building id
   assert.match(baseQuery.text, /\) owner on true/);
   const ownerLateral = baseQuery.text.slice(baseQuery.text.indexOf("left join lateral"), baseQuery.text.indexOf(") owner on true"));
   assert.ok(ownerLateral.includes("where par.permission_actor_id = p.actor_id"), "owner LATERAL must resolve via the base's actor id");
-  assert.ok(ownerLateral.includes("order by par.rank asc"), "owner must be the lowest-rank (rank 1) member, not an arbitrary one");
+  assert.ok(ownerLateral.includes("par.rank = 1"), "owner must be the rank-1 holder; an unresolvable rank 1 must not promote a shared-access holder (#1232)");
+  assert.ok(ownerLateral.includes("order by par.rank asc"), "owner ordering must stay deterministic");
   assert.ok(!ownerLateral.includes("par.permission_actor_id = p.id"), "owner LATERAL must not regress to the building id");
 });
 
@@ -4008,7 +4009,8 @@ test("list bases resolves the owner via the base's actor id, not its building id
   assert.match(baseQuery.text, /\) owner on true/);
   const ownerLateral = baseQuery.text.slice(baseQuery.text.indexOf("left join lateral"), baseQuery.text.indexOf(") owner on true"));
   assert.ok(ownerLateral.includes("where par.permission_actor_id = a.id"), "owner LATERAL must resolve via the base's actor id");
-  assert.ok(ownerLateral.includes("order by par.rank asc"), "owner must be the lowest-rank (rank 1) member, not an arbitrary one");
+  assert.ok(ownerLateral.includes("par.rank = 1"), "owner must be the rank-1 holder; an unresolvable rank 1 must not promote a shared-access holder (#1232)");
+  assert.ok(ownerLateral.includes("order by par.rank asc"), "owner ordering must stay deterministic");
   assert.ok(!ownerLateral.includes("par.permission_actor_id = b.id"), "owner LATERAL must not regress to the building id");
 });
 
