@@ -122,6 +122,17 @@ import { playerListSettingsView, resolvePlayerInactiveWeeks, savePlayerListSetti
 import { resolveAutoStartBattlegroup, saveServerStartupSettings, serverStartupSettingsView } from "./services/serverStartupSettings.js";
 
 const config = loadConfig();
+// Resolve the effective allowlist BEFORE the ADMIN_AUTH_DISABLED guard below: under
+// compose only DUNE_CONFIGURED_ADMIN_ALLOWED_IPS is set (not ADMIN_ALLOWED_IPS), so the
+// guard would otherwise see an empty list and crash-loop a correctly restricted install (#1227).
+const consoleAccess = createConsoleAccess({
+  repoRoot: config.repoRoot,
+  configured: process.env.DUNE_CONFIGURED_ADMIN_ALLOWED_IPS,
+  legacy: process.env.ADMIN_ALLOWED_IPS
+});
+config.allowedIps = consoleAccess.activeIps();
+Object.defineProperty(config, "consoleAccessReviewRequired", { get: () => consoleAccess.status().pending });
+if (config.consoleAccessReviewRequired) console.warn("Console IP restrictions await confirmation in Settings; existing access is preserved.");
 // #141: ADMIN_AUTH_DISABLED bypasses both password auth (auth.js requireAuth)
 // and the CSRF check (auth.js, and the mutation-route check at ~5276) -- a
 // full, unauthenticated API, not just a login skip. This must be loud
@@ -145,14 +156,6 @@ if (config.authDisabled) {
     "This is intended for local development only; never set it on an install anyone else can reach."
   );
 }
-const consoleAccess = createConsoleAccess({
-  repoRoot: config.repoRoot,
-  configured: process.env.DUNE_CONFIGURED_ADMIN_ALLOWED_IPS,
-  legacy: process.env.ADMIN_ALLOWED_IPS
-});
-config.allowedIps = consoleAccess.activeIps();
-Object.defineProperty(config, "consoleAccessReviewRequired", { get: () => consoleAccess.status().pending });
-if (config.consoleAccessReviewRequired) console.warn("Console IP restrictions await confirmation in Settings; existing access is preserved.");
 const hardwareStatus = createHardwareStatusProvider({ filesystemPath: config.repoRoot });
 const readCommandCache = createReadCommandCache();
 // Status commands walk Docker, PostgreSQL, RabbitMQ, and logs. Keep a fresh
@@ -1506,7 +1509,7 @@ async function handleApi(req, res, path) {
     apiKeys.recordUse(bearer.key.id, remoteIpOf(req));
   }
 
-  if (path === "/api/setup/state") return json(res, 200, await setupState());
+  if (path === "/api/setup/state") return json(res, 200, await setupState(remoteIpOf(req)));
   if (path === "/api/setup/preflight" && req.method === "POST") return json(res, 200, await preflight(config));
   if (path === "/api/setup/write-config" && req.method === "POST") return writeConfig(req, res);
   if (path === "/api/setup/save-token" && req.method === "POST") return saveToken(req, res);
