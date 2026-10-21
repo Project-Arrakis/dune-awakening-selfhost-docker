@@ -837,6 +837,17 @@ terminal. Without it the save only changes what the next install writes, and the
 
 ---
 
+
+### Realtime Data
+
+Live sandworms, vehicles, NPCs, civilians, storms and Coriolis read from the optional MapViewer3D position agent (`mvagent`, loopback only; `DUNE_REALTIME_AGENT_URL`). The Console is the only door to it: every request is authenticated and authorized (API key scope `realtime:read`). Player objects are included only when the caller may also read players (`players:read`).
+
+| Method | Route | Description | Parameters |
+|--------|-------|-------------|------------|
+| GET | `/api/realtime/healthz` | Availability of the position agent: `available`, `version`, `ok`, `ready` and the public source list. Returns `503` when the agent is not running on this host. | — |
+| GET | `/api/realtime/objects` | Snapshot of the current objects. Player objects are removed unless the caller has `players:read`. | — |
+| GET | `/api/realtime/stream` | Server-sent stream of position updates. The session or API key is re-checked while the stream is open (idle expiry is not renewed by an open stream), so revoking a key stops it. | — |
+
 ## Live Map
 
 See [live-map.md](live-map.md) for how the panel uses these endpoints --
@@ -934,6 +945,8 @@ pre-write backup before the query is rejected.
 | POST | `/api/admin/player-announcements` | Save/restore announcements | `settings?` or `restoreDefaults: true` |
 | GET | `/api/admin/map-chat-schedules` | List scheduled recurring in-map chat messages | None |
 | POST | `/api/admin/map-chat-schedules` | Save, delete, or immediately run a scheduled map message | `action` (`"save"`, `"delete"`, or `"run"`), plus `schedule` (for `save`) or `id` (for `delete`/`run`) |
+
+Character transfer settings are persisted and applied through Director's live settings API without restarting services. POST returns `200` with `applied: true` after verifying the effective settings; it does not create a restart task. If persistence succeeds but live application cannot be confirmed, POST returns `503` explaining that the settings remain saved and can be retried. GET includes `applied` (`true` when confirmed, `false` when settings differ, or `null` when Director cannot be checked).
 
 ### Landsraad
 
@@ -1054,6 +1067,9 @@ semantics.
 | POST | `/api/settings/discord-bot/oauth-config` | Configure the hosted-bot connection's own, independent Discord Application (Client ID + Redirect URI) -- deliberately separate from Settings -> Discord OAuth's console-sign-in credentials; neither requires the other. Restart the console for changes to take effect. | `clientId?` (Discord snowflake), `redirectUri?` (URL) |
 | POST | `/api/settings/discord-bot/oauth-secret` | Save the hosted-bot connection's Discord Application client secret. File-only, written to its own secrets file, never echoed back. | `secret` (at least 20 characters) |
 | POST | `/api/settings/discord-bot/choice` | Persist the hosted/self-hosted deployment choice immediately, ahead of role config or enabling the adapter. Does not restart the console -- nothing about the live adapter's runtime behavior depends on this value. | `deploymentChoice` (`"hosted"` or `"self-hosted"`) |
+| GET | `/api/settings/encrypted-api` | Status of the optional Encrypted API front door (`runtime/tls-front`): enabled state, port, and the pinned key fingerprint (`sha256/<base64url>`) API clients compare against. Reads only the public certificate; the private key is never read. | — |
+| POST | `/api/settings/encrypted-api` | Turn the Encrypted API front door on or off. The front door forwards only `GET /api/*` requests that carry an API key. Audited as `settings.encrypted-api-enable` / `-disable`. Returns the new status. | `enabled` (boolean) |
+| POST | `/api/settings/console-access/confirm` | Confirm a pending `ADMIN_ALLOWED_IPS` change after reviewing it in Settings. Until confirmed, the previously active restriction is preserved. Returns `409` with the reason when `confirmed` is not `true`, the fingerprint does not match, or nothing is pending. Audited as `settings.console-access-confirm`. | `confirmed` (must be `true`), `fingerprint` (the pending change's fingerprint, as reported by `consoleAccess` in the settings status) |
 
 ---
 

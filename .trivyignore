@@ -290,3 +290,16 @@ CVE-2026-16742 exp:2027-01-07  # libsystemd0 -- systemd-homed privesc; systemd-h
 # attacker-influenced UTF-16 XML. Re-check on the next base-image bump or
 # apt index refresh that might carry a trixie-security fix.
 CVE-2026-93990 exp:2027-01-07  # libexpat1 -- XML injection via malformed UTF-16 surrogate pairs; unreachable, nothing here parses XML
+#
+# Go stdlib crypto/x509 "mitigation for compromised intermediate certificates"
+# (CVE-2026-111943, also reported as govulncheck GO-2026-6809; fixed in Go
+# 1.26.10 / 1.27.3). Found in two prebuilt upstream binaries bundled in this
+# image: usr/local/bin/docker (built with go1.26.9) and the docker-compose CLI
+# plugin (go1.26.8). We do not control their toolchain; the fix needs a new
+# upstream Docker CLI / Compose release. These binaries talk to the local
+# Docker socket and registries the operator configures; whether any path
+# verifies an attacker-chosen certificate chain has NOT been analysed, so this
+# is a short-expiry acceptance to be re-checked, not a reachability claim.
+# runtime/public-probe (our own Go code) is bumped to 1.26.10 instead.
+# Tracked in #1180 (standing re-triage of accepted CI risks).
+CVE-2026-111943 exp:2026-11-04  # prebuilt docker CLI + compose plugin built with Go < 1.26.10; awaiting upstream release
