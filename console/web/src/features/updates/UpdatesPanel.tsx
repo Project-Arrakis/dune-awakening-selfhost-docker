@@ -9,6 +9,7 @@ import { conciseTaskError } from "../../lib/taskDisplay";
 import {
   canApplyUpdateStatus,
   gameAssetsMissing,
+  gameUpdateBlockReason,
   firstVersionMatch,
   formatStackVersionLabel,
   GAME_UPDATE_TASK_KEY,
@@ -149,8 +150,21 @@ export function UpdatesPanel({
     await waitForTaskWithUpdates(response.task, setGameSteamcmdFixTask);
   }
 
+  async function confirmConsoleUpdate(message: string) {
+    try {
+      const state = await fetchConsoleAuthState();
+      const warning = state?.config?.consoleAccessReviewRequired
+        ? "\n\nConsole IP restrictions await confirmation. This update preserves current access; review the restrictions in Settings before activating them. Keep SSH access available for recovery."
+        : "";
+      return await confirmAction(message + warning);
+    } catch (error) {
+      setStackStatus((current) => ({ ...current, status: "Check Failed", reason: error instanceof Error ? error.message : String(error) }));
+      return false;
+    }
+  }
+
   async function applyStackUpdate() {
-    if (!(await confirmAction("Apply the latest console update now?"))) return;
+    if (!(await confirmConsoleUpdate("Apply the latest console update now?"))) return;
     const expectedVersion = String(stackStatus.latest || "").trim();
     saveStackUpdateExpectedVersion(expectedVersion);
     setStackUpdateExpectedVersion(expectedVersion);
@@ -207,7 +221,7 @@ export function UpdatesPanel({
   }
 
   async function applyQaUpdate() {
-    if (!(await confirmAction(`Apply QA pre-release ${qaBuild?.shortSha || "build"} and rebuild the Console?`))) return;
+    if (!(await confirmConsoleUpdate(`Apply QA pre-release ${qaBuild?.shortSha || "build"} and rebuild the Console?`))) return;
     saveStackUpdateExpectedVersion(String(stackStatus.current || ""));
     setStackUpdateExpectedVersion(String(stackStatus.current || ""));
     setStackUpdateReadyAt(null);
@@ -219,7 +233,7 @@ export function UpdatesPanel({
   }
 
   async function reinstallPublicRelease() {
-    if (!(await confirmAction("Replace the QA pre-release with the latest published Console release? Your server configuration and data will be preserved."))) return;
+    if (!(await confirmConsoleUpdate("Replace the QA pre-release with the latest published Console release? Your server configuration and data will be preserved."))) return;
     const expectedVersion = String(stackStatus.latest || "").trim();
     saveStackUpdateExpectedVersion(expectedVersion);
     setStackUpdateExpectedVersion(expectedVersion);
@@ -314,7 +328,9 @@ export function UpdatesPanel({
   useEffect(() => {
     if (!gameUpdateTask || isTerminalTask(gameUpdateTask.status)) {
       persistUpdateTask(GAME_UPDATE_TASK_KEY, gameUpdateTask);
-      if (gameUpdateTask?.status === "failed" || gameUpdateTask?.status === "cancelled") {
+      if (gameUpdateTask && gameUpdateBlockReason(gameUpdateTask)) {
+        void refreshGameStatus();
+      } else if (gameUpdateTask?.status === "failed" || gameUpdateTask?.status === "cancelled") {
         setGameStatus((current) => gameUpdateTerminalStatus(gameUpdateTask, current));
       }
       return;
@@ -407,7 +423,7 @@ export function UpdatesPanel({
   }, [stackUpdateTask?.id, stackUpdateTask?.status, stackUpdateTask?.currentStep]);
 
   useEffect(() => {
-    if (!gameUpdateTask || gameUpdateTask.status !== "succeeded") return;
+    if (!gameUpdateTask || (gameUpdateTask.status !== "succeeded" && !gameUpdateBlockReason(gameUpdateTask))) return;
     const id = window.setTimeout(() => setGameUpdateTask(null), UPDATE_RESULT_DISMISS_MS);
     return () => window.clearTimeout(id);
   }, [gameUpdateTask?.id, gameUpdateTask?.status]);
@@ -605,6 +621,11 @@ function GameUpdateProgress({
   formatResultTitle,
   formatResultMessage
 }: { task: Task; repairTask: Task | null; onRetry: () => Promise<void>; onFixSteamcmd: () => Promise<void>; onDismiss: () => void; formatResultTitle: (value: unknown, pending?: boolean) => string; formatResultMessage: (value: unknown) => string }) {
+  const blockedReason = gameUpdateBlockReason(task);
+  if (blockedReason) return <div key={task.id} className="game-update-blocked-notice" role="status" style={{ animationDuration: `${UPDATE_RESULT_DISMISS_MS}ms` }}>
+    <ShieldCheck size={18} aria-hidden="true" />
+    <div><strong>Game Update Blocked</strong><p>{blockedReason}</p></div>
+  </div>;
   const progress = summarizeGameUpdateProgress(task);
   const running = !isTerminalTask(task.status);
   const repairRunning = Boolean(repairTask && !isTerminalTask(repairTask.status));

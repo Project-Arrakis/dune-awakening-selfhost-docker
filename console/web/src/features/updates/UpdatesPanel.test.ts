@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Task } from "../../api/setup";
 import { gameUpdateTerminalStatus, isDetachedStackUpdateTask, isUpdatedConsoleReady, summarizeStackUpdateProgress } from "./UpdatesPanel";
-import { gameAssetsMissing, gameAssetsMissingInText, parseUpdateTask, preferKnownVersions, stackVersionButtonLabel, updateDisplayValue, withInstalledVersion } from "./updateUtils";
+import { gameAssetsMissing, gameAssetsMissingInText, gameUpdateBlockReason, parseUpdateTask, preferKnownVersions, stackVersionButtonLabel, updateDisplayValue, withInstalledVersion } from "./updateUtils";
 
 function detachedTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -91,6 +91,12 @@ describe("game update terminal status", () => {
       status: "Check Failed",
       reason: "Steam did not finish the game update check in time. Try again in a few minutes. No game files were changed."
     });
+  });
+
+  it.each(["log", "error"])("explains the Tank preflight blocker from the %s instead of a generic failure", (source) => {
+    const message = "Disable Experimental Tanks in Settings before updating game-server files. The Tank patch must be verified for each new game build.";
+    const task = detachedTask({ operation: "updateApply", status: "failed", errorMessage: source === "error" ? message : "dune update --yes failed with exit 1", logLines: source === "log" ? [{ timestamp: "", stream: "stderr", line: message }] : [] });
+    expect(gameUpdateBlockReason(task)).toContain("Disable Regis Tanks in Settings → Experimental Features");
   });
 
   it("replaces a stale Updating badge with the task failure", () => {

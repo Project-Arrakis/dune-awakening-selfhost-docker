@@ -584,6 +584,7 @@ export function publicConfig(config) {
     allowHostBootstrap: config.allowHostBootstrap,
     mockMode: config.mockMode,
     discordOAuthConfigured: config.discordOAuthConfigured,
-    consoleTotpEnabled: config.consoleTotpEnabled
+    consoleTotpEnabled: config.consoleTotpEnabled,
+    consoleAccessReviewRequired: Boolean(config.consoleAccessReviewRequired)
   };
 }

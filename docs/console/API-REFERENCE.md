@@ -935,6 +935,8 @@ pre-write backup before the query is rejected.
 | GET | `/api/admin/map-chat-schedules` | List scheduled recurring in-map chat messages | None |
 | POST | `/api/admin/map-chat-schedules` | Save, delete, or immediately run a scheduled map message | `action` (`"save"`, `"delete"`, or `"run"`), plus `schedule` (for `save`) or `id` (for `delete`/`run`) |
 
+Character transfer settings are persisted and applied through Director's live settings API without restarting services. POST returns `200` with `applied: true` after verifying the effective settings; it does not create a restart task. If persistence succeeds but live application cannot be confirmed, POST returns `503` explaining that the settings remain saved and can be retried. GET includes `applied` (`true` when confirmed, `false` when settings differ, or `null` when Director cannot be checked).
+
 ### Landsraad
 
 | Method | Route | Description | Parameters |

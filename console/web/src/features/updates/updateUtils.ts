@@ -1,9 +1,16 @@
 import type { Task } from "../../api/setup";
-import { summarizeCommandText } from "../../lib/display";
+import { stripAnsi, summarizeCommandText } from "../../lib/display";
 
 export const GAME_UPDATE_TASK_KEY = "arrakis.gameUpdateTask";
 export const STACK_UPDATE_TASK_KEY = "arrakis.stackUpdateTask";
 export const UPDATE_RESULT_DISMISS_MS = 10000;
+
+export function gameUpdateBlockReason(task: Task) {
+  if (task.status !== "failed" || !["updateApply", "updateInstallAssets"].includes(task.operation)) return null;
+  const text = stripAnsi([task.errorMessage || "", ...task.logLines.map(line => line.line)].join("\n"));
+  if (!/Disable Experimental Tanks in Settings before updating game-server files\./i.test(text)) return null;
+  return "Disable Regis Tanks in Settings → Experimental Features, then apply the game update again.";
+}
 
 export function parseUpdateTask(task: Task) {
   const text = task.logLines.map((line) => line.line).join("\n");
@@ -37,6 +44,10 @@ export function loadPersistedUpdateTask(key: string) {
     const raw = window.localStorage.getItem(key);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Task;
+    if (key === GAME_UPDATE_TASK_KEY && parsed?.id && gameUpdateBlockReason(parsed)) {
+      window.localStorage.removeItem(key);
+      return null;
+    }
     return parsed?.id ? parsed : null;
   } catch {
     return null;
@@ -46,7 +57,7 @@ export function loadPersistedUpdateTask(key: string) {
 export function persistUpdateTask(key: string, task: Task | null) {
   if (typeof window === "undefined") return;
   try {
-    if (task && task.status !== "succeeded") {
+    if (task && task.status !== "succeeded" && !(key === GAME_UPDATE_TASK_KEY && gameUpdateBlockReason(task))) {
       // Preserve failed diagnostics across navigation/reloads, without keeping
       // an unbounded Steam download log in browser storage.
       const snapshot = { ...task, logLines: task.logLines.slice(-160).map((line) => ({ ...line, line: line.line.slice(-4096) })) };

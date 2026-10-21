@@ -39,6 +39,7 @@ def function(name, next_name):
     return source[start:end].rstrip() + "\n"
 
 selected = [
+    function("director_logs", "director_logs_available"),
     function("director_map_max_parties", "map_requires_isolated_party_dimension"),
     function("map_requires_isolated_party_dimension", "map_exists"),
     function("max_dimensions_for_map", "ensure_dynamic_instance_partitions"),
@@ -59,6 +60,7 @@ SPAWN_LOG="$test_root/spawns" POOL_LOG="$test_root/pools" TEST_ROOT="$test_root"
 set -euo pipefail
 cd "$TEST_ROOT"
 source "$TEST_ROOT/functions.sh"
+unset DIRECTOR_LOG_CACHE_FILE
 
 mkdir -p runtime/generated
 printf '{"maps":{}}\n' >runtime/generated/sietch-config.json
@@ -150,7 +152,15 @@ for map in \
   CB_Ecolab_Bronze_Green_152 \
   CB_Ecolab_Bronze_Green_195 \
   CB_Dungeon_ThePit \
-  CB_Story_BanditFortress01; do
+  CB_Story_BanditFortress01 \
+  CB_Story_Hephaestus \
+  CB_Story_Ecolab_Carthag \
+  CB_Story_WaterFatManor \
+  CB_Arrakis_Generic_Sietch_Room \
+  CB_Arrakis_Story_Paranoid_PrayerRoom \
+  CB_Arrakis_Story_Glutton_DiningRoom \
+  CB_Story_DestroyedZanovar \
+  CB_Story_OrbitalMonitor; do
   : >"$SPAWN_LOG"
   : >"$POOL_LOG"
   handle_demand "$map" 1 "classical-$map" request ClassicalInstancing
@@ -190,7 +200,7 @@ diff -u <(printf '%s\n' \
   'CB_Dungeon_ThePit|1|request|ClassicalInstancing' \
   'DeepDesert_1|1|request|Dimension') "$SPAWN_LOG"
 
-grep -q 'docker logs --timestamps --since "$SINCE" dune-director' "$TEST_ROOT/functions.sh"
+grep -q 'director_logs --timestamps --since "$SINCE"' "$TEST_ROOT/functions.sh"
 SH
 
 python3 - <<'PY'

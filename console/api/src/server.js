@@ -42,11 +42,16 @@ import { createRestorePreviewReceipts, restorePreviewRejectionMessage } from "./
 import { looksLikeTar, mintSystemBackupName, normalizeImportedSystemMetadata, readEncryptedArchiveHeader, readTarMemberIndex, sanitizeUploadFilename, synthesizeSystemMetadata } from "./services/systemBackupImport.js";
 import { createTarHeader, tarArchiveLength, tarPadding, TAR_TRAILER_BYTES, createBackupDownloadArchive, enrichBackupRows, nextImportedBackupName, normalizeImportedBackupMetadata, readCurrentBattlegroupId, validBackupDownloadName } from "./services/backups.js";
 import { createMemoryBalancer } from "./services/memoryBalancer.js";
+import { collectContainerHealth } from "./services/containerHealth.js";
+import { createRealtime, RealtimeError } from "./services/realtime.js";
+import { createEncryptedApi, EncryptedApiError } from "./services/encryptedApi.js";
+import { tlsClientAddress } from "./services/tlsClientAddress.js";
+import { createConsoleAccess } from "./services/consoleAccess.js";
 import { parseMemorySwapStatus } from "./services/memorySwap.js";
 import { createDeathPoller } from "./deathPoller.js";
 import { updateEnvFileValue as updateEnvValue } from "./services/envFile.js";
 import { funcomAuthMismatchDetected, matchingFuncomAuthLines, saveFuncomTokenValue as writeFuncomToken, validDockerSince } from "./services/funcomAuth.js";
-import { readCharacterTransferSettings, saveCharacterTransferSettings } from "./services/characterTransferSettings.js";
+import { readCharacterTransferSettingsStatus, saveAndApplyCharacterTransferSettings } from "./services/characterTransferSettings.js";
 import { handleDiscordAdapterRoute, isDiscordAdapterRoute, readDiscordBotApiToken, WRITE_BRIDGE_SOCKET_FILENAME } from "./integrations/discord/routes.js";
 import { createPendingStateStore, exchangeDiscordAuthCode, fetchDiscordIdentity, createOAuthTierResolver, buildAuthorizeUrl, oauthStateCookie, clearOAuthStateCookie, constantTimeStringEqual } from "./integrations/discord/oauth.js";
 import { fetchOwnedDiscordGuilds, createPendingRegistrationStore, hostedBotOAuthStateCookie, clearHostedBotOAuthStateCookie, hostedBotRegistrationHandleCookie, clearHostedBotRegistrationHandleCookie, hostedBotOAuthReturnPage } from "./integrations/discord/hostedBotOAuth.js";
@@ -140,6 +145,14 @@ if (config.authDisabled) {
     "This is intended for local development only; never set it on an install anyone else can reach."
   );
 }
+const consoleAccess = createConsoleAccess({
+  repoRoot: config.repoRoot,
+  configured: process.env.DUNE_CONFIGURED_ADMIN_ALLOWED_IPS,
+  legacy: process.env.ADMIN_ALLOWED_IPS
+});
+config.allowedIps = consoleAccess.activeIps();
+Object.defineProperty(config, "consoleAccessReviewRequired", { get: () => consoleAccess.status().pending });
+if (config.consoleAccessReviewRequired) console.warn("Console IP restrictions await confirmation in Settings; existing access is preserved.");
 const hardwareStatus = createHardwareStatusProvider({ filesystemPath: config.repoRoot });
 const readCommandCache = createReadCommandCache();
 // Status commands walk Docker, PostgreSQL, RabbitMQ, and logs. Keep a fresh
@@ -361,6 +374,8 @@ function shouldNoteApiKeyAuthThrottle(failureKey, at = Date.now()) {
   return true;
 }
 const apiKeys = createApiKeyStore({ file: config.apiKeysFile });
+const realtime = createRealtime();
+const encryptedApi = createEncryptedApi({ repoRoot: config.repoRoot });
 // Proof that a restore was previewed, for the apply that follows it. In memory
 // beside the sessions it is keyed by -- see the module header for why it is not
 // persisted.
@@ -628,6 +643,17 @@ async function requestHandler(req, res, opts = {}) {
     return;
   }
 
+  // Trusted client address: only the project TLS front may supply one (signed
+  // header, see services/tlsClientAddress.js). Resolved once here so the
+  // ADMIN_ALLOWED_IPS gate and remoteIpOf() agree. Over the write-bridge Unix
+  // socket there is no peer address and no forwarding headers, so this yields "".
+  req.trustedClientAddress = tlsClientAddress(req, config.repoRoot);
+  if (req.trustedClientAddress === null) {
+    res.writeHead(403, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "Invalid encrypted API forwarding identity." }));
+    return;
+  }
+
   // Write-bridge credential resolution (docs/rw-architecture.md 3.2/3.4,
   // round-4/5/6 corrections, CRITICAL #750/#757/#763's fix chain): this
   // must run BEFORE the config.allowedIps gate, not after it -- the real
@@ -647,7 +673,7 @@ async function requestHandler(req, res, opts = {}) {
     : null;
 
   if (!writeBridgePrincipal && config.allowedIps.length) {
-    const remoteIp = (req.socket.remoteAddress || "").replace(/^::ffff:/, "");
+    const remoteIp = req.trustedClientAddress;
     if (!config.allowedIps.includes(remoteIp)) {
       res.writeHead(403, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: "Access denied: IP not in ADMIN_ALLOWED_IPS" }));
@@ -1750,6 +1776,22 @@ async function handleApi(req, res, path) {
     return json(res, 200, { keys: apiKeys.list() });
   }
   if (path === "/api/settings/api-keys" && req.method === "POST") return apiKeyCreateRoute(req, res);
+  if (path === "/api/realtime/healthz" && req.method === "GET") return realtimeRoute(res, () => realtime.health());
+  if (path === "/api/realtime/objects" && req.method === "GET") return realtimeRoute(res, () => realtime.objects({ allowPlayers: principalMay(req, "players:read") }));
+  if (path === "/api/realtime/stream" && req.method === "GET") return realtimeStreamRoute(req, res);
+  if (path === "/api/settings/encrypted-api" && req.method === "GET") return encryptedApiRoute(res, () => encryptedApi.status());
+  if (path === "/api/settings/console-access/confirm" && req.method === "POST") {
+    const body = await readJson(req);
+    try {
+      const result = consoleAccess.confirm(body, remoteIpOf(req));
+      config.allowedIps = consoleAccess.activeIps();
+      audit(config, req, "settings.console-access-confirm", { activeCount: result.activeCount });
+      return json(res, 200, result);
+    } catch (error) {
+      return json(res, 409, { error: error.message });
+    }
+  }
+  if (path === "/api/settings/encrypted-api" && req.method === "POST") return encryptedApiToggleRoute(req, res);
   if (path.startsWith("/api/settings/api-keys/")) return apiKeyItemRoute(req, res, path);
   if (path === "/api/settings/iam/policy/test" && req.method === "POST") {
     const body = await readJson(req);
@@ -3000,7 +3042,7 @@ async function handleApi(req, res, path) {
     return task(req, res, "settings", "experimentalTanksApply", await readJson(req));
   }
   if (path === "/api/settings" && req.method === "POST") return writeConfig(req, res);
-  if (path === "/api/settings") return json(res, 200, await setupState());
+  if (path === "/api/settings") return json(res, 200, await setupState(remoteIpOf(req)));
 
   return json(res, 404, { error: "Not found" });
 }
@@ -4531,6 +4573,64 @@ async function recoveryCodesRegenerateRoute(req, res) {
   }
 }
 
+async function realtimeRoute(res, action) {
+  try {
+    return json(res, 200, await action(), { "cache-control": "no-store" });
+  } catch (error) {
+    if (error instanceof RealtimeError) return json(res, error.status, { available: false, error: error.message });
+    throw error;
+  }
+}
+
+async function encryptedApiRoute(res, action) {
+  try {
+    return json(res, 200, await action(), { "cache-control": "no-store" });
+  } catch (error) {
+    if (error instanceof EncryptedApiError) return json(res, error.status, { error: error.message });
+    throw error;
+  }
+}
+
+// A stream outlives the request that authorized it, so the key (or browser
+// session) is checked again every few seconds: disabling, expiring or revoking
+// the key, or removing its Realtime Data / Players scope, takes effect on the
+// open stream too.
+function realtimeStreamRoute(req, res) {
+  const principal = req.authApiKey ? `apikey:${req.authApiKey.id}` : `session:${req.authSession?.id || "unknown"}`;
+  const current = () => {
+    if (!req.authApiKey) {
+      // peekSession does not renew the idle expiry: an open stream must not
+      // keep an abandoned browser login alive.
+      const session = auth.peekSession(req);
+      return session ? { session, key: null } : null;
+    }
+    const bearer = apiKeys.authenticate(req);
+    return bearer && !bearer.error ? { session: bearer.session, key: bearer.key } : null;
+  };
+  const may = (action) => {
+    const now = current();
+    if (!now || !evaluate(now.session, action)) return false;
+    return !now.key || apiKeys.allows(now.key, action);
+  };
+  // The session id is half of the login cookie: never write it to the audit log.
+  // audit() already records who the caller is; a key's id is not a secret.
+  audit(config, req, "realtime.stream-open", req.authApiKey ? { apiKey: req.authApiKey.id } : {});
+  realtime.stream(req, res, {
+    principal,
+    allowPlayers: () => may("players:read"),
+    stillAllowed: () => may("realtime:read")
+  });
+}
+
+async function encryptedApiToggleRoute(req, res) {
+  const body = await readJson(req);
+  return encryptedApiRoute(res, async () => {
+    const status = await encryptedApi.setEnabled(body?.enabled);
+    audit(config, req, body.enabled ? "settings.encrypted-api-enable" : "settings.encrypted-api-disable", { port: status.port });
+    return status;
+  });
+}
+
 async function apiKeyCreateRoute(req, res) {
   const body = await readJson(req);
   const created = await apiKeys.create({
@@ -4644,6 +4744,7 @@ function scheduleConsoleRestart(port) {
       "docker compose -f docker-compose.web.yml build redblink-dune-docker-console >> runtime/generated/console-restart.log 2>&1",
       "docker rm -f redblink-dune-docker-console >> runtime/generated/console-restart.log 2>&1 || true",
       "docker compose -f docker-compose.web.yml up -d redblink-dune-docker-console >> runtime/generated/console-restart.log 2>&1",
+      "if [ -x runtime/scripts/tls-front.sh ]; then runtime/scripts/tls-front.sh reconcile >> runtime/generated/console-restart.log 2>&1; fi",
       `echo "[$(date -Is)] Dune Docker Console restart command finished" >> runtime/generated/console-restart.log`
     ].join("\n");
     const child = spawn("docker", buildSelfUpdateHelperDockerArgs({
@@ -5114,14 +5215,13 @@ async function restartQueueRestartNowRoute(req, res) {
 }
 
 async function characterTransferSettingsRoute(req, res) {
-  if (req.method === "GET") return json(res, 200, readCharacterTransferSettings(config));
+  if (req.method === "GET") return json(res, 200, await readCharacterTransferSettingsStatus(config));
   if (req.method !== "POST") return json(res, 405, { error: "Method not allowed" });
   const body = await readJson(req);
   try {
-    const result = saveCharacterTransferSettings(config, body.settings || {}, { defaults: Boolean(body.restoreDefaults) });
-    const payload = { service: "director" };
+    const result = await saveAndApplyCharacterTransferSettings(config, body.settings || {}, { defaults: Boolean(body.restoreDefaults) });
     audit(config, req, "admin.character-transfer-settings.save", { restoreDefaults: Boolean(body.restoreDefaults), settings: result.settings });
-    return json(res, 202, { ok: true, settings: result.settings, path: result.path, task: tasks.create("server", "restartService", payload) });
+    return json(res, 200, { ok: true, ...result });
   } catch (error) {
     return json(res, error.statusCode || 500, { error: redact(error?.message || "Unexpected error.") });
   }
@@ -8213,7 +8313,7 @@ function readLogs(service, options) {
   return runDockerLogs(service, options);
 }
 
-async function setupState() {
+async function setupState(clientIp) {
   const env = existsSync(resolve(config.repoRoot, ".env"));
   const token = existsSync(resolve(config.secretsDir, "funcom-token.txt"));
   const battlegroup = existsSync(resolve(config.generatedDir, "battlegroup.env"));
@@ -8223,6 +8323,7 @@ async function setupState() {
     serverConfig: readSetupConfigValues(),
     publicDirectory: publicDirectorySettings(),
     serverStartup: serverStartupSettingsView(config.repoRoot),
+    consoleAccess: consoleAccess.status(clientIp),
     files: {
       env,
       token,
@@ -8692,9 +8793,11 @@ function mockCommand(operation) {
 
 // Best-effort client address, IPv4-mapped IPv6 unwrapped. No X-Forwarded-For
 // handling, matching every other limiter here -- behind a reverse proxy this
-// records the proxy, not the caller. Per-key limits are unaffected: they key
+// records the proxy, not the caller, unless the project TLS front supplies a
+// verified forwarding identity. Per-key limits are unaffected: they key
 // on the key id, not on this.
 function remoteIpOf(req) {
+  if (req.trustedClientAddress !== undefined) return req.trustedClientAddress || "";
   return (req?.socket?.remoteAddress || "").replace(/^::ffff:/, "") || null;
 }
 
