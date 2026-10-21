@@ -123,6 +123,37 @@ export function BuildingUnlocksTab({ dbPlayerId, playerName, confirmAction, onAc
     }
   }
 
+  async function grantAll() {
+    if (!(await confirmAction(`Grant every building set ${playerName} does not already have?\n\nEach set is delivered as a patent token in the player's inventory (offline players receive them on next login). Sets that are already owned or pending, and experimental sets, are skipped. If the inventory is full some sets may not arrive; the result lists them.`, {
+      title: "Grant All Building Sets",
+      confirmLabel: "Grant All",
+      details: [{ label: "Player", value: playerName, tone: "accent" }]
+    }))) return;
+
+    const key = "building:all";
+    setBusyItemId("*all*");
+    setResult({ key, tone: "neutral", text: "Granting all building sets", pending: true });
+    try {
+      const response = await playersApi.grantAllBuildingUnlocks(dbPlayerId, { confirmation: "GRANT ALL BUILDING UNLOCKS" });
+      const statuses = new Map((response.results || []).filter((entry) => !entry.skipped && entry.ok).map((entry) => [entry.itemId, entry.status as BuildingUnlockRow["status"]]));
+      setRows((current) => current.map((row) => statuses.has(row.itemId) ? { ...row, status: statuses.get(row.itemId)! } : row));
+      const parts = [`${response.granted ?? 0} granted`];
+      if (response.skipped) parts.push(`${response.skipped} already owned or pending`);
+      if (response.experimentalSkipped) parts.push(`${response.experimentalSkipped} experimental skipped`);
+      if (response.failed) parts.push(`${response.failed} failed`);
+      const failedNames = (response.results || []).filter((entry) => !entry.ok).slice(0, 5).map((entry) => entry.name || entry.itemId);
+      const detail = response.failed ? ` Not delivered: ${failedNames.join(", ")}${response.failed > failedNames.length ? ", ..." : ""}.` : " Dune processes them on the next login.";
+      setResult({ key, tone: response.failed ? "danger" : "success", text: `${parts.join(", ")}.${detail}` });
+      onActionLog?.("Grant All Building Sets", playerName, String(response.granted ?? 0), response.failed ? `${response.failed} Failed` : "Succeeded");
+    } catch (grantError) {
+      const message = friendlyInlineError(grantError);
+      setResult({ key, tone: "danger", text: message });
+      onActionLog?.("Grant All Building Sets", playerName, "0", `Failed: ${message}`);
+    } finally {
+      setBusyItemId("");
+    }
+  }
+
   const groups = useMemo(() => [...new Set(rows.filter((row) => showExperimental || !row.experimental).map((row) => row.group))].sort(), [rows, showExperimental]);
   const filterTerms = filter.toLowerCase().split(/\s+/).map((term) => term.trim()).filter(Boolean);
   const filteredRows = rows.filter((row) => {
@@ -158,6 +189,8 @@ export function BuildingUnlocksTab({ dbPlayerId, playerName, confirmAction, onAc
           </select>
           <label className="playerAdmin_buildingExperimentalToggle"><input type="checkbox" checked={showExperimental} onChange={(event) => { setShowExperimental(event.target.checked); setGroup(""); }} /> Show Experimental</label>
           <button disabled={!dbPlayerId || loading} onClick={() => void load()}>{loading ? "Loading..." : "Reload"}</button>
+          <button disabled={!dbPlayerId || loading || !ownershipSupported || Boolean(busyItemId)} onClick={() => void grantAll()}>{busyItemId === "*all*" ? "Granting..." : "Grant All"}</button>
+          <InlineActionResult result={result} resultKey="building:all" />
         </div>
       </div>
       {error ? <p className="playerAdmin_note danger">{error}</p> : <DataTable

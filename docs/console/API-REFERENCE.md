@@ -301,7 +301,10 @@ Player rows include `total_playtime_seconds`. The console samples `player_state.
 | POST | `/api/players/{playerId}/specializations/keystones/grant-all` | Grant all keystones | `confirmation` |
 | POST | `/api/players/{playerId}/specializations/keystones/reset-all` | Reset all keystones | `confirmation` |
 | POST | `/api/players/{playerId}/crafting-recipes/unlock` | Unlock recipe | `recipeId`, `confirmation` |
+| POST | `/api/players/{playerId}/crafting-recipes/unlock-all` | Unlock every catalogued recipe (offline player only; takes a backup first) | `confirmation` (`UNLOCK ALL CRAFTING RECIPES`) |
 | POST | `/api/players/{playerId}/research-items/unlock` | Unlock research | `itemKey`, `confirmation` |
+| POST | `/api/players/{playerId}/research-items/unlock-all` | Unlock all research and its linked recipes/building sets; group markers are skipped and named in the result (offline player only; takes a backup first) | `confirmation` (`UNLOCK ALL RESEARCH`) |
+| POST | `/api/players/{playerId}/building-unlocks/grant-all` | Deliver every non-experimental building set the player does not own or have pending; per-item failures are reported, not fatal | `confirmation` (`GRANT ALL BUILDING UNLOCKS`) |
 | POST | `/api/players/{playerId}/journey/complete` | Complete journey node | `nodeId`, `confirmation` |
 | POST | `/api/players/{playerId}/journey/reset` | Reset journey node | `nodeId`, `confirmation` |
 | POST | `/api/players/{playerId}/tutorials/complete` | Complete tutorial | `tutorialId`, `confirmation` |

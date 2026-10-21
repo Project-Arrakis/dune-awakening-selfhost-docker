@@ -114,3 +114,16 @@ describe("CustomizationsTab", () => {
     expect(screen.getAllByText("Delivered")).toHaveLength(2);
   });
 });
+
+describe("CustomizationsTab Grant All", () => {
+  it("offers Grant All Customizations and sends the whole catalog in one request (#1235)", async () => {
+    const confirmAction = vi.fn().mockResolvedValue(true);
+    vi.mocked(playersApi.grantCustomizations).mockResolvedValue({ ok: true, granted: 2, requested: 0, skipped: 1, failed: 0, results: [] });
+    render(<CustomizationsTab dbPlayerId="123" playerName="Chani" confirmAction={confirmAction} />);
+    await screen.findByText("Atreides Pistol");
+    expect(screen.queryByRole("button", { name: "Grant All Sets" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Grant All Customizations" }));
+    await waitFor(() => expect(playersApi.grantCustomizations).toHaveBeenCalledWith("123", expect.objectContaining({ groupId: "all", confirmation: "GRANT CUSTOMIZATIONS" })));
+    expect(confirmAction).toHaveBeenCalledTimes(1);
+  });
+});

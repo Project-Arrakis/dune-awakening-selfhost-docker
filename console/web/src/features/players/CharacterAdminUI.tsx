@@ -449,6 +449,26 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
       playerAdmin_setBusyActionKey("");
     }
   }
+  async function playerAdmin_unlockAllCraftingRecipes() {
+    if (!(await confirmAction(`Unlock every crafting schematic for ${playerName}? The player must be offline. A full safety backup is created first and the player sees the change on next login. Existing recipes are kept.`))) return;
+    const key = "crafting:all";
+    onError("");
+    playerAdmin_setBusyActionKey(key);
+    try {
+      const response = await playersApi.unlockAllCraftingRecipes(dbPlayerId, { confirmation: "UNLOCK ALL CRAFTING RECIPES" });
+      const unlocked = Number(response.result?.unlocked ?? 0);
+      const already = Number(response.result?.alreadyUnlocked ?? 0);
+      playerAdmin_addLog("Unlock All Crafting Recipes", playerName, String(unlocked), unlocked ? "Succeeded" : "Already Unlocked");
+      await playerAdmin_loadCraftingRecipes();
+      playerAdmin_showResult(key, unlocked ? `${unlocked} unlocked, ${already} already known. Player will see them on next login.` : "Every schematic was already unlocked.", "success");
+    } catch (error) {
+      const message = friendlyInlineError(error);
+      playerAdmin_showResult(key, message, "danger");
+      playerAdmin_addLog("Unlock All Crafting Recipes", playerName, "0", `Failed: ${message}`);
+    } finally {
+      playerAdmin_setBusyActionKey("");
+    }
+  }
   async function playerAdmin_loadResearchItems() {
     if (!dbPlayerId) {
       playerAdmin_setResearchRows([]);
@@ -505,6 +525,31 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
       const message = friendlyInlineError(error);
       playerAdmin_showResult(key, message, "danger");
       playerAdmin_addLog("Unlock Research", row.itemKey, "1", `Failed: ${message}`);
+    } finally {
+      playerAdmin_setBusyActionKey("");
+    }
+  }
+  async function playerAdmin_unlockAllResearchItems() {
+    if (!(await confirmAction(`Unlock all research for ${playerName}? The player must be offline. A full safety backup is created first, the linked recipes and building sets are unlocked too, and the player sees the change on next login. Group markers are skipped.`))) return;
+    const key = "research:all";
+    onError("");
+    playerAdmin_setBusyActionKey(key);
+    try {
+      const response = await playersApi.unlockAllResearchItems(dbPlayerId, { confirmation: "UNLOCK ALL RESEARCH" });
+      const unlocked = Number(response.result?.unlocked ?? 0);
+      const repaired = Number(response.result?.repaired ?? 0);
+      const skipped = response.result?.skippedGroups?.length ?? 0;
+      playerAdmin_addLog("Unlock All Research", playerName, String(unlocked + repaired), unlocked || repaired ? "Succeeded" : "Already Unlocked");
+      await playerAdmin_loadResearchItems();
+      await playerAdmin_loadCraftingRecipes();
+      const parts = [`${unlocked} unlocked`];
+      if (repaired) parts.push(`${repaired} repaired`);
+      if (skipped) parts.push(`${skipped} group marker${skipped === 1 ? "" : "s"} skipped`);
+      playerAdmin_showResult(key, unlocked || repaired ? `${parts.join(", ")}. Player will see them on next login.` : `Nothing to unlock${skipped ? ` (${skipped} group marker${skipped === 1 ? "" : "s"} cannot be unlocked directly)` : ""}.`, "success");
+    } catch (error) {
+      const message = friendlyInlineError(error);
+      playerAdmin_showResult(key, message, "danger");
+      playerAdmin_addLog("Unlock All Research", playerName, "0", `Failed: ${message}`);
     } finally {
       playerAdmin_setBusyActionKey("");
     }
@@ -970,6 +1015,56 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
     }
   };
   const playerAdmin_starterSkillPreset = playerAdmin_starterSkillPresets[playerAdmin_skillSchool];
+  // Raises every skill the catalog knows to its max rank and applies it at once,
+  // through the same setSkillModule task the Save button uses. Skills already at
+  // max are skipped. Stops at the first failure and says how far it got, so a
+  // dropped connection never leaves the operator guessing what was applied.
+  async function playerAdmin_grantAllSkills() {
+    if (!playerAdmin_canRunLiveAction) {
+      playerAdmin_showResult("skillsAll", "The player must be online to change skills.", "danger");
+      return;
+    }
+    const targets = new Map<string, { id: string; level: number }>();
+    for (const [school, trees] of Object.entries(playerAdmin_skillTrees)) {
+      for (const tree of trees) {
+        for (const card of tree.cards) {
+          const module = playerAdmin_findSkillModule(school, card);
+          if (!module?.id) continue;
+          const maxRank = playerAdmin_skillMaxRank(school, card);
+          if (playerAdmin_skillBaselineRank(school, card) < maxRank) targets.set(module.id, { id: module.id, level: maxRank });
+        }
+      }
+    }
+    if (!targets.size) {
+      playerAdmin_showResult("skillsAll", "Every skill is already at max rank.", "success");
+      return;
+    }
+    const entries = [...targets.values()];
+    if (!(await confirmAction(`Raise ${entries.length} skill${entries.length === 1 ? "" : "s"} to max rank for ${playerName}? The change is applied immediately while the player is online.`, {
+      title: "Grant All Skills",
+      confirmLabel: "Grant All",
+      details: [{ label: "Skills to raise", value: String(entries.length), tone: "accent" }]
+    }))) return;
+    onError("");
+    const applied: Record<string, number> = {};
+    try {
+      for (const [index, entry] of entries.entries()) {
+        playerAdmin_showResult("skillsAll", `Granting skills for ${playerName}: ${index + 1} of ${entries.length}`, "neutral", true);
+        await playerAdmin_runTask(() => playersApi.setSkillModule(actionPlayerId, { module: entry.id, level: entry.level }));
+        applied[entry.id] = entry.level;
+      }
+      playerAdmin_setSkillBaseline((current) => ({ ...current, ...applied }));
+      playerAdmin_setSkillChanges({});
+      playerAdmin_showResult("skillsAll", `${entries.length} skill${entries.length === 1 ? "" : "s"} raised to max rank for ${playerName}.`, "success");
+      playerAdmin_addLog("Grant All Skills", playerName, String(entries.length), "Succeeded");
+    } catch (error) {
+      const message = friendlyInlineError(error);
+      const done = Object.keys(applied).length;
+      playerAdmin_setSkillBaseline((current) => ({ ...current, ...applied }));
+      playerAdmin_showResult("skillsAll", `Stopped after ${done} of ${entries.length}: ${message}`, "danger");
+      playerAdmin_addLog("Grant All Skills", playerName, String(done), `Failed after ${done} of ${entries.length}: ${message}`);
+    }
+  }
   async function playerAdmin_restoreStarterSkills() {
     if (!playerAdmin_starterSkillPreset) {
       playerAdmin_showResult("starterSkills", `No verified starter preset is available for ${playerAdmin_skillSchool}.`, "danger");
@@ -1192,6 +1287,8 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
               </div>
               <div className="playerAdmin_filterActionsRight">
                 <button disabled={!dbPlayerId || playerAdmin_craftingLoading} onClick={() => playerAdmin_loadCraftingRecipes()}>{playerAdmin_craftingLoading ? "Loading..." : "Reload"}</button>
+                <button disabled={!dbPlayerId || playerAdmin_craftingLoading || Boolean(playerAdmin_busyActionKey)} onClick={() => playerAdmin_unlockAllCraftingRecipes()}>{playerAdmin_busyActionKey === "crafting:all" ? "Unlocking..." : "Unlock All"}</button>
+                <InlineActionResult result={playerAdmin_actionResult} resultKey="crafting:all" />
               </div>
             </div>
             <PlayerCategoryIconRail
@@ -1220,6 +1317,8 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
               <div className="playerAdmin_filterActionsRight">
                 {playerAdmin_researchCategory && <select value={playerAdmin_productGroup} onChange={(playerAdmin_event) => playerAdmin_setProductGroup(playerAdmin_event.target.value)}><option value="">All Product Groups</option>{playerAdmin_researchGroups[playerAdmin_researchCategory].map((playerAdmin_option) => <option key={playerAdmin_option}>{playerAdmin_option}</option>)}</select>}
                 <button disabled={!dbPlayerId || playerAdmin_researchLoading} onClick={() => playerAdmin_loadResearchItems()}>{playerAdmin_researchLoading ? "Loading..." : "Reload"}</button>
+                <button disabled={!dbPlayerId || playerAdmin_researchLoading || Boolean(playerAdmin_busyActionKey)} onClick={() => playerAdmin_unlockAllResearchItems()}>{playerAdmin_busyActionKey === "research:all" ? "Unlocking..." : "Unlock All"}</button>
+                <InlineActionResult result={playerAdmin_actionResult} resultKey="research:all" />
               </div>
             </div>
             <PlayerCategoryIconRail
@@ -1251,6 +1350,8 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
                 <span className="playerAdmin_note">{playerAdmin_skillChangeCount} Unsaved Change{playerAdmin_skillChangeCount === 1 ? "" : "s"}</span>
                 <button disabled={!playerAdmin_canRunLiveAction || !playerAdmin_starterSkillPreset || playerAdmin_actionResult?.pending} onClick={() => playerAdmin_restoreStarterSkills()}>Restore Starter Skills</button>
                 <button disabled={playerAdmin_skillCatalogLoading || playerAdmin_skillBaselineLoading} onClick={() => playerAdmin_reloadSkills()}>{playerAdmin_skillCatalogLoading || playerAdmin_skillBaselineLoading ? "Loading..." : "Reload"}</button>
+                <button disabled={!playerAdmin_canRunLiveAction || playerAdmin_skillCatalogLoading || playerAdmin_skillBaselineLoading || Boolean(playerAdmin_actionResult?.pending)} onClick={() => playerAdmin_grantAllSkills()}>Grant All</button>
+                <InlineActionResult result={playerAdmin_actionResult} resultKey="skillsAll" />
                 <InlineActionResult result={playerAdmin_actionResult} resultKey="starterSkills" />
               </div>
             </div>
