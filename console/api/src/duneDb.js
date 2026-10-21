@@ -7848,6 +7848,9 @@ export async function unlockCraftingRecipe(db, id, { recipeId }) {
 export async function unlockAllCraftingRecipes(db, id) {
   await requireCapability(await supportsCraftingRecipes(db), "Crafting recipes require dune.actors.properties with CraftingRecipesLibraryActorComponent.");
   const catalogIds = [...new Set(craftingRecipeCatalog().map((row) => row.recipeId).filter(Boolean))];
+  // craftingRecipeCatalog() returns [] when its data file cannot be read; that must
+  // not be reported as "every recipe already unlocked".
+  if (!catalogIds.length) throw new UnsupportedCapabilityError("The crafting recipe catalog could not be loaded, so nothing was unlocked.");
   return db.transaction(async (tx) => {
     const player = await resolvePlayerMutationTarget(tx, id);
     requireOfflinePlayer(player, "Crafting recipe unlocks");
@@ -8329,15 +8332,20 @@ export async function unlockResearchItem(db, id, { itemKey }) {
 // The unlock itself, for a caller that already holds the transaction and has
 // resolved and offline-checked the player. Shared by the single unlock and by
 // unlockAllResearchItems so the two cannot drift.
-async function unlockResearchItemWithin(tx, player, safeItemKey) {
-  const known = await tx.query(`
-    select exists (
-      select 1
-      from dune.actors a
-      cross join lateral jsonb_array_elements(coalesce(a.properties->'TechKnowledgePlayerComponent'->'m_TechKnowledge'->'m_TechKnowledgeData', '[]'::jsonb)) item
-      where item->>'ItemKey' = $1
-    ) as exists`, [safeItemKey]);
-  if (!known.rows[0]?.exists) throw new Error(`Research key ${safeItemKey} was not found in the game database.`);
+async function unlockResearchItemWithin(tx, player, safeItemKey, { verifyKnown = true } = {}) {
+  // A key taken from the research listing already exists in the game database
+  // (the listing is built from the same data), so the bulk path skips this
+  // whole-table scan instead of repeating it once per key.
+  if (verifyKnown) {
+    const known = await tx.query(`
+      select exists (
+        select 1
+        from dune.actors a
+        cross join lateral jsonb_array_elements(coalesce(a.properties->'TechKnowledgePlayerComponent'->'m_TechKnowledge'->'m_TechKnowledgeData', '[]'::jsonb)) item
+        where item->>'ItemKey' = $1
+      ) as exists`, [safeItemKey]);
+    if (!known.rows[0]?.exists) throw new Error(`Research key ${safeItemKey} was not found in the game database.`);
+  }
   const current = await tx.query(`
     select properties->'TechKnowledgePlayerComponent'->'m_TechKnowledge'->'m_TechKnowledgeData' as items
     from dune.actors
@@ -8386,10 +8394,16 @@ async function unlockResearchItemWithin(tx, player, safeItemKey) {
   };
 }
 
-// Lets a route refuse an online player before it spends a backup on a bulk
-// write that would be rejected anyway. The write repeats the check in its own
+// Lets a route refuse an unsupported database or an online player before it
+// spends a backup on a bulk write that would be rejected anyway. The write repeats the check in its own
 // transaction, so this is never trusted as authorization.
-export async function assertPlayerOffline(db, id, actionName) {
+export async function preflightBulkUnlock(db, id, kind, actionName) {
+  if (kind === "research") {
+    await requireCapability(await supportsResearchItems(db), "Research unlocks require dune.actors.properties with TechKnowledgePlayerComponent.");
+  } else {
+    await requireCapability(await supportsCraftingRecipes(db), "Crafting recipes require dune.actors.properties with CraftingRecipesLibraryActorComponent.");
+    if (!craftingRecipeCatalog().length) throw new UnsupportedCapabilityError("The crafting recipe catalog could not be loaded, so nothing was unlocked.");
+  }
   requireOfflinePlayer(await resolvePlayerMutationTarget(db, id), actionName);
 }
 
@@ -8404,18 +8418,32 @@ export async function unlockAllResearchItems(db, id) {
     requireOfflinePlayer(player, "Research unlocks");
     const listing = await playerResearchItems(tx, id);
     const skippedGroups = [];
+    const skippedUnsupported = [];
     const pending = [];
+    let groupMarkers = 0;
+    // A building-kind key needs the player's building_progression row. Without
+    // one (or on a schema that has none) the single unlock refuses, which would
+    // abort the whole batch, so those keys are skipped and named instead.
+    const progressionRow = player.playerStateId && await tableExists(tx, "building_progression")
+      ? (await tx.query("select 1 from dune.building_progression where character_id = $1 limit 1", [player.playerStateId])).rowCount > 0
+      : false;
     for (const row of listing.rows) {
       if (row.unlockKind === "group") {
+        groupMarkers += 1;
         if (row.unlockedState !== "Purchased") skippedGroups.push(row.itemKey);
         continue;
       }
-      if (row.unlockedState !== "Purchased" || row.unlockMaterialized === false) pending.push(row.itemKey);
+      if (row.unlockedState === "Purchased" && row.unlockMaterialized !== false) continue;
+      if (row.unlockKind === "building" && (!row.actionable || !progressionRow)) {
+        skippedUnsupported.push(row.itemKey);
+        continue;
+      }
+      pending.push(row.itemKey);
     }
     let unlocked = 0;
     let repaired = 0;
     for (const itemKey of pending) {
-      const result = await unlockResearchItemWithin(tx, player, itemKey);
+      const result = await unlockResearchItemWithin(tx, player, itemKey, { verifyKnown: false });
       if (result.alreadyUnlocked) repaired += 1; else unlocked += 1;
     }
     return {
@@ -8424,8 +8452,10 @@ export async function unlockAllResearchItems(db, id) {
       total: listing.rows.length,
       unlocked,
       repaired,
-      alreadyUnlocked: listing.rows.length - skippedGroups.length - pending.length,
-      skippedGroups
+      alreadyUnlocked: listing.rows.length - groupMarkers - skippedUnsupported.length - pending.length,
+      groupMarkers,
+      skippedGroups,
+      skippedUnsupported
     };
   }, { queryTimeoutMs: 120000 });
 }

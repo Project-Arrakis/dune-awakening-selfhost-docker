@@ -124,7 +124,7 @@ export function BuildingUnlocksTab({ dbPlayerId, playerName, confirmAction, onAc
   }
 
   async function grantAll() {
-    if (!(await confirmAction(`Grant every building set ${playerName} does not already have?\n\nEach set is delivered as a patent token in the player's inventory (offline players receive them on next login). Sets that are already owned or pending, and experimental sets, are skipped. If the inventory is full some sets may not arrive; the result lists them.`, {
+    if (!(await confirmAction(`Grant every building set ${playerName} does not already have?\n\nThe player must be offline; each set is delivered as a patent token in their inventory and received on next login. Sets that are already owned or pending, and experimental sets, are skipped. If the inventory is full some sets may not arrive; the result lists them.`, {
       title: "Grant All Building Sets",
       confirmLabel: "Grant All",
       details: [{ label: "Player", value: playerName, tone: "accent" }]

@@ -303,3 +303,16 @@ describe("CharacterAdminUI Grant All Skills", () => {
     expect(playersApi.setSkillModule).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("CharacterAdminUI Grant All Skills guards", () => {
+  it("is disabled when the player's current skills could not be loaded", async () => {
+    vi.mocked(adminApi.skillModules).mockResolvedValue({ stdout: "Energy Capsule [Trooper]\n  id: Skills.Ability.EnergyCapsule\n  max level: 1" });
+    vi.mocked(playersApi.specs).mockRejectedValue(new Error("specs unavailable"));
+    render(<CharacterAdminUI {...baseProps} detail={{ player: { actual_online_status: "Online" }, capabilities: {} }} />);
+    fireEvent.click(screen.getByRole("button", { name: "Skills" }));
+    await screen.findByText("0 Unsaved Changes");
+    await screen.findByText(/specs unavailable/);
+    expect(screen.getByRole("button", { name: "Grant All" })).toBeDisabled();
+    expect(playersApi.setSkillModule).not.toHaveBeenCalled();
+  });
+});

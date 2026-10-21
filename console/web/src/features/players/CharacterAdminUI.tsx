@@ -1024,6 +1024,12 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
       playerAdmin_showResult("skillsAll", "The player must be online to change skills.", "danger");
       return;
     }
+    // Without the player's current ranks every skill reads as rank 0, so the plan
+    // would be built from data that was never read.
+    if (playerAdmin_skillBaselineError || playerAdmin_skillCatalogError) {
+      playerAdmin_showResult("skillsAll", "The player's current skills could not be loaded. Reload and try again.", "danger");
+      return;
+    }
     const targets = new Map<string, { id: string; level: number }>();
     for (const [school, trees] of Object.entries(playerAdmin_skillTrees)) {
       for (const tree of trees) {
@@ -1040,7 +1046,8 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
       return;
     }
     const entries = [...targets.values()];
-    if (!(await confirmAction(`Raise ${entries.length} skill${entries.length === 1 ? "" : "s"} to max rank for ${playerName}? The change is applied immediately while the player is online.`, {
+    const unsaved = playerAdmin_skillChangeCount > 0 ? ` ${playerAdmin_skillChangeCount} unsaved skill change${playerAdmin_skillChangeCount === 1 ? "" : "s"} will be discarded.` : "";
+    if (!(await confirmAction(`Raise ${entries.length} skill${entries.length === 1 ? "" : "s"} to max rank for ${playerName}? The change is applied immediately while the player is online.${unsaved}`, {
       title: "Grant All Skills",
       confirmLabel: "Grant All",
       details: [{ label: "Skills to raise", value: String(entries.length), tone: "accent" }]
@@ -1350,7 +1357,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
                 <span className="playerAdmin_note">{playerAdmin_skillChangeCount} Unsaved Change{playerAdmin_skillChangeCount === 1 ? "" : "s"}</span>
                 <button disabled={!playerAdmin_canRunLiveAction || !playerAdmin_starterSkillPreset || playerAdmin_actionResult?.pending} onClick={() => playerAdmin_restoreStarterSkills()}>Restore Starter Skills</button>
                 <button disabled={playerAdmin_skillCatalogLoading || playerAdmin_skillBaselineLoading} onClick={() => playerAdmin_reloadSkills()}>{playerAdmin_skillCatalogLoading || playerAdmin_skillBaselineLoading ? "Loading..." : "Reload"}</button>
-                <button disabled={!playerAdmin_canRunLiveAction || playerAdmin_skillCatalogLoading || playerAdmin_skillBaselineLoading || Boolean(playerAdmin_actionResult?.pending)} onClick={() => playerAdmin_grantAllSkills()}>Grant All</button>
+                <button disabled={!playerAdmin_canRunLiveAction || playerAdmin_skillCatalogLoading || playerAdmin_skillBaselineLoading || Boolean(playerAdmin_skillBaselineError) || Boolean(playerAdmin_skillCatalogError) || Boolean(playerAdmin_actionResult?.pending)} onClick={() => playerAdmin_grantAllSkills()}>Grant All</button>
                 <InlineActionResult result={playerAdmin_actionResult} resultKey="skillsAll" />
                 <InlineActionResult result={playerAdmin_actionResult} resultKey="starterSkills" />
               </div>

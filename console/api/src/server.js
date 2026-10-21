@@ -1981,8 +1981,8 @@ async function handleApi(req, res, path) {
   if (path.match(/^\/api\/players\/[^/]+\/specializations\/keystones\/reset-all$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.specializations.keystones.reset-all", "RESET ALL KEYSTONES", (playerId) => duneDb.resetAllSpecializationKeystones(db, playerId));
   if (path.match(/^\/api\/players\/[^/]+\/crafting-recipes\/unlock$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.crafting-recipes.unlock", "UNLOCK CRAFTING RECIPE", (playerId, body) => duneDb.unlockCraftingRecipe(db, playerId, body));
   if (path.match(/^\/api\/players\/[^/]+\/research-items\/unlock$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.research-items.unlock", "UNLOCK RESEARCH ITEM", (playerId, body) => duneDb.unlockResearchItem(db, playerId, body));
-  if (path.match(/^\/api\/players\/[^/]+\/research-items\/unlock-all$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.research-items.unlock-all", "UNLOCK ALL RESEARCH", (playerId) => bulkPlayerUnlock(playerId, "Research unlocks", duneDb.unlockAllResearchItems));
-  if (path.match(/^\/api\/players\/[^/]+\/crafting-recipes\/unlock-all$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.crafting-recipes.unlock-all", "UNLOCK ALL CRAFTING RECIPES", (playerId) => bulkPlayerUnlock(playerId, "Crafting recipe unlocks", duneDb.unlockAllCraftingRecipes));
+  if (path.match(/^\/api\/players\/[^/]+\/research-items\/unlock-all$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.research-items.unlock-all", "UNLOCK ALL RESEARCH", (playerId) => bulkPlayerUnlock(playerId, "Research unlocks", duneDb.unlockAllResearchItems, "research"));
+  if (path.match(/^\/api\/players\/[^/]+\/crafting-recipes\/unlock-all$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.crafting-recipes.unlock-all", "UNLOCK ALL CRAFTING RECIPES", (playerId) => bulkPlayerUnlock(playerId, "Crafting recipe unlocks", duneDb.unlockAllCraftingRecipes, "crafting"));
   if (path.match(/^\/api\/players\/[^/]+\/journey\/complete$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.journey.complete", "COMPLETE JOURNEY NODE", (playerId, body) => duneDb.completeJourneyNode(db, playerId, body, journeyTagsData));
   if (path.match(/^\/api\/players\/[^/]+\/journey\/reset$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.journey.reset", "RESET JOURNEY NODE", (playerId, body) => duneDb.resetJourneyNode(db, playerId, body, journeyTagsData));
   if (path.match(/^\/api\/players\/[^/]+\/tutorials\/complete$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.tutorials.complete", "COMPLETE TUTORIAL", (playerId, body) => duneDb.completeTutorial(db, playerId, body));
@@ -5877,9 +5877,10 @@ async function playerDbMutation(req, res, path, action, phrase, fn) {
 
 // A bulk unlock rewrites a large part of the character's saved state, so it takes
 // a full backup first, like the other bulk repairs. An online player is refused
-// before the backup is spent; the write repeats the check inside its transaction.
-async function bulkPlayerUnlock(playerId, actionName, unlockAll) {
-  await duneDb.assertPlayerOffline(db, playerId, actionName);
+// before the backup is spent (as is a database that lacks the needed component);
+// the write repeats the checks inside its transaction.
+async function bulkPlayerUnlock(playerId, actionName, unlockAll, kind) {
+  await duneDb.preflightBulkUnlock(db, playerId, kind, actionName);
   await runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "restore-safety" } });
   const result = await unlockAll(db, playerId);
   return { ...result, backupCreated: true };
@@ -7812,6 +7813,11 @@ async function buildingUnlockGrantAllRoute(req, res, path) {
     if (catalog.length === 0) throw new Error("The Building Sets catalog is empty.");
     const target = await resolvePlayerGrantTarget(playerId);
     if (!config.mockMode && !target.actorId) throw new Error("A database actor ID is required to verify building-set ownership.");
+    // Each set is one delivery. For an online player that is one `dune` command per
+    // set, in series, which can outlast the request and the tunnel in front of it, so
+    // a retry would deliver twice. Offline delivery is a database write per set and
+    // is quick; an online player can still be given sets one at a time.
+    if (target.online) throw new Error("Grant All Building Sets needs the player to be offline. Grant sets one at a time while they are online.");
     let state = null;
     if (target.actorId) {
       state = await duneDb.playerBuildingUnlockState(db, target.actorId);
