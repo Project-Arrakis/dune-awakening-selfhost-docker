@@ -1,6 +1,7 @@
-import { Fragment, useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { Fragment, useCallback, useEffect, useId, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { AlertTriangle, ChevronDown, ChevronUp, Download, Grid2X2, Info, List, Lock, MapPin, RotateCcw } from "lucide-react";
 import { mapsApi, type ChoamTransform, type ChoamCaptureBaseline, type ActiveSpicefieldRow, type ChoamCapturedPlacement, type ChoamTerminalOverview, type ChoamTradeCenter, type LiveMapMemoryRow, type MapCombatStateResult, type MapRuntimeSettings, type MemoryBalancerState, type MemorySwapState, type PartitionCombatStateRow, type UserSettingField, type UserSettingsSchema } from "../../api/maps";
+import { CombatSettingsNotice } from "./CombatSettingsNotice";
 import { playersApi } from "../../api/players";
 import { runGatedRestart, type RestartGate, type RestartGateChoice } from "../server/restartQueueGuard";
 import { serverApi, type RestartHistoryResponse, type RestartHistoryRow, type RestartQueueTarget } from "../../api/server";
@@ -1490,6 +1491,9 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   // flicker the toggle, or worse, pin a draft from data that was never this
   // target's to begin with.
   const gameValuesReady = Boolean(userGameName) && gameValuesTargetKey === userGameTargetKey;
+  const selectedCombatSettings = !isUserGameGlobal && effectiveUserGamePartitionId
+    ? combatStateByMap[userGameName]?.partitions.find(row => row.partitionId === effectiveUserGamePartitionId)
+    : undefined;
   const coriolisHour = useCoriolisMatchRegion(CORIOLIS_CYCLE_START_HOUR_FIELD_ID, CORIOLIS_REGION_HOURS, schema, gameValues, gameDraft, setGameDraft, gameValuesReady, serverRegion, userGameTargetKey);
   const coriolisDay = useCoriolisMatchRegion(CORIOLIS_CYCLE_START_DAY_FIELD_ID, CORIOLIS_REGION_DAYS, schema, gameValues, gameDraft, setGameDraft, gameValuesReady, serverRegion, userGameTargetKey);
   const coriolisHourMatchRegionAvailable = coriolisHour.regionValue !== undefined && userGameFields.some((field) => field.id === CORIOLIS_CYCLE_START_HOUR_FIELD_ID);
@@ -1564,6 +1568,10 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   const filteredEngineFields = filterSettingsFields(activeEngineFields, modifierFilter);
   const engineDirty = changedKeys(engineValues, engineDraft, engineFields);
   const gameDirty = changedKeys(gameValues, gameDraft, userGameFields);
+  const invalidGameDirty = gameDirty.filter((fieldId) => {
+    const field = userGameFields.find((candidate) => candidate.id === fieldId);
+    return Boolean(field && !settingValueIsValid(field, gameDraft[fieldId] ?? field.default ?? ""));
+  });
   const serverCustomDirty = changedKeys(serverCustomValues, serverCustomDraft, serverCustomFields);
   const invalidServerCustomDirty = serverCustomDirty.filter((fieldId) => {
     const field = serverCustomFields.find((candidate) => candidate.id === fieldId);
@@ -2078,7 +2086,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     await runTaskAndRefresh(() => mapsApi.spawn(partitionId, "SPAWN MAP"), `Spawning ${label}`, `${label} Spawned`, { resultTarget: mapResultTarget("DeepDesert_1", partitionId) });
   }
   async function saveGame() {
-    if (!userGameName) return;
+    if (!userGameName || invalidGameDirty.length) return;
     const scope = isUserGameGlobal ? "global" : effectiveUserGamePartitionId ? "partition" : "map";
     const map = isUserGameGlobal ? "Survival_1" : userGameName;
     const partitionId = isUserGameGlobal ? undefined : effectiveUserGamePartitionId || undefined;
@@ -2604,11 +2612,13 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
             </div>
           </div>
         </div>
+        {userGameName && filteredGameFields.some(field => ["partition_pvp_enabled", "partition_pve_enabled", "force_pvp_all_partitions", "legacy_pvp_enabled", "server_pve", "security_zones_enabled"].includes(field.id)) && <CombatSettingsNotice row={selectedCombatSettings} hasUnsavedChanges={gameDirty.length > 0} />}
         {userGameName && <SettingsCardGrid fields={filteredGameFields} values={gameDraft} onChange={(id, value) => setGameDraft({ ...gameDraft, [id]: value })} viewMode={modifierViewMode} emptyMessage={modifierEmptyMessage(!!schema, userGameFields.length, modifierFilter, activeGameCategory)} matchRegionControls={[
           { fieldId: CORIOLIS_CYCLE_START_HOUR_FIELD_ID, enabled: coriolisHour.matchesRegion, available: coriolisHourMatchRegionAvailable, regionLabel: serverRegion, regionValueLabel: coriolisHourRegionValueLabel(coriolisHour.regionValue), onToggle: coriolisHour.setManualOverride },
           { fieldId: CORIOLIS_CYCLE_START_DAY_FIELD_ID, enabled: coriolisDay.matchesRegion, available: coriolisDayMatchRegionAvailable, regionLabel: serverRegion, regionValueLabel: coriolisDayRegionValueLabel(coriolisDay.regionValue), onToggle: coriolisDay.setManualOverride }
         ]} />}
-        <div className="action-row"><button disabled={!gameDirty.length || !userGameName} onClick={() => run(saveGame)}>Save</button><button disabled={!gameDirty.length} onClick={() => setGameDraft(gameValues)}>Discard Changes</button><button className="settings-reset-all-button" disabled={!userGameName || !userGameFields.length} title="Set every UserGame setting on this tab back to its default value" onClick={() => run(() => resetAllToDefaults("game"))}>Restore Defaults</button></div>
+        {invalidGameDirty.length > 0 && <p className="error">Enter a supported value within the displayed range before saving.</p>}
+        <div className="action-row"><button disabled={!gameDirty.length || !userGameName || invalidGameDirty.length > 0} onClick={() => run(saveGame)}>Save</button><button disabled={!gameDirty.length} onClick={() => setGameDraft(gameValues)}>Discard Changes</button><button className="settings-reset-all-button" disabled={!userGameName || !userGameFields.length} title="Set every UserGame setting on this tab back to its default value" onClick={() => run(() => resetAllToDefaults("game"))}>Restore Defaults</button></div>
       </> : settingsTab === "serverCustom" ? <>
         <div className="settings-selector-row">
           <label className="compact-select">Target<select value={userGameTargetKey} onChange={(event) => selectUserGameTarget(event.target.value)}><option value="">Select Map Or Partition</option>{userGameTargets.map((target) => <option key={target.key} value={target.key}>{target.label}</option>)}</select></label>
@@ -2621,6 +2631,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
             </div>
           </div>
         </div>
+        {userGameName && filteredServerCustomFields.some(field => field.id === "pvp_mode") && <CombatSettingsNotice row={selectedCombatSettings} hasUnsavedChanges={serverCustomDirty.length > 0} />}
         {userGameName && <><p className="muted">Official Patch 1.5 settings stored in <code>Saved/Config/LinuxServer/ServerCustomSettings.ini</code>. Dune Docker keeps <code>DifficultyLevel=Custom</code> and preserves unmanaged file values.</p><SettingsCardGrid fields={filteredServerCustomFields} values={serverCustomDraft} onChange={(id, value) => setServerCustomDraft({ ...serverCustomDraft, [id]: value })} viewMode={modifierViewMode} emptyMessage={modifierEmptyMessage(!!schema, serverCustomFields.length, modifierFilter, activeServerCustomCategory)} /></>}
         {invalidServerCustomDirty.length > 0 && <p className="error">Enter a supported value within the displayed range before saving.</p>}
         <div className="action-row"><button disabled={!serverCustomDirty.length || !userGameName || invalidServerCustomDirty.length > 0} onClick={() => run(saveServerCustom)}>Save Custom Settings</button><button disabled={!serverCustomDirty.length} onClick={() => setServerCustomDraft(serverCustomValues)}>Discard Custom Settings Changes</button><button className="settings-reset-all-button" disabled={!userGameName || !serverCustomFields.length} title="Set every Server Setting on this tab back to its default value" onClick={() => setServerCustomDraft(Object.fromEntries(serverCustomFields.map((field) => [field.id, field.default ?? ""]))) }>Restore Custom Settings Defaults</button></div>
@@ -3171,7 +3182,7 @@ function SettingInput({ field, value, inputId, onChange, disabled }: { field: Us
     : field.type === "boolean"
     ? <select id={inputId} value={normalizeBooleanText(value)} disabled={disabled} onChange={(event) => onChange(event.target.value)}><option value="True">True</option><option value="False">False</option></select>
     : field.type === "integer" || field.type === "number"
-      ? <input id={inputId} type="number" step={field.type === "integer" ? "1" : "any"} min={field.minimum ?? undefined} max={field.maximum ?? undefined} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)} />
+      ? <input id={inputId} type="number" step={field.type === "integer" ? "1" : "any"} min={field.minimum ?? undefined} max={field.maximum ?? undefined} placeholder={field.allowEmpty ? "Use inherited or game defaults" : undefined} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)} />
       : String(value).length > 72 || value.includes("(")
         ? <textarea id={inputId} rows={3} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)} />
         : <input id={inputId} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)} />;
@@ -3194,7 +3205,7 @@ function SettingInput({ field, value, inputId, onChange, disabled }: { field: Us
   const aboveRecommendation = recommended && hasNumericValue && field.recommendedMaximum != null && numericValue > field.recommendedMaximum;
   return <>
     {input}
-    {bounded && <small className="muted settings-value-constraint">Allowed: {range}{field.type === "integer" ? " (whole numbers)" : ""}</small>}
+    {bounded && <small className="muted settings-value-constraint">Allowed: {range}{field.type === "integer" ? " (whole numbers)" : ""}{field.allowEmpty ? ". Leave empty to use inherited or game defaults." : ""}</small>}
     {recommended && <small className="muted settings-value-constraint">Recommended: {recommendedRange}</small>}
     {aboveRecommendation && <small className="settings-value-recommendation-warning">Above Funcom&apos;s recommended range. Higher values may increase server and client load.</small>}
     {belowRecommendation && <small className="settings-value-recommendation-warning">Below Funcom&apos;s recommended range. Lower values may produce unsupported gameplay behavior.</small>}
@@ -3266,15 +3277,16 @@ export function MapDisplayName({ mapId, instanceName, sietch, draft, combatState
 }
 
 export function CombatStatusBadge({ state, restartRequired = false }: { state: PartitionCombatStateRow["configuredState"]; restartRequired?: boolean }) {
+  const helpId = useId();
   const normalized = state === "PVP" || state === "PVE" || state === "CONFLICT" ? state : "UNKNOWN";
   const label = normalized === "PVP" ? "PvP" : normalized === "PVE" ? "PvE" : normalized === "CONFLICT" ? "Conflict" : "Unknown";
   const detail = normalized === "UNKNOWN"
-    ? "The effective combat setting could not be determined."
+    ? "The saved UserGame combat selection could not be determined."
     : normalized === "CONFLICT"
-      ? "The effective PvP/PvE settings conflict."
-      : `Effective combat setting: ${label}.`;
+      ? "UserGame has overlapping PvP/PvE selections. This is a Console configuration warning, not a verified game error."
+      : `Saved UserGame selection: ${label}. Custom Settings' PVPMode is separate; this badge does not verify combat rules in game.`;
   const title = restartRequired ? `${detail} Restart required to apply the saved setting.` : detail;
-  return <span className={`combat-status-badge combat-status-${normalized.toLowerCase()}`} title={title} aria-label={`${label} combat status`}>{label}</span>;
+  return <span className={`combat-status-badge combat-status-${normalized.toLowerCase()}`}>{label}<InfoTooltip id={helpId} label={`About ${label} combat settings`} portal>{title}</InfoTooltip></span>;
 }
 
 export function MapRuntimeStatus({ value, detail }: { value: unknown; detail?: unknown }) {
@@ -3362,6 +3374,7 @@ function normalizeBooleanText(value: string) {
 
 export function settingValueIsValid(field: UserSettingField, value: string) {
   const candidate = String(value ?? "").trim();
+  if (!candidate && field.allowEmpty) return true;
   if (field.options?.length) return field.options.includes(candidate);
   if (field.type === "boolean") return /^(true|false)$/i.test(candidate);
   if (field.type !== "integer" && field.type !== "number") return true;

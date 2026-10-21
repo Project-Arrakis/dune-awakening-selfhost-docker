@@ -4095,6 +4095,16 @@ export function vehicleSubtypeFromClass(rawClass) {
   return "Other";
 }
 
+async function vehicleLifecycleStateSql(db) {
+  // Patch 1.5 moved lifecycle state onto actors. Older installations may
+  // still use actor_state, or have no lifecycle information at all.
+  if ((await columnsFor(db, "actors")).has("state")) return `coalesce(a.state::text, 'Default')`;
+  if (await tableExists(db, "actor_state")) {
+    return `coalesce((select ast.state::text from dune.actor_state ast where ast.actor_id=v.id limit 1), 'Default')`;
+  }
+  return `'Default'::text`;
+}
+
 export async function liveMapVehicles(db, map = "") {
   if (!(await tableExists(db, "actors")) || !(await tableExists(db, "vehicles"))) return unsupportedMap("vehicles", ["dune.actors", "dune.vehicles"]);
   const hasWorldPartition = await tableExists(db, "world_partition");
@@ -4102,6 +4112,7 @@ export async function liveMapVehicles(db, map = "") {
   const where = mapFilterClause(map, values, "a");
   const partitionWhere = validActorPartitionClause(hasWorldPartition, "a");
   try {
+    const lifecycleState = await vehicleLifecycleStateSql(db);
     const result = await db.query(`
       select a.id,
              'vehicle' as type,
@@ -4129,7 +4140,10 @@ export async function liveMapVehicles(db, map = "") {
         order by ps.character_name
         limit 1
       ) owner on true
+      -- Stored and travelling vehicles can retain their last world transform.
+      -- Lifecycle state, rather than those saved coordinates, controls visibility.
       where a.transform is not null ${partitionWhere} ${where}
+        and ${lifecycleState} not in ('Travel', 'VehicleBackup', 'VehicleRecovery')
       order by a.map, a.partition_id, a.id`, values);
     return { capabilities: { vehicles: true }, rows: result.rows.map((row) => ({ ...normalizeMarker(row), subtype: vehicleSubtypeFromClass(row.class) })) };
   } catch (error) {
@@ -9033,12 +9047,7 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
   // actor_state-table adapter so the same Console build remains upgrade-safe.
   // This state explains undeployed Travel / Backup / Recovery rows without
   // inventing a partition for them.
-  const actorColumns = await columnsFor(db, "actors");
-  const vehicleLifecycleStateSql = actorColumns.has("state")
-    ? `coalesce(a.state::text, 'Default')`
-    : await tableExists(db, "actor_state")
-      ? `coalesce((select ast.state::text from dune.actor_state ast where ast.actor_id=v.id limit 1), 'Default')`
-      : `'Default'::text`;
+  const lifecycleState = await vehicleLifecycleStateSql(db);
 
   // The game clears a vehicle's roster when it stores it and keeps the owner
   // on recovered_vehicles / backup_vehicles (character_id -> player_state.id).
@@ -9126,7 +9135,7 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
           ${VEHICLE_CUSTOM_NAME_SQL} as clean_name,
           coalesce(a.map, '') as map,
           a.partition_id::int as partition_id,
-          ${vehicleLifecycleStateSql} as lifecycle_state,
+          ${lifecycleState} as lifecycle_state,
           a.transform,
           a.owner_account_id
         from dune.vehicles v

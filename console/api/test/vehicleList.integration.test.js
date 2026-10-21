@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { listVehicles } from "../src/duneDb.js";
+import { listVehicles, liveMapVehicles } from "../src/duneDb.js";
 import { pgTransactionalDb, withIsolatedDatabase } from "../test-support/pgIntegrationDb.js";
 
 // Runs the real listVehicles query; db.test.js only asserts its SQL text.
@@ -145,6 +145,45 @@ async function listed(db, options) {
 
 const ids = (result) => result.rows.map((row) => Number(row.id));
 const byId = (result, id) => result.rows.find((row) => Number(row.id) === id);
+
+for (const schema of ["inline", "legacy", "unavailable"]) {
+  test(`real PostgreSQL: livemap vehicle lifecycle visibility (${schema})`, async (t) => {
+    await withDatabase(t, async (db, pool) => {
+      // Stored vehicles deliberately retain valid coordinates and an assigned
+      // partition: checking their saved location alone reproduces the bug.
+      await pool.query(`
+        create table dune.world_partition (partition_id bigint primary key, server_id text);
+        insert into dune.world_partition values (1, 'fixture-server');
+        update dune.actors set partition_id=1 where id in (${RECOVERED}, ${BACKED_UP}, ${TRAVELLING}, ${RECOVERED_ORPHAN});
+      `);
+      if (schema === "legacy") {
+        await pool.query(`
+          create table dune.actor_state (actor_id bigint primary key, state dune.actorstate);
+          insert into dune.actor_state select id, state from dune.actors;
+          alter table dune.actors drop column state;
+        `);
+      } else if (schema === "unavailable") {
+        await pool.query("alter table dune.actors drop column state");
+      }
+      const markers = await liveMapVehicles(db, "HaggaBasin");
+      assert.equal(markers.capabilities.vehicles, true, markers.reason);
+      assert.deepEqual(ids(markers), schema === "unavailable"
+        ? [OWNED, RECOVERED, BACKED_UP, UNOWNED, TRAVELLING, RECOVERED_ORPHAN]
+        : [OWNED, UNOWNED]);
+
+      if (schema !== "unavailable") {
+        // Redeploying a vehicle makes it visible on the next query, even if
+        // a historical backup link remains. No cache or owner is required.
+        await pool.query(schema === "inline"
+          ? `update dune.actors set state='Default' where id=${BACKED_UP}`
+          : `delete from dune.actor_state where actor_id=${BACKED_UP}`);
+        const redeployed = await liveMapVehicles(db, "HaggaBasin");
+        assert.equal(redeployed.capabilities.vehicles, true, redeployed.reason);
+        assert.deepEqual(ids(redeployed), [OWNED, BACKED_UP, UNOWNED]);
+      }
+    });
+  });
+}
 
 test("real PostgreSQL: each status returns exactly its bucket, and the buckets partition the list", async (t) => {
   await withDatabase(t, async (db) => {
