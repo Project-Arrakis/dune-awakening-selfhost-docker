@@ -39,7 +39,7 @@ def function(name, next_name):
     return source[start:end].rstrip() + "\n"
 
 selected = [
-    function("director_logs", "director_logs_available"),
+    function("director_logs", "director_logs_or_defer"),  # includes director_logs_available (used by scan_travel_demand)
     function("director_map_max_parties", "map_requires_isolated_party_dimension"),
     function("map_requires_isolated_party_dimension", "map_exists"),
     function("max_dimensions_for_map", "ensure_dynamic_instance_partitions"),
