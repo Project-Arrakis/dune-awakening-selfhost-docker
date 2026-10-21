@@ -226,3 +226,93 @@ describe("CharacterAdminUI item grant results", () => {
     expect(formatMutationResult).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining("Only 500") }));
   });
 });
+
+describe("CharacterAdminUI Grant All Skills", () => {
+  const succeeded = { id: "t", type: "admin", operation: "adminSetSkillModule", status: "succeeded", currentStep: "Done", progressMessage: "", logLines: [], warnings: [], startedAt: "2026-01-01T00:00:00Z" } as unknown as Task;
+  const catalog = [
+    "Weirding Step [BeneGesserit]\n  id: Skills.Ability.WeirdingStep\n  max level: 3",
+    "Energy Capsule [Trooper]\n  id: Skills.Ability.EnergyCapsule\n  max level: 1"
+  ].join("\n");
+
+  function renderOnline(extra: Partial<typeof baseProps> = {}, status = "Online") {
+    return render(<CharacterAdminUI {...baseProps} {...extra} detail={{ player: { actual_online_status: status }, capabilities: {} }} />);
+  }
+
+  it("raises every skill below max rank immediately, with no save step", async () => {
+    vi.mocked(adminApi.skillModules).mockResolvedValue({ stdout: catalog });
+    vi.mocked(playersApi.specs).mockResolvedValue({
+      rows: [], capabilities: {},
+      skillModules: [{ module_id: "Skills.Ability.WeirdingStep", skill_points_spent: 5, level: 2, max_level: 3 }]
+    } as unknown as Awaited<ReturnType<typeof playersApi.specs>>);
+    vi.mocked(playersApi.setSkillModule).mockResolvedValue({ task: succeeded });
+    const waitForTask = vi.fn().mockResolvedValue(succeeded);
+    const confirm = vi.fn().mockResolvedValue(true);
+    renderOnline({ waitForTask, confirmAction: confirm });
+
+    fireEvent.click(screen.getByRole("button", { name: "Skills" }));
+    await screen.findByText("0 Unsaved Changes");
+    const grantAll = screen.getByRole("button", { name: "Grant All" });
+    await waitFor(() => expect(grantAll).toBeEnabled());
+    fireEvent.click(grantAll);
+
+    await screen.findByText(/2 skills raised to max rank for OfflinePlayer/);
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(confirm.mock.calls[0][0]).toMatch(/Raise 2 skills to max rank/);
+    expect(playersApi.setSkillModule).toHaveBeenCalledWith("FLS_TEST", { module: "Skills.Ability.WeirdingStep", level: 3 });
+    expect(playersApi.setSkillModule).toHaveBeenCalledWith("FLS_TEST", { module: "Skills.Ability.EnergyCapsule", level: 1 });
+    expect(playersApi.setSkillModule).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+  });
+
+  it("does nothing when the operator cancels the confirmation", async () => {
+    vi.mocked(adminApi.skillModules).mockResolvedValue({ stdout: catalog });
+    const confirm = vi.fn().mockResolvedValue(false);
+    renderOnline({ confirmAction: confirm });
+    fireEvent.click(screen.getByRole("button", { name: "Skills" }));
+    await screen.findByText("0 Unsaved Changes");
+    const grantAll = screen.getByRole("button", { name: "Grant All" });
+    await waitFor(() => expect(grantAll).toBeEnabled());
+    fireEvent.click(grantAll);
+    await waitFor(() => expect(confirm).toHaveBeenCalledTimes(1));
+    expect(playersApi.setSkillModule).not.toHaveBeenCalled();
+  });
+
+  it("is disabled for an offline player and sends nothing", async () => {
+    vi.mocked(adminApi.skillModules).mockResolvedValue({ stdout: catalog });
+    renderOnline({}, "Offline");
+    fireEvent.click(screen.getByRole("button", { name: "Skills" }));
+    await screen.findByText("0 Unsaved Changes");
+    const grantAll = screen.getByRole("button", { name: "Grant All" });
+    expect(grantAll).toBeDisabled();
+    fireEvent.click(grantAll);
+    expect(playersApi.setSkillModule).not.toHaveBeenCalled();
+  });
+
+  it("stops at the first failure and reports how many were applied", async () => {
+    vi.mocked(adminApi.skillModules).mockResolvedValue({ stdout: catalog });
+    const failed = { ...succeeded, status: "failed", logLines: ["game refused"] } as unknown as Task;
+    vi.mocked(playersApi.setSkillModule).mockResolvedValue({ task: succeeded });
+    const waitForTask = vi.fn().mockResolvedValueOnce(succeeded).mockResolvedValueOnce(failed);
+    renderOnline({ waitForTask, confirmAction: vi.fn().mockResolvedValue(true) });
+    fireEvent.click(screen.getByRole("button", { name: "Skills" }));
+    await screen.findByText("0 Unsaved Changes");
+    const grantAll = screen.getByRole("button", { name: "Grant All" });
+    await waitFor(() => expect(grantAll).toBeEnabled());
+    fireEvent.click(grantAll);
+    await screen.findByText(/Stopped after 1 of 2/);
+    expect(playersApi.setSkillModule).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("CharacterAdminUI Grant All Skills guards", () => {
+  it("is disabled when the player's current skills could not be loaded", async () => {
+    vi.mocked(adminApi.skillModules).mockResolvedValue({ stdout: "Energy Capsule [Trooper]\n  id: Skills.Ability.EnergyCapsule\n  max level: 1" });
+    vi.mocked(playersApi.specs).mockRejectedValue(new Error("specs unavailable"));
+    render(<CharacterAdminUI {...baseProps} detail={{ player: { actual_online_status: "Online" }, capabilities: {} }} />);
+    fireEvent.click(screen.getByRole("button", { name: "Skills" }));
+    await screen.findByText("0 Unsaved Changes");
+    await screen.findByText(/specs unavailable/);
+    expect(screen.getByRole("button", { name: "Grant All" })).toBeDisabled();
+    expect(playersApi.setSkillModule).not.toHaveBeenCalled();
+  });
+});

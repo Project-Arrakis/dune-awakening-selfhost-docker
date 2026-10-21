@@ -48,9 +48,12 @@ const EXPECTED = [
   ["POST", p("/set-skill-points"), "players:grant"],
   ["POST", p("/set-skill-module"), "players:grant"],
   ["POST", p("/building-unlocks/grant"), "players:grant"],
+  ["POST", p("/building-unlocks/grant-all"), "players:grant"],
   ["POST", p("/customizations/grant"), "players:grant"],
   ["POST", p("/crafting-recipes/unlock"), "players:grant"],
+  ["POST", p("/crafting-recipes/unlock-all"), "players:grant"],
   ["POST", p("/research-items/unlock"), "players:grant"],
+  ["POST", p("/research-items/unlock-all"), "players:grant"],
   ["POST", p("/specializations/add-xp"), "players:grant"],
   ["POST", p("/specializations/grant-max"), "players:grant"],
   ["POST", p("/specializations/keystones/grant-all"), "players:grant"],
@@ -153,9 +156,9 @@ test("players: server.js has no mutation missing from the table", () => {
   assert.deepEqual(missing, [], `player mutations in server.js with no entry in EXPECTED: ${missing.join(", ")}`);
   // Without this the assertion above passes vacuously if the extraction stops
   // matching -- a damaged escape in the split pattern makes it find zero routes
-  // and cover nothing. 39, not 41: /ban carries no method in its dispatch and
+  // and cover nothing. 42, not 44: /ban carries no method in its dispatch and
   // is asserted separately.
-  assert.equal(found.size, 39, "route extraction found an unexpected number of player mutations");
+  assert.equal(found.size, 42, "route extraction found an unexpected number of player mutations");
 });
 
 test("players: the ban route still multiplexes three methods on one path", () => {

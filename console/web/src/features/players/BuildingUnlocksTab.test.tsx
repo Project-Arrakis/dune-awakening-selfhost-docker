@@ -6,7 +6,8 @@ import { BuildingUnlocksTab } from "./BuildingUnlocksTab";
 vi.mock("../../api/players", () => ({
   playersApi: {
     buildingUnlocks: vi.fn(),
-    grantBuildingUnlock: vi.fn()
+    grantBuildingUnlock: vi.fn(),
+    grantAllBuildingUnlocks: vi.fn()
   }
 }));
 
@@ -83,5 +84,52 @@ describe("BuildingUnlocksTab", () => {
     expect(await screen.findByText("Lost Harvest")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Recorded" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "Owned" })).not.toBeInTheDocument();
+  });
+});
+
+describe("BuildingUnlocksTab Grant All", () => {
+  it("grants everything missing after one confirmation and updates the rows", async () => {
+    const confirmAction = vi.fn().mockResolvedValue(true);
+    vi.mocked(playersApi.grantAllBuildingUnlocks).mockResolvedValue({
+      ok: true, requested: 3, granted: 1, skipped: 1, experimentalSkipped: 1, failed: 0,
+      results: [{ itemId: "BasicLighting_Patent", name: "Basic Lighting", ok: true, status: "Pending" }]
+    });
+    render(<BuildingUnlocksTab dbPlayerId="123" playerName="Chani" confirmAction={confirmAction} />);
+
+    await screen.findByText("Basic Lighting");
+    fireEvent.click(screen.getByRole("button", { name: "Grant All" }));
+
+    await waitFor(() => expect(playersApi.grantAllBuildingUnlocks).toHaveBeenCalledWith("123", { confirmation: "GRANT ALL BUILDING UNLOCKS" }));
+    expect(confirmAction).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText(/1 granted, 1 already owned or pending, 1 experimental skipped/)).toBeInTheDocument();
+    expect(await screen.findByText("Pending Login")).toBeInTheDocument();
+    expect(playersApi.grantBuildingUnlock).not.toHaveBeenCalled();
+  });
+
+  it("does nothing when the confirmation is cancelled", async () => {
+    const confirmAction = vi.fn().mockResolvedValue(false);
+    render(<BuildingUnlocksTab dbPlayerId="123" playerName="Chani" confirmAction={confirmAction} />);
+    await screen.findByText("Basic Lighting");
+    fireEvent.click(screen.getByRole("button", { name: "Grant All" }));
+    await waitFor(() => expect(confirmAction).toHaveBeenCalledTimes(1));
+    expect(playersApi.grantAllBuildingUnlocks).not.toHaveBeenCalled();
+  });
+
+  it("names what could not be delivered instead of reporting success", async () => {
+    vi.mocked(playersApi.grantAllBuildingUnlocks).mockResolvedValue({
+      ok: false, requested: 3, granted: 0, skipped: 1, experimentalSkipped: 1, failed: 1,
+      results: [{ itemId: "BasicLighting_Patent", name: "Basic Lighting", ok: false, status: "Available", error: "inventory full" }]
+    });
+    render(<BuildingUnlocksTab dbPlayerId="123" playerName="Chani" confirmAction={vi.fn().mockResolvedValue(true)} />);
+    await screen.findByText("Basic Lighting");
+    fireEvent.click(screen.getByRole("button", { name: "Grant All" }));
+    expect(await screen.findByText(/1 failed\. Not delivered: Basic Lighting/)).toBeInTheDocument();
+  });
+
+  it("is disabled when ownership cannot be verified", async () => {
+    vi.mocked(playersApi.buildingUnlocks).mockResolvedValue({ capabilities: { buildingUnlockOwnership: false }, rows });
+    render(<BuildingUnlocksTab dbPlayerId="123" playerName="Chani" confirmAction={vi.fn().mockResolvedValue(true)} />);
+    await screen.findByText("Basic Lighting");
+    expect(screen.getByRole("button", { name: "Grant All" })).toBeDisabled();
   });
 });

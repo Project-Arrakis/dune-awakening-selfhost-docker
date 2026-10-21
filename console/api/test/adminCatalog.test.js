@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildingUnlockStatus, customizationGrantGroups, customizationGrantStatus, isFillableItem, itemImagePath, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, listCatalogItems, listCustomizationGrantItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemStackSize, resolveItemVolume } from "../src/adminCatalog.js";
+import { buildingUnlockStatus, customizationGrantGroups, customizationGrantStatus, isFillableItem, itemImagePath, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, listCatalogItems, planBulkBuildingUnlockGrant, listCustomizationGrantItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemStackSize, resolveItemVolume } from "../src/adminCatalog.js";
 
 const REAL_REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 
@@ -487,4 +487,34 @@ test("no fillable-group item still carries the 1.0 volume placeholder, except co
     .filter((item) => Number(item.volume) === 1.0)
     .map((item) => item.id);
   assert.deepEqual(stillPlaceholder, []);
+});
+
+// #1235: bulk Building Sets grant.
+test("bulk building set plan delivers only sets the player lacks and leaves experimental ones alone", () => {
+  const items = [
+    { itemId: "A_Patent", name: "A" },
+    { itemId: "B_Patent", name: "B" },
+    { itemId: "C_Patent", name: "C" },
+    { itemId: "D_Patent", name: "D", experimental: true },
+    { itemId: "E_Patent", name: "E" }
+  ];
+  const status = { A_Patent: "Owned", B_Patent: "Pending", C_Patent: "Available", D_Patent: "Available", E_Patent: "Unknown" };
+  const plan = planBulkBuildingUnlockGrant(items, (item) => status[item.itemId]);
+  assert.deepEqual(plan.toGrant.map((item) => item.itemId), ["C_Patent", "E_Patent"]);
+  assert.deepEqual(plan.alreadyHave.map(({ item, status: s }) => [item.itemId, s]), [["A_Patent", "Owned"], ["B_Patent", "Pending"]]);
+  assert.deepEqual(plan.experimental.map((item) => item.itemId), ["D_Patent"]);
+});
+
+test("bulk building set plan never asks for the ownership of an experimental set", () => {
+  const asked = [];
+  planBulkBuildingUnlockGrant([{ itemId: "X", experimental: true }, { itemId: "Y" }], (item) => { asked.push(item.itemId); return "Available"; });
+  assert.deepEqual(asked, ["Y"]);
+});
+
+test("the real Building Sets catalog plans without losing or duplicating an item", () => {
+  const items = listBuildingUnlockItems(REAL_REPO_ROOT);
+  const plan = planBulkBuildingUnlockGrant(items, () => "Available");
+  assert.equal(plan.toGrant.length + plan.alreadyHave.length + plan.experimental.length, items.length);
+  assert.equal(new Set(plan.toGrant.map((item) => item.itemId)).size, plan.toGrant.length);
+  assert.ok(plan.toGrant.length > 0);
 });

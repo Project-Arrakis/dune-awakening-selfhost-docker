@@ -155,6 +155,26 @@ export function isCustomizationGrantItem(item = {}) {
     String(item.source || "").toLowerCase() === "customizations";
 }
 
+// Decides, for a bulk Building Sets grant, what to deliver and what to leave.
+// Owned and pending sets are skipped so nothing is delivered twice; experimental
+// sets (incomplete or developer-only metadata) are left to a deliberate,
+// per-item grant. `statusOf` maps an item to its ownership status.
+export function planBulkBuildingUnlockGrant(items, statusOf) {
+  const toGrant = [];
+  const alreadyHave = [];
+  const experimental = [];
+  for (const item of items) {
+    if (item.experimental) {
+      experimental.push(item);
+      continue;
+    }
+    const status = statusOf(item);
+    if (status === "Owned" || status === "Pending") alreadyHave.push({ item, status });
+    else toGrant.push(item);
+  }
+  return { toGrant, alreadyHave, experimental };
+}
+
 export function listCustomizationGrantItems(repoRoot) {
   const items = JSON.parse(readFileSync(resolve(repoRoot, "runtime/data/admin-items.json"), "utf8"));
   return CUSTOMIZATION_GROUPS.flatMap((group) => items

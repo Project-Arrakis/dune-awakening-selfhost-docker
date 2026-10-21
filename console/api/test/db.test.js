@@ -193,6 +193,9 @@ import {
   teleportPlayer,
   trackPlayerPlaytime,
   unlinkAdditionalAccount,
+  preflightBulkUnlock,
+  unlockAllCraftingRecipes,
+  unlockAllResearchItems,
   unlockCraftingRecipe,
   unlockResearchItem,
   unsupportedPlayerFeature,
@@ -11317,4 +11320,117 @@ test("transactionError keeps an application error's code but never a Postgres SQ
   assert.equal(transactionError(app).code, "stored_owner_online");
   const pg = Object.assign(new Error("duplicate key"), { code: "23505", severity: "ERROR" });
   assert.equal(transactionError(pg).code, undefined);
+});
+
+// #1235: bulk unlocks for the Crafting and Research tabs.
+const ONLINE_PLAYER = [{ actor_id: 123, account_id: 44, controller_id: 55, player_state_id: 5, online_status: "Online" }];
+
+test("unlock all crafting recipes adds every missing catalog recipe and leaves existing entries untouched", async () => {
+  const catalogSize = (await playerCraftingRecipes(fakeMutationDb([], { craftingListRows: [] }), 123)).rows.length;
+  assert.ok(catalogSize > 500);
+  const existing = { BaseRecipeId: { Name: "HealthPackRecipe" }, m_Source: "Vendor", m_QualityLevel: 3, m_NumberOfRecipeUses: 7, m_bIsLimitedUseRecipe: false };
+  const calls = [];
+  const db = fakeMutationDb(calls, { currentCraftingRecipes: [existing] });
+  const result = await unlockAllCraftingRecipes(db, 123);
+  assert.equal(result.total, catalogSize);
+  assert.equal(result.alreadyUnlocked, 1);
+  assert.equal(result.unlocked, catalogSize - 1);
+  const updates = calls.filter((call) => call.text.includes("CraftingRecipesLibraryActorComponent,m_KnownItemRecipes") && call.text.includes("update dune.actors"));
+  assert.equal(updates.length, 1, "one write, not one per recipe");
+  const recipes = JSON.parse(updates[0].values[1]);
+  assert.equal(recipes.length, catalogSize);
+  assert.deepEqual(recipes[0], existing, "an existing recipe keeps its own quality and use count");
+  assert.equal(new Set(recipes.map((recipe) => recipe.BaseRecipeId.Name)).size, catalogSize, "no recipe is duplicated");
+});
+
+test("unlock all crafting recipes writes nothing when every recipe is already known", async () => {
+  const all = (await playerCraftingRecipes(fakeMutationDb([], { craftingListRows: [] }), 123)).rows
+    .map((row) => ({ BaseRecipeId: { Name: row.recipeId }, m_Source: "SchematicPickup" }));
+  const calls = [];
+  const result = await unlockAllCraftingRecipes(fakeMutationDb(calls, { currentCraftingRecipes: all }), 123);
+  assert.equal(result.unlocked, 0);
+  assert.equal(result.alreadyUnlocked, all.length);
+  assert.equal(calls.some((call) => call.text.includes("update dune.actors")), false);
+});
+
+test("unlock all crafting recipes refuses an online player and writes nothing", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, { playerRows: ONLINE_PLAYER, currentCraftingRecipes: [] });
+  await assert.rejects(() => unlockAllCraftingRecipes(db, 123), /offline/i);
+  assert.equal(calls.some((call) => call.text.includes("update dune.actors")), false);
+});
+
+test("unlock all research unlocks recipe-linked keys and names the group markers it skips", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    researchListRows: [
+      { item_key: "RCP_HealthPackRecipe", unlocked_state: "NotPurchased", is_new: true },
+      { item_key: "DA_GRP_SandbikePack", unlocked_state: "NotPurchased", is_new: true }
+    ],
+    researchExists: true,
+    currentResearchItems: [{ ItemKey: "RCP_HealthPackRecipe", bIsNewEntry: true, UnlockedState: "NotPurchased" }],
+    recipeExists: true,
+    currentCraftingRecipes: []
+  });
+  const result = await unlockAllResearchItems(db, 123);
+  assert.equal(result.total, 2);
+  assert.equal(result.unlocked, 1);
+  assert.deepEqual(result.skippedGroups, ["DA_GRP_SandbikePack"]);
+  const researchUpdate = calls.find((call) => call.text.includes("TechKnowledgePlayerComponent,m_TechKnowledge,m_TechKnowledgeData") && call.text.includes("update dune.actors"));
+  assert.ok(researchUpdate);
+  assert.equal(JSON.parse(researchUpdate.values[1])[0].UnlockedState, "Purchased");
+  const recipeUpdate = calls.find((call) => call.text.includes("CraftingRecipesLibraryActorComponent,m_KnownItemRecipes") && call.text.includes("update dune.actors"));
+  assert.equal(JSON.parse(recipeUpdate.values[1])[0].BaseRecipeId.Name, "HealthPackRecipe", "the linked recipe is materialized too");
+});
+
+test("unlock all research refuses an online player and writes nothing", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, { playerRows: ONLINE_PLAYER, researchListRows: [{ item_key: "RCP_HealthPackRecipe", unlocked_state: "NotPurchased", is_new: true }] });
+  await assert.rejects(() => unlockAllResearchItems(db, 123), /offline/i);
+  assert.equal(calls.some((call) => call.text.includes("update dune.actors")), false);
+});
+
+test("unlock all research skips building keys it cannot materialize instead of aborting the batch (#1235)", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    researchListRows: [
+      { item_key: "BLD_LargeOreRefinery_Patent", unlocked_state: "NotPurchased", is_new: true },
+      { item_key: "RCP_HealthPackRecipe", unlocked_state: "NotPurchased", is_new: true }
+    ],
+    researchExists: true,
+    currentResearchItems: [{ ItemKey: "RCP_HealthPackRecipe", bIsNewEntry: true, UnlockedState: "NotPurchased" }],
+    recipeExists: true,
+    currentCraftingRecipes: []
+  });
+  const result = await unlockAllResearchItems(db, 123);
+  assert.equal(result.unlocked, 1, "the recipe key still unlocks");
+  assert.deepEqual(result.skippedUnsupported, ["BLD_LargeOreRefinery_Patent"]);
+  assert.equal(calls.some((call) => call.text.includes("building_progression") && /^\s*update/i.test(call.text)), false);
+});
+
+test("unlock all research counts add up: purchased group markers are not 'already unlocked' (#1235)", async () => {
+  const db = fakeMutationDb([], {
+    researchListRows: [
+      { item_key: "DA_GRP_SandbikePack", unlocked_state: "Purchased", is_new: false },
+      { item_key: "DA_GRP_BuggyPack", unlocked_state: "NotPurchased", is_new: true },
+      { item_key: "RCP_HealthPackRecipe", unlocked_state: "NotPurchased", is_new: true }
+    ],
+    researchExists: true,
+    currentResearchItems: [{ ItemKey: "RCP_HealthPackRecipe", bIsNewEntry: true, UnlockedState: "NotPurchased" }],
+    recipeExists: true,
+    currentCraftingRecipes: []
+  });
+  const r = await unlockAllResearchItems(db, 123);
+  assert.equal(r.total, 3);
+  assert.equal(r.groupMarkers, 2);
+  assert.deepEqual(r.skippedGroups, ["DA_GRP_BuggyPack"], "only the unpurchased group marker is named");
+  assert.equal(r.total, r.unlocked + r.repaired + r.alreadyUnlocked + r.groupMarkers + r.skippedUnsupported.length);
+});
+
+test("bulk unlock preflight refuses an online player before any backup is spent (#1235)", async () => {
+  const db = fakeMutationDb([], { playerRows: ONLINE_PLAYER });
+  await assert.rejects(() => preflightBulkUnlock(db, 123, "research", "Research unlocks"), /offline/i);
+  await assert.rejects(() => preflightBulkUnlock(db, 123, "crafting", "Crafting recipe unlocks"), /offline/i);
+  await assert.doesNotReject(() => preflightBulkUnlock(fakeMutationDb([], {}), 123, "research", "Research unlocks"));
+  await assert.doesNotReject(() => preflightBulkUnlock(fakeMutationDb([], {}), 123, "crafting", "Crafting recipe unlocks"));
 });

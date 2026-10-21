@@ -26,7 +26,7 @@ import { createDb, hasExecutableStatement, isReadOnlySql, quoteIdentifier } from
 import * as duneDb from "./duneDb.js";
 import { audit, recordAdminHistory } from "./audit.js";
 import { redact } from "./redact.js";
-import { buildingUnlockStatus, customizationGrantGroups, customizationGrantStatus, isBuildingUnlockItem, isCustomizationGrantItem, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, listCatalogItems, listCustomizationGrantItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemVolume } from "./adminCatalog.js";
+import { buildingUnlockStatus, customizationGrantGroups, customizationGrantStatus, isBuildingUnlockItem, isCustomizationGrantItem, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, planBulkBuildingUnlockGrant, listCatalogItems, listCustomizationGrantItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemVolume } from "./adminCatalog.js";
 import { buildBroadcastCommand, buildShutdownBroadcastCommand, publishCarePackageWhisper, publishServerCommand } from "./rmq.js";
 import { clearCarePackageHistory, enableCarePackage, ensureCarePackageServerPersona, grantEligibleCarePackages, grantCarePackage, retryCarePackageGrant, runCarePackageAutoScan, maintainCarePackageHistory, saveCarePackageConfig, carePackageCapabilities, carePackageConfig, carePackageEligiblePlayers, carePackageHistory } from "./carePackage.js";
 import { readJsonBody, readMultipartForm, streamRequestToFile } from "./httpSafety.js";
@@ -1996,6 +1996,7 @@ async function handleApi(req, res, path) {
   if (path.match(/^\/api\/players\/[^/]+\/give-items$/) && req.method === "POST") return giveItemsRoute(req, res, path);
   if (path.match(/^\/api\/players\/[^/]+\/give-item-id$/) && req.method === "POST") return giveSingleItemRoute(req, res, path, "adminGiveItemId");
   if (path.match(/^\/api\/players\/[^/]+\/building-unlocks\/grant$/) && req.method === "POST") return buildingUnlockGrantRoute(req, res, path);
+  if (path.match(/^\/api\/players\/[^/]+\/building-unlocks\/grant-all$/) && req.method === "POST") return buildingUnlockGrantAllRoute(req, res, path);
   if (path.match(/^\/api\/players\/[^/]+\/customizations\/grant$/) && req.method === "POST") return customizationGrantRoute(req, res, path);
   if (path.match(/^\/api\/players\/[^/]+\/add-xp$/) && req.method === "POST") return playerTask(req, res, path, "adminAddXp");
   if (path.match(/^\/api\/players\/[^/]+\/set-skill-points$/) && req.method === "POST") return playerTask(req, res, path, "adminSetSkillPoints");
@@ -2025,6 +2026,8 @@ async function handleApi(req, res, path) {
   if (path.match(/^\/api\/players\/[^/]+\/specializations\/keystones\/reset-all$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.specializations.keystones.reset-all", "RESET ALL KEYSTONES", (playerId) => duneDb.resetAllSpecializationKeystones(db, playerId));
   if (path.match(/^\/api\/players\/[^/]+\/crafting-recipes\/unlock$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.crafting-recipes.unlock", "UNLOCK CRAFTING RECIPE", (playerId, body) => duneDb.unlockCraftingRecipe(db, playerId, body));
   if (path.match(/^\/api\/players\/[^/]+\/research-items\/unlock$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.research-items.unlock", "UNLOCK RESEARCH ITEM", (playerId, body) => duneDb.unlockResearchItem(db, playerId, body));
+  if (path.match(/^\/api\/players\/[^/]+\/research-items\/unlock-all$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.research-items.unlock-all", "UNLOCK ALL RESEARCH", (playerId) => bulkPlayerUnlock(playerId, "Research unlocks", duneDb.unlockAllResearchItems, "research"));
+  if (path.match(/^\/api\/players\/[^/]+\/crafting-recipes\/unlock-all$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.crafting-recipes.unlock-all", "UNLOCK ALL CRAFTING RECIPES", (playerId) => bulkPlayerUnlock(playerId, "Crafting recipe unlocks", duneDb.unlockAllCraftingRecipes, "crafting"));
   if (path.match(/^\/api\/players\/[^/]+\/journey\/complete$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.journey.complete", "COMPLETE JOURNEY NODE", (playerId, body) => duneDb.completeJourneyNode(db, playerId, body, journeyTagsData));
   if (path.match(/^\/api\/players\/[^/]+\/journey\/reset$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.journey.reset", "RESET JOURNEY NODE", (playerId, body) => duneDb.resetJourneyNode(db, playerId, body, journeyTagsData));
   if (path.match(/^\/api\/players\/[^/]+\/tutorials\/complete$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.tutorials.complete", "COMPLETE TUTORIAL", (playerId, body) => duneDb.completeTutorial(db, playerId, body));
@@ -5975,6 +5978,17 @@ async function playerDbMutation(req, res, path, action, phrase, fn) {
   return directDbMutation(req, res, action, phrase, (body) => fn(playerId, body), { playerId });
 }
 
+// A bulk unlock rewrites a large part of the character's saved state, so it takes
+// a full backup first, like the other bulk repairs. An online player is refused
+// before the backup is spent (as is a database that lacks the needed component);
+// the write repeats the checks inside its transaction.
+async function bulkPlayerUnlock(playerId, actionName, unlockAll, kind) {
+  await duneDb.preflightBulkUnlock(db, playerId, kind, actionName);
+  await runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "restore-safety" } });
+  const result = await unlockAll(db, playerId);
+  return { ...result, backupCreated: true };
+}
+
 async function playerLandsraadQuestRepairRoute(req, res, path) {
   const playerId = decodeURIComponent(path.split("/")[3]);
   return directDbMutation(req, res, "players.repair-landsraad-quests", "REPAIR LANDSRAAD QUESTS", async () => {
@@ -7884,6 +7898,58 @@ async function buildingUnlockGrantRoute(req, res, path) {
     return json(res, result.ok ? 200 : 207, { ok: result.ok, status, deliveryVerified: result.ok, ownershipVerified, item: resolved, result });
   } catch (error) {
     audit(config, req, "players.building-unlocks.grant", { playerId, itemId: body.itemId, ok: false, error: redact(error?.message || "Unexpected error.") });
+    return json(res, 400, { ok: false, error: redact(error?.message || "Unexpected error.") });
+  }
+}
+
+// Grant every Building Set the player neither owns nor has pending. One bad item
+// (a full inventory, an item the game refuses) does not stop the rest: each
+// outcome is reported so the operator can see exactly what did not arrive.
+async function buildingUnlockGrantAllRoute(req, res, path) {
+  const playerId = decodeURIComponent(path.split("/")[3]);
+  const body = await readJson(req);
+  if (body.confirmation !== "GRANT ALL BUILDING UNLOCKS") return json(res, 400, { error: "Confirmation phrase mismatch" });
+  if (!applyMutationRateLimit(req, res, "players.building-unlocks.grant-all")) return;
+
+  try {
+    const catalog = listBuildingUnlockItems(config.repoRoot);
+    if (catalog.length === 0) throw new Error("The Building Sets catalog is empty.");
+    const target = await resolvePlayerGrantTarget(playerId);
+    if (!config.mockMode && !target.actorId) throw new Error("A database actor ID is required to verify building-set ownership.");
+    // Each set is one delivery. For an online player that is one `dune` command per
+    // set, in series, which can outlast the request and the tunnel in front of it, so
+    // a retry would deliver twice. Offline delivery is a database write per set and
+    // is quick; an online player can still be given sets one at a time.
+    if (target.online) throw new Error("Grant All Building Sets needs the player to be offline. Grant sets one at a time while they are online.");
+    let state = null;
+    if (target.actorId) {
+      state = await duneDb.playerBuildingUnlockState(db, target.actorId);
+      if (!state.capabilities?.buildingUnlockOwnership) {
+        throw new Error("This game database cannot verify building-set ownership, so nothing was granted.");
+      }
+    }
+    const plan = planBulkBuildingUnlockGrant(catalog, (item) => state ? buildingUnlockStatus(item.itemId, { ...state, supported: true }) : "Available");
+    const results = [
+      ...plan.alreadyHave.map(({ item, status }) => ({ itemId: item.itemId, name: item.name, ok: true, status, skipped: true })),
+      ...plan.experimental.map((item) => ({ itemId: item.itemId, name: item.name, ok: true, status: "Experimental", skipped: true, experimental: true }))
+    ];
+    for (const item of plan.toGrant) {
+      try {
+        const result = await grantPlayerItem(playerId, { itemId: item.itemId, quantity: 1 }, target);
+        results.push({ itemId: item.itemId, name: item.name, ok: Boolean(result.ok), status: result.ok ? (target.online ? "Delivered" : "Pending") : "Available", ...(result.ok ? {} : { error: redact(result.warning || result.error || "Delivery was not accepted.") }) });
+      } catch (error) {
+        results.push({ itemId: item.itemId, name: item.name, ok: false, status: "Available", error: redact(error?.message || "Unexpected error.") });
+      }
+    }
+    const experimentalSkipped = plan.experimental.length;
+    const skipped = plan.alreadyHave.length;
+    const failed = results.filter((entry) => !entry.ok).length;
+    const granted = plan.toGrant.length - failed;
+    const ok = failed === 0;
+    audit(config, req, "players.building-unlocks.grant-all", { playerId, requested: catalog.length, granted, skipped, experimentalSkipped, failed, ok, failures: results.filter((entry) => !entry.ok).map((entry) => ({ itemId: entry.itemId, error: entry.error })) });
+    return json(res, ok ? 200 : 207, { ok, requested: catalog.length, granted, skipped, experimentalSkipped, failed, ownershipVerified: false, results });
+  } catch (error) {
+    audit(config, req, "players.building-unlocks.grant-all", { playerId, ok: false, error: redact(error?.message || "Unexpected error.") });
     return json(res, 400, { ok: false, error: redact(error?.message || "Unexpected error.") });
   }
 }
