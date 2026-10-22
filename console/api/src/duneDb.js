@@ -4408,12 +4408,11 @@ export async function baseIsBackedUp(db, baseId) {
 // player_controller_id appeared immediately.
 //
 // The fallback lookup exists so such a phantom row is still shown to the
-// operator rather than silently vanishing from the roster: resolving the name
-// through owner_account_id is how listBases does it, and every actors row of an
-// account maps to the same character name.
-// Shared by bases and vehicles -- the roster query only depends on the
-// permission actor id, not on what kind of actor it is.
-async function listPermissionRoster(db, actorId) {
+// operator rather than silently vanishing from the roster. Account-based actor
+// lookup is only a fallback: it cannot override the canonical controller name.
+// The Bases table and permission editor share this identity resolution so a
+// missing/stale actors row cannot rename the owner or promote a co-owner.
+async function permissionRosterIdentitySql(db) {
   const encryptedPlayerStateColumns = await tableExists(db, "encrypted_player_state")
     ? await columnsFor(db, "encrypted_player_state")
     : new Set();
@@ -4433,19 +4432,16 @@ async function listPermissionRoster(db, actorId) {
       limit 1
     ) eps on true`
     : "";
-  const encryptedName = hasEncryptedController ? "eps.character_name" : "''";
+  const encryptedName = hasEncryptedController ? "eps.character_name" : "null::text";
   const encryptedCanonical = hasEncryptedController ? "or eps.player_controller_id is not null" : "";
-  const result = await db.query(`
-    select par.player_id::text as player_id,
-           case
+  return {
+    name: `case
              when par.player_id = ${CARE_PACKAGE_SERVER_PERSONA.playerControllerId}::bigint then '${CARE_PACKAGE_SERVER_PERSONA.displayName}'
              when par.player_id = ${FUNCOM_GM_PERSONA.playerControllerId}::bigint then '${FUNCOM_GM_PERSONA.displayName}'
              else coalesce(ps.character_name, ${encryptedName}, fallback.character_name, '')
-           end as character_name,
-           par.rank::int as rank,
-           (ps.player_controller_id is not null ${encryptedCanonical}) as canonical
-    from dune.permission_actor_rank par
-    left join dune.player_state ps on ps.player_controller_id = par.player_id
+           end`,
+    canonical: `(ps.player_controller_id is not null ${encryptedCanonical})`,
+    joins: `left join dune.player_state ps on ps.player_controller_id = par.player_id
     ${encryptedJoin}
     left join lateral (
       select fps.character_name
@@ -4453,9 +4449,23 @@ async function listPermissionRoster(db, actorId) {
       join dune.player_state fps on fps.account_id = fa.owner_account_id
       where fa.id = par.player_id
       limit 1
-    ) fallback on true
+    ) fallback on true`
+  };
+}
+
+// Shared by bases and vehicles -- the roster query only depends on the
+// permission actor id, not on what kind of actor it is.
+async function listPermissionRoster(db, actorId) {
+  const identity = await permissionRosterIdentitySql(db);
+  const result = await db.query(`
+    select par.player_id::text as player_id,
+           ${identity.name} as character_name,
+           par.rank::int as rank,
+           ${identity.canonical} as canonical
+    from dune.permission_actor_rank par
+    ${identity.joins}
     where par.permission_actor_id = $1::bigint
-    order by par.rank asc, coalesce(ps.character_name, fallback.character_name, '') asc`, [actorId]);
+    order by par.rank asc, character_name asc, par.player_id asc`, [actorId]);
   return result.rows.map((row) => ({
     playerId: String(row.player_id),
     name: String(row.character_name || ""),
@@ -5839,7 +5849,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
   const safeSortDirection = String(sortDirection).toLowerCase() === "desc" ? "desc" : "asc";
   const sortSpec = BASE_SORT_COLUMNS[safeSortColumn];
 
-  // Owner resolution (lowest-rank permission holder) is a per-base correlated LATERAL —
+  // Owner resolution (rank 1 only) is a per-base correlated LATERAL —
   // expensive at scale. When searching, the `having` clause needs it to filter on, so it
   // must run inside `matched` (before pagination) for every candidate base. When not
   // searching, defer it to the final SELECT so it only runs for the page being displayed.
@@ -5864,33 +5874,25 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
   const offsetParamIndex = values.length;
 
   const matchedOwnerSelect = resolveOwnerBeforePaging ? "coalesce(owner.character_name, '') as owner_name,\n               " : "";
-  const matchedOwnerJoin = resolveOwnerBeforePaging ? `
+  const permissionIdentity = await permissionRosterIdentitySql(db);
+  const ownerJoin = (actor) => `
         left join lateral (
-          select ps.character_name
+          select ${permissionIdentity.name} as character_name
           from dune.permission_actor_rank par
-          join dune.actors player_a on player_a.id = par.player_id
-          join dune.player_state ps on ps.account_id = player_a.owner_account_id
-          where par.permission_actor_id = a.id
-          order by par.rank asc, ps.character_name asc
+          ${permissionIdentity.joins}
+          where par.permission_actor_id = ${actor}
+            and par.rank = ${PERMISSION_OWNER_RANK}
+          order by par.rank asc, character_name asc, par.player_id asc
           limit 1
-        ) owner on true` : "";
+        ) owner on true`;
+  const matchedOwnerJoin = resolveOwnerBeforePaging ? ownerJoin("a.id") : "";
   const matchedGroupByOwner = resolveOwnerBeforePaging ? "owner.character_name, " : "";
 
   const finalOwnerSelect = resolveOwnerBeforePaging ? "p.owner_name," : "coalesce(owner.character_name, '') as owner_name,";
   const viewerRankSelect = player
     ? `(select min(viewer_par.rank)::int from dune.permission_actor_rank viewer_par where viewer_par.permission_actor_id = p.actor_id and viewer_par.player_id = $1) as viewer_rank,`
     : "null::int as viewer_rank,";
-  const finalOwnerJoin = resolveOwnerBeforePaging ? "" : `
-      left join lateral (
-        select ps.character_name
-        from dune.permission_actor_rank par
-        join dune.actors player_a on player_a.id = par.player_id
-        join dune.player_state ps on ps.account_id = player_a.owner_account_id
-        where par.permission_actor_id = p.actor_id
-        order by par.rank asc, ps.character_name asc
-        limit 1
-      ) owner on true`;
-  const sharedOwnerRef = resolveOwnerBeforePaging ? "p.owner_name" : "coalesce(owner.character_name, '')";
+  const finalOwnerJoin = resolveOwnerBeforePaging ? "" : ownerJoin("p.actor_id");
   const matchedSortSelect = [
     "((a.transform).location).x as x",
     "((a.transform).location).y as y",
@@ -5948,13 +5950,11 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
       ${partitionJoin}
       ${finalOwnerJoin}
       left join lateral (
-        select jsonb_agg(jsonb_build_object('name', ps.character_name, 'rank', par.rank) order by par.rank asc, ps.character_name asc) as entries
+        select jsonb_agg(jsonb_build_object('name', ${permissionIdentity.name}, 'rank', par.rank) order by par.rank asc, ${permissionIdentity.name} asc, par.player_id asc) as entries
         from dune.permission_actor_rank par
-        join dune.actors player_a on player_a.id = par.player_id
-        join dune.player_state ps on ps.account_id = player_a.owner_account_id
+        ${permissionIdentity.joins}
         where par.permission_actor_id = p.actor_id
           and par.rank <> 1
-          and ps.character_name is distinct from ${sharedOwnerRef}
       ) shared on true
       order by p.sort_position`, values);
 
