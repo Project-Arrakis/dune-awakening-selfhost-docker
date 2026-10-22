@@ -11,6 +11,8 @@ vi.mock("../../api/updates", () => ({
     status: vi.fn(),
     check: vi.fn(),
     apply: vi.fn(),
+    applyGame: vi.fn(),
+    checkGame: vi.fn(),
     fixSteamcmd: vi.fn(),
     auto: vi.fn(),
     selfUpdateStatus: vi.fn(),
@@ -75,9 +77,11 @@ describe("install-game-files request", () => {
 
 describe("update diagnostics retention", () => {
   beforeEach(() => {
+    vi.mocked(updatesApi.applyGame).mockReset();
     window.localStorage.clear();
     window.sessionStorage.clear();
     vi.useFakeTimers();
+    vi.mocked(updatesApi.checkGame).mockResolvedValue({ task: { ...task, operation: "updateCheck", status: "succeeded", logLines: [{ timestamp: "", stream: "stdout", line: "Local build: old\nRemote build: new\nUpdate available." }] } } as never);
   });
   afterEach(() => {
     cleanup();
@@ -107,6 +111,35 @@ describe("update diagnostics retention", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(UPDATE_RESULT_DISMISS_MS + 1); });
     expect(screen.queryByText("Game Files Installed")).toBeNull();
     expect(loadPersistedUpdateTask(GAME_UPDATE_TASK_KEY)).toBeNull();
+  });
+
+  const blockedTask: Task = { ...task, operation: "updateApply", status: "failed", errorMessage: "dune update --yes failed with exit 1", logLines: [{ timestamp: "", stream: "stderr", line: "Disable Experimental Tanks in Settings before updating game-server files. The Tank patch must be verified for each new game build." }] };
+
+  it("does not restore an old Tank warning when the user opens Updates", async () => {
+    window.localStorage.setItem(GAME_UPDATE_TASK_KEY, JSON.stringify(blockedTask));
+    await act(async () => { renderPanel(0, vi.fn().mockResolvedValue(true)); });
+    expect(screen.queryByText("Game Update Blocked")).toBeNull();
+    expect(window.localStorage.getItem(GAME_UPDATE_TASK_KEY)).toBeNull();
+  });
+
+  it("shows a short Tank warning only after Apply, then removes it without a Dismiss button or leftover panel", async () => {
+    vi.mocked(updatesApi.applyGame).mockResolvedValue({ task: blockedTask });
+    await act(async () => { renderPanel(0, vi.fn().mockResolvedValue(true)); });
+    expect(screen.queryByText("Game Update Blocked")).toBeNull();
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Apply Game Update" })); });
+    expect(screen.getByText("Game Update Blocked")).toBeVisible();
+    expect(screen.getByText(/Disable Regis Tanks in Settings → Experimental Features/)).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Dismiss" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry Game Update" })).toBeNull();
+    expect(screen.queryByText("Update Log")).toBeNull();
+    expect(screen.queryByLabelText(/Game update progress/)).toBeNull();
+    expect(loadPersistedUpdateTask(GAME_UPDATE_TASK_KEY)).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(UPDATE_RESULT_DISMISS_MS - 1000); });
+    expect(screen.getByText("Game Update Blocked")).toBeVisible();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1001); });
+    expect(screen.queryByText("Game Update Blocked")).toBeNull();
+    expect(document.querySelector(".game-update-blocked-notice")).toBeNull();
+    expect(screen.getByRole("button", { name: "Apply Game Update" })).toBeEnabled();
   });
 
   it("keeps cancelled update diagnostics with a truthful status and dismissal", async () => {

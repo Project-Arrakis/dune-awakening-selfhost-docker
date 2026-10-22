@@ -18,6 +18,11 @@ services:
     # Host networking lets the console reach local Dune services and bind
     # ADMIN_BIND_PORT directly.
     network_mode: host
+    # The Console manages the host Docker daemon through its socket. Default
+    # container_t confinement blocks that access on SELinux hosts. Disable label
+    # confinement only for this trusted management container, not for the host.
+    security_opt:
+      - label=disable
     group_add:
       - "${DOCKER_SOCKET_GID:-0}"
     environment:
@@ -35,7 +40,13 @@ services:
       DUNE_COMPOSE_PROJECT_NAME: "${DUNE_COMPOSE_PROJECT_NAME:-dune-awakening-selfhost-docker}"
       ADMIN_BIND_HOST: "${ADMIN_BIND_HOST:-0.0.0.0}"
       ADMIN_BIND_PORT: "${ADMIN_WEB_PORT:-${ADMIN_BIND_PORT:-8088}}"
+      # Transport the existing setting without silently activating a previously
+      # ignored allowlist on upgrade. Settings requires a safe, explicit review.
+      DUNE_CONFIGURED_ADMIN_ALLOWED_IPS: "${ADMIN_ALLOWED_IPS:-}"
       ADMIN_AUTH_DISABLED: "${ADMIN_AUTH_DISABLED:-0}"
+      # Realtime Data: where the optional MapViewer3D position agent listens
+      # (plain HTTP on loopback only). Empty = http://127.0.0.1:8796.
+      DUNE_REALTIME_AGENT_URL: "${DUNE_REALTIME_AGENT_URL:-}"
       ADMIN_SECURE_COOKIES: "${ADMIN_SECURE_COOKIES:-0}"
       ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
       # Tier 3 second factor (docs/rfc-console-auth.md §2.3/§4). Off unless the
@@ -109,7 +120,9 @@ services:
       DUNE_PUBLIC_DIRECTORY_URL: "${DUNE_PUBLIC_DIRECTORY_URL:-}"
       DUNE_PUBLIC_DIRECTORY_CLAIM_URL: "${DUNE_PUBLIC_DIRECTORY_CLAIM_URL:-}"
     volumes:
-      - "${DUNE_HOST_REPO_ROOT:-.}:/repo"
+      # Shared SELinux label: the Console, Autoscaler, and map containers use
+      # this tree. Private :Z labeling would deny access to the other services.
+      - "${DUNE_HOST_REPO_ROOT:-.}:/repo:z"
       - /etc/localtime:/etc/localtime:ro
       # WARNING: mounting the Docker socket gives this container broad control
       # over the host Docker daemon. Expose the web admin only to trusted admins.

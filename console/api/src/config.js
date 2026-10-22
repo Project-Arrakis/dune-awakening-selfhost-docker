@@ -488,6 +488,7 @@ export function publicConfig(config) {
     secureCookies: config.secureCookies,
     allowHostBootstrap: config.allowHostBootstrap,
     mockMode: config.mockMode,
+    consoleAccessReviewRequired: Boolean(config.consoleAccessReviewRequired),
     consoleTotpEnabled: config.consoleTotpEnabled
   };
 }

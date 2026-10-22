@@ -26,6 +26,7 @@ PID_FILE="runtime/generated/sietch-overrides.pid"
 LOOP_TOKEN_FILE="runtime/generated/sietch-overrides.loop-token"
 LOG_FILE="runtime/generated/sietch-overrides.log"
 LOG_POINTER_FILE="runtime/generated/sietch-overrides-current.log"
+PUBLICATION_STATE_FILE="runtime/generated/sietch-publication-state.json"
 TEXT_ROUTER_LOG="runtime/text-router/director-current.log"
 RMQ_CREDS_FILE="runtime/generated/sietch-rmq-admin-creds"
 SHARED_RMQ_CREDS_FILES=("runtime/generated/deepdesert-rmq-admin-creds")
@@ -340,14 +341,26 @@ restore_route() {
   rmq_delete_binding_exact "$SOURCE_EXCHANGE" "$SOURCE_FILTER_QUEUE" "$SOURCE_ROUTING_KEY" >/dev/null 2>&1 || true
 }
 
-publish_payload() {
-  local payload="$1"
+publish_payload() (
+  local payload="$1" source="${2:-native}" prepared
+  # One-shot repairs and the loop may overlap. Serialize the actual send with
+  # its metadata update, not just the earlier snapshot/batch construction.
+  umask 077
+  mkdir -p "$(dirname "$PUBLICATION_STATE_FILE")" || return 1
+  exec {publication_lock}>"${PUBLICATION_STATE_FILE}.lock" || return 1
+  dune_set_host_path_owner "${PUBLICATION_STATE_FILE}.lock"
+  flock -x "$publication_lock" || return 1
+  prepared="$(python3 runtime/scripts/sietch_publication.py prepare "$PUBLICATION_STATE_FILE" "$source" <<<"$payload")" || return 1
+  [ -n "$prepared" ] || return 0
   rmq_admin publish \
     exchange="$FILTER_EXCHANGE" \
     routing_key="$SOURCE_ROUTING_KEY" \
     properties='{"content_type":"Content","type":"server_state"}' \
-    payload="$payload" >/dev/null
-}
+    payload="$prepared" >/dev/null || return 1
+  # A failed broker send must not mark an unforwarded report as authoritative.
+  python3 runtime/scripts/sietch_publication.py record "$PUBLICATION_STATE_FILE" "$source" <<<"$prepared" || return 1
+  dune_set_host_path_owner "$PUBLICATION_STATE_FILE"
+)
 
 heal_survival_alive_state() {
   local live_server_ids sql connections
@@ -547,7 +560,7 @@ PY
   [ -n "$rows" ] || return 0
   while IFS= read -r payload; do
     [ -n "$payload" ] || continue
-    publish_payload "$payload"
+    publish_payload "$payload" snapshot
   done <<< "$rows"
 }
 

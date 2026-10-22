@@ -7,6 +7,8 @@ import { RecoveryCodesPanel } from "../auth/RecoveryCodesPanel";
 import { firstDefined, formatUiSentence, friendlyColumnName } from "../../lib/display";
 import { ApiKeysSection } from "./ApiKeysSection";
 import { ExperimentalFeatures } from "./ExperimentalFeatures";
+import { EncryptedApiSection } from "./EncryptedApiSection";
+import { ConsoleAccessNotice, type ConsoleAccessStatus } from "./ConsoleAccessNotice";
 
 // Authenticator apps display codes as "123 456" and the server strips whitespace
 // (auth/totp.js) precisely so a paste of that form validates. Do not add
@@ -115,6 +117,7 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
     }
   }
   const [apiKeysOpen, setApiKeysOpen] = useState(false);
+  const [encryptedApiOpen, setEncryptedApiOpen] = useState(false);
   const [serverStartupOpen, setServerStartupOpen] = useState(false);
   const [serverStartupSaving, setServerStartupSaving] = useState(false);
   const [serverStartupResult, setServerStartupResult] = useState<SettingsTaskResult | null>(null);
@@ -477,6 +480,7 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
         </div>}
       </div>
       <RuntimeSettingsSummary settings={settings} />
+      <ConsoleAccessNotice status={settings?.consoleAccess as ConsoleAccessStatus | undefined} confirmAction={confirmAction} onConfirmed={refresh} />
       <ExperimentalFeatures confirmAction={confirmAction} />
       <div className={`playerAdmin_toggle settings-web-port-toggle ${webPortOpen ? "open" : ""}`}>
         <button className="playerAdmin_toggleHeader" aria-label={webPortOpen ? "Collapse Web Console Port" : "Expand Web Console Port"} onClick={() => setWebPortOpen(!webPortOpen)}>{webPortOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Web Console Port</span></button>
@@ -530,6 +534,10 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
             </span>}
           </div>
         </div>}
+      </div>
+      <div className={`playerAdmin_toggle settings-encrypted-api-toggle ${encryptedApiOpen ? "open" : ""}`}>
+        <button className="playerAdmin_toggleHeader" aria-label={encryptedApiOpen ? "Collapse Encrypted API Access" : "Expand Encrypted API Access"} onClick={() => setEncryptedApiOpen(!encryptedApiOpen)}>{encryptedApiOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Encrypted API Access</span></button>
+        {encryptedApiOpen && <div className="playerAdmin_toggleBody"><EncryptedApiSection /></div>}
       </div>
       {/* Rendered OUTSIDE the secondFactorEnrolled gate. While these codes are on
           screen they are the ONLY copy that will ever exist -- the previous sheet

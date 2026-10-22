@@ -1,4 +1,5 @@
-import { isValidElement, useEffect, useRef, useState } from "react";
+import { isValidElement, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import { createPortal } from "react-dom";
 import { Info } from "lucide-react";
 import { formatCell, formatDisplayValue, normalizeStatus } from "../../lib/display";
 
@@ -36,9 +37,34 @@ export function PlayerStatusCell({ value }: { value: unknown }) {
 // focus, or click. Originally local to MapsPanel.tsx (Host Memory Protection,
 // Memory Balancer, Memory Swap); moved here so other feature panels can reuse
 // it without importing across two independently lazy-loaded panel chunks.
-export function InfoTooltip({ id, label, children }: { id: string; label: string; children: string }) {
+export function InfoTooltip({ id, label, children, portal = false }: { id: string; label: string; children: string; portal?: boolean }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLSpanElement>(null);
+  const boxRef = useRef<HTMLSpanElement>(null);
+  const [position, setPosition] = useState<CSSProperties>({});
+  useLayoutEffect(() => {
+    if (!portal || !open) return;
+    const placeTooltip = () => {
+      const anchor = rootRef.current?.getBoundingClientRect();
+      const box = boxRef.current?.getBoundingClientRect();
+      if (!anchor || !box) return;
+      const margin = 14;
+      const width = Math.min(310, window.innerWidth - margin * 2);
+      const height = Math.min(box.height, window.innerHeight - margin * 2);
+      const below = anchor.bottom + 8;
+      setPosition({ position: "fixed", width, maxHeight: window.innerHeight - margin * 2,
+        left: Math.max(margin, Math.min(anchor.left, window.innerWidth - width - margin)),
+        top: Math.max(margin, below + height <= window.innerHeight - margin ? below : anchor.top - height - 8),
+        right: "auto", bottom: "auto" });
+    };
+    placeTooltip();
+    window.addEventListener("resize", placeTooltip);
+    window.addEventListener("scroll", placeTooltip, true);
+    return () => {
+      window.removeEventListener("resize", placeTooltip);
+      window.removeEventListener("scroll", placeTooltip, true);
+    };
+  }, [portal, open, children]);
   function openTooltip() {
     window.dispatchEvent(new CustomEvent("memory-info-open", { detail: id }));
     setOpen(true);
@@ -61,8 +87,9 @@ export function InfoTooltip({ id, label, children }: { id: string; label: string
       document.removeEventListener("pointerdown", closeOutside);
     };
   }, [open]);
-  return <span ref={rootRef} className={`memory-info-tooltip ${open ? "open" : ""}`} onMouseEnter={openTooltip} onMouseLeave={() => setOpen(false)}>
-    <button type="button" className="memory-info-button" aria-label={label} aria-expanded={open} aria-describedby={id} onClick={() => open ? setOpen(false) : openTooltip()} onFocus={openTooltip}><Info size={15} aria-hidden="true" /></button>
-    <span id={id} role="tooltip" className="memory-info-box">{children}</span>
+  const box = <span ref={boxRef} id={id} role="tooltip" className={`memory-info-box ${portal && open ? "open" : ""}`} style={portal ? position : undefined}>{children}</span>;
+  return <span ref={rootRef} className={`memory-info-tooltip ${open ? "open" : ""}`} onPointerEnter={event => { if (event.pointerType !== "touch") openTooltip(); }} onPointerLeave={event => { if (event.pointerType !== "touch") setOpen(false); }}>
+    <button type="button" className="memory-info-button" aria-label={label} aria-expanded={open} aria-describedby={id} onClick={openTooltip} onFocus={openTooltip}><Info size={15} aria-hidden="true" /></button>
+    {portal ? createPortal(box, document.body) : box}
   </span>;
 }
