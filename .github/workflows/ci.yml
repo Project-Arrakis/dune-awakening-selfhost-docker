@@ -112,6 +112,10 @@ jobs:
           python3 -c 'from cryptography.hazmat.primitives.ciphers.aead import AESGCM'
       - name: Test readiness with configured service ports
         run: bash tests/ready-configured-ports-test.sh
+      - name: Test the encrypted API access script
+        run: |
+          bash tests/tls-front-script-test.sh
+          python3 runtime/scripts/test_tls_front_config.py
       - name: Test stable farm readiness gating
         run: bash tests/farm-readiness-test.sh
       - name: Test current-start readiness and login queue safety
@@ -155,6 +159,7 @@ jobs:
           runtime/tests/test-deepdesert-startup-publisher-consistency.sh
           runtime/tests/test-sietch-combat-state-publication.sh
           runtime/tests/test-sietch-heartbeat-publication.sh
+          python3 runtime/scripts/test_sietch_publication.py
       - name: Test runtime safety regressions
         run: |
           runtime/tests/test-command-auth-token.sh
@@ -165,6 +170,8 @@ jobs:
           runtime/tests/test-deepdesert-layout-apply-safety.sh
           runtime/tests/test-map-despawn-lifecycle.sh
           runtime/tests/test-director-log-id-normalization.sh
+          runtime/tests/test-director-story-admission.sh
+          runtime/tests/test-overland-dynamic-allocation.sh
           runtime/tests/test-game-epic-config-permissions.sh
           tests/fls-signals-test.sh
           tests/steamcmd-signals-test.sh
@@ -206,6 +213,8 @@ jobs:
       - name: Test self-update lock contention (fails closed, never invokes docker)
         run: |
           runtime/tests/test-self-update-lock-contention.sh
+      - name: Test Console SELinux mount and write-denial diagnostics
+        run: bash runtime/tests/test-console-selinux-mount.sh
       - name: Test age-based secrets library (AEAD primitive, shell seam, cross-language round-trip)
         run: |
           python3 runtime/scripts/lib/test_secrets_aead.py -v
@@ -283,6 +292,8 @@ jobs:
       # 2.2.40 while db.sh required 2.3 for --aead-algo: every check was green.
       - name: Build the console image
         run: docker build -f console/api/Dockerfile -t dune-console:ci .
+      - name: Build the encrypted front door image (go vet and its tests run in the build)
+        run: docker build -t dune-tls-front:ci runtime/tls-front
       - name: Check the runtime it actually ships
         run: |
           set -euo pipefail

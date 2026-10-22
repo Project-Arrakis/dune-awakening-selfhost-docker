@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -119,6 +119,66 @@ function buildSandbox() {
 function writeProfile(env, lines) {
   writeFileSync(env.DUNE_GAMEPLAY_PROFILE, lines.join("\n") + "\n");
 }
+
+test("reported PvP selectors and NoPVP remain separate, with an explicit overlap warning", async t => {
+  const { dir, config, env } = buildSandbox();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeProfile(env, [
+    "[Partition:DeepDesert_1:8:/Script/DuneSandbox.PvpPveSettings]",
+    "+m_PvpEnabledPartitions=8",
+    "[ServerCustomGlobal:/Script/DuneSandbox.UserServerCustomSettings]",
+    "PVPMode=FullPVP",
+    "[ServerCustomMap:DeepDesert_1:/Script/DuneSandbox.UserServerCustomSettings]",
+    "PVPMode=Limited",
+    "[ServerCustomPartition:DeepDesert_1:8:/Script/DuneSandbox.UserServerCustomSettings]",
+    "PVPMode=NoPVP",
+  ]);
+  const before = readFileSync(env.DUNE_GAMEPLAY_PROFILE, "utf8");
+  const result = await resolveMapCombatState({ ...config, env }, "DeepDesert_1", [{ partitionId: "8" }]);
+  const row = result.partitions[0];
+  assert.equal(row.configuredState, "PVP", "must not invent a new precedence rule");
+  assert.equal(row.customPvpMode, "NoPVP");
+  assert.equal(row.customPvpModeSource, "profile");
+  assert.equal(row.materializedCustomPvpMode, null);
+  assert.match(row.warnings.join(" "), /NoPVP.*not verified/);
+  assert.equal(readFileSync(env.DUNE_GAMEPLAY_PROFILE, "utf8"), before, "reporting cannot rewrite the configuration");
+});
+
+test("combat report distinguishes saved Custom PvP Mode from the file on disk", async t => {
+  const { dir, config, env } = buildSandbox();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeProfile(env, [
+    "[Partition:DeepDesert_1:8:/Script/DuneSandbox.PvpPveSettings]",
+    "+m_PveEnabledPartitions=8",
+    "[ServerCustomMap:DeepDesert_1:/Script/DuneSandbox.UserServerCustomSettings]",
+    "PVPMode=NoPVP",
+  ]);
+  const path = join(env.DUNE_USERSETTINGS_GAME_ROOT, "deepdesert-1-8", "Saved", "Config", "LinuxServer", "ServerCustomSettings.ini");
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, "[/Script/DuneSandbox.UserServerCustomSettings]\nPVPMode=FullPVP\n");
+  const result = await resolvePartitionCombatStateFromRuntime({ ...config, env }, "DeepDesert_1", "8");
+  assert.equal(result.customPvpMode, "NoPVP");
+  assert.equal(result.materializedCustomPvpMode, "FullPVP");
+  assert.equal(result.customPvpModeSource, "profile");
+  assert.equal(result.configuredState, "PVE");
+  assert.ok(!result.warnings.some(warning => warning.includes("Custom Settings specifies")), "matching saved settings should not trigger a contradiction warning");
+});
+
+test("combat report preserves unmanaged native mode and distinguishes it from a schema default", async t => {
+  const { dir, config, env } = buildSandbox();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const initial = await resolvePartitionCombatStateFromRuntime({ ...config, env }, "DeepDesert_1", "8");
+  assert.equal(initial.customPvpMode, "Limited");
+  assert.equal(initial.customPvpModeSource, "default");
+  assert.equal(initial.materializedCustomPvpMode, null);
+  const path = join(env.DUNE_USERSETTINGS_GAME_ROOT, "deepdesert-1-8", "Saved", "Config", "LinuxServer", "ServerCustomSettings.ini");
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, "[/Script/DuneSandbox.UserServerCustomSettings]\nPVPMode=NoPVP\n");
+  const native = await resolvePartitionCombatStateFromRuntime({ ...config, env }, "DeepDesert_1", "8");
+  assert.equal(native.customPvpMode, "NoPVP");
+  assert.equal(native.customPvpModeSource, "runtime-file");
+  assert.equal(native.materializedCustomPvpMode, "NoPVP");
+});
 
 test("resolver: explicit partition PvP selector resolves to PVP end-to-end", async () => {
   const { config, env } = buildSandbox();

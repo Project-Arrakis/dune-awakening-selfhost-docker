@@ -10,6 +10,8 @@ import { DiscordBotSection } from "./DiscordBotSection";
 import { firstDefined, formatUiSentence, friendlyColumnName } from "../../lib/display";
 import { ApiKeysSection } from "./ApiKeysSection";
 import { ExperimentalFeatures } from "./ExperimentalFeatures";
+import { EncryptedApiSection } from "./EncryptedApiSection";
+import { ConsoleAccessNotice, type ConsoleAccessStatus } from "./ConsoleAccessNotice";
 
 // Authenticator apps display codes as "123 456" and the server strips whitespace
 // (auth/totp.js) precisely so a paste of that form validates. Do not add
@@ -191,6 +193,7 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
     }
   }
   const [apiKeysOpen, setApiKeysOpen] = useState(false);
+  const [encryptedApiOpen, setEncryptedApiOpen] = useState(false);
   const [serverStartupOpen, setServerStartupOpen] = useState(false);
   const [serverStartupSaving, setServerStartupSaving] = useState(false);
   const [serverStartupResult, setServerStartupResult] = useState<SettingsTaskResult | null>(null);
@@ -861,7 +864,6 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
         adjacently to each other, so the swap's own internal order doesn't
         conflict with the outer alphabetical order. */}
     <div className="settings-section-stack">
-      <RuntimeSettingsSummary settings={settings} />
       <div className={`playerAdmin_toggle settings-api-keys-toggle ${apiKeysOpen ? "open" : ""}`}>
         <button className="playerAdmin_toggleHeader" aria-label={apiKeysOpen ? "Collapse API Keys" : "Expand API Keys"} onClick={() => setApiKeysOpen(!apiKeysOpen)}>{apiKeysOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>API Keys</span></button>
         {apiKeysOpen && <div className="playerAdmin_toggleBody"><ApiKeysSection confirmAction={confirmAction} /></div>}
@@ -936,6 +938,8 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
           </span>}
         </div>}
       </div>
+      <RuntimeSettingsSummary settings={settings} />
+      <ConsoleAccessNotice status={settings?.consoleAccess as ConsoleAccessStatus | undefined} confirmAction={confirmAction} onConfirmed={refresh} />
       <ExperimentalFeatures confirmAction={confirmAction} />
       <div className={`playerAdmin_toggle settings-web-port-toggle ${webPortOpen ? "open" : ""}`}>
         <button className="playerAdmin_toggleHeader" aria-label={webPortOpen ? "Collapse Web Console Port" : "Expand Web Console Port"} onClick={() => setWebPortOpen(!webPortOpen)}>{webPortOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Web Console Port</span></button>
