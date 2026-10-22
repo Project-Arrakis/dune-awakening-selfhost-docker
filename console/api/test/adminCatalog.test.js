@@ -115,6 +115,28 @@ test("real catalog exposes only verified Filmic Archive grant tokens through the
   }
 });
 
+test("real catalog exposes the verified Ixian Icon patent through building unlocks", () => {
+  // The exact token is present in build 2160922's CDT_BaseItems. The item
+  // listing names it Ixian Icon and links it to A Sign from Above:
+  // https://dune.gaming.tools/items/mtx_ixiantotem_patent
+  const id = "MTX_IxianTotem_Patent";
+  const matches = listBuildingUnlockItems(REAL_REPO_ROOT).filter((item) => item.itemId === id);
+  assert.equal(matches.length, 1);
+  const item = matches[0];
+  assert.equal(item.name, "Ixian Icon");
+  assert.equal(item.category, "buildings");
+  assert.equal(item.source, "BuildingSets");
+  assert.equal(item.group, "Special & Promotional");
+  assert.equal(item.experimental, false);
+  assert.equal(item.entitlementControlled, true); // Preserve the existing MTX handling.
+  assert.equal(item.requiredDlc, undefined);
+  assert.equal(item.requiredSteamDlc, undefined);
+  assert.equal(resolveCatalogItem(REAL_REPO_ROOT, { itemName: "Ixian Icon" }).itemId, id);
+  assert.equal(listCatalogItems(REAL_REPO_ROOT, { q: "Ixian Icon" }).some((row) => row.itemId === id), false);
+  assert.equal(buildingUnlockStatus(id, { owned: ["MTX_IxianTotem"] }), "Owned");
+  assert.equal(buildingUnlockStatus(id, { pending: [id] }), "Pending");
+});
+
 test("building patent tokens are isolated while Developer Storage remains available to shared item selectors", () => {
   const root = fixtureRepo();
   assert.equal(listCatalogItems(root, { q: "lighting" }).length, 0);
