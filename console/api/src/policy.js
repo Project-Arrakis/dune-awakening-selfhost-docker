@@ -640,6 +640,7 @@ export const DEFAULT_POLICIES = {
         "backups:create", "backups:create-system", "backups:delete-system", "backups:read",
         "setup:read",
         "addons:read",
+        "realtime:read",   // upstream v1.4.51 grants admin the realtime feed; read is its only action
       ]},
       { Effect: "Deny", Action: CROWN_JEWEL_DENY_ACTIONS }
     ]

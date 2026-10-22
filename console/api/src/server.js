@@ -46,11 +46,15 @@ import { looksLikeTar, mintSystemBackupName, normalizeImportedSystemMetadata, re
 import { createTarHeader, tarArchiveLength, tarPadding, TAR_TRAILER_BYTES, createBackupDownloadArchive, enrichBackupRows, nextImportedBackupName, normalizeImportedBackupMetadata, readCurrentBattlegroupId, validBackupDownloadName } from "./services/backups.js";
 import { createMemoryBalancer } from "./services/memoryBalancer.js";
 import { collectContainerHealth } from "./services/containerHealth.js";
+import { createRealtime, RealtimeError } from "./services/realtime.js";
+import { createEncryptedApi, EncryptedApiError } from "./services/encryptedApi.js";
+import { tlsClientAddress } from "./services/tlsClientAddress.js";
+import { createConsoleAccess } from "./services/consoleAccess.js";
 import { parseMemorySwapStatus } from "./services/memorySwap.js";
 import { createDeathPoller } from "./deathPoller.js";
 import { updateEnvFileValue as updateEnvValue, updateEnvFileValues as updateEnvValues } from "./services/envFile.js";
 import { funcomAuthMismatchDetected, matchingFuncomAuthLines, saveFuncomTokenValue as writeFuncomToken, validDockerSince } from "./services/funcomAuth.js";
-import { readCharacterTransferSettings, saveCharacterTransferSettings } from "./services/characterTransferSettings.js";
+import { readCharacterTransferSettingsStatus, saveAndApplyCharacterTransferSettings } from "./services/characterTransferSettings.js";
 import { handleDiscordAdapterRoute, isDiscordAdapterRoute } from "./integrations/discord/routes.js";
 import { discordAdapterEnabled } from "./integrations/discord/adapter.js";
 import { initializeDiscordAdapterSchema } from "./integrations/discord/schema.js";
@@ -110,6 +114,14 @@ import { playerListSettingsView, resolvePlayerInactiveWeeks, savePlayerListSetti
 import { resolveAutoStartBattlegroup, saveServerStartupSettings, serverStartupSettingsView } from "./services/serverStartupSettings.js";
 
 const config = loadConfig();
+const consoleAccess = createConsoleAccess({
+  repoRoot: config.repoRoot,
+  configured: process.env.DUNE_CONFIGURED_ADMIN_ALLOWED_IPS,
+  legacy: process.env.ADMIN_ALLOWED_IPS
+});
+config.allowedIps = consoleAccess.activeIps();
+Object.defineProperty(config, "consoleAccessReviewRequired", { get: () => consoleAccess.status().pending });
+if (config.consoleAccessReviewRequired) console.warn("Console IP restrictions await confirmation in Settings; existing access is preserved.");
 const hardwareStatus = createHardwareStatusProvider({ filesystemPath: config.repoRoot });
 const readCommandCache = createReadCommandCache();
 // Status commands walk Docker, PostgreSQL, RabbitMQ, and logs. Keep a fresh
@@ -433,6 +445,8 @@ function shouldNoteApiKeyAuthThrottle(failureKey, at = Date.now()) {
   return true;
 }
 const apiKeys = createApiKeyStore({ file: config.apiKeysFile });
+const realtime = createRealtime();
+const encryptedApi = createEncryptedApi({ repoRoot: config.repoRoot });
 // Proof that a restore was previewed, for the apply that follows it. In memory
 // beside the sessions it is keyed by -- see the module header for why it is not
 // persisted.
@@ -564,13 +578,18 @@ process.on("unhandledRejection", (error) => {
 });
 
 createServer(async (req, res) => {
+  req.trustedClientAddress = tlsClientAddress(req, config.repoRoot);
+  if (req.trustedClientAddress === null) {
+    res.writeHead(403, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "Invalid encrypted API forwarding identity." }));
+    return;
+  }
   if (config.allowedIps.length) {
-    // /code-review high finding (2026-09-24): this used to read the raw
-    // socket address directly, so ADMIN_ALLOWED_IPS was unusable behind the
-    // same reverse proxy CONSOLE_TRUSTED_PROXY_IPS exists to support --
-    // every client looked like the proxy's own IP. Now shares the identical
-    // trusted-proxy resolution the login rate limiter already uses.
-    const remoteIp = resolveClientIp(req, config.trustedProxyIps);
+    // Resolved once by clientIpOf(): a signed project-TLS identity wins; otherwise the
+    // CONSOLE_TRUSTED_PROXY_IPS-aware resolution the login limiter uses (/code-review
+    // high finding, 2026-09-24: the raw socket address made ADMIN_ALLOWED_IPS unusable
+    // behind a reverse proxy).
+    const remoteIp = clientIpOf(req);
     if (!config.allowedIps.includes(remoteIp)) {
       res.writeHead(403, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: "Access denied: IP not in ADMIN_ALLOWED_IPS" }));
@@ -1738,6 +1757,22 @@ async function handleApi(req, res) {
     return json(res, 200, { keys: apiKeys.list() });
   }
   if (path === "/api/settings/api-keys" && req.method === "POST") return apiKeyCreateRoute(req, res);
+  if (path === "/api/realtime/healthz" && req.method === "GET") return realtimeRoute(res, () => realtime.health());
+  if (path === "/api/realtime/objects" && req.method === "GET") return realtimeRoute(res, () => realtime.objects({ allowPlayers: principalMay(req, "players:read") }));
+  if (path === "/api/realtime/stream" && req.method === "GET") return realtimeStreamRoute(req, res);
+  if (path === "/api/settings/encrypted-api" && req.method === "GET") return encryptedApiRoute(res, () => encryptedApi.status());
+  if (path === "/api/settings/console-access/confirm" && req.method === "POST") {
+    const body = await readJson(req);
+    try {
+      const result = consoleAccess.confirm(body, remoteIpOf(req));
+      config.allowedIps = consoleAccess.activeIps();
+      audit(config, req, "settings.console-access-confirm", { activeCount: result.activeCount });
+      return json(res, 200, result);
+    } catch (error) {
+      return json(res, 409, { error: error.message });
+    }
+  }
+  if (path === "/api/settings/encrypted-api" && req.method === "POST") return encryptedApiToggleRoute(req, res);
   if (path.startsWith("/api/settings/api-keys/")) return apiKeyItemRoute(req, res, path);
   if (path === "/api/settings/iam/policy/test" && req.method === "POST") {
     const body = await readJson(req);
@@ -2207,7 +2242,7 @@ async function handleApi(req, res) {
     return task(req, res, "settings", "experimentalTanksApply", await readJson(req));
   }
   if (path === "/api/settings" && req.method === "POST") return writeConfig(req, res);
-  if (path === "/api/settings") return json(res, 200, await setupState());
+  if (path === "/api/settings") return json(res, 200, await setupState(remoteIpOf(req)));
 
   return json(res, 404, { error: "Not found" });
 }
@@ -3660,6 +3695,64 @@ async function recoveryCodesRegenerateRoute(req, res) {
   }
 }
 
+async function realtimeRoute(res, action) {
+  try {
+    return json(res, 200, await action(), { "cache-control": "no-store" });
+  } catch (error) {
+    if (error instanceof RealtimeError) return json(res, error.status, { available: false, error: error.message });
+    throw error;
+  }
+}
+
+async function encryptedApiRoute(res, action) {
+  try {
+    return json(res, 200, await action(), { "cache-control": "no-store" });
+  } catch (error) {
+    if (error instanceof EncryptedApiError) return json(res, error.status, { error: error.message });
+    throw error;
+  }
+}
+
+// A stream outlives the request that authorized it, so the key (or browser
+// session) is checked again every few seconds: disabling, expiring or revoking
+// the key, or removing its Realtime Data / Players scope, takes effect on the
+// open stream too.
+function realtimeStreamRoute(req, res) {
+  const principal = req.authApiKey ? `apikey:${req.authApiKey.id}` : `session:${req.authSession?.id || "unknown"}`;
+  const current = () => {
+    if (!req.authApiKey) {
+      // peekSession does not renew the idle expiry: an open stream must not
+      // keep an abandoned browser login alive.
+      const session = auth.peekSession(req);
+      return session ? { session, key: null } : null;
+    }
+    const bearer = apiKeys.authenticate(req);
+    return bearer && !bearer.error ? { session: bearer.session, key: bearer.key } : null;
+  };
+  const may = (action) => {
+    const now = current();
+    if (!now || !evaluate(now.session, action)) return false;
+    return !now.key || apiKeys.allows(now.key, action);
+  };
+  // The session id is half of the login cookie: never write it to the audit log.
+  // audit() already records who the caller is; a key's id is not a secret.
+  audit(config, req, "realtime.stream-open", req.authApiKey ? { apiKey: req.authApiKey.id } : {});
+  realtime.stream(req, res, {
+    principal,
+    allowPlayers: () => may("players:read"),
+    stillAllowed: () => may("realtime:read")
+  });
+}
+
+async function encryptedApiToggleRoute(req, res) {
+  const body = await readJson(req);
+  return encryptedApiRoute(res, async () => {
+    const status = await encryptedApi.setEnabled(body?.enabled);
+    audit(config, req, body.enabled ? "settings.encrypted-api-enable" : "settings.encrypted-api-disable", { port: status.port });
+    return status;
+  });
+}
+
 // Owner-initiated TOTP enrollment (RFC §4, made opt-in per issue #665): a
 // normal, already-authenticated owner session proves the current password,
 // then gets the SAME short-lived enroll-scope session /api/auth/login used to
@@ -4110,6 +4203,7 @@ function scheduleConsoleRestart(port) {
       "docker compose -f docker-compose.web.yml build redblink-dune-docker-console >> runtime/generated/console-restart.log 2>&1",
       "docker rm -f redblink-dune-docker-console >> runtime/generated/console-restart.log 2>&1 || true",
       "docker compose -f docker-compose.web.yml up -d redblink-dune-docker-console >> runtime/generated/console-restart.log 2>&1",
+      "if [ -x runtime/scripts/tls-front.sh ]; then runtime/scripts/tls-front.sh reconcile >> runtime/generated/console-restart.log 2>&1; fi",
       `echo "[$(date -Is)] Dune Docker Console restart command finished" >> runtime/generated/console-restart.log`
     ].join("\n");
     const child = spawn("docker", buildSelfUpdateHelperDockerArgs({
@@ -4597,14 +4691,13 @@ async function restartQueueRestartNowRoute(req, res) {
 }
 
 async function characterTransferSettingsRoute(req, res) {
-  if (req.method === "GET") return json(res, 200, readCharacterTransferSettings(config));
+  if (req.method === "GET") return json(res, 200, await readCharacterTransferSettingsStatus(config));
   if (req.method !== "POST") return json(res, 405, { error: "Method not allowed" });
   const body = await readJson(req);
   try {
-    const result = saveCharacterTransferSettings(config, body.settings || {}, { defaults: Boolean(body.restoreDefaults) });
-    const payload = { service: "director" };
+    const result = await saveAndApplyCharacterTransferSettings(config, body.settings || {}, { defaults: Boolean(body.restoreDefaults) });
     audit(config, req, "admin.character-transfer-settings.save", { restoreDefaults: Boolean(body.restoreDefaults), settings: result.settings });
-    return json(res, 202, { ok: true, settings: result.settings, path: result.path, task: tasks.create("server", "restartService", payload) });
+    return json(res, 200, { ok: true, ...result });
   } catch (error) {
     return json(res, error.statusCode || 500, { error: redact(error?.message || "Unexpected error.") });
   }
@@ -7739,7 +7832,7 @@ function readLogs(service, options) {
   return runDockerLogs(service, options);
 }
 
-async function setupState() {
+async function setupState(clientIp) {
   const env = existsSync(resolve(config.repoRoot, ".env"));
   const token = existsSync(resolve(config.secretsDir, "funcom-token.txt"));
   const battlegroup = existsSync(resolve(config.generatedDir, "battlegroup.env"));
@@ -7749,6 +7842,7 @@ async function setupState() {
     serverConfig: readSetupConfigValues(),
     publicDirectory: publicDirectorySettings(),
     serverStartup: serverStartupSettingsView(config.repoRoot),
+    consoleAccess: consoleAccess.status(clientIp),
     files: {
       env,
       token,
@@ -8343,14 +8437,24 @@ function mockCommand(operation) {
 }
 
 // Best-effort client address, IPv4-mapped IPv6 unwrapped. No X-Forwarded-For
-// handling (/code-review high finding, 2026-09-24: previously did not,
-// unlike the login limiter -- an operator behind a reverse proxy who set
-// CONSOLE_TRUSTED_PROXY_IPS to fix login rate-limiting still had every
-// API-key-auth-failure and every apiKeys.recordUse() audit entry attributed
-// to the proxy's own IP). Per-key limits are unaffected: they key on the key
-// id, not on this.
+// handling (/code-review high finding, 2026-09-24): a verified project-TLS
+// identity or CONSOLE_TRUSTED_PROXY_IPS resolves the caller instead of the proxy. Per-key limits are unaffected: they key
+// on the key id, not on this.
 function remoteIpOf(req) {
-  return resolveClientIp(req, config.trustedProxyIps) || null;
+  return clientIpOf(req) || null;
+}
+
+// The caller's address for the allowlist, API-key audit entries and limiters. Precedence:
+// (1) a signed project-TLS identity (req.trustedClientAddress differs from the raw peer);
+// (2) "" for the write-bridge Unix socket (no peer address, never matches an allowlist);
+// (3) otherwise resolveClientIp(), which honours X-Forwarded-For only from a
+// CONSOLE_TRUSTED_PROXY_IPS peer.
+function clientIpOf(req) {
+  const trusted = req.trustedClientAddress;
+  if (trusted === "") return "";
+  const peer = String(req?.socket?.remoteAddress || "").replace(/^::ffff:/, "");
+  if (trusted && trusted !== peer) return trusted;
+  return resolveClientIp(req, config.trustedProxyIps);
 }
 
 function loginRateLimitKey(req) {

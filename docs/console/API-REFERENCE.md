@@ -919,6 +919,8 @@ pre-write backup before the query is rejected.
 | GET | `/api/admin/player-announcements` | Get announcement settings | None |
 | POST | `/api/admin/player-announcements` | Save/restore announcements | `settings?` or `restoreDefaults: true` |
 
+Character transfer settings are persisted and applied through Director's live settings API without restarting services. POST returns `200` with `applied: true` after verifying the effective settings; it does not create a restart task. If persistence succeeds but live application cannot be confirmed, POST returns `503` explaining that the settings remain saved and can be retried. GET includes `applied` (`true` when confirmed, `false` when settings differ, or `null` when Director cannot be checked).
+
 ### Landsraad
 
 | Method | Route | Description | Parameters |
