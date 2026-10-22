@@ -24,9 +24,10 @@ registry, vehicle backup tool, or client file is modified. See
 
 `source/scoped_module_ids.py <workspace>` consumes `server-2162777-clean` and
 writes the candidate executable and generated manifest into that workspace.
-This build has not yet been verified in game. The manifest retains candidate
-status; local gameplay testing of Tanks, ordinary vehicles, persistence, and
-Ornithopter backup/restoration remains necessary before broader acceptance.
+Local in-game acceptance confirmed that Tanks work on 2162777. This does not
+verify every preset, weapon, persistence scenario, or Ornithopter backup and
+restoration on this build. The manifest retains candidate status and does not
+claim full gameplay verification.
 
 Known pink Dart firing effects and missing firing audio remain unresolved.
 No client patch is included.
