@@ -23,6 +23,8 @@ mock_target="abc|Survival_1"
 mock_container_id="container-generation-1"
 mock_director_id="director-generation-1"
 mock_container_started_at="2026-09-05T13:00:00Z"
+mock_report_timestamp="2026-09-05T13:10:00.000000000Z"
+mock_stale_large_tail=0
 mock_now_epoch="1788614400"
 test_cache_dir="$(mktemp -d)"
 mock_docker_log_calls_file="$test_cache_dir/docker-log-calls"
@@ -58,11 +60,20 @@ docker() {
       ;;
     "logs --since")
       printf '%s\n' "$*" >> "$mock_docker_log_calls_file"
-      printf '%s\n' "$mock_director_log"
+      # Reproduce the daemon returning an empty filtered window despite a
+      # current bounded tail. Readiness must not depend on this API filter.
       ;;
     "logs --tail")
       printf '%s\n' "$*" >> "$mock_docker_log_calls_file"
-      if [ "${4:-}" = "dune-director" ]; then
+      if [ "${4:-}" = "--timestamps" ] && [ "${5:-}" = "dune-director" ]; then
+        local stamp="$mock_report_timestamp"
+        if [ "$mock_stale_large_tail" = 1 ] && [ "${3:-}" -gt 500 ]; then
+          stamp='2026-09-04T13:10:00.000000000Z'
+        fi
+        while IFS= read -r line; do
+          printf '%s %s\n' "$stamp" "$line"
+        done <<< "$mock_director_log"
+      elif [ "${4:-}" = "dune-director" ]; then
         printf '%s\n' "$mock_director_log"
       else
         printf '%s\n' "$mock_map_log"
@@ -139,7 +150,11 @@ mock_db_state="false|true"
 expect_not_ready
 mock_db_state="true|true"
 farm_partition_is_ready dune-server-survival-1 1 3
-grep -Fq "logs --since $mock_container_started_at" "$mock_docker_log_calls_file"
+grep -Fq "logs --tail $farm_ready_director_tail_lines --timestamps dune-director" "$mock_docker_log_calls_file"
+if grep -Fq 'logs --since' "$mock_docker_log_calls_file"; then
+  echo "readiness must filter bounded timestamps locally" >&2
+  exit 1
+fi
 # Consume long output fully so a valid completion does not cause SIGPIPE.
 { printf '%s\n%s\n' "$arrival" "$handled"; printf 'unrelated long log %.0s' {1..10000}; } | farm_partition_has_completed_travel 1
 mock_container_id="completed-arrival-new-generation"
@@ -150,6 +165,25 @@ rm -f "$test_cache_dir/dune-server-survival-1.stable"
 
 # Marker + current ready/alive state + three consecutive reports is Ready.
 mock_director_log=$'[ServerState] {"partitionId":1,"ready":true}\n[ServerState] {"partitionId":1,"ready":true}\n[ServerState] {"partitionId":1,"ready":true}'
+# Historical, unparseable and subsecond-before-start reports fail closed.
+mock_container_started_at="2026-09-05T13:10:00.123456789Z"
+for mock_report_timestamp in \
+  '2026-09-05T13:09:59Z' \
+  '2026-09-05T13:10:00.123456788Z' \
+  'invalid-timestamp'; do
+  expect_not_ready
+done
+mock_report_timestamp="2026-09-05T15:10:00.123456789+02:00"
+farm_partition_is_ready dune-server-survival-1 1 3
+rm -f "$test_cache_dir/dune-server-survival-1.stable"
+mock_container_started_at="2026-09-05T13:00:00Z"
+mock_report_timestamp="2026-09-05T13:10:00.000000000Z"
+mock_stale_large_tail=1
+: > "$mock_docker_log_calls_file"
+farm_partition_is_ready dune-server-survival-1 1 3
+grep -Fq 'logs --tail 500 --timestamps dune-director' "$mock_docker_log_calls_file"
+rm -f "$test_cache_dir/dune-server-survival-1.stable"
+mock_stale_large_tail=0
 farm_partition_is_ready dune-server-survival-1 1 3
 
 # Once confirmed, startup stability is retained for the exact map/director

@@ -224,12 +224,28 @@ farm_partition_has_stable_director_reports() {
 
   director_logs="$(
       if [ -n "$container_started_at" ]; then
-        farm_docker_timeout docker logs --since "$container_started_at" \
-          --tail "$farm_ready_director_tail_lines" dune-director 2>&1
+        # Some Docker log stores return an empty --since window even though
+        # their bounded tail contains current reports. Filter Docker's own
+        # timestamps locally, retaining the exact map-generation boundary.
+        farm_docker_timeout docker logs --tail "$farm_ready_director_tail_lines" \
+          --timestamps dune-director 2>&1 \
+          | python3 runtime/scripts/filter-container-logs.py "$container_started_at"
       else
         farm_docker_timeout docker logs --tail "$farm_ready_director_tail_lines" dune-director 2>&1
       fi
   )" || return 1
+
+  # A damaged/rotated Docker log index can return only historical records for
+  # a large tail while the recent tail is intact. Retry a smaller bounded read
+  # only when no current-generation evidence survived. Keep the same timestamp
+  # filter and fail closed; never substitute historical reports or DB state.
+  if [ -n "$container_started_at" ] && [ -z "$director_logs" ] \
+    && [ "$farm_ready_director_tail_lines" -gt 500 ] 2>/dev/null; then
+    director_logs="$(
+      farm_docker_timeout docker logs --tail 500 --timestamps dune-director 2>&1 \
+        | python3 runtime/scripts/filter-container-logs.py "$container_started_at"
+    )" || return 1
+  fi
 
   # A completed arrival proves this exact current-generation server accepts
   # players. Do not keep showing Loading while waiting for extra heartbeats.
