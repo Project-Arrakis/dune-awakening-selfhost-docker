@@ -5,8 +5,18 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
+import { createServer as createTcpServer } from "node:net";
+
+function getFreePort() {
+  return new Promise((resolve, reject) => {
+    const s = createTcpServer();
+    s.listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => resolve(p)); });
+    s.on("error", reject);
+  });
+}
+
 const API_ROOT = resolve(import.meta.dirname, "..");
-const PORT = 24000 + (process.pid % 15000);
+const PORT = await getFreePort();
 const BASE = `http://127.0.0.1:${PORT}`;
 
 function writeAddon(repoRoot, id, approvedPermissions) {
