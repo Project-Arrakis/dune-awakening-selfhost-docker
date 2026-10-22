@@ -55,6 +55,24 @@ test("update check cache coalesces overlapping and forced reads onto one in-flig
   assert.equal(firstResult.code, overlappingResult.code);
 });
 
+test("optional failure backoff expires and invalidation permits an immediate retry", async () => {
+  let currentTime = 1000;
+  let collections = 0;
+  const cache = createUpdateCheckCache({}, {
+    errorCacheMs: 60000, now: () => currentTime,
+    collect: async () => { collections++; throw new Error("provider unavailable"); }
+  });
+  await assert.rejects(cache.read(), /provider unavailable/);
+  await assert.rejects(cache.read({ fresh: true }), /provider unavailable/);
+  assert.equal(collections, 1);
+  currentTime += 60001;
+  await assert.rejects(cache.read(), /provider unavailable/);
+  assert.equal(collections, 2);
+  cache.invalidate();
+  await assert.rejects(cache.read(), /provider unavailable/);
+  assert.equal(collections, 3);
+});
+
 test("update check cache does not cache a rejected collection", async () => {
   let collections = 0;
   let shouldReject = true;

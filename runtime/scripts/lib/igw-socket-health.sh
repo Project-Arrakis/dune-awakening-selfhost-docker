@@ -1,5 +1,32 @@
 #!/usr/bin/env bash
 
+# The UDP socket table is a property of the network namespace, not of the
+# container. Every container in this stack runs with host networking
+# (docker-compose.yml's network_mode, spawn-server.sh --network host,
+# start-autoscaler.sh --network host), so the autoscaler already shares the
+# namespace the core map's IGW socket lives in and can read /proc/net/udp
+# directly. That matters because this runs for every ready core map every
+# IGW_SOCKET_HEALTH_SCAN_SECONDS: an exec here leaves a conmon pair resident for
+# the engine's exit delay, which is the same cost lib/postgres.sh exists to
+# avoid, for a file the host can already see.
+#
+# The port filter is the only thing that scopes the read to this map, so a
+# container that did *not* share the namespace would not have its port in the
+# host's table and would sample an empty queue -- the watchdog would go blind
+# rather than fail loudly. Confirm the namespace before trusting the shortcut,
+# and keep the exec for anything else.
+igw_socket_table() {
+  local container="$1"
+
+  if [ "$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$container" 2>/dev/null)" = "host" ]; then
+    cat /proc/net/udp /proc/net/udp6 2>/dev/null
+    return 0
+  fi
+
+  timeout --kill-after=1s 5s docker exec "$container" sh -c \
+    'cat /proc/net/udp /proc/net/udp6 2>/dev/null' 2>/dev/null
+}
+
 # Classify consecutive IGW UDP socket samples. A large receive queue alone is
 # normal during bursts and is not evidence that the game stopped consuming it.
 # A recoverable stall requires all of the following for the full confirmation

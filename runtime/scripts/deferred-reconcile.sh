@@ -3,6 +3,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
+[ -f .env ] && . ./.env
+# shellcheck source=runtime/scripts/lib/postgres.sh
+source runtime/scripts/lib/postgres.sh
+
 timeout_seconds="${DUNE_DEFERRED_RECONCILE_TIMEOUT_SECONDS:-900}"
 poll_seconds="${DUNE_DEFERRED_RECONCILE_POLL_SECONDS:-5}"
 deadline=$(( $(date +%s) + timeout_seconds ))
@@ -18,7 +22,7 @@ db_bool_true() {
 
 partition_ready() {
   local partition_id="$1"
-  docker exec dune-postgres psql -U dune -d dune -Atc "
+  psql_app_value "
     select coalesce(fs.ready::text, 'f')
     from dune.world_partition wp
     left join dune.farm_state fs on fs.server_id = wp.server_id

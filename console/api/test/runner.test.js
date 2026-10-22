@@ -18,6 +18,14 @@ test("validates known service names and aliases", () => {
   assert.throws(() => validateServiceName("gateway; rm -rf /"));
 });
 
+test("Experimental Tanks require an explicit Hagga restart confirmation", () => {
+  assert.deepEqual(buildDuneArgs("experimentalTanksStatus"), ["experimental-tanks", "status"]);
+  assert.deepEqual(buildDuneArgs("experimentalTanksApply", { enabled: true, confirmRestart: true }), ["experimental-tanks", "apply", "true"]);
+  assert.deepEqual(buildDuneArgs("experimentalTanksApply", { enabled: false, confirmRestart: true }), ["experimental-tanks", "apply", "false"]);
+  assert.throws(() => buildDuneArgs("experimentalTanksApply", { enabled: true }));
+  assert.throws(() => buildDuneArgs("experimentalTanksApply", { enabled: "true", confirmRestart: true }));
+});
+
 test("bounds captured child-process output while retaining its newest tail", () => {
   assert.equal(appendBoundedOutput("abc", "def", 10), "abcdef");
   const output = appendBoundedOutput("old-".repeat(30), "new-output", 48);

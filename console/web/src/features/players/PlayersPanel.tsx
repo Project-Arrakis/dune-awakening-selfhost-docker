@@ -41,12 +41,13 @@ const PLAYERS_VIEW_MODES = [
 const PLAYERS_AUTO_REFRESH_MS = 10_000;
 const PLAYERS_PAGE_SIZES = [25, 50, 100, 200] as const;
 const PLAYERS_DEFAULT_PAGE_SIZE = 50;
+const INACTIVE_PLAYER_WEEK_OPTIONS = [1, 2, 3, 4, 8] as const;
 
 function errorText(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
-type PlayersLoadParams = { q: string; page: number; pageSize: number; status: PlayerStatusFilter; sortColumn: string; sortDirection: SortDirection };
+type PlayersLoadParams = { q: string; page: number; pageSize: number; status: PlayerStatusFilter; sortColumn: string; sortDirection: SortDirection; recentOnly: boolean };
 
 export function PlayersPanel({ onError, renderCharacterAdmin, onOpenBase, confirmAction }: PlayersPanelProps) {
   const [viewMode, setViewMode] = useState<PlayersViewMode>("active");
@@ -62,6 +63,10 @@ export function PlayersPanel({ onError, renderCharacterAdmin, onOpenBase, confir
   const [totalCount, setTotalCount] = useState(0);
   const [totalPlayers, setTotalPlayers] = useState(0);
   const [statusFilterSupported, setStatusFilterSupported] = useState(true);
+  const [showInactive, setShowInactive] = useState(true);
+  const [inactiveWeeks, setInactiveWeeks] = useState<number | null>(null);
+  const [canConfigureVisibility, setCanConfigureVisibility] = useState(false);
+  const [visibilitySaving, setVisibilitySaving] = useState(false);
   const [selected, setSelected] = useState<Record<string, unknown> | null>(null);
   const [detail, setDetail] = useState<Record<string, unknown> | null>(null);
   const requestIdRef = useRef(0);
@@ -76,7 +81,21 @@ export function PlayersPanel({ onError, renderCharacterAdmin, onOpenBase, confir
       return;
     }
     setPage(0);
-  }, [submittedQ, playerFilter]);
+  }, [submittedQ, playerFilter, showInactive]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void playersApi.listSettings().then((result) => {
+      if (cancelled) return;
+      const weeks = result.settings?.inactiveWeeks === null ? null : Number(result.settings?.inactiveWeeks);
+      setInactiveWeeks(weeks);
+      setShowInactive(weeks === null);
+      setCanConfigureVisibility(result.canConfigure === true);
+    }).catch((error) => {
+      if (!cancelled) onError(errorText(error));
+    });
+    return () => { cancelled = true; };
+  }, [onError]);
 
   function submitSearch() {
     setSubmittedQ(q);
@@ -126,7 +145,7 @@ export function PlayersPanel({ onError, renderCharacterAdmin, onOpenBase, confir
     if (viewMode !== "active") return;
     let cancelled = false;
     let timeoutId: number | undefined;
-    const params = { q: submittedQ, page, pageSize, status: playerFilter, sortColumn, sortDirection };
+    const params = { q: submittedQ, page, pageSize, status: playerFilter, sortColumn, sortDirection, recentOnly: !showInactive };
 
     const scheduleNext = () => {
       if (cancelled) return;
@@ -151,7 +170,44 @@ export function PlayersPanel({ onError, renderCharacterAdmin, onOpenBase, confir
       window.clearTimeout(timeoutId);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [viewMode, submittedQ, page, pageSize, playerFilter, sortColumn, sortDirection, load]);
+  }, [viewMode, submittedQ, page, pageSize, playerFilter, sortColumn, sortDirection, showInactive, load]);
+
+  async function changeInactiveFilter(value: string) {
+    const weeks = value === "never" ? null : Number(value);
+    if (weeks === inactiveWeeks) return;
+    if (!canConfigureVisibility) {
+      onError("You do not have permission to change the inactive-player filter.");
+      return;
+    }
+    const previousWeeks = inactiveWeeks;
+    const previousShowInactive = showInactive;
+    setInactiveWeeks(weeks);
+    setShowInactive(weeks === null);
+    setVisibilitySaving(true);
+    onError("");
+    try {
+      const result = await playersApi.saveListSettings(weeks);
+      const savedWeeks = result.settings.inactiveWeeks;
+      setInactiveWeeks(savedWeeks);
+      setShowInactive(savedWeeks === null);
+      setPage(0);
+      await load({
+        q: submittedQ,
+        page: 0,
+        pageSize,
+        status: playerFilter,
+        sortColumn,
+        sortDirection,
+        recentOnly: savedWeeks !== null
+      });
+    } catch (error) {
+      setInactiveWeeks(previousWeeks);
+      setShowInactive(previousShowInactive);
+      onError(errorText(error));
+    } finally {
+      setVisibilitySaving(false);
+    }
+  }
 
   const partitionMapsKey = [...new Set(rows
     .map((row) => String(row.partitionMap || "").trim())
@@ -174,10 +230,17 @@ export function PlayersPanel({ onError, renderCharacterAdmin, onOpenBase, confir
   async function open(row: Record<string, unknown>) {
     const id = String(row.actor_id || row.player_pawn_id || row.id || "");
     const requestId = ++profileRequestIdRef.current;
+    // Never show the previously selected player's profile under a new selection.
+    if (selectedPlayerIdRef.current !== id) setDetail(null);
     selectedPlayerIdRef.current = id;
     setSelected(row);
-    const nextDetail = await playersApi.profile(id);
-    if (profileRequestIdRef.current === requestId && selectedPlayerIdRef.current === id) setDetail(nextDetail);
+    try {
+      const nextDetail = await playersApi.profile(id);
+      if (profileRequestIdRef.current === requestId && selectedPlayerIdRef.current === id) setDetail(nextDetail);
+    } catch (error) {
+      if (profileRequestIdRef.current === requestId) setDetail(null);
+      if (profileRequestIdRef.current === requestId) onError(`Could not load this player's profile: ${errorText(error)}`);
+    }
   }
 
   const dbPlayerId = selected ? String(selected.actor_id || selected.player_pawn_id || selected.id || "") : "";
@@ -300,17 +363,38 @@ export function PlayersPanel({ onError, renderCharacterAdmin, onOpenBase, confir
         <div className="action-row players-filter-row">
           <label className="inline-filter-label players-filter-label">
             Filter
-            <select className="players-filter-select" value={playerFilter} disabled={!statusFilterSupported} onChange={(event) => setPlayerFilter(event.target.value as PlayerStatusFilter)}>
+            <select className="players-filter-select" value={playerFilter} disabled={!statusFilterSupported} title={statusFilterSupported ? undefined : "Status filtering isn't available on this database version"} onChange={(event) => setPlayerFilter(event.target.value as PlayerStatusFilter)}>
               <option value="all">All Players</option>
               <option value="online">Online</option>
               <option value="offline">Offline</option>
               <option value="banned">Banned</option>
             </select>
           </label>
-          <button onClick={() => void load({ q: submittedQ, page, pageSize, status: playerFilter, sortColumn, sortDirection })}>Refresh</button>
+          <label className="inline-filter-label players-inactive-filter">
+            Hide Inactive Players After
+            <select
+              value={inactiveWeeks === null ? "never" : String(inactiveWeeks)}
+              disabled={visibilitySaving || !canConfigureVisibility || playerFilter === "banned"}
+              onChange={(event) => void changeInactiveFilter(event.target.value)}
+            >
+              <option value="never">Never</option>
+              {inactiveWeeks !== null && !INACTIVE_PLAYER_WEEK_OPTIONS.includes(inactiveWeeks as typeof INACTIVE_PLAYER_WEEK_OPTIONS[number]) && <option value={inactiveWeeks}>{inactiveWeeks} Weeks</option>}
+              <option value="1">1 Week</option>
+              <option value="2">2 Weeks</option>
+              <option value="3">3 Weeks</option>
+              <option value="4">1 Month</option>
+              <option value="8">2 Months</option>
+            </select>
+          </label>
+          <button onClick={() => void load({ q: submittedQ, page, pageSize, status: playerFilter, sortColumn, sortDirection, recentOnly: !showInactive })}>Refresh</button>
         </div>
       </div>
-      <p className="action-help-note">Total Players: {totalPlayers.toLocaleString()}</p>
+      <p className="action-help-note">
+        {playerFilter !== "all" || submittedQ || !showInactive
+          ? `${totalCount.toLocaleString()} of ${totalPlayers.toLocaleString()} players shown`
+          : `${totalPlayers.toLocaleString()} players`}
+        {!statusFilterSupported && " · Status filtering isn't available on this database version."}
+      </p>
       <div className="action-row players-search-row">
         <input
           value={q}
@@ -323,7 +407,7 @@ export function PlayersPanel({ onError, renderCharacterAdmin, onOpenBase, confir
       </div>
       <DataTable
         rows={rows}
-        columns={["actor_id", "character_name", "last_seen", "total_playtime_seconds", "online_status", "map", "fls_id"]}
+        columns={["character_name", "online_status", "last_seen", "total_playtime_seconds", "map", "actor_id", "fls_id"]}
         columnLabels={{
           actor_id: "DB Player ID",
           character_name: "Character",
@@ -351,7 +435,7 @@ export function PlayersPanel({ onError, renderCharacterAdmin, onOpenBase, confir
         }}
       />
       <div className="panel-title players-pagination-footer">
-        <p className="action-help-note">Showing {rangeStart}-{rangeEnd} of {totalCount} rows.</p>
+        <p className="action-help-note">Showing {rangeStart}-{rangeEnd} of {totalCount.toLocaleString()}</p>
         <div className="database-pagination-controls">
           <label className="compact-select">
             Rows
@@ -377,7 +461,7 @@ export function PlayersPanel({ onError, renderCharacterAdmin, onOpenBase, confir
             onRefresh: () => {
               void Promise.all([
                 open(selected),
-                load({ q: submittedQ, page, pageSize, status: playerFilter, sortColumn, sortDirection }, { silent: true })
+                load({ q: submittedQ, page, pageSize, status: playerFilter, sortColumn, sortDirection, recentOnly: !showInactive }, { silent: true })
               ]);
             },
             onClose: () => {

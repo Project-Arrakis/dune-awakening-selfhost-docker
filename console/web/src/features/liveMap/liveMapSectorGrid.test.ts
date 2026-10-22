@@ -1,19 +1,20 @@
 import { describe, expect, it } from "vitest";
 import type { LiveMapConfig } from "../../api/liveMap";
-import { labelAnchorInView, sectorForWorldPoint, sectorGridFor } from "./liveMapSectorGrid";
+import { labelAnchorInView, projectSectorLabels, SECTOR_GRID, sectorForWorldPoint, sectorGridFor } from "./liveMapSectorGrid";
+import { liveMapCamera, terrainViewport } from "./liveMapGeometry";
+import { projectToScreen, screenToWorldAtZ } from "./terrain/terrainCamera";
 
 const DEEP_DESERT: LiveMapConfig = {
   key: "DeepDesert", label: "The Deep Desert", actorMap: "DeepDesert",
   image: "/images/maps/deep-desert.png", width: 4096, height: 4096,
-  minX: -1177656, maxX: 1072344, minY: -1177066, maxY: 1072934,
+  minX: -1268450, maxX: 1158400, minY: -1261434, maxY: 1165416,
   flipY: false, defaultPartitionId: 8
 };
 const HAGGA: LiveMapConfig = { ...DEEP_DESERT, key: "HaggaBasin", actorMap: "HaggaBasin" };
 
-const CENTRE_X = -52656;
-const CENTRE_Y = -52066;
-const HALF = 1125000;
-const CELL = 250000;
+const { x0: X0, y0: Y0, cellX: CELL_X, cellY: CELL_Y } = SECTOR_GRID;
+const X1 = X0 + 9 * CELL_X;
+const Y1 = Y0 + 9 * CELL_Y;
 
 describe("sectorForWorldPoint", () => {
   // Orientation is checked against the game's own map art, which carries the
@@ -21,35 +22,49 @@ describe("sectorForWorldPoint", () => {
   // draws downward in the panel, so the letter runs OPPOSITE to screen-down --
   // the obvious guess (A first, going down) is upside down.
   it("puts A at the high-Y edge and I at the low-Y edge", () => {
-    expect(sectorForWorldPoint(CENTRE_X - HALF + 1, CENTRE_Y + HALF - 1)).toBe("A1");
-    expect(sectorForWorldPoint(CENTRE_X - HALF + 1, CENTRE_Y - HALF + 1)).toBe("I1");
+    expect(sectorForWorldPoint(X0 + 1, Y1 - 1)).toBe("A1");
+    expect(sectorForWorldPoint(X0 + 1, Y0 + 1)).toBe("I1");
   });
 
   it("numbers columns west to east", () => {
-    expect(sectorForWorldPoint(CENTRE_X + HALF - 1, CENTRE_Y + HALF - 1)).toBe("A9");
-    expect(sectorForWorldPoint(CENTRE_X + HALF - 1, CENTRE_Y - HALF + 1)).toBe("I9");
+    expect(sectorForWorldPoint(X1 - 1, Y1 - 1)).toBe("A9");
+    expect(sectorForWorldPoint(X1 - 1, Y0 + 1)).toBe("I9");
   });
 
   it("puts the map centre in the middle cell", () => {
-    expect(sectorForWorldPoint(CENTRE_X, CENTRE_Y)).toBe("E5");
+    expect(sectorForWorldPoint(-52656, -52066)).toBe("E5");
   });
 
   it("steps one letter per cell down the grid", () => {
-    const column = CENTRE_X - HALF + CELL / 2;
     const letters = Array.from({ length: 9 }, (_, row) =>
-      sectorForWorldPoint(column, CENTRE_Y + HALF - (row + 0.5) * CELL));
+      sectorForWorldPoint(X0 + CELL_X / 2, Y1 - (row + 0.5) * CELL_Y));
     expect(letters).toEqual(["A1", "B1", "C1", "D1", "E1", "F1", "G1", "H1", "I1"]);
   });
 
   it("returns null outside the grid rather than an out-of-range letter", () => {
-    expect(sectorForWorldPoint(CENTRE_X - HALF - 1, CENTRE_Y)).toBeNull();
-    expect(sectorForWorldPoint(CENTRE_X, CENTRE_Y + HALF + 1)).toBeNull();
-    // The rect and the grid now coincide, so the far corner is the grid's own
-    // exclusive edge rather than a point beyond it -- still no sector, but for a
-    // different reason.
-    expect(sectorForWorldPoint(DEEP_DESERT.minX, DEEP_DESERT.minY)).toBeNull();
-    // and one cell inside that corner does have a sector
-    expect(sectorForWorldPoint(DEEP_DESERT.minX + 1, DEEP_DESERT.minY + 1)).toBe("I1");
+    expect(sectorForWorldPoint(X0 - 1, -52066)).toBeNull();
+    expect(sectorForWorldPoint(-52656, Y1 + 1)).toBeNull();
+  });
+
+  it("lies inside the map rect, which is the grid squared up", () => {
+    expect(X0).toBe(DEEP_DESERT.minX);
+    expect(X1).toBe(DEEP_DESERT.maxX);
+    expect(Y0).toBeGreaterThan(DEEP_DESERT.minY);
+    expect(Y1).toBeLessThan(DEEP_DESERT.maxY);
+    expect(DEEP_DESERT.maxY - DEEP_DESERT.minY).toBe(DEEP_DESERT.maxX - DEEP_DESERT.minX);
+  });
+
+  // In-game map labels read at exact positions (2026-10-04), plus three older
+  // anchors. The pairs straddling a line by a few thousand uu pin the grid.
+  const READINGS: [number, number, string][] = [
+    [-30000, 100000, "D5"], [-30000, 350000, "D5"], [-30000, 900000, "A5"], [900000, -710000, "G9"],
+    [886000, -724000, "H8"], [890500, -719000, "G9"], [889200, -720500, "G9"], [888560, -721240, "H8"],
+    [-1001800, 898200, "A1"], [-997000, 895000, "A2"], [-999400, 892000, "B1"], [-998200, 893500, "B2"],
+    [474472, 575390, "C7"], [129775, -238525, "F6"], [-1106224, -307716, "F1"]
+  ];
+
+  it("reproduces every sector label read in game", () => {
+    for (const [x, y, sector] of READINGS) expect([x, y, sectorForWorldPoint(x, y)]).toEqual([x, y, sector]);
   });
 });
 
@@ -87,17 +102,17 @@ describe("sectorGridFor", () => {
     expect(sectorGridFor(HAGGA)).toBeNull();
   });
 
-  it("spans the image exactly, because the rect is the sector square", () => {
-    // The config rect used to be ~8% wider than the square the image covers, so
-    // this grid sat inset 153 px per side while the picture's own grid ran edge
-    // to edge. The two now describe the same world square.
+  it("spans the map's width exactly and all but a sliver of its height", () => {
     const grid = sectorGridFor(DEEP_DESERT)!;
     const xs = grid.lines.flatMap((line) => [line.x1, line.x2]);
     const ys = grid.lines.flatMap((line) => [line.y1, line.y2]);
     expect(Math.min(...xs)).toBeCloseTo(0, 6);
     expect(Math.max(...xs)).toBeCloseTo(DEEP_DESERT.width, 6);
-    expect(Math.min(...ys)).toBeCloseTo(0, 6);
-    expect(Math.max(...ys)).toBeCloseTo(DEEP_DESERT.height, 6);
+    // The rect is the grid squared up: under 4 px of 4096 spare at each end.
+    expect(Math.min(...ys)).toBeGreaterThan(0);
+    expect(Math.min(...ys)).toBeLessThan(4);
+    expect(Math.max(...ys)).toBeLessThan(DEEP_DESERT.height);
+    expect(Math.max(...ys)).toBeGreaterThan(DEEP_DESERT.height - 4);
   });
 });
 
@@ -168,5 +183,60 @@ describe("labels survive being zoomed out", () => {
     const cell = grid.labels.find((l) => l.text === "E5")!;
     const view = { left: cell.x1 - 4, top: cell.y0, right: cell.x1 + 500, bottom: cell.y1 };
     expect(labelAnchorInView(cell, view, 20)).toBeNull();
+  });
+});
+
+describe("SECTOR_GRID", () => {
+  it("is the grid the sector lookup uses: its lines are where the sector changes", () => {
+    const { x0, y0, cellX, cellY, divisions } = SECTOR_GRID;
+    expect(divisions).toBe(9);
+    for (let k = 0; k < divisions; k++) {
+      // Either side of a vertical line, one column apart; either side of a horizontal one, one row.
+      const left = sectorForWorldPoint(x0 + (k + 1) * cellX - 1, y0 + (k + 0.5) * cellY)!;
+      const right = sectorForWorldPoint(x0 + (k + 1) * cellX + 1, y0 + (k + 0.5) * cellY);
+      if (k < divisions - 1) expect(Number(right!.slice(1))).toBe(Number(left.slice(1)) + 1);
+      else expect(right).toBeNull();
+      const above = sectorForWorldPoint(x0 + (k + 0.5) * cellX, y0 + (k + 1) * cellY - 1)!;
+      const below = sectorForWorldPoint(x0 + (k + 0.5) * cellX, y0 + (k + 1) * cellY + 1);
+      if (k < divisions - 1) expect(below![0].charCodeAt(0)).toBe(above[0].charCodeAt(0) - 1);
+      else expect(below).toBeNull();
+    }
+    expect(sectorForWorldPoint(x0 - 1, y0 + 1)).toBeNull();
+    expect(sectorForWorldPoint(x0 + 1, y0 + 1)).toBe("I1");
+  });
+});
+
+describe("projectSectorLabels", () => {
+  const deg = (d: number) => (d * Math.PI) / 180;
+  const W = 900;
+  const H = 700;
+  const PIVOT = 5000;
+  /** The panel's camera for a zoom, centred on a map pixel. */
+  function cameraAt(zoom: number, px: number, py: number, tiltDeg: number, yawDeg: number) {
+    const viewport = terrainViewport(DEEP_DESERT, zoom, px * zoom - W / 2, py * zoom - H / 2, W, H);
+    return liveMapCamera(DEEP_DESERT, zoom, viewport, deg(tiltDeg), deg(yawDeg), PIVOT)!;
+  }
+
+  it("labels each sector with the sector that is actually under the label", () => {
+    for (const [zoom, tilt, yaw] of [[0.2, 0, 35], [0.2, 45, 0], [0.5, 60, 130], [2, 55, -70], [8, 60, 20]]) {
+      const camera = cameraAt(zoom, 2048, 2048, tilt, yaw);
+      const labels = projectSectorLabels(camera, 20, 900);
+      expect(labels.length).toBeGreaterThan(0);
+      for (const label of labels) {
+        const ground = screenToWorldAtZ(camera, label.sx, label.sy, PIVOT);
+        expect(sectorForWorldPoint(ground.x, ground.y)).toBe(label.text);
+        // ...and it is inside the viewport, clear of its edge.
+        expect(label.sx).toBeGreaterThanOrEqual(20);
+        expect(label.sx).toBeLessThanOrEqual(W - 20);
+        expect(label.sy).toBeGreaterThanOrEqual(20);
+        expect(label.sy).toBeLessThanOrEqual(H - 20);
+      }
+    }
+  });
+
+  it("still labels the sector in view when one cell is larger than the viewport", () => {
+    // Zoom 8, centred in E5's middle: the cell's edges are all off-screen.
+    const labels = projectSectorLabels(cameraAt(8, 2048, 2048, 50, 25), 20, 900);
+    expect(labels.map((label) => label.text)).toEqual(["E5"]);
   });
 });
