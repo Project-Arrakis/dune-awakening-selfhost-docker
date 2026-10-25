@@ -157,6 +157,21 @@ test("real PostgreSQL: a base without a rank-1 owner does not label its co-owner
   });
 });
 
+test("real PostgreSQL: a rank holder whose identity cannot be resolved is shown as Unknown player, not a blank chip (#1249)", async (t) => {
+  await withDatabase(t, async (db, pool) => {
+    // 9001 and 9002 match no player_state, encrypted_player_state or actors row.
+    await pool.query('insert into dune.permission_actor_rank (permission_actor_id, player_id, rank) values (1002, 9001, 3), (1002, 9002, 3)');
+    const result = await listBases(db, { includeGenerators: false });
+    const row = result.rows.find((base) => base.base_id === '1002');
+    assert.deepEqual(row.shared_with, [
+      { name: 'Duncan', rank: 2, label: 'Co-Owner' },
+      { name: 'Unknown player 9001', rank: 3, label: 'Associate' },
+      { name: 'Unknown player 9002', rank: 3, label: 'Associate' }
+    ]);
+    assert.equal(new Set(row.shared_with.map((entry) => `${entry.name}-${entry.rank}`)).size, row.shared_with.length, 'chip keys are unique');
+  });
+});
+
 test("real PostgreSQL: encrypted and reserved owners have the same name in the table and permissions card", async (t) => {
   await withDatabase(t, async (db, pool) => {
     await pool.query(`
