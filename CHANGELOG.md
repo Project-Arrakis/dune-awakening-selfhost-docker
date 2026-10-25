@@ -9,6 +9,10 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ## Unreleased (on top of upstream v1.4.48)
 
+### Added
+
+- **`docs/console/rbac-roles-and-architecture.md` (#1251).** One document for the four role tiers, how a person gets one, the architecture across the bot and the console, and the per-action permission matrix generated from the real policy engine (owner 137 / admin 116 / moderator 16 / player 2 of 137 actions at v1.4.52). It also lists three places where the bot and the console defaults disagree. Docs only.
+
 ### Changed
 
 - **Upstream sync to v1.4.52 (#1244).** Merges Red-Blink v1.4.52: map readiness no longer misreads stale Docker log windows (`farm-readiness.sh`, `filter-container-logs.py`), base-owner labels match the permission roster identities, the experimental Regis tank patch is rebuilt for game build 2162777, and the admin item catalog gains the Ixian Icon building unlock. One conflict, `runtime/data/admin-items.json`: kept this fork's per-item stack limits (#1217) and appended upstream's `MTX_IxianTotem_Patent`. No operator action needed.
