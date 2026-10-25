@@ -259,9 +259,27 @@ describe("MarketBotOverlay", () => {
       rankedWeaponMultiplier: 1,
       augmentPricing: "original",
       commodityStacks: {},
+      durabilityPercent: null,
       exchangeId: "42"
     }));
     expect(await screen.findByText(/Reseed schedule saved \(disabled\)\./)).toBeInTheDocument();
+  });
+
+  it("saves a chosen listing durability with the reseed schedule", async () => {
+    vi.mocked(marketBotApi.saveSeedSchedule).mockImplementation(async (schedule) => ({
+      ...statusFixture().seed, ...schedule, exchangeId: String(schedule.exchangeId || "42"), enabled: Boolean(schedule.enabled)
+    }));
+    renderOverlay();
+    await selectTab("Reseed");
+
+    const durability = await screen.findByLabelText("Seed Listing Durability");
+    expect(durability).toHaveValue(null);
+    fireEvent.change(durability, { target: { value: "150" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save Reseed Schedule" }));
+
+    await waitFor(() => expect(marketBotApi.saveSeedSchedule).toHaveBeenCalledWith(
+      expect.objectContaining({ durabilityPercent: 150 })
+    ));
   });
 
   it("populates saved category multipliers and saves edited ones with the reseed schedule", async () => {
@@ -290,6 +308,7 @@ describe("MarketBotOverlay", () => {
       rankedWeaponMultiplier: 1.5,
       augmentPricing: "discounted",
       commodityStacks: {},
+      durabilityPercent: null,
       exchangeId: "42"
     }));
   });
@@ -328,6 +347,7 @@ describe("MarketBotOverlay", () => {
       rankedWeaponMultiplier: 1,
       augmentPricing: "discounted",
       commodityStacks: { Oil: 10, AntiRadiationPill: 2 },
+      durabilityPercent: null,
       exchangeId: "42"
     }));
   });

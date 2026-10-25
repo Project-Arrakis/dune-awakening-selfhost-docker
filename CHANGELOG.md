@@ -11,6 +11,7 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ### Added
 
+- **Market Bot: schedule-wide listing durability (#1253).** The reseed schedule has an optional `durabilityPercent` (100-200, shown as "Listing Durability" in the Market Bot Reseed pricing block). When set, every seeded listing uses it for current, max and decayed-max durability; blank keeps each plan row's own `durability_cur`/`durability_max`. Existing listings change on the next reseed. Default unset, so existing deployments are unchanged.
 - **`docs/console/rbac-roles-and-architecture.md` (#1251).** One document for the four role tiers, how a person gets one, the architecture across the bot and the console, and the per-action permission matrix generated from the real policy engine (owner 137 / admin 116 / moderator 16 / player 2 of 137 actions at v1.4.52). It also lists three places where the bot and the console defaults disagree. Docs only.
 
 ### Changed

@@ -480,3 +480,31 @@ test("bundled plan lists two full stacks of iodine pills", () => {
   assert.equal(rows[0].stack_size, 20);
   assert.equal(rows[0].price, 800);
 });
+
+test("seed schedule durability is optional, bounded, and kept across partial saves", () => {
+  assert.equal(normalizeSeedSchedule({}).durabilityPercent, null);
+  assert.equal(normalizeSeedSchedule({ durabilityPercent: 150 }).durabilityPercent, 150);
+  assert.equal(normalizeSeedSchedule({ durabilityPercent: "" }).durabilityPercent, null);
+  assert.equal(normalizeSeedSchedule({ durabilityPercent: null }, { durabilityPercent: 150 }).durabilityPercent, null);
+  // Saves that omit the field (for example through the addon bridge) keep the stored value.
+  assert.equal(normalizeSeedSchedule({ intervalMinutes: 20 }, { durabilityPercent: 150 }).durabilityPercent, 150);
+  assert.throws(() => normalizeSeedSchedule({ durabilityPercent: 99 }), /durabilityPercent/);
+  assert.throws(() => normalizeSeedSchedule({ durabilityPercent: 201 }), /durabilityPercent/);
+  assert.throws(() => normalizeSeedSchedule({ durabilityPercent: 120.5 }), /durabilityPercent/);
+});
+
+test("seed SQL applies the schedule durability to every row and keeps augment rolls", () => {
+  const repoRoot = makeRepoRoot();
+  try {
+    const plan = loadMarketSeedPlan({ repoRoot });
+    const base = { enabled: true, exchangeId: "7", priceMultiplier: 5 };
+    const plain = buildMarketSeedSql(plan, base);
+    assert.match(plain, /"CurrentDurability":110/);
+    const sql = buildMarketSeedSql(plan, { ...base, durabilityPercent: 150 });
+    assert.doesNotMatch(sql, /"CurrentDurability":(110|184|192)/);
+    assert.match(sql, /"CurrentDurability":150,"MaxDurability":150,"DecayedMaxDurability":150/);
+    assert.match(sql, /"StatRolls":\[0\.2,0\.2\]/);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});

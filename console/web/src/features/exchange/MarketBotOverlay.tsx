@@ -299,6 +299,7 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
   const [seedEnabled, setSeedEnabled] = useState(false);
   const [seedInterval, setSeedInterval] = useState(15);
   const [seedMultiplier, setSeedMultiplier] = useState(5);
+  const [durabilityPercent, setDurabilityPercent] = useState("");
   const [seedCategoryMultipliers, setSeedCategoryMultipliers] = useState(defaultCategoryMultipliers);
   const [augmentPricing, setAugmentPricing] = useState<MarketAugmentPricing>("discounted");
   const [commodityCatalog, setCommodityCatalog] = useState<CommodityStackItem[]>([]);
@@ -327,6 +328,7 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
       setSeedMultiplier(next.seed.priceMultiplier);
       setSeedCategoryMultipliers(categoryMultipliersFrom(next.seed));
       setAugmentPricing(next.seed.augmentPricing === "original" ? "original" : "discounted");
+      setDurabilityPercent(next.seed.durabilityPercent == null ? "" : String(next.seed.durabilityPercent));
       setCommodityStacks(commodityStacksFrom(next.seed.commodityStacks, catalog));
       setExchangeId((current) => current || next.buyback.exchangeId || next.seed.exchangeId || "");
       const activeId = next.plans?.activePlanId || next.plan.id || "bundled";
@@ -435,6 +437,7 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
         ...seedCategoryMultipliers,
         augmentPricing,
         commodityStacks,
+        durabilityPercent: durabilityPercent === "" ? null : Number(durabilityPercent),
         ...(exchangeId ? { exchangeId } : {})
       });
       return saved.enabled
@@ -788,6 +791,9 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
                     <option value="discounted">Cheaper Than Patterns</option>
                     <option value="original">Original Plan Prices</option>
                   </select>
+                </label>
+                <label>Listing Durability (blank = per item)
+                  <input aria-label="Seed Listing Durability" type="number" min={100} max={200} placeholder="100" value={durabilityPercent} onChange={(event) => setDurabilityPercent(event.target.value)} />
                 </label>
               </div>
               </div>

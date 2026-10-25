@@ -165,6 +165,10 @@ Exchange Bot addon drives through the scheduler bridge, now first-class):
   multiplier is applied before the usual stepped price rounding, and relative
   pricing within a category is preserved (a discounted augment item stays at
   half its pattern's price when both are boosted).
+- **Listing durability** (optional, 100–200) sets the durability of every item the
+  reseed lists, current and maximum alike. Left blank, each plan row keeps its own
+  `durability_cur` / `durability_max` (default 100). Listings already on the market
+  change on the next reseed; player listings are never touched.
 - **Commodity stacks** let the operator set how many full listings of selected
   base-useful commodities each reseed writes (1–20, default 2 — the bundled
   plan's `listings_per_grade`). Units per stack stay at the plan maximum, so
