@@ -20,8 +20,18 @@ import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { createServer as createTcpServer } from "node:net";
+
+function getFreePort() {
+  return new Promise((resolve, reject) => {
+    const s = createTcpServer();
+    s.listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => resolve(p)); });
+    s.on("error", reject);
+  });
+}
+
 const API_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const PORT = 21000 + ((process.pid + 7) % 20000);
+const PORT = await getFreePort();
 const BASE = `http://127.0.0.1:${PORT}`;
 
 // A stub `docker` on PATH, so the answer depends on the container list this

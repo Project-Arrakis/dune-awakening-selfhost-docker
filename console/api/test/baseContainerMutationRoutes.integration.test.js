@@ -34,9 +34,19 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { pgConnectionConfig, withIsolatedDatabase } from "../test-support/pgIntegrationDb.js";
 
+import { createServer as createTcpServer } from "node:net";
+
+function getFreePort() {
+  return new Promise((resolve, reject) => {
+    const s = createTcpServer();
+    s.listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => resolve(p)); });
+    s.on("error", reject);
+  });
+}
+
 const API_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const REPO_ROOT = resolve(API_ROOT, "../..");
-const PORT = 21000 + ((process.pid + 2) % 20000);
+const PORT = await getFreePort();
 const BASE = `http://127.0.0.1:${PORT}`;
 
 const CLAIM_ACTOR = 40001;
