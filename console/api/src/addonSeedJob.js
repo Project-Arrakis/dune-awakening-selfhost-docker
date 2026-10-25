@@ -180,6 +180,10 @@ export function seedRowListingCount(row, schedule) {
   return Number.isInteger(override) ? override : row.listings;
 }
 
+export function describeDurability(schedule = {}) {
+  return Number.isInteger(schedule.durabilityPercent) ? `, durability ${schedule.durabilityPercent}` : "";
+}
+
 export function describeCommodityStacks(schedule = {}) {
   const overridden = Object.entries(schedule.commodityStacks || {})
     .filter(([, listings]) => listings !== COMMODITY_STACK_DEFAULT);
@@ -193,9 +197,17 @@ const DURABILITY_PERCENT_MIN = 100;
 const DURABILITY_PERCENT_MAX = 200;
 
 export function normalizeDurabilityPercent(payload = {}, previous = {}) {
-  const raw = payload?.durabilityPercent === undefined ? previous?.durabilityPercent : payload.durabilityPercent;
+  const fromPayload = payload?.durabilityPercent !== undefined;
+  const raw = fromPayload ? payload.durabilityPercent : previous?.durabilityPercent;
   if (raw === null || raw === undefined || raw === "") return null;
-  return integerField(raw, "durabilityPercent", DURABILITY_PERCENT_MIN, DURABILITY_PERCENT_MAX);
+  try {
+    return integerField(raw, "durabilityPercent", DURABILITY_PERCENT_MIN, DURABILITY_PERCENT_MAX);
+  } catch (error) {
+    // A bad value in the stored schedule degrades to "unset" so it cannot
+    // reset the operator's other settings; a bad value in a save still errors.
+    if (fromPayload) throw error;
+    return null;
+  }
 }
 
 // Rewrites the durability fields of a row's pre-serialized item stats JSON
@@ -547,7 +559,7 @@ export async function executeSeedRun(config, db, schedule, { runDuneImpl, buildD
     priceMultiplier: schedule.priceMultiplier,
     exchangeId: schedule.exchangeId,
     backupSkipped,
-    detail: `Seeded ${listingCount} listings on exchange ${schedule.exchangeId} at ${schedule.priceMultiplier}x${describeCategoryMultipliers(schedule)}${describeCommodityStacks(schedule)} (bot listings cleared first).${backupSkipped ? SAFETY_BACKUP_SKIPPED_NOTE : ""}`
+    detail: `Seeded ${listingCount} listings on exchange ${schedule.exchangeId} at ${schedule.priceMultiplier}x${describeCategoryMultipliers(schedule)}${describeCommodityStacks(schedule)}${describeDurability(schedule)} (bot listings cleared first).${backupSkipped ? SAFETY_BACKUP_SKIPPED_NOTE : ""}`
   };
 }
 

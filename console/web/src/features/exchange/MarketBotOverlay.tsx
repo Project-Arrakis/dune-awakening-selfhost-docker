@@ -300,6 +300,7 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
   const [seedInterval, setSeedInterval] = useState(15);
   const [seedMultiplier, setSeedMultiplier] = useState(5);
   const [durabilityPercent, setDurabilityPercent] = useState("");
+  const [durabilityBadInput, setDurabilityBadInput] = useState(false);
   const [seedCategoryMultipliers, setSeedCategoryMultipliers] = useState(defaultCategoryMultipliers);
   const [augmentPricing, setAugmentPricing] = useState<MarketAugmentPricing>("discounted");
   const [commodityCatalog, setCommodityCatalog] = useState<CommodityStackItem[]>([]);
@@ -329,6 +330,7 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
       setSeedCategoryMultipliers(categoryMultipliersFrom(next.seed));
       setAugmentPricing(next.seed.augmentPricing === "original" ? "original" : "discounted");
       setDurabilityPercent(next.seed.durabilityPercent == null ? "" : String(next.seed.durabilityPercent));
+      setDurabilityBadInput(false);
       setCommodityStacks(commodityStacksFrom(next.seed.commodityStacks, catalog));
       setExchangeId((current) => current || next.buyback.exchangeId || next.seed.exchangeId || "");
       const activeId = next.plans?.activePlanId || next.plan.id || "bundled";
@@ -430,6 +432,10 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
 
   function saveSeed() {
     return run("save-seed", async () => {
+      const durability = durabilityPercent === "" ? null : Number(durabilityPercent);
+      if (durabilityBadInput || (durability !== null && (!Number.isInteger(durability) || durability < 100 || durability > 200))) {
+        throw new Error("Listing Durability must be a whole number from 100 to 200, or blank to keep each item's own durability.");
+      }
       const saved = await marketBotApi.saveSeedSchedule({
         enabled: seedEnabled,
         intervalMinutes: seedInterval,
@@ -437,7 +443,7 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
         ...seedCategoryMultipliers,
         augmentPricing,
         commodityStacks,
-        durabilityPercent: durabilityPercent === "" ? null : Number(durabilityPercent),
+        durabilityPercent: durability,
         ...(exchangeId ? { exchangeId } : {})
       });
       return saved.enabled
@@ -792,8 +798,9 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
                     <option value="original">Original Plan Prices</option>
                   </select>
                 </label>
-                <label>Listing Durability (blank = per item)
-                  <input aria-label="Seed Listing Durability" type="number" min={100} max={200} placeholder="100" value={durabilityPercent} onChange={(event) => setDurabilityPercent(event.target.value)} />
+                <label>Listing Durability %
+                  <input aria-label="Seed Listing Durability" aria-describedby="seed-durability-hint" type="number" min={100} max={200} placeholder="per item" value={durabilityPercent} onChange={(event) => { setDurabilityBadInput(event.target.validity.badInput); setDurabilityPercent(event.target.value); }} />
+                  <small id="seed-durability-hint" className="muted">100–200. Blank keeps each item's own durability. Applies at the next reseed; listings already on the market are unchanged until then.</small>
                 </label>
               </div>
               </div>

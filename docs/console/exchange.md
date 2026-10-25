@@ -167,8 +167,11 @@ Exchange Bot addon drives through the scheduler bridge, now first-class):
   half its pattern's price when both are boosted).
 - **Listing durability** (optional, 100–200) sets the durability of every item the
   reseed lists, current and maximum alike. Left blank, each plan row keeps its own
-  `durability_cur` / `durability_max` (default 100). Listings already on the market
-  change on the next reseed; player listings are never touched.
+  `durability_cur` / `durability_max` (default 100). When set, it wins over per-row
+  values and over any durability set on Bot items. Listings already on the market
+  change on the next reseed; player listings are never touched. Above 100 is better
+  than normal gear and affects market balance; the game's behaviour above 100 has not
+  been verified in-game.
 - **Commodity stacks** let the operator set how many full listings of selected
   base-useful commodities each reseed writes (1–20, default 2 — the bundled
   plan's `listings_per_grade`). Units per stack stay at the plan maximum, so

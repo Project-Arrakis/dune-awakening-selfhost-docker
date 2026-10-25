@@ -282,6 +282,37 @@ describe("MarketBotOverlay", () => {
     ));
   });
 
+  it("loads a saved listing durability and clears it back to blank", async () => {
+    vi.mocked(marketBotApi.status).mockResolvedValue(statusFixture({
+      seed: { ...statusFixture().seed, durabilityPercent: 150 }
+    }));
+    vi.mocked(marketBotApi.saveSeedSchedule).mockImplementation(async (schedule) => ({
+      ...statusFixture().seed, ...schedule, exchangeId: String(schedule.exchangeId || "42"), enabled: Boolean(schedule.enabled)
+    }));
+    renderOverlay();
+    await selectTab("Reseed");
+
+    const durability = await screen.findByLabelText("Seed Listing Durability");
+    await waitFor(() => expect(durability).toHaveValue(150));
+    fireEvent.change(durability, { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save Reseed Schedule" }));
+
+    await waitFor(() => expect(marketBotApi.saveSeedSchedule).toHaveBeenCalledWith(
+      expect.objectContaining({ durabilityPercent: null })
+    ));
+  });
+
+  it("refuses to save an out-of-range listing durability and says why", async () => {
+    const { onError } = renderOverlay();
+    await selectTab("Reseed");
+
+    fireEvent.change(await screen.findByLabelText("Seed Listing Durability"), { target: { value: "250" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save Reseed Schedule" }));
+
+    await waitFor(() => expect(onError).toHaveBeenCalledWith(expect.stringMatching(/Listing Durability must be a whole number from 100 to 200/)));
+    expect(marketBotApi.saveSeedSchedule).not.toHaveBeenCalled();
+  });
+
   it("populates saved category multipliers and saves edited ones with the reseed schedule", async () => {
     vi.mocked(marketBotApi.status).mockResolvedValue(statusFixture({
       seed: { ...statusFixture().seed, augmentMultiplier: 2 }
