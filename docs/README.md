@@ -69,6 +69,7 @@ by nature, so it gets its own.
 ## Console (`console/api`, `console/web`)
 
 - [API-REFERENCE.md](console/API-REFERENCE.md) — Current. Full HTTP API reference for every console endpoint.
+- [rbac-roles-and-architecture.md](console/rbac-roles-and-architecture.md) — Current. The four role tiers, how a person gets one, the generated per-action permission matrix (owner/admin/moderator/player) and the console-to-bot architecture; lists where the bot and console defaults disagree.
 - [api-keys.md](console/api-keys.md) — Current. Named, revocable API keys for external callers: scopes that default to no access, given per namespace as Read/Read+write or as an explicit list of actions, the `settings`/`database`/`setup` namespaces no key can ever reach and the write-denied `updates` and `addons`, hash-only storage with a one-time reveal, and per-key expiry, disable and rate limits.
 - [blueprints.md](console/blueprints.md) — Current. Blueprint import/export developer documentation.
 - [PRE-AUGMENTED-GEAR.md](console/PRE-AUGMENTED-GEAR.md) — Current. API reference for granting gear with augments pre-applied.
