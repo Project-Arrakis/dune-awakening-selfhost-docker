@@ -9,6 +9,7 @@ import { conciseTaskError } from "../../lib/taskDisplay";
 import {
   canApplyUpdateStatus,
   gameAssetsMissing,
+  gameUpdateBlockReason,
   firstVersionMatch,
   formatStackVersionLabel,
   GAME_UPDATE_TASK_KEY,
@@ -19,7 +20,8 @@ import {
   stackReleaseNotesUrl,
   STACK_UPDATE_TASK_KEY,
   UPDATE_RESULT_DISMISS_MS,
-  updateDisplayValue
+  updateDisplayValue,
+  withInstalledVersion
 } from "./updateUtils";
 
 type HomeTaskResult = { status: "running" | "succeeded" | "failed" | "stopped"; title: string; message?: string; details?: string };
@@ -31,6 +33,9 @@ type UpdatesPanelProps = {
   // 0 means nothing has asked, so a fresh mount never auto-starts a download.
   installGameFilesRequest?: number;
   onInstallGameFilesHandled?: () => void;
+  // Keeps the sidebar version badge in step with checks made here.
+  onStackStatus?: (status: Record<string, string>) => void;
+  installedConsoleVersion?: string;
   confirmAction: (message: string) => Promise<boolean>;
   waitForTask: (task: Task) => Promise<Task>;
   parseKeyValueText: (text: string) => Record<string, string>;
@@ -44,6 +49,8 @@ type UpdatesPanelProps = {
 export function UpdatesPanel({
   installGameFilesRequest = 0,
   onInstallGameFilesHandled,
+  onStackStatus,
+  installedConsoleVersion = "",
   confirmAction,
   waitForTask,
   parseKeyValueText,
@@ -68,6 +75,8 @@ export function UpdatesPanel({
   const [autoGameNotifyMinutes, setAutoGameNotifyMinutes] = useState("15, 10, 5, 1");
   const [autoGameWaitUntilEmpty, setAutoGameWaitUntilEmpty] = useState(false);
   const [autoGameMaxWaitMinutes, setAutoGameMaxWaitMinutes] = useState("360");
+  const [autoGameUpdateConsole, setAutoGameUpdateConsole] = useState(false);
+  const [autoGameManageTanks, setAutoGameManageTanks] = useState(false);
   const [autoGameResult, setAutoGameResult] = useState<HomeTaskResult | null>(null);
   const [stackUpdateNow, setStackUpdateNow] = useState(() => Date.now());
   const [stackUpdateExpectedVersion, setStackUpdateExpectedVersion] = useState(() => loadStackUpdateExpectedVersion());
@@ -104,7 +113,9 @@ export function UpdatesPanel({
   async function checkStack() {
     setStackStatus({ status: "Checking...", current: "", latest: "", reason: "" });
     const final = await waitForTask((await updatesApi.checkStack()).task);
-    setStackStatus(parseUpdateTask(final));
+    const parsed = parseUpdateTask(final);
+    setStackStatus(parsed);
+    if (parsed.current || parsed.latest) onStackStatus?.(parsed);
   }
 
   async function refreshStackStatus() {
@@ -141,8 +152,21 @@ export function UpdatesPanel({
     await waitForTaskWithUpdates(response.task, setGameSteamcmdFixTask);
   }
 
+  async function confirmConsoleUpdate(message: string) {
+    try {
+      const state = await fetchConsoleAuthState();
+      const warning = state?.config?.consoleAccessReviewRequired
+        ? "\n\nConsole IP restrictions await confirmation. This update preserves current access; review the restrictions in Settings before activating them. Keep SSH access available for recovery."
+        : "";
+      return await confirmAction(message + warning);
+    } catch (error) {
+      setStackStatus((current) => ({ ...current, status: "Check Failed", reason: error instanceof Error ? error.message : String(error) }));
+      return false;
+    }
+  }
+
   async function applyStackUpdate() {
-    if (!(await confirmAction("Apply the latest console update now?"))) return;
+    if (!(await confirmConsoleUpdate("Apply the latest console update now?"))) return;
     const expectedVersion = String(stackStatus.latest || "").trim();
     saveStackUpdateExpectedVersion(expectedVersion);
     setStackUpdateExpectedVersion(expectedVersion);
@@ -199,7 +223,7 @@ export function UpdatesPanel({
   }
 
   async function applyQaUpdate() {
-    if (!(await confirmAction(`Apply QA pre-release ${qaBuild?.shortSha || "build"} and rebuild the Console?`))) return;
+    if (!(await confirmConsoleUpdate(`Apply QA pre-release ${qaBuild?.shortSha || "build"} and rebuild the Console?`))) return;
     saveStackUpdateExpectedVersion(String(stackStatus.current || ""));
     setStackUpdateExpectedVersion(String(stackStatus.current || ""));
     setStackUpdateReadyAt(null);
@@ -211,7 +235,7 @@ export function UpdatesPanel({
   }
 
   async function reinstallPublicRelease() {
-    if (!(await confirmAction("Replace the QA pre-release with the latest published Console release? Your server configuration and data will be preserved."))) return;
+    if (!(await confirmConsoleUpdate("Replace the QA pre-release with the latest published Console release? Your server configuration and data will be preserved."))) return;
     const expectedVersion = String(stackStatus.latest || "").trim();
     saveStackUpdateExpectedVersion(expectedVersion);
     setStackUpdateExpectedVersion(expectedVersion);
@@ -237,6 +261,8 @@ export function UpdatesPanel({
       if (values.notify_minutes) setAutoGameNotifyMinutes(formatAutoGameCheckpoints(values.notify_minutes));
       if (values.wait_until_empty) setAutoGameWaitUntilEmpty(/^(1|true|yes|enabled)$/i.test(values.wait_until_empty));
       if (values.max_wait_minutes) setAutoGameMaxWaitMinutes(values.max_wait_minutes);
+      if (values.update_console) setAutoGameUpdateConsole(/^(1|true|yes|enabled)$/i.test(values.update_console));
+      if (values.manage_regis_tanks) setAutoGameManageTanks(/^(1|true|yes|enabled)$/i.test(values.manage_regis_tanks));
     } finally {
       setAutoGameLoading(false);
     }
@@ -265,6 +291,8 @@ export function UpdatesPanel({
         notifyMinutes: notifyMinutes.length ? notifyMinutes.join(",") : "15,10,5,1",
         waitUntilEmpty: autoGameWaitUntilEmpty,
         maxWaitMinutes: maxWaitMinutes ?? 360,
+        updateConsole: autoGameUpdateConsole,
+        manageTanks: autoGameManageTanks,
         confirmation: "SAVE AUTO GAME UPDATES"
       })).task);
       const details = taskTechnicalDetails(final);
@@ -306,7 +334,9 @@ export function UpdatesPanel({
   useEffect(() => {
     if (!gameUpdateTask || isTerminalTask(gameUpdateTask.status)) {
       persistUpdateTask(GAME_UPDATE_TASK_KEY, gameUpdateTask);
-      if (gameUpdateTask?.status === "failed" || gameUpdateTask?.status === "cancelled") {
+      if (gameUpdateTask && gameUpdateBlockReason(gameUpdateTask)) {
+        void refreshGameStatus();
+      } else if (gameUpdateTask?.status === "failed" || gameUpdateTask?.status === "cancelled") {
         setGameStatus((current) => gameUpdateTerminalStatus(gameUpdateTask, current));
       }
       return;
@@ -366,7 +396,7 @@ export function UpdatesPanel({
   }, [stackUpdateTask?.id, stackUpdateTask?.status, stackUpdateTask?.currentStep]);
 
   useEffect(() => {
-    if (!stackUpdateTask || !isDetachedStackUpdateTask(stackUpdateTask) || stackUpdateTask.status === "failed") return;
+    if (!stackUpdateTask || !isDetachedStackUpdateTask(stackUpdateTask) || ["failed", "cancelled"].includes(stackUpdateTask.status)) return;
     let cancelled = false;
     void (async () => {
       while (!cancelled) {
@@ -399,15 +429,15 @@ export function UpdatesPanel({
   }, [stackUpdateTask?.id, stackUpdateTask?.status, stackUpdateTask?.currentStep]);
 
   useEffect(() => {
-    if (!gameUpdateTask || !isTerminalTask(gameUpdateTask.status)) return;
+    if (!gameUpdateTask || (gameUpdateTask.status !== "succeeded" && !gameUpdateBlockReason(gameUpdateTask))) return;
     const id = window.setTimeout(() => setGameUpdateTask(null), UPDATE_RESULT_DISMISS_MS);
     return () => window.clearTimeout(id);
   }, [gameUpdateTask?.id, gameUpdateTask?.status]);
 
   useEffect(() => {
-    if (!stackUpdateTask || !isTerminalTask(stackUpdateTask.status)) return;
+    if (!stackUpdateTask || stackUpdateTask.status !== "succeeded") return;
     if (isDetachedStackUpdateTask(stackUpdateTask)) return;
-    if (stackUpdateTask.status === "succeeded") refreshStackStatus();
+    refreshStackStatus();
     const id = window.setTimeout(() => setStackUpdateTask(null), UPDATE_RESULT_DISMISS_MS);
     return () => window.clearTimeout(id);
   }, [stackUpdateTask?.id, stackUpdateTask?.status, stackUpdateTask?.currentStep]);
@@ -499,11 +529,11 @@ export function UpdatesPanel({
             {assetsMissing ? "Install Game Files" : "Reinstall Game Files"}
           </button>
         </div>
-        {gameUpdateTask && <GameUpdateProgress task={gameUpdateTask} repairTask={gameSteamcmdFixTask} onRetry={gameUpdateTask.operation === "updateInstallAssets" ? installGameAssets : applyGameUpdate} onFixSteamcmd={fixSteamcmd} formatResultTitle={formatResultTitle} formatResultMessage={formatResultMessage} />}
+        {gameUpdateTask && <GameUpdateProgress task={gameUpdateTask} repairTask={gameSteamcmdFixTask} onDismiss={() => setGameUpdateTask(null)} onRetry={gameUpdateTask.operation === "updateInstallAssets" ? installGameAssets : applyGameUpdate} onFixSteamcmd={fixSteamcmd} formatResultTitle={formatResultTitle} formatResultMessage={formatResultMessage} />}
       </section>
       <section className="action-section">
         <div className="panel-title"><h4>Console Update</h4><StatusPill value={stackStatus.status} /></div>
-        <KeyValueGrid items={[["Current Console Version", updateDisplayValue(stackStatus, "current", formatStackVersionLabel)], ["Latest Console Version", latestConsoleValue], ["Update Channel", qaStatus?.channel.label || "Public Release"], ["Status", stackStatus.status]]} />
+        <KeyValueGrid items={[["Current Console Version", updateDisplayValue(withInstalledVersion(stackStatus, installedConsoleVersion), "current", formatStackVersionLabel)], ["Latest Console Version", latestConsoleValue], ["Update Channel", qaStatus?.channel.label || "Public Release"], ["Status", stackStatus.status]]} />
         {qaAuthenticated && <div className="qa-build-row"><div><strong>Latest GitHub Pre-Release</strong><span>{qaBuild ? `${qaBuild.shortSha} · ${qaBuild.status}` : "Checking..."}</span>{qaBuild?.reason && !qaBuild.ready && <small>{qaBuild.reason}</small>}</div>{qaBuild?.commitUrl && <a href={qaBuild.commitUrl} target="_blank" rel="noreferrer">View Commit</a>}</div>}
         {stackStatus.status === "Check Failed" && stackStatus.reason && <p className="danger-note">{stackStatus.reason}</p>}
         {stackStatus.status === "Version details unavailable" && <p className="muted">{stackStatus.reason}</p>}
@@ -513,7 +543,7 @@ export function UpdatesPanel({
           {stackCanApply && <button className="update-action" onClick={applyStackUpdate}>Apply Console Update</button>}
           {qaAuthenticated && <button className="update-action qa-apply-button" disabled={stackUpdateRunning || !qaBuild?.ready || !qaBuild.updateAvailable} title={qaApplyReason} onClick={() => void applyQaUpdate()}>Apply Pre-Release</button>}
         </div>
-        {stackUpdateTask && <StackUpdateProgress task={stackUpdateTask} helperProgress={stackHelperProgress} refreshCountdown={stackUpdateRefreshCountdown} onRetry={stackUpdateTask.operation === "selfUpdateQaApply" ? applyQaUpdate : applyStackUpdate} formatResultTitle={formatResultTitle} formatResultMessage={formatResultMessage} />}
+        {stackUpdateTask && <StackUpdateProgress task={stackUpdateTask} helperProgress={stackHelperProgress} refreshCountdown={stackUpdateRefreshCountdown} onDismiss={() => setStackUpdateTask(null)} onRetry={stackUpdateTask.operation === "selfUpdateQaApply" ? applyQaUpdate : applyStackUpdate} formatResultTitle={formatResultTitle} formatResultMessage={formatResultMessage} />}
       </section>
       <div className={`playerAdmin_toggle auto-game-toggle ${autoGameOpen ? "open" : ""}`}>
           <button className="playerAdmin_toggleHeader" aria-label={autoGameOpen ? "Collapse Automatic Game Updates" : "Expand Automatic Game Updates"} onClick={() => setAutoGameOpen(!autoGameOpen)}>{autoGameOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Automatic Game Updates</span></button>
@@ -525,6 +555,8 @@ export function UpdatesPanel({
           ["Apply Updates", enabledLabel(autoGameValues.apply_updates, autoGameApplyEnabled)],
           ["Player Notice", enabledLabel(autoGameValues.notify_players, autoGameNotifyEnabled, `${formatAutoGameCheckpoints(autoGameValues.notify_minutes || autoGameNotifyMinutes)} Min`)],
           ["Empty Server Policy", enabledLabel(autoGameValues.wait_until_empty, autoGameWaitUntilEmpty, `max ${autoGameValues.max_wait_minutes || autoGameMaxWaitMinutes} minutes`)],
+          ["Console Updates", enabledLabel(autoGameValues.update_console, autoGameUpdateConsole)],
+          ["Regis Tanks", enabledLabel(autoGameValues.manage_regis_tanks, autoGameManageTanks, "disable, then restore")],
           ["Timer", autoGameDisplayTimerLabel]
         ]} />
         {commandStatusSummary(autoGame).reason && <p className="danger-note">{commandStatusSummary(autoGame).reason}</p>}
@@ -547,6 +579,17 @@ export function UpdatesPanel({
             <h5>Empty Server Policy</h5>
             <label className="auto-update-settings-row auto-update-settings-boolean-row"><span>Wait until server is empty</span><strong>{autoGameWaitUntilEmpty ? "Enabled" : "Disabled"}</strong><input type="checkbox" disabled={autoGameSaving} checked={autoGameWaitUntilEmpty} onChange={(event) => setAutoGameWaitUntilEmpty(event.target.checked)} /></label>
             <label className={`auto-update-settings-row ${autoGameWaitUntilEmpty ? "" : "is-disabled"}`}><span>Maximum wait</span><span className="number-unit-field"><input type="number" min="0" max="10080" step="1" disabled={autoGameSaving || !autoGameWaitUntilEmpty} value={autoGameMaxWaitMinutes} onChange={(event) => setAutoGameMaxWaitMinutes(event.target.value)} /><em>min</em></span><span className="auto-update-settings-spacer" /></label>
+          </section>
+          <section className="auto-update-policy-group">
+            <h5>Dune Docker Console</h5>
+            <label className="auto-update-settings-row auto-update-settings-boolean-row"><span>Update the Console after a game update</span><strong>{autoGameUpdateConsole ? "Enabled" : "Disabled"}</strong><input type="checkbox" aria-label="Update the Console after a game update" disabled={autoGameSaving} checked={autoGameUpdateConsole} onChange={(event) => setAutoGameUpdateConsole(event.target.checked)} /></label>
+            <p className="muted auto-update-setting-help">After the game files are updated, check RedBlink for a newer Dune Docker release and install it. Without this, the Console is never updated automatically.</p>
+          </section>
+          <section className="auto-update-policy-group">
+            <h5>Regis Tanks</h5>
+            <label className="auto-update-settings-row auto-update-settings-boolean-row"><span>Disable before, restore after the update</span><strong>{autoGameManageTanks ? "Enabled" : "Disabled"}</strong><input type="checkbox" aria-label="Disable Regis Tanks before the update and restore them afterwards" disabled={autoGameSaving} checked={autoGameManageTanks} onChange={(event) => setAutoGameManageTanks(event.target.checked)} /></label>
+            <p className="muted auto-update-setting-help">If Regis Tanks are enabled, they are switched off and confirmed off before the game files are updated. They are switched on again only after a newer Dune Docker release from RedBlink has been installed and supports the new game build. Without a new release they stay off. Without this option, an update is blocked while Regis Tanks are enabled.</p>
+            {autoGameValues.regis_tanks_restore && <p className="danger-note auto-update-setting-help">Regis Tanks restore: {autoGameValues.regis_tanks_restore}</p>}
           </section>
         </div>
         <div className="auto-update-settings-divider" />
@@ -593,9 +636,15 @@ function GameUpdateProgress({
   repairTask,
   onRetry,
   onFixSteamcmd,
+  onDismiss,
   formatResultTitle,
   formatResultMessage
-}: { task: Task; repairTask: Task | null; onRetry: () => Promise<void>; onFixSteamcmd: () => Promise<void>; formatResultTitle: (value: unknown, pending?: boolean) => string; formatResultMessage: (value: unknown) => string }) {
+}: { task: Task; repairTask: Task | null; onRetry: () => Promise<void>; onFixSteamcmd: () => Promise<void>; onDismiss: () => void; formatResultTitle: (value: unknown, pending?: boolean) => string; formatResultMessage: (value: unknown) => string }) {
+  const blockedReason = gameUpdateBlockReason(task);
+  if (blockedReason) return <div key={task.id} className="game-update-blocked-notice" role="status" style={{ animationDuration: `${UPDATE_RESULT_DISMISS_MS}ms` }}>
+    <ShieldCheck size={18} aria-hidden="true" />
+    <div><strong>Game Update Blocked</strong><p>{blockedReason}</p></div>
+  </div>;
   const progress = summarizeGameUpdateProgress(task);
   const running = !isTerminalTask(task.status);
   const repairRunning = Boolean(repairTask && !isTerminalTask(repairTask.status));
@@ -605,7 +654,7 @@ function GameUpdateProgress({
   return <div className={`result-panel game-update-progress result-${task.status === "succeeded" ? "ok" : task.status === "failed" ? "fail" : "running"}`} aria-live="polite">
     <div className="panel-title">
       <h4 className={running ? "loading-dots" : ""}>{formatResultTitle(progress.title, running)}</h4>
-      <StatusPill value={task.status === "failed" ? "Failed" : task.status === "succeeded" ? "Succeeded" : "Running"} />
+      <StatusPill value={task.status === "failed" ? "Failed" : task.status === "cancelled" ? "Cancelled" : task.status === "succeeded" ? "Succeeded" : "Running"} />
     </div>
     <div className="progress-row">
       <div className="progress-track" aria-label={`Game update progress ${progress.percent}%`}>
@@ -619,7 +668,9 @@ function GameUpdateProgress({
     {task.status === "failed" && <div className="action-line">
       {repairable && <button disabled={repairRunning} onClick={onFixSteamcmd}>Fix SteamCMD</button>}
       <button disabled={repairRunning} onClick={onRetry}>Retry Game Update</button>
+      <button onClick={onDismiss}>Dismiss</button>
     </div>}
+    {task.status === "cancelled" && <div className="action-line"><button onClick={onDismiss}>Dismiss</button></div>}
     <details className="task-technical-details update-log-details">
       <summary>Update Log</summary>
       <pre className="log-box">{updateLog || "Waiting for game update output..."}</pre>
@@ -640,6 +691,9 @@ function summarizeGameUpdateProgress(task: Task) {
   }
   if (task.status === "failed") {
     return { title: "Update Failed", percent: Math.max(5, gameUpdatePercent(text)), message: conciseTaskError(task) };
+  }
+  if (task.status === "cancelled") {
+    return { title: "Update Cancelled", percent: gameUpdatePercent(text), message: "The game update was cancelled. Review the update log before retrying." };
   }
 
   const fixIndex = text.lastIndexOf("Detected a common SteamCMD cache error");
@@ -767,16 +821,17 @@ function StackUpdateProgress({
   helperProgress,
   refreshCountdown,
   onRetry,
+  onDismiss,
   formatResultTitle,
   formatResultMessage
-}: { task: Task; helperProgress: StackUpdateRunProgress | null; refreshCountdown: number | null; onRetry: () => Promise<void>; formatResultTitle: (value: unknown, pending?: boolean) => string; formatResultMessage: (value: unknown) => string }) {
+}: { task: Task; helperProgress: StackUpdateRunProgress | null; refreshCountdown: number | null; onRetry: () => Promise<void>; onDismiss: () => void; formatResultTitle: (value: unknown, pending?: boolean) => string; formatResultMessage: (value: unknown) => string }) {
   const progress = summarizeStackUpdateProgress(task, helperProgress, refreshCountdown);
-  const running = task.status !== "failed" && (!isTerminalTask(task.status) || (isDetachedStackUpdateTask(task) && refreshCountdown === null));
+  const running = !["failed", "cancelled"].includes(task.status) && (!isTerminalTask(task.status) || (isDetachedStackUpdateTask(task) && refreshCountdown === null));
   const resultState = task.status === "failed" ? "fail" : refreshCountdown !== null || (task.status === "succeeded" && !isDetachedStackUpdateTask(task)) ? "ok" : "running";
   return <div className={`result-panel stack-update-progress result-${resultState}`} aria-live="polite">
     <div className="panel-title">
       <h4 className={running ? "loading-dots" : ""}>{formatResultTitle(progress.title, running)}</h4>
-      <StatusPill value={task.status === "failed" ? "Failed" : refreshCountdown !== null ? "Succeeded" : "Running"} />
+      <StatusPill value={task.status === "failed" ? "Failed" : task.status === "cancelled" ? "Cancelled" : refreshCountdown !== null ? "Succeeded" : "Running"} />
     </div>
     <div className="progress-row">
       <div className="progress-track" aria-label={`Console update progress ${progress.percent}%`}>
@@ -788,7 +843,12 @@ function StackUpdateProgress({
     {refreshCountdown !== null && <div className="action-line"><button onClick={() => window.location.reload()}>Refresh Now</button></div>}
     {refreshCountdown === null && helperProgress?.state === "succeeded" && <div className="action-line stack-update-refresh-line"><button onClick={() => window.location.reload()}>Refresh Now</button><span className="muted">The update helper finished. Refresh manually if this page does not detect it shortly.</span></div>}
     {task.status === "succeeded" && !isDetachedStackUpdateTask(task) && <div className="action-line"><button onClick={() => window.location.reload()}>Refresh Console</button></div>}
-    {task.status === "failed" && <div className="action-line"><button onClick={onRetry}>Retry Console Update</button></div>}
+    {task.status === "failed" && <div className="action-line"><button onClick={onRetry}>Retry Console Update</button><button onClick={onDismiss}>Dismiss</button></div>}
+    {task.status === "cancelled" && <div className="action-line"><button onClick={onDismiss}>Dismiss</button></div>}
+    <details className="task-technical-details update-log-details">
+      <summary>Update Log</summary>
+      <pre className="log-box">{task.logLines.slice(-160).map((line) => line.line).join("\n").trim() || "Waiting for Console update output..."}</pre>
+    </details>
   </div>;
 }
 
@@ -797,6 +857,9 @@ export function summarizeStackUpdateProgress(task: Task, helperProgress: StackUp
   const latestLine = [...task.logLines].reverse().map((line) => line.line.trim()).find(Boolean) || task.progressMessage || task.currentStep || "";
   if (task.status === "failed") {
     return { title: "Console Update Failed", percent: Math.max(5, helperProgress?.percent || stackUpdatePercent(text)), message: helperProgress?.message || conciseTaskError(task) };
+  }
+  if (task.status === "cancelled") {
+    return { title: "Console Update Cancelled", percent: stackUpdatePercent(text), message: "The Console update was cancelled. Review the update log before retrying." };
   }
   if (isDetachedStackUpdateTask(task)) {
     if (refreshCountdown !== null) {

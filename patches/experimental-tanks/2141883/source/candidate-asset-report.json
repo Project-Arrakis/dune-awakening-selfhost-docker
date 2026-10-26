@@ -1,0 +1,101 @@
+{
+  "candidateOnly": true,
+  "build": "2141883-0-shipping",
+  "unchangedSharedTables": [
+    "CDT_BaseItems",
+    "DT_BaseItems_Vehicles",
+    "DT_ItemTableBuildables"
+  ],
+  "packages": [
+    "Vehicles/Modules/DT_Tank_Modules",
+    "Vehicles/DT_VehicleTemplates",
+    "Vehicles/Modules/DT_Buggy_Modules",
+    "Vehicles/Blueprints/GroundVehicles/BP_Tank_CHOAM"
+  ],
+  "presetNames": [
+    "T0",
+    "T6_CombatFire",
+    "T6_CombatDart",
+    "T6_DartInventory",
+    "T6_RocketInventory",
+    "T6_FireInventory"
+  ],
+  "moduleChanges": [
+    {
+      "row": "TankChassis_0",
+      "from": "TankChassis:1",
+      "to": "TankChassis:7"
+    },
+    {
+      "row": "TankGenerator_0",
+      "from": "TankGenerator:1",
+      "to": "TreadwheelGenerator:7"
+    },
+    {
+      "row": "TankGenerator_6",
+      "from": "TankGenerator:7",
+      "to": "TreadwheelGenerator:7"
+    },
+    {
+      "row": "TankEngine_0",
+      "from": "TankEngine:1",
+      "to": "TankEngine:7"
+    },
+    {
+      "row": "TankLocomotionFrontLeft_0",
+      "from": "TankLocomotion:1",
+      "to": "TreadwheelLocomotion:7"
+    },
+    {
+      "row": "TankLocomotionFrontRight_0",
+      "from": "TankLocomotion:1",
+      "to": "TreadwheelLocomotion:7"
+    },
+    {
+      "row": "TankLocomotionBackLeft_0",
+      "from": "TankLocomotion:1",
+      "to": "TreadwheelLocomotion:7"
+    },
+    {
+      "row": "TankLocomotionBackRight_0",
+      "from": "TankLocomotion:1",
+      "to": "TreadwheelLocomotion:7"
+    },
+    {
+      "row": "TankLocomotionFrontLeft_6",
+      "from": "TankLocomotion:7",
+      "to": "TreadwheelLocomotion:7"
+    },
+    {
+      "row": "TankLocomotionFrontRight_6",
+      "from": "TankLocomotion:7",
+      "to": "TreadwheelLocomotion:7"
+    },
+    {
+      "row": "TankLocomotionBackLeft_6",
+      "from": "TankLocomotion:7",
+      "to": "TreadwheelLocomotion:7"
+    },
+    {
+      "row": "TankLocomotionBackRight_6",
+      "from": "TankLocomotion:7",
+      "to": "TreadwheelLocomotion:7"
+    },
+    {
+      "row": "TankHull_0",
+      "from": "TankHull:1",
+      "to": "TankHull:7"
+    },
+    {
+      "row": "TankHullFront_0",
+      "from": "TankHullFront:1",
+      "to": "TankHullFront:7"
+    },
+    {
+      "row": "TankDart_0",
+      "from": "TankDart:1",
+      "to": "TankDart:7"
+    }
+  ],
+  "gameplayVerified": false
+}

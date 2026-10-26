@@ -142,3 +142,73 @@ test("the storage route is registered ahead of the bare vehicle-id route", () =>
   assert.ok(storageAt < bareAt, "the storage route must be matched before the bare /api/vehicles/{id} route");
   assert.match(serverSource, /path\.match\(\/\^\\\/api\\\/vehicles\\\/\[\^\/\]\+\\\/storage\$\/\) && req\.method === "GET"/);
 });
+
+// ---- DELETE /api/vehicles/{id}/stored --------------------------------------
+
+test("vehicleStoredDeleteRoute uses the same strict guard before its directDbMutation call", () => {
+  const body = routeBody("vehicleStoredDeleteRoute");
+  assert.match(body, /!Number\.isInteger\(vehicleId\)[\s\S]*?vehicleId > Number\.MAX_SAFE_INTEGER/);
+  const guardAt = body.indexOf("Invalid vehicle ID");
+  const mutationAt = body.indexOf("directDbMutation");
+  assert.ok(guardAt !== -1 && guardAt < mutationAt, "vehicleStoredDeleteRoute must reject a bad id before mutating");
+});
+
+test("vehicleStoredDeleteRoute sends its own confirmation phrase and audit action", () => {
+  const body = routeBody("vehicleStoredDeleteRoute");
+  // The audit name matches the IAM action's word order (vehicles:stored-delete).
+  assert.match(body, /"vehicles\.stored-delete", "DELETE STORED VEHICLE"/);
+  assert.doesNotMatch(body, /"DELETE VEHICLE"/, "an ordinary DELETE VEHICLE phrase must never satisfy the stored route");
+});
+
+// Stops Deny vehicles:delete + Allow vehicles:* from reaching the stored
+// delete, and must run before the rate-limit tick and the backup.
+test("vehicleStoredDeleteRoute also requires vehicles:delete, before anything with a side effect", () => {
+  const body = routeBody("vehicleStoredDeleteRoute");
+  const gateAt = body.indexOf('if (!requireAction(req, res, "vehicles:delete")) return;');
+  assert.notEqual(gateAt, -1, "the stored route lost its vehicles:delete requirement");
+  assert.ok(gateAt < body.indexOf("directDbMutation"), "the second gate must run before directDbMutation");
+});
+
+// A refused request must not cost a full database backup: ten of them would
+// rotate every genuine pre-delete safety backup out of retention.
+test("vehicleStoredDeleteRoute runs the preflight before the safety backup", () => {
+  const body = routeBody("vehicleStoredDeleteRoute");
+  const preflightAt = body.indexOf("duneDb.storedVehicleDeletePreflight(db, vehicleId)");
+  const backupAt = body.indexOf('buildDuneArgs("backupCreate")');
+  const deleteAt = body.indexOf("duneDb.deleteVehicleCompletely(db, vehicleId, { storedRecoveryOnly: true })");
+  assert.notEqual(preflightAt, -1, "the stored route lost its preflight");
+  assert.notEqual(backupAt, -1, "the stored route must still take a safety backup");
+  assert.notEqual(deleteAt, -1, "the stored route must delete with storedRecoveryOnly, never the wider allowBlockedState");
+  assert.ok(preflightAt < backupAt && backupAt < deleteAt, "order must be preflight, backup, delete");
+  assert.doesNotMatch(body, /allowBlockedState/);
+});
+
+test("the stored route is registered ahead of the bare vehicle-id route", () => {
+  const storedAt = serverSource.indexOf("return vehicleStoredDeleteRoute(req, res, path)");
+  const bareAt = serverSource.indexOf("return vehicleDeleteRoute(req, res, path)");
+  assert.notEqual(storedAt, -1, "DELETE /api/vehicles/{id}/stored is not registered");
+  assert.ok(storedAt < bareAt, "the stored route must be matched before the bare /api/vehicles/{id} route");
+  assert.match(serverSource, /path\.match\(\/\^\\\/api\\\/vehicles\\\/\[\^\/\]\+\\\/stored\$\/\) && req\.method === "DELETE"/);
+});
+
+// A vehicle queued for an ordinary delete and then put into recovery would
+// otherwise keep a pending entry for a vehicle that no longer exists.
+test("vehicleStoredDeleteRoute drops a stale queued delete only after the delete succeeds", () => {
+  const body = routeBody("vehicleStoredDeleteRoute");
+  const deleteAt = body.indexOf("duneDb.deleteVehicleCompletely(db, vehicleId, { storedRecoveryOnly: true })");
+  const cleanupAt = body.indexOf("duneDb.cancelQueuedVehicleDelete(config.repoRoot, vehicleId)");
+  assert.notEqual(cleanupAt, -1, "the stored route no longer clears a stale queued delete");
+  assert.ok(deleteAt < cleanupAt, "the queue entry must outlive a refused or failed delete");
+  assert.match(body, /try \{ duneDb\.cancelQueuedVehicleDelete\(config\.repoRoot, vehicleId\); \} catch \{\}/,
+    "having no queued delete is the normal case and must not fail the request");
+});
+
+// Who is online is players:read information, so other callers are not told.
+test("vehicleStoredDeleteRoute withholds the owner's online state from a caller without players:read", () => {
+  const body = routeBody("vehicleStoredDeleteRoute");
+  assert.match(body, /error\?\.code === duneDb\.STORED_VEHICLE_OWNER_ONLINE && !principalMay\(req, "players:read"\)/);
+  assert.match(body, /throw new Error\("This stored vehicle cannot be deleted right now\. Try again later\."\)/);
+  const helper = routeBody("vehicleStoredDeleteRoute").length && serverSource.slice(serverSource.indexOf("function principalMay(req, action)"));
+  assert.match(helper.slice(0, 400), /evaluate\(session, action\)/);
+  assert.match(helper.slice(0, 400), /apiKeys\.allows\(req\.authApiKey, action\)/);
+});

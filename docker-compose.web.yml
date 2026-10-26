@@ -18,6 +18,11 @@ services:
     # Host networking lets the console reach local Dune services and bind
     # ADMIN_BIND_PORT directly.
     network_mode: host
+    # The Console manages the host Docker daemon through its socket. Default
+    # container_t confinement blocks that access on SELinux hosts. Disable label
+    # confinement only for this trusted management container, not for the host.
+    security_opt:
+      - label=disable
     group_add:
       - "${DOCKER_SOCKET_GID:-0}"
     environment:
@@ -35,9 +40,21 @@ services:
       DUNE_COMPOSE_PROJECT_NAME: "${DUNE_COMPOSE_PROJECT_NAME:-dune-awakening-selfhost-docker}"
       ADMIN_BIND_HOST: "${ADMIN_BIND_HOST:-0.0.0.0}"
       ADMIN_BIND_PORT: "${ADMIN_WEB_PORT:-${ADMIN_BIND_PORT:-8088}}"
+      # Transport the existing setting without silently activating a previously
+      # ignored allowlist on upgrade. Settings requires a safe, explicit review.
+      DUNE_CONFIGURED_ADMIN_ALLOWED_IPS: "${ADMIN_ALLOWED_IPS:-}"
       ADMIN_AUTH_DISABLED: "${ADMIN_AUTH_DISABLED:-0}"
+      # Realtime Data: where the optional MapViewer3D position agent listens
+      # (plain HTTP on loopback only). Empty = http://127.0.0.1:8796.
+      DUNE_REALTIME_AGENT_URL: "${DUNE_REALTIME_AGENT_URL:-}"
       ADMIN_SECURE_COOKIES: "${ADMIN_SECURE_COOKIES:-0}"
       ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
+      # Tier 3 second factor (docs/rfc-console-auth.md §2.3/§4). Off unless the
+      # operator sets it in .env. Must be passed through here explicitly: the
+      # console reads process.env inside the container, so a value that only
+      # exists in .env on the host is invisible to it.
+      CONSOLE_TOTP_ENABLED: "${CONSOLE_TOTP_ENABLED:-0}"
+      CONSOLE_TRUSTED_PROXY_IPS: "${CONSOLE_TRUSTED_PROXY_IPS:-}"
       ADMIN_TASK_RETENTION: "${ADMIN_TASK_RETENTION:-200}"
       # Seed values for the Bases auto-refill settings. The console settings
       # overlay writes runtime/generated/auto-refill-settings.json, which wins
@@ -46,6 +63,7 @@ services:
       # no env_file here, so .env reaches the container only via this map.
       ADMIN_AUTO_REFILL_THRESHOLD_PERCENT: "${ADMIN_AUTO_REFILL_THRESHOLD_PERCENT:-50}"
       ADMIN_AUTO_REFILL_INTERVAL_HOURS: "${ADMIN_AUTO_REFILL_INTERVAL_HOURS:-24}"
+      ADMIN_AUTO_REFILL_WINDTRAP_THRESHOLD_PERCENT: "${ADMIN_AUTO_REFILL_WINDTRAP_THRESHOLD_PERCENT:-40}"
       ADMIN_AUTO_REFILL_WATER_THRESHOLD_PERCENT: "${ADMIN_AUTO_REFILL_WATER_THRESHOLD_PERCENT:-50}"
       ADMIN_AUTO_REFILL_WATER_INTERVAL_HOURS: "${ADMIN_AUTO_REFILL_WATER_INTERVAL_HOURS:-24}"
       ADMIN_MARKET_HISTORY_RETENTION_DAYS: "${ADMIN_MARKET_HISTORY_RETENTION_DAYS:-0}"
@@ -53,6 +71,8 @@ services:
       ADMIN_UPDATE_CHECK_CACHE_MS: "${ADMIN_UPDATE_CHECK_CACHE_MS:-1800000}"
       ADMIN_MAP_WRITE_FLUSH_TIMEOUT_MS: "${ADMIN_MAP_WRITE_FLUSH_TIMEOUT_MS:-300000}"
       ADMIN_MAX_JSON_BYTES: "${ADMIN_MAX_JSON_BYTES:-2097152}"
+      # Per-statement limit for base backup export/import (docs/console/base-backups.md).
+      ADMIN_BASE_BACKUP_STATEMENT_TIMEOUT_MS: "${ADMIN_BASE_BACKUP_STATEMENT_TIMEOUT_MS:-120000}"
       ALLOW_HOST_BOOTSTRAP: "${ALLOW_HOST_BOOTSTRAP:-false}"
       ADMIN_MOCK_MODE: "${ADMIN_MOCK_MODE:-0}"
       ADMIN_STATIC_DIR: /app/web-dist
@@ -67,6 +87,7 @@ services:
       DIRECTOR_PORT: "${DIRECTOR_PORT:-}"
       CLIENT_PORT_BASE: "${CLIENT_PORT_BASE:-}"
       IGW_PORT_BASE: "${IGW_PORT_BASE:-}"
+      DUNE_SCHEMA_CACHE_TTL_MS: "${DUNE_SCHEMA_CACHE_TTL_MS:-}"
       DUNE_DB_NAME: "${DUNE_DB_NAME:-}"
       DUNE_DB_USER: "${DUNE_DB_USER:-}"
       DUNE_DB_PASSWORD: "${DUNE_DB_PASSWORD:-}"
@@ -100,7 +121,9 @@ services:
       DUNE_PUBLIC_DIRECTORY_URL: "${DUNE_PUBLIC_DIRECTORY_URL:-}"
       DUNE_PUBLIC_DIRECTORY_CLAIM_URL: "${DUNE_PUBLIC_DIRECTORY_CLAIM_URL:-}"
     volumes:
-      - "${DUNE_HOST_REPO_ROOT:-.}:/repo"
+      # Shared SELinux label: the Console, Autoscaler, and map containers use
+      # this tree. Private :Z labeling would deny access to the other services.
+      - "${DUNE_HOST_REPO_ROOT:-.}:/repo:z"
       - /etc/localtime:/etc/localtime:ro
       # WARNING: mounting the Docker socket gives this container broad control
       # over the host Docker daemon. Expose the web admin only to trusted admins.

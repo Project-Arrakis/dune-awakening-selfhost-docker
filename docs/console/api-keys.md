@@ -96,14 +96,15 @@ namespace" rule, so Create stays disabled until something is selected.
 
 | Namespace | Read grants | Read+write additionally grants |
 |---|---|---|
-| `players` | `players:read` | `delete-item`, `edit-item`, `give-item`, `grant`, `kick-all`, `moderate`, `recover`, `repair`, `reset`, `teleport`, `unclassified` |
-| `bases` | `bases:read` | `add-item`, `bulk-delete-items`, `delete`, `delete-item`, `fill-item`, `give-item`, `mutate`, `write-config` |
-| `vehicles` | `vehicles:read` | `bulk-delete-items`, `delete`, `delete-item`, `mutate` |
+| `players` | `players:read` | `configure-list`, `delete-item`, `edit-item`, `give-item`, `grant`, `kick-all`, `moderate`, `recover`, `repair`, `reset`, `teleport`, `unclassified` |
+| `bases` | `bases:read` | `add-item`, `bulk-delete-items`, `delete`, `delete-item`, `fill-item`, `give-item`, `delete-backup`, `edit-backup`, `export-backup`, `import-backup`, `mutate`, `write-config` — **the four base-backup actions require explicit grants; see below** |
+| `vehicles` | `vehicles:read` | `bulk-delete-items`, `delete`, `delete-item`, `mutate`, `stored-delete` — **the stored-vehicle delete requires an explicit grant; see below** |
 | `guilds` | `guilds:read` | `disband`, `membership`, `rank`, `unclassified` |
 | `storage` | `storage:read` | `mutate` |
 | `blueprints` | `blueprints:read` | `delete`, `export`, `import`, `unclassified` |
 | `exchange` | `exchange:market`, `exchange:read` | `market-write`, `write-config` |
 | `maps` | `maps:read` | `despawn`, `reconcile`, `restart`, `spawn`, `teleport`, `write-config` |
+| `realtime` | `realtime:read` | *nothing — Realtime Data is read-only* |
 | `sietches` | `sietches:read` | `write` |
 | `deepdesert` | `deepdesert:read` | `write` |
 | `landsraad` | `landsraad:read` | `write` |
@@ -115,9 +116,9 @@ namespace" rule, so Create stays disabled until something is selected.
 | `addons` | `addons:read` | *nothing — write actions are denied to keys* |
 | `admin` | `admin:announcements:read`, `admin:history:read`, `admin:items:read`, `admin:motd:read`, `admin:skills:read`, `admin:transfer-settings:read`, `admin:vehicles:read` | `announcements:write`, `broadcast`, `broadcast-shutdown`, `history:clear`, `map-chat`, `motd:write`, `transfer-settings:write` |
 
-`logs`, `updates` and `addons` render a two-segment control (None / Read), not three. `logs`
-has no write action at all; the other two have several, but they are denied to keys — see
-below. All three are read from the action catalog rather than hardcoded, so a future `logs`
+`logs`, `realtime`, `updates` and `addons` render a two-segment control (None / Read), not
+three. `logs` and `realtime` have no write action at all; the other two have several, but they
+are denied to keys — see below. All three are read from the action catalog rather than hardcoded, so a future `logs`
 write action makes the third segment appear on its own.
 
 ### Two read exceptions
@@ -139,11 +140,11 @@ runs a grant cycle. The verb-shaped name is not the test; what the route does is
 
 ### The two system-backup scopes
 
-### Three actions no level ever grants
+### Actions no level ever grants
 
-`backups:download-system`, `backups:import-system` and `backups:restore-system` are
-reachable **only** by naming them in a key's explicit action list. A key stored as
-`{"backups": "write"}` does not get them.
+`backups:download-system`, `backups:import-system`, `backups:restore-system`,
+`bases:import-backup`, `bases:edit-backup`, `bases:export-backup`, `bases:delete-backup` and `vehicles:stored-delete` are reachable **only** by naming them in a
+key's explicit action list. A key stored as `{"backups": "write"}`, `{"bases": "write"}` or `{"vehicles": "write"}` does not get them.
 
 Levels otherwise auto-cover actions added later, so a key keeps working as routes are
 added. That is right for a namespace whose blast radius is stable, and wrong for this
@@ -157,7 +158,20 @@ nothing for the operator to review.
 `create-system` and `delete-system` are not excluded: neither reads an archive back nor
 writes one into the host.
 
-The `admin` tier is denied the same three for the same reason — see `policy.js`.
+`bases:import-backup`, `bases:edit-backup`, `bases:export-backup` and `bases:delete-backup` are excluded on the
+same grounds. Import creates a whole base, with every item stored in it, from an uploaded
+file. Edit can hand an existing picked-up base to another player or move it to another map.
+Export downloads a whole base, every stored item included, as a file that imports on any
+server. Delete permanently removes that backup and all of its stored contents. A `bases: write` key was minted for per-base
+knobs (refills, permissions), not for that.
+
+`vehicles:stored-delete` is excluded because it deletes a vehicle that is Stored for
+Recovery -- one a player can still get back. A `vehicles: write` key was minted before that
+was possible. The route also requires `vehicles:delete`, so a key needs both: `vehicles:delete`
+(from the write level or named) and `vehicles:stored-delete` named explicitly.
+
+The `admin` tier is denied the three `backups` actions above for the same reason — see
+`policy.js`. It keeps the four `bases` actions through `bases:*`.
 
 `backups:create-system` and `backups:download-system` are write-classified and
 deliberately separate from the rest of the namespace, because neither is really about

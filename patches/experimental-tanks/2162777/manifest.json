@@ -1,0 +1,52 @@
+{
+  "candidateOnly": true,
+  "gameplayVerified": false,
+  "version": "r6.4-tank-only-ids-candidate",
+  "worldTag": "2162777-0-shipping",
+  "baseImage": "registry.funcom.com/funcom/self-hosting/seabass-server@sha256:8b0004648892649d9fa0f5ca77f674aa708e60bb0649a06ef3493029c2bfea91",
+  "baseConfigId": "sha256:ffa32ef75851fddea7dbe51373b259d7d1b5ffe599aa87e6ebbedb46e4dc92a4",
+  "cleanSha256": "9d1921e585fd3d02d5ae17f7db79a346dff7c3f0a9c6187a77d7542bb7d5d30a",
+  "patchedSha256": "ec9da025ccb45ce4ec50b3f24efbbe4eeda320ffd028d364f4ebb6eaac54c444",
+  "assets": {
+    "pakchunk999-RegisTank-r6_0-2141883-LinuxServer_P.pak": "9fd38ec6c7fede35688c7f748fece813947e64e47b25cd7e53bf0b70cf5be02f",
+    "pakchunk999-RegisTank-r6_0-2141883-LinuxServer_P.ucas": "3d7e5f792f2d0cebf78c43958ee74d1a2ee48b191294e3a6106081b9041d6787",
+    "pakchunk999-RegisTank-r6_0-2141883-LinuxServer_P.utoc": "96ea73496a4720140f2d974d49537033d583aa20220146b537215a39543f5de1"
+  },
+  "sites": [
+    [
+      226045978,
+      "488d3dbf92ffffe82a862202",
+      "909090909090909090909090"
+    ],
+    [
+      255493936,
+      "0f8512010000",
+      "90e912010000"
+    ],
+    [
+      259587569,
+      "0f849d010000",
+      "e99e01000090"
+    ],
+    [
+      255419536,
+      "4d8b4c24e8",
+      "e9d9131005"
+    ],
+    [
+      259589166,
+      "488b8568ffffff",
+      "e96474d0049090"
+    ],
+    [
+      259612036,
+      "488b4008488945b8",
+      "e93a1bd004909090"
+    ],
+    [
+      340359193,
+      "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "505152803d6e3285020074424489d189c8c1e8103d002000007333488d1585328502488b54c2684885d274220fb7c9488d144af60201751666813a0001720f8b42020d202020203d74616e6beb0383c8015a5958c39c4152458b5424f8e89effffff750d415a9d4531c99090e90beceffa415a9d4d8b4c24e8e9feebeffa9c4152458b1424e876ffffff750f415a9d31c09090909090e9818b2ffb415a9d488b8568ffffffe9728b2ffb9c41524d89eae84bffffff7510415a9d31c09090488945b8e9ace42ffb415a9d488b4008488945b8e99ce42ffb"
+    ]
+  ]
+}

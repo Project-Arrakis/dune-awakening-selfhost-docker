@@ -18,6 +18,14 @@ test("validates known service names and aliases", () => {
   assert.throws(() => validateServiceName("gateway; rm -rf /"));
 });
 
+test("Experimental Tanks require an explicit Hagga restart confirmation", () => {
+  assert.deepEqual(buildDuneArgs("experimentalTanksStatus"), ["experimental-tanks", "status"]);
+  assert.deepEqual(buildDuneArgs("experimentalTanksApply", { enabled: true, confirmRestart: true }), ["experimental-tanks", "apply", "true"]);
+  assert.deepEqual(buildDuneArgs("experimentalTanksApply", { enabled: false, confirmRestart: true }), ["experimental-tanks", "apply", "false"]);
+  assert.throws(() => buildDuneArgs("experimentalTanksApply", { enabled: true }));
+  assert.throws(() => buildDuneArgs("experimentalTanksApply", { enabled: "true", confirmRestart: true }));
+});
+
 test("bounds captured child-process output while retaining its newest tail", () => {
   assert.equal(appendBoundedOutput("abc", "def", 10), "abcdef");
   const output = appendBoundedOutput("old-".repeat(30), "new-output", 48);
@@ -139,7 +147,7 @@ test("builds allowlisted command arguments without shell interpolation", () => {
   assert.deepEqual(buildDuneArgs("updateApply"), ["update", "--yes"]);
   assert.deepEqual(buildDuneArgs("updateInstallAssets"), ["update", "install-assets"]);
   assert.deepEqual(buildDuneArgs("updateAutoStatus"), ["update", "auto", "status"]);
-  assert.deepEqual(buildDuneArgs("updateAutoEnable"), ["update", "auto", "enable", "60", "1", "1", "15,10,5,1", "0", "360"]);
+  assert.deepEqual(buildDuneArgs("updateAutoEnable"), ["update", "auto", "enable", "60", "1", "1", "15,10,5,1", "0", "360", "0", "0"]);
   assert.deepEqual(buildDuneArgs("updateAutoEnable", {
     intervalMinutes: 30,
     applyEnabled: true,
@@ -147,7 +155,11 @@ test("builds allowlisted command arguments without shell interpolation", () => {
     notifyMinutes: "10, 5, 1",
     waitUntilEmpty: true,
     maxWaitMinutes: 240
-  }), ["update", "auto", "enable", "30", "1", "1", "10,5,1", "1", "240"]);
+  }), ["update", "auto", "enable", "30", "1", "1", "10,5,1", "1", "240", "0", "0"]);
+  assert.deepEqual(buildDuneArgs("updateAutoEnable", { updateConsole: true, manageTanks: true }),
+    ["update", "auto", "enable", "60", "1", "1", "15,10,5,1", "0", "360", "1", "1"]);
+  assert.throws(() => buildDuneArgs("updateAutoEnable", { updateConsole: "false" }), /updateConsole must be true or false/);
+  assert.throws(() => buildDuneArgs("updateAutoEnable", { manageTanks: 1 }), /manageTanks must be true or false/);
   assert.deepEqual(buildDuneArgs("updateAutoDisable"), ["update", "auto", "disable"]);
   assert.deepEqual(buildDuneArgs("selfUpdateApply"), ["self-update", "install", "latest"]);
   assert.deepEqual(buildDuneArgs("selfUpdateQaApply", { sha: "a".repeat(40) }), ["self-update", "install-qa", "a".repeat(40)]);

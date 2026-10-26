@@ -15,6 +15,7 @@ RUN dpkg --add-architecture i386 \
     git \
     python3 \
     python3-yaml \
+    postgresql-client \
     procps \
     util-linux \
     lib32gcc-s1 \

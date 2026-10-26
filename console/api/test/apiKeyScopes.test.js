@@ -73,11 +73,11 @@ test("carepackage:scan is a write despite its verb-shaped name", () => {
   assert.equal(keyAllows({ scopes: { carepackage: "write" } }, "carepackage:scan"), true);
 });
 
-test("logs, updates and addons are the only namespaces offering no write level", () => {
-  // logs has no write action at all; updates has several but they are denied.
-  // Both render a two-segment None/Read control.
+test("logs, realtime, updates and addons are the only namespaces offering no write level", () => {
+  // logs and realtime have no write action at all; updates has several but
+  // they are denied. All render a two-segment None/Read control.
   const namespaces = selectableNamespaces();
-  const readOnly = new Set(["logs", ...KEY_WRITE_DENIED_NAMESPACES]);
+  const readOnly = new Set(["logs", "realtime", ...KEY_WRITE_DENIED_NAMESPACES]);
   for (const namespace of readOnly) {
     assert.ok(namespaces.includes(namespace), `${namespace} should still be selectable, just not writable`);
     assert.equal(namespaceHasWriteActions(namespace), false, `${namespace} offers a write level it should not`);
@@ -116,7 +116,7 @@ test("denied namespaces are absent from the selectable catalog entirely", () => 
     assert.ok(!namespaces.includes(denied), `${denied} must never be offered as a key scope`);
     assert.ok(!actionsByNamespace().has(denied));
   }
-  assert.equal(namespaces.length, 18);
+  assert.equal(namespaces.length, 19);
 });
 
 test("scopeCatalog reports write support for the UI", () => {
@@ -464,6 +464,31 @@ test("a stored write level does not reach the whole-host backup actions", () => 
     assert.equal(scopeAllowsAction("backups", "write", action), false, `write must not cover ${action}`);
     assert.equal(scopeAllowsAction("backups", "read", action), false, `read must not cover ${action}`);
   }
+});
+
+test("a stored bases write level does not reach any base-backup transfer or delete action", () => {
+  for (const action of ["bases:import-backup", "bases:edit-backup", "bases:export-backup", "bases:delete-backup"]) {
+    assert.equal(scopeAllowsAction("bases", "write", action), false, `write must not cover ${action}`);
+    assert.equal(scopeAllowsAction("bases", "read", action), false, `read must not cover ${action}`);
+    assert.equal(scopeAllowsAction("bases", [action], action), true);
+  }
+  // Listing stays under bases:read.
+  assert.equal(scopeAllowsAction("bases", "read", "bases:read"), true);
+});
+
+test("a stored vehicles write level does not reach the stored-vehicle delete", () => {
+  // vehicles:delete (junk vehicles) stays covered by the level; taking a
+  // recoverable vehicle away from a player has to be named.
+  assert.equal(scopeAllowsAction("vehicles", "write", "vehicles:stored-delete"), false);
+  assert.equal(scopeAllowsAction("vehicles", "read", "vehicles:stored-delete"), false);
+  assert.equal(scopeAllowsAction("vehicles", ["vehicles:stored-delete"], "vehicles:stored-delete"), true);
+  assert.equal(scopeAllowsAction("vehicles", "write", "vehicles:delete"), true);
+  assert.equal(keyAllows({ scopes: { vehicles: "write" } }, "vehicles:stored-delete"), false);
+  // The route needs both actions, so the explicit list has to carry both.
+  const explicit = { scopes: { vehicles: ["vehicles:delete", "vehicles:stored-delete"] } };
+  assert.equal(keyAllows(explicit, "vehicles:stored-delete"), true);
+  assert.equal(keyAllows(explicit, "vehicles:delete"), true);
+  assert.equal(keyAllows({ scopes: { vehicles: ["vehicles:stored-delete"] } }, "vehicles:delete"), false);
 });
 
 test("the excluded actions can still be granted by naming them", () => {

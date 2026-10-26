@@ -6,7 +6,14 @@ cd "$(dirname "$0")/../.."
 # shellcheck source=runtime/scripts/lib/igw-socket-health.sh
 source runtime/scripts/lib/igw-socket-health.sh
 
+# shellcheck source=runtime/scripts/lib/postgres.sh
+source runtime/scripts/lib/postgres.sh
+
 INTERVAL="${DUNE_AUTOSCALER_INTERVAL:-5}"
+if ! [[ "$INTERVAL" =~ ^[1-9][0-9]*$ ]]; then
+  echo "Invalid DUNE_AUTOSCALER_INTERVAL; using 5 seconds." >&2
+  INTERVAL=5
+fi
 DEMAND_INTERVAL="${DUNE_AUTOSCALER_DEMAND_INTERVAL:-2}"
 if ! [[ "$DEMAND_INTERVAL" =~ ^[1-9][0-9]*$ ]]; then
   echo "Invalid DUNE_AUTOSCALER_DEMAND_INTERVAL; using 2 seconds." >&2
@@ -107,6 +114,46 @@ SINCE="$(validate_log_window DUNE_AUTOSCALER_LOG_SINCE "$SINCE" 30s)"
 NAMED_DESTINATION_SINCE="$(validate_log_window DUNE_AUTOSCALER_NAMED_DESTINATION_LOG_SINCE "$NAMED_DESTINATION_SINCE" 10m)"
 SINCE_SECONDS="$(duration_to_seconds "$SINCE")"
 NAMED_DESTINATION_SINCE_SECONDS="$(duration_to_seconds "$NAMED_DESTINATION_SINCE")"
+
+# All production scanners share one stream. The unset branch also lets isolated
+# function harnesses supply their existing Docker fixtures without a daemon.
+director_logs() {
+  if [ -n "${DIRECTOR_LOG_CACHE_FILE:-}" ]; then
+    python3 runtime/scripts/director-log-cache.py read "$DIRECTOR_LOG_CACHE_FILE" "$@"
+  else
+    docker logs "$@" dune-director
+  fi
+}
+
+director_logs_available() {
+  [ -z "${DIRECTOR_LOG_CACHE_FILE:-}" ] || director_logs --since 1s >/dev/null 2>&1
+}
+
+start_director_log_cache() {
+  DIRECTOR_LOG_CACHE_DIR="$(mktemp -d runtime/generated/director-log-cache.XXXXXX)"
+  DIRECTOR_LOG_CACHE_FILE="$DIRECTOR_LOG_CACHE_DIR/recent.sqlite"
+  ensure_director_log_cache
+  trap 'stop_director_log_cache' EXIT
+  trap 'exit 143' TERM
+  trap 'exit 130' INT
+}
+
+ensure_director_log_cache() {
+  [ -z "${DIRECTOR_LOG_CACHE_PID:-}" ] || ! kill -0 "$DIRECTOR_LOG_CACHE_PID" 2>/dev/null || return 0
+  local retention="$NAMED_DESTINATION_SINCE_SECONDS"
+  [ "$retention" -ge "$SINCE_SECONDS" ] || retention="$SINCE_SECONDS"
+  [ "$retention" -ge 600 ] || retention=600
+  python3 runtime/scripts/director-log-cache.py follow "$DIRECTOR_LOG_CACHE_FILE" \
+    --retention "$retention" --parent "$$" &
+  DIRECTOR_LOG_CACHE_PID=$!
+}
+
+stop_director_log_cache() {
+  kill "$DIRECTOR_LOG_CACHE_PID" 2>/dev/null || true
+  wait "$DIRECTOR_LOG_CACHE_PID" 2>/dev/null || true
+  rm -f "$DIRECTOR_LOG_CACHE_FILE" "$DIRECTOR_LOG_CACHE_FILE-wal" "$DIRECTOR_LOG_CACHE_FILE-shm"
+  rmdir "$DIRECTOR_LOG_CACHE_DIR" 2>/dev/null || true
+}
 PROACTIVE_HAGGA_SCAN_SECONDS="$(validate_scan_seconds DUNE_AUTOSCALER_PROACTIVE_HAGGA_SCAN_SECONDS "${DUNE_AUTOSCALER_PROACTIVE_HAGGA_SCAN_SECONDS:-15}" 15 "$SINCE_SECONDS")"
 DEEPDESERT_LOADING_SCAN_SECONDS="$(validate_scan_seconds DUNE_AUTOSCALER_DEEPDESERT_LOADING_SCAN_SECONDS "${DUNE_AUTOSCALER_DEEPDESERT_LOADING_SCAN_SECONDS:-15}" 15 "$SINCE_SECONDS")"
 NAMED_DESTINATION_SCAN_SECONDS="$(validate_scan_seconds DUNE_AUTOSCALER_NAMED_DESTINATION_SCAN_SECONDS "${DUNE_AUTOSCALER_NAMED_DESTINATION_SCAN_SECONDS:-60}" 60 "$NAMED_DESTINATION_SINCE_SECONDS")"
@@ -167,10 +214,6 @@ if ! docker ps --format '{{.Names}}' | grep -qx dune-postgres; then
   echo "dune-postgres is not running."
   exit 1
 fi
-
-psql_value() {
-  docker exec dune-postgres psql -U postgres -d dune -Atc "$1"
-}
 
 hub_origin_id_for_map() {
   case "$1" in
@@ -248,7 +291,7 @@ replay_hagga_travel_handoff() {
   [ -n "$origin_server_id" ] || return 0
 
   director_log_file="$(mktemp)"
-  docker logs --since "$NAMED_DESTINATION_SINCE" dune-director > "$director_log_file" 2>&1 || true
+  director_logs --since "$NAMED_DESTINATION_SINCE" > "$director_log_file" 2>/dev/null || true
   replay_rows="$(FLOW_ID="$flow_id" LOG_FILE="$director_log_file" python3 - <<'PY'
 import base64
 import json
@@ -867,20 +910,15 @@ forget_deepdesert_travel() {
 
 deepdesert_target_json() {
   local target_partition="${1:-}"
-  DUNE_DEEPDESERT_TARGET_PARTITION="$target_partition" python3 - <<'PY'
-import json
-import os
-import subprocess
+  local partition_clause=""
+  local row
 
-target_partition = os.environ.get("DUNE_DEEPDESERT_TARGET_PARTITION", "").strip()
-partition_clause = ""
-if target_partition:
-    try:
-        partition_clause = f"  and wp.partition_id = {int(target_partition)}\n"
-    except ValueError:
-        raise SystemExit(1)
+  if [ -n "$target_partition" ]; then
+    [[ "$target_partition" =~ ^[0-9]+$ ]] || return 1
+    partition_clause="  and wp.partition_id = $target_partition"
+  fi
 
-sql = f"""
+  row="$(dune_psql -AtF '|' -c "
 select
   wp.partition_id,
   coalesce(wp.dimension_index, 0),
@@ -892,20 +930,18 @@ select
 from dune.world_partition wp
 join dune.farm_state fs on fs.server_id = wp.server_id
 where wp.map = 'DeepDesert_1'
-{partition_clause}\
+$partition_clause
 order by wp.dimension_index, wp.partition_id
 limit 1;
-"""
-proc = subprocess.run(
-    ["docker", "exec", "dune-postgres", "psql", "-U", "postgres", "-d", "dune", "-AtF", "|", "-c", sql],
-    capture_output=True,
-    text=True,
-    check=False,
-)
-row = proc.stdout.strip()
-if not row:
-    raise SystemExit(1)
-partition_id, dimension, port, ip, ready, alive, server_id = row.split("|", 6)
+")" || return 1
+  [ -n "$row" ] || return 1
+
+  DUNE_DEEPDESERT_TARGET_ROW="$row" python3 - <<'PY'
+import json
+import os
+
+partition_id, dimension, port, ip, ready, alive, server_id = \
+    os.environ["DUNE_DEEPDESERT_TARGET_ROW"].strip().split("|", 6)
 print(json.dumps({
     "partition_id": int(partition_id),
     "dimension": int(dimension),
@@ -919,11 +955,9 @@ PY
 }
 
 survival_partition_target_json() {
-  python3 - <<'PY'
-import json
-import subprocess
+  local row
 
-sql = """
+  row="$(dune_psql -AtF '|' -c "
 select
   wp.partition_id,
   coalesce(wp.dimension_index, 0),
@@ -936,17 +970,15 @@ where wp.map = 'Survival_1'
   and fs.alive = true
 order by wp.partition_id
 limit 1;
-"""
-proc = subprocess.run(
-    ["docker", "exec", "dune-postgres", "psql", "-U", "postgres", "-d", "dune", "-AtF", "|", "-c", sql],
-    capture_output=True,
-    text=True,
-    check=False,
-)
-row = proc.stdout.strip()
-if not row:
-    raise SystemExit(1)
-partition_id, dimension, port, ip = row.split("|", 3)
+")" || return 1
+  [ -n "$row" ] || return 1
+
+  DUNE_SURVIVAL_TARGET_ROW="$row" python3 - <<'PY'
+import json
+import os
+
+partition_id, dimension, port, ip = \
+    os.environ["DUNE_SURVIVAL_TARGET_ROW"].strip().split("|", 3)
 print(json.dumps({
     "partition_id": int(partition_id),
     "dimension": int(dimension),
@@ -965,7 +997,7 @@ scan_proactive_hagga_handoffs() {
   [ -n "$target_json" ] || return 0
 
   director_log_file="$(mktemp)"
-  docker logs --since "$SINCE" dune-director > "$director_log_file" 2>&1 || true
+  director_logs --since "$SINCE" > "$director_log_file" 2>/dev/null || true
   proactive_rows="$(TARGET_JSON="$target_json" LOG_FILE="$director_log_file" python3 - <<'PY'
 import json
 import os
@@ -1057,7 +1089,7 @@ PY
 
 follow_director_hagga_handoffs() {
   while true; do
-    docker logs -f --since 0s dune-director 2>&1 | TARGET_JSON="$(survival_partition_target_json 2>/dev/null || true)" python3 -u - <<'PY' | while IFS='|' read -r flow_id origin_id payload_json; do
+    python3 runtime/scripts/director-log-cache.py stream "$DIRECTOR_LOG_CACHE_FILE" --parent "$$" 2>/dev/null | TARGET_JSON="$(survival_partition_target_json 2>/dev/null || true)" python3 -u /dev/fd/3 3<<'PY' | while IFS='|' read -r flow_id origin_id payload_json; do
 import json
 import os
 import re
@@ -1151,7 +1183,7 @@ scan_deepdesert_loading_responses() {
   director_heal_due deepdesert_loading "$DEEPDESERT_LOADING_SCAN_SECONDS" || return 0
 
   director_log_file="$(mktemp)"
-  docker logs --since "$SINCE" dune-director > "$director_log_file" 2>&1 || true
+  director_logs --since "$SINCE" > "$director_log_file" 2>/dev/null || true
   pending_rows="$(LOG_FILE="$director_log_file" python3 - <<'PY'
 import json
 import os
@@ -1434,8 +1466,7 @@ igw_socket_sample() {
     total_queue=$((total_queue + 16#$rx_hex))
     total_drops=$((total_drops + drop_count))
   done < <(
-    timeout --kill-after=1s 5s docker exec "$container" sh -c \
-      'cat /proc/net/udp /proc/net/udp6 2>/dev/null' 2>/dev/null \
+    igw_socket_table "$container" \
       | awk -v port="$port_hex" '
           $2 ~ (":" port "$") {
             split($5, queue, ":")
@@ -2245,7 +2276,7 @@ scan_rejected_story_returns() {
   director_heal_due rejected_story_returns "$STORY_RETURN_RECOVERY_SCAN_SECONDS" || return 0
 
   director_log_file="$(mktemp)"
-  docker logs --timestamps --since "$NAMED_DESTINATION_SINCE" dune-director > "$director_log_file" 2>&1 || true
+  director_logs --timestamps --since "$NAMED_DESTINATION_SINCE" > "$director_log_file" 2>/dev/null || true
   rejected_rows="$(LOG_FILE="$director_log_file" python3 - <<'PY'
 import os
 import re
@@ -2561,7 +2592,7 @@ scan_idle_servers() {
     *) echo "WARN invalid idle scan scope: $scope" >&2; return 1 ;;
   esac
 
-  docker exec dune-postgres psql -U postgres -d dune -At -F '|' -c "
+  dune_psql -At -F '|' -c "
     select
       fs.map,
       wp.partition_id,
@@ -2628,7 +2659,7 @@ follow_fresh_process_lifecycle() {
 }
 
 scan_reconnect_demand() {
-  docker exec dune-postgres psql -U postgres -d dune -At -F '|' -c "
+  dune_psql -At -F '|' -c "
     select
       ps.account_id,
       coalesce(ps.server_id, ''),
@@ -2716,7 +2747,7 @@ scan_reconnect_demand() {
 }
 
 scan_live_player_partition_alignment() {
-  docker exec dune-postgres psql -U postgres -d dune -At -F '|' -c "
+  dune_psql -At -F '|' -c "
     select
       ps.account_id,
       ps.server_id,
@@ -2764,7 +2795,7 @@ scan_travel_demand() {
   demand_rows="$(
     # Timestamps make otherwise identical player requests distinct while
     # keeping the same log occurrence stable across overlapping scan windows.
-    docker logs --timestamps --since "$SINCE" dune-director 2>&1 | python3 -c '
+    director_logs --timestamps --since "$SINCE" 2>/dev/null | python3 -c '
 import hashlib
 import re
 import sys
@@ -2866,7 +2897,7 @@ scan_igwo_unavailable_maps() {
   now="$(date +%s)"
 
   rows="$(
-    docker logs --since "$NAMED_DESTINATION_SINCE" dune-director 2>&1 | python3 -c '
+    director_logs --since "$NAMED_DESTINATION_SINCE" 2>/dev/null | python3 -c '
 import hashlib
 import re
 import sys
@@ -2972,7 +3003,7 @@ scan_stale_server_state() {
   now="$(date +%s)"
 
   rows="$(
-    docker logs --since "$SINCE" dune-director 2>&1 | python3 -c '
+    director_logs --since "$SINCE" 2>/dev/null | python3 -c '
 import hashlib
 import re
 import sys
@@ -3023,7 +3054,7 @@ scan_unscoped_stale_server_state() {
   now="$(date +%s)"
 
   count="$(
-    docker logs --since "$SINCE" dune-director 2>&1 | python3 -c '
+    director_logs --since "$SINCE" 2>/dev/null | python3 -c '
 import re
 import sys
 
@@ -3047,7 +3078,7 @@ print(sum(1 for line in sys.stdin if stale_pattern.search(line)))
 }
 
 director_live_server_rows() {
-  docker exec dune-postgres psql -U postgres -d dune -At -F '|' -c "
+  dune_psql -At -F '|' -c "
     select map, server_id
     from dune.farm_state
     where map in ('Survival_1', 'Overmap', 'DeepDesert_1')
@@ -3059,7 +3090,7 @@ director_live_server_rows() {
 }
 
 director_latest_capacity() {
-  docker logs --since 10m dune-director 2>&1 \
+  director_logs --since 10m 2>/dev/null \
     | python3 -c '
 import json
 import re
@@ -3092,7 +3123,7 @@ director_logs_contain_live_ids() {
   # (for example, "+" becomes "\\u002B"). Normalize those escapes before
   # comparing log text with the literal IDs stored in farm_state.
   logs="$(
-    docker logs --since 10m dune-director 2>&1 \
+    director_logs --since 10m 2>/dev/null \
       | python3 runtime/scripts/decode-log-unicode-escapes.py \
       || true
   )"
@@ -3134,6 +3165,15 @@ scan_director_browser_state() {
   local republish_at republish_age online_players restart_deferred
 
   director_heal_due browser_state "$DIRECTOR_BROWSER_SCAN_SECONDS" || return 0
+
+  # Missing log evidence is not proof of stale publication. In particular,
+  # never let a failed/reconnecting follower trigger a disruptive farm heal.
+  if ! director_logs_available; then
+    director_heal_clear stale_since
+    director_heal_clear browser_republish_at
+    director_heal_clear browser_restart_deferred
+    return 0
+  fi
 
   # Capacity can legitimately remain zero while the core maps are still
   # registering during stack startup or after a controlled Director refresh.
@@ -3266,6 +3306,7 @@ scan_director_browser_state() {
   director_heal_clear browser_restart_deferred
 }
 
+start_director_log_cache
 follow_director_hagga_handoffs &
 follow_director_travel_demand &
 follow_fresh_process_lifecycle &
@@ -3274,6 +3315,7 @@ reconcile_always_on_maps
 repair_chat_exchanges_due
 
 while true; do
+  ensure_director_log_cache
   reconcile_always_on_maps
   scan_deepdesert_loading_responses
   ensure_overmap_travel_maps_prewarmed

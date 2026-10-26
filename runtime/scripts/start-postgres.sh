@@ -10,6 +10,8 @@ cd "$(dirname "$0")/../.."
 source runtime/scripts/host-paths.sh
 source runtime/scripts/runtime-env.sh
 source runtime/scripts/image-tags.sh
+# shellcheck source=runtime/scripts/lib/postgres.sh
+source runtime/scripts/lib/postgres.sh
 # Refuse before building an image reference nothing can fetch. This registry is
 # never logged into by this repo -- the images exist only once SteamCMD has
 # downloaded the depot and update.sh has loaded its image tarballs -- so a
@@ -50,9 +52,9 @@ docker run -d \
   --network dune-net \
   --restart unless-stopped \
   -p "127.0.0.1:${POSTGRES_PORT}:5432" \
-  -e POSTGRES_USER=postgres \
-  -e POSTGRES_PASSWORD=postgres \
-  -e POSTGRES_DB=dune \
+  -e "POSTGRES_USER=$DUNE_PG_SUPERUSER" \
+  -e "POSTGRES_PASSWORD=$DUNE_PG_SUPERUSER_PASSWORD" \
+  -e "POSTGRES_DB=$DUNE_PG_DATABASE" \
   -v dune-postgres-data:/var/lib/postgresql/data \
   "$IMAGE"
 

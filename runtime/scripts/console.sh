@@ -6,7 +6,6 @@ cd "$(dirname "$0")/../.."
 . runtime/scripts/compose-project.sh
 MAIN_PROJECT_NAME="$(dune_resolve_compose_project_name "$(pwd -P)")"
 export DUNE_COMPOSE_PROJECT_NAME="$MAIN_PROJECT_NAME"
-dune_persist_compose_project_name "$(pwd -P)" "$MAIN_PROJECT_NAME"
 
 WEB_COMPOSE="docker-compose.web.yml"
 WEB_SERVICE="redblink-dune-docker-console"
@@ -104,6 +103,7 @@ require_compose() {
 restart_console() {
   local previous_image_id current_image_id
   require_compose
+  dune_persist_compose_project_name "$(pwd -P)" "$MAIN_PROJECT_NAME"
   prepare_docker_socket_gid
   prepare_host_user_ids
   export ADMIN_BIND_PORT="${ADMIN_WEB_PORT:-${ADMIN_BIND_PORT:-}}"
@@ -119,6 +119,7 @@ restart_console() {
   echo "Replacing Dune Docker Console container..."
   docker rm -f "$WEB_SERVICE" >/dev/null 2>&1 || true
   COMPOSE_PROJECT_NAME="$PROJECT_NAME" DUNE_COMPOSE_PROJECT_NAME="$MAIN_PROJECT_NAME" DUNE_HOST_REPO_ROOT="$HOST_ROOT" docker compose -f "$WEB_COMPOSE" up -d "$WEB_SERVICE"
+  if [ -x runtime/scripts/tls-front.sh ]; then runtime/scripts/tls-front.sh reconcile; fi
   current_image_id="$(docker image inspect --format '{{.Id}}' redblink-dune-docker-console:dev 2>/dev/null || true)"
   if [ -n "$previous_image_id" ] && [ "$previous_image_id" != "$current_image_id" ]; then
     docker image rm "$previous_image_id" >/dev/null 2>&1 || true
@@ -133,6 +134,7 @@ restart_console() {
 # what restart_console spends minutes producing. Nothing here touches the image.
 reload_console() {
   require_compose
+  dune_persist_compose_project_name "$(pwd -P)" "$MAIN_PROJECT_NAME"
   prepare_docker_socket_gid
   prepare_host_user_ids
   export ADMIN_BIND_PORT="${ADMIN_WEB_PORT:-${ADMIN_BIND_PORT:-}}"
@@ -140,15 +142,13 @@ reload_console() {
   echo "Recreating the Dune Docker Console container..."
   docker rm -f "$WEB_SERVICE" >/dev/null 2>&1 || true
   COMPOSE_PROJECT_NAME="$PROJECT_NAME" DUNE_COMPOSE_PROJECT_NAME="$MAIN_PROJECT_NAME" DUNE_HOST_REPO_ROOT="$HOST_ROOT" docker compose -f "$WEB_COMPOSE" up -d "$WEB_SERVICE"
+  if [ -x runtime/scripts/tls-front.sh ]; then runtime/scripts/tls-front.sh reconcile; fi
   echo "Dune Docker Console reloaded."
   print_url
 }
 
 status_console() {
   require_compose
-  prepare_docker_socket_gid
-  prepare_host_user_ids
-  export ADMIN_BIND_PORT="${ADMIN_WEB_PORT:-${ADMIN_BIND_PORT:-}}"
   docker ps -a --filter "name=^/${WEB_SERVICE}$" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
   print_url
 }

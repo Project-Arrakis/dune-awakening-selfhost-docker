@@ -125,13 +125,16 @@ class EmbeddedPythonSyntaxTests(unittest.TestCase):
                 check=False,
             )
 
+        # The resolver emits one "<partition-id>|<label>" line per requested
+        # partition; normalize_deepdesert_labels() reads it back with
+        # IFS='|' read -r partition_id label.
         valid = resolve('{"partitions":[{"partitionId":"10","configuredState":"PVP"},{"partitionId":"20","configuredState":"PVE"}]}')
         self.assertEqual(valid.returncode, 0)
-        self.assertEqual(valid.stdout.strip(), "PvP|PvE")
+        self.assertEqual(valid.stdout.split(), ["10|PvP", "20|PvE"])
 
         reversed_pair = resolve('{"partitions":[{"partitionId":"10","configuredState":"PVE"},{"partitionId":"20","configuredState":"PVP"}]}')
         self.assertEqual(reversed_pair.returncode, 0)
-        self.assertEqual(reversed_pair.stdout.strip(), "PvE|PvP")
+        self.assertEqual(reversed_pair.stdout.split(), ["10|PvE", "20|PvP"])
 
         for unsafe_payload in (
             '{"partitions":[{"partitionId":"10","configuredState":"PVP"}]}',
@@ -145,7 +148,7 @@ class EmbeddedPythonSyntaxTests(unittest.TestCase):
     def test_deep_desert_label_swap_is_one_atomic_database_command(self):
         text = SIETCHES_SH.read_text(encoding="utf-8")
         function_body = text.split("normalize_deepdesert_labels() {", 1)[1].split("\n}\n\nrefresh_survival_browser_state()", 1)[0]
-        self.assertEqual(function_body.count("docker exec dune-postgres psql"), 1)
+        self.assertEqual(function_body.count("dune_psql"), 1)
         self.assertIn("begin;", function_body)
         self.assertIn("commit;", function_body)
 
