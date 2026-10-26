@@ -83,7 +83,8 @@ describe("sidebar version badge", () => {
 
     render(<App />);
 
-    await waitFor(() => expect(screen.getByRole("button", { name: "Open Updates" }).textContent).toBe("v1.4.44"));
+    const badge = await screen.findByRole("button", { name: "Open Updates" });
+    await waitFor(() => expect(badge).toHaveTextContent("v1.4.44"));
   });
 
   it("keeps the Updates page result when the sidebar's own check fails afterwards", async () => {

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { listBases } from "../src/duneDb.js";
+import { listBases, listBasePermissions } from "../src/duneDb.js";
 import { pgTransactionalDb, withIsolatedDatabase } from "../test-support/pgIntegrationDb.js";
 
 // The ?access filter on a player's Bases tab, against real rows. Rank 1 is "Owner", rank 2
@@ -29,6 +29,10 @@ const SCHEMA = `
   );
   create table dune.placeables (id bigint primary key, owner_entity_id bigint, health real, building_type text);
   create table dune.map_names (map_name_id smallint primary key, map_name text not null);
+  create function dune.permission_set_player_rank(bigint,bigint,smallint,text)
+    returns void language sql as $$ select $$;
+  create function dune.permission_remove_player_rank(bigint,bigint)
+    returns void language sql as $$ select $$;
 `;
 
 const DUNCAN = { pawn: 21, controller: 11, account: 100 };
@@ -115,5 +119,85 @@ test("real PostgreSQL: a player on no roster lists no bases under any filter", a
     for (const access of [undefined, "all", "owner", "coowner"]) {
       assert.deepEqual(ids(await bases(db, DUNCAN, access)), [], `access=${access}`);
     }
+  });
+});
+
+test("real PostgreSQL: base owner matches the permissions roster when the owner's actor is missing or stale", async (t) => {
+  await withDatabase(t, async (db, pool) => {
+    // The controller identity remains valid in player_state/permission ranks.
+    // Its unrelated actors record must not decide whose name the table shows.
+    for (const change of [
+      `update dune.actors set owner_account_id = ${DUNCAN.account} where id = ${GURNEY.controller}`,
+      `delete from dune.actors where id = ${GURNEY.controller}`
+    ]) {
+      await pool.query(change);
+      const roster = await listBasePermissions(db, 1002);
+      const owner = roster.entries.find((entry) => entry.rank === 1);
+      assert.equal(owner.name, 'Gurney');
+      for (const options of [{}, { q: 'Gurney' }, { sortColumn: 'owner_name' }]) {
+        const result = await listBases(db, { includeGenerators: false, ...options });
+        const row = result.rows.find((base) => base.base_id === '1002');
+        assert.ok(row, `base is present for ${JSON.stringify(options)}`);
+        assert.equal(row.owner_name, owner.name);
+        assert.deepEqual(row.shared_with, [{ name: 'Duncan', rank: 2, label: 'Co-Owner' }]);
+      }
+    }
+  });
+});
+
+test("real PostgreSQL: a base without a rank-1 owner does not label its co-owner as Owner", async (t) => {
+  await withDatabase(t, async (db, pool) => {
+    await pool.query('delete from dune.permission_actor_rank where permission_actor_id = 1002 and rank = 1');
+    const roster = await listBasePermissions(db, 1002);
+    assert.equal(roster.entries.some((entry) => entry.rank === 1), false);
+    const result = await listBases(db, { includeGenerators: false });
+    const row = result.rows.find((base) => base.base_id === '1002');
+    assert.equal(row.owner_name, '');
+    assert.deepEqual(row.shared_with, [{ name: 'Duncan', rank: 2, label: 'Co-Owner' }]);
+  });
+});
+
+test("real PostgreSQL: a rank holder whose identity cannot be resolved is shown as Unknown player, not a blank chip (#1249)", async (t) => {
+  await withDatabase(t, async (db, pool) => {
+    // 9001 and 9002 match no player_state, encrypted_player_state or actors row.
+    await pool.query('insert into dune.permission_actor_rank (permission_actor_id, player_id, rank) values (1002, 9001, 3), (1002, 9002, 3)');
+    const result = await listBases(db, { includeGenerators: false });
+    const row = result.rows.find((base) => base.base_id === '1002');
+    assert.deepEqual(row.shared_with, [
+      { name: 'Duncan', rank: 2, label: 'Co-Owner' },
+      { name: 'Unknown player 9001', rank: 3, label: 'Associate' },
+      { name: 'Unknown player 9002', rank: 3, label: 'Associate' }
+    ]);
+    assert.equal(new Set(row.shared_with.map((entry) => `${entry.name}-${entry.rank}`)).size, row.shared_with.length, 'chip keys are unique');
+  });
+});
+
+test("real PostgreSQL: encrypted and reserved owners have the same name in the table and permissions card", async (t) => {
+  await withDatabase(t, async (db, pool) => {
+    await pool.query(`
+      create table dune.encrypted_player_state (player_controller_id bigint, encrypted_character_name bytea);
+      create function dune.decrypt_user_data(value bytea) returns text
+        language sql immutable as $$ select convert_from(value, 'UTF8') $$;
+      insert into dune.encrypted_player_state values (33, convert_to('Encrypted Owner', 'UTF8'));
+    `);
+    for (const [controller, expected] of [[33, 'Encrypted Owner'], [900000201, 'Server'], [900000101, 'GM']]) {
+      await pool.query('update dune.permission_actor_rank set player_id = $1 where permission_actor_id = 1002 and rank = 1', [controller]);
+      const roster = await listBasePermissions(db, 1002);
+      assert.equal(roster.entries.find((entry) => entry.rank === 1).name, expected);
+      for (const options of [{}, { q: expected }, { sortColumn: 'owner_name' }]) {
+        const result = await listBases(db, { includeGenerators: false, ...options });
+        assert.equal(result.rows.find((base) => base.base_id === '1002')?.owner_name, expected);
+      }
+    }
+  });
+});
+
+test("real PostgreSQL: shared players with the owner's display name remain visible", async (t) => {
+  await withDatabase(t, async (db, pool) => {
+    await pool.query(`update dune.player_state set character_name = 'Duncan' where player_controller_id = ${GURNEY.controller}`);
+    const result = await listBases(db, { includeGenerators: false });
+    const row = result.rows.find((base) => base.base_id === '1002');
+    assert.equal(row.owner_name, 'Duncan');
+    assert.deepEqual(row.shared_with, [{ name: 'Duncan', rank: 2, label: 'Co-Owner' }]);
   });
 });
