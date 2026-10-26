@@ -677,10 +677,8 @@ export function BackupsPanel({ backupRestoreTask, setBackupRestoreTask, onError,
         {commandStatusSummary(autoBackup).reason && <p className="danger-note">{commandStatusSummary(autoBackup).reason}</p>}
         <div className="action-line backup-auto-controls">
           <label className="compact-select">First Backup Time<input type="time" step="60" pattern="[0-2][0-9]:[0-5][0-9]" value={autoTime} onChange={(event) => setAutoTime(sanitizeTimeInput(event.target.value))} placeholder="05:00" /></label>
-          <label className="memory-number-field">Repeat Every<input type="number" min="1" max="168" step="1" value={autoIntervalHours} onChange={(event) => setAutoIntervalHours(event.target.value)} /></label>
-          <span className="unit-label">Hours</span>
-          <label className="memory-number-field">Keep<input type="number" min="0" max="3650" step="1" value={autoRetentionDays} onChange={(event) => setAutoRetentionDays(event.target.value)} /></label>
-          <span className="unit-label">Days</span>
+          <label className="memory-number-field">Repeat Every<span className="backup-number-unit"><input type="number" min="1" max="168" step="1" value={autoIntervalHours} onChange={(event) => setAutoIntervalHours(event.target.value)} /><span>Hours</span></span></label>
+          <label className="memory-number-field">Keep<span className="backup-number-unit"><input type="number" min="0" max="3650" step="1" value={autoRetentionDays} onChange={(event) => setAutoRetentionDays(event.target.value)} /><span>Days</span></span></label>
           <button disabled={Boolean(busyAction)} onClick={() => run(() => saveAutomaticBackups())}>Save Settings</button>
           {autoResult && <span className={`inline-task-result result-${autoResult.status === "succeeded" ? "ok" : autoResult.status === "failed" ? "fail" : "running"}`}>
             <strong className={autoResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(autoResult.title, autoResult.status === "running")}</strong>
