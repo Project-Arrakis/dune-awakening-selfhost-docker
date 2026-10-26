@@ -145,7 +145,7 @@ Unavailable numeric and boolean values are `null`, and unavailable collections a
 | POST | `/api/updates/apply-stack` | Apply stack updates | None |
 | GET | `/api/updates/auto-game` | Get auto-update status | None |
 | GET | `/api/updates/stack-progress` | Progress of an in-flight stack update | None |
-| POST | `/api/updates/auto-game` | Save auto-update config | `enabled`, `intervalMinutes`, `applyEnabled`, `notifyEnabled`, `notifyMinutes`, `waitUntilEmpty`, `maxWaitMinutes`, `confirmation` |
+| POST | `/api/updates/auto-game` | Save auto-update config | `enabled`, `intervalMinutes`, `applyEnabled`, `notifyEnabled`, `notifyMinutes`, `waitUntilEmpty`, `maxWaitMinutes`, `updateConsole`, `manageTanks`, `confirmation` |
 | POST | `/api/updates/repair-runtime` | Repair runtime installation | None |
 | GET | `/api/updates/qa/status` | Check whether this session is authorized for Discord-gated QA pre-release updates | `refresh?` (`"1"` to bypass cache) |
 | POST | `/api/updates/qa/login` | Start Discord OAuth authorization for QA pre-release updates | None |

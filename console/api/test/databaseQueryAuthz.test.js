@@ -194,8 +194,9 @@ test("both caller-supplied SQL routes opt into read-only enforcement", () => {
   // the old, bypassable behaviour. Internal callers pass server-built SQL and
   // deliberately do not enforce; these two take it from the caller and must.
   const query = codeOf(functionBody("databaseQuery"));
-  const bridge = codeOf(functionBody("addonBridgeRoute"));
-  for (const [name, fn] of [["databaseQuery", query], ["addonBridgeRoute", bridge]]) {
+  const bridge = codeOf(functionBody("dispatchAddonBridgeAction"));
+  assert.match(codeOf(functionBody("addonBridgeRoute")), /dispatchAddonBridgeAction\(req, res, id, body, action\)/);
+  for (const [name, fn] of [["databaseQuery", query], ["dispatchAddonBridgeAction", bridge]]) {
     assert.match(fn, /enforceReadOnly: true/, `${name} must enforce read-only on the read path`);
   }
 });
@@ -289,7 +290,7 @@ test("every input with nothing to run would otherwise have been treated as a wri
 test("both SQL routes guard before classifying", () => {
   // databaseQuery and the addon bridge each take a backup on the write path;
   // the guard has to come first in both, not just the one that was reported.
-  for (const name of ["databaseQuery", "addonBridgeRoute"]) {
+  for (const name of ["databaseQuery", "dispatchAddonBridgeAction"]) {
     const fn = codeOf(functionBody(name));
     const guardAt = fn.indexOf("hasExecutableStatement(query)");
     assert.ok(guardAt >= 0, `${name} is missing the empty-statement guard`);
