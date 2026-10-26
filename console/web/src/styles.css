@@ -41,6 +41,7 @@
 * { box-sizing: border-box; }
 body { margin: 0; min-height: 100vh; background: radial-gradient(circle at top left, rgba(170, 111, 45, .18), transparent 38%), var(--bg); }
 button, input, select, textarea { font: inherit; }
+button, .button-link, input, select { line-height: 1.25; }
 button, .button-link {
   border: 1px solid var(--border-strong);
   background: #25201b;
@@ -146,7 +147,8 @@ input, select, textarea {
   padding: 10px 12px;
   border-radius: 6px;
 }
-select { padding-right: 34px; }
+select { height: 42px; padding-right: 34px; }
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]) { min-height: 42px; }
 input[type="file"]::file-selector-button {
   border: 1px solid #4d4032;
   background: #25201b;
@@ -924,6 +926,8 @@ main { padding: 22px; min-width: 0; }
   margin-top: 14px;
 }
 .schedule-action-line .memory-number-field { flex-basis: 86px; max-width: 86px; }
+.schedule-action-line label.compact-select { grid-template-columns: minmax(0, 1fr); white-space: normal; }
+.schedule-action-line label.compact-select input { min-width: 0; height: 42px; }
 .restore-stack-line { align-items: center; }
 .broadcast-line { align-items: end; }
 .broadcast-line button { margin-bottom: 0; }
@@ -1620,8 +1624,8 @@ body.debug .technical-details { display: block; }
 .player-vehicles-panel .panel-title > .players-filter-row > button,
 .player-bases-panel .panel-title > .players-filter-row > button { flex: 0 0 auto; }
 .players-filter-label .players-filter-select {
-  width: 150px;
-  min-width: 150px;
+  width: 172px;
+  min-width: 172px;
   padding-right: 38px;
 }
 .players-inactive-filter select { width: 160px; min-width: 160px; }
@@ -2072,18 +2076,18 @@ body.debug .technical-details { display: block; }
 .guild-add-member-selected { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel-soft); font-weight: 700; }
 .guild-add-member-selected span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .guild-add-member-selected button { flex-shrink: 0; }
-.bases-table { width: 100%; min-width: 0; table-layout: fixed; }
+.bases-table { width: 100%; min-width: 1440px; table-layout: fixed; }
 .bases-table th { max-width: none; white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.2; }
 .bases-table th, .bases-table td { padding: 8px 6px; font-size: 14px; }
 .bases-table th:nth-child(2), .bases-table td:nth-child(2) { width: 5%; text-align: center; }
 .bases-table th:nth-child(3), .bases-table td:nth-child(3) { width: 12%; }
 .bases-table th:nth-child(4), .bases-table td:nth-child(4) { width: 7%; }
-.bases-table th:nth-child(5), .bases-table td:nth-child(5) { width: 7%; }
+.bases-table th:nth-child(5), .bases-table td:nth-child(5) { width: 9%; }
 .bases-table th:nth-child(6), .bases-table td:nth-child(6) { width: 9%; }
 .bases-table th:nth-child(7), .bases-table td:nth-child(7) { width: 7%; }
-.bases-table th:nth-child(8), .bases-table td:nth-child(8) { width: 17%; }
-.bases-table th:nth-child(9), .bases-table td:nth-child(9) { width: 6%; text-align: center; }
-.bases-table th:nth-child(10), .bases-table td:nth-child(10) { width: 6%; text-align: center; }
+.bases-table th:nth-child(8), .bases-table td:nth-child(8) { width: 13%; }
+.bases-table th:nth-child(9), .bases-table td:nth-child(9) { width: 8%; text-align: center; }
+.bases-table th:nth-child(10), .bases-table td:nth-child(10) { width: 8%; text-align: center; }
 .bases-table th:nth-child(11), .bases-table td:nth-child(11) { width: 10.5%; }
 /* 96px fit two icon-toggle-buttons (Refill Generators, Download); a third
    (Refill Water) plus the wider queued-refill pills grew this to 148px to
@@ -3830,28 +3834,15 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .bases-table-wrap .bases-table tbody > tr:last-child > td:first-child { border-bottom-left-radius: 7px; }
 .bases-table-wrap .bases-table tbody > tr:last-child > td:last-child { border-bottom-right-radius: 7px; }
 
-/* Below this width the twelve columns have nowhere to go. The table has no
-   intrinsic minimum, so instead of overflowing it crushes -- cells collapse to
-   one character per line and "Advanced Sub-Fief" renders vertically. (That
-   predates the height-cap change: with no min-width the table always shrank to
-   its container, so the wrap's overflow-x never had anything to scroll.)
-   Give it a floor and let the container scroll horizontally again.
-   The sticky header does not survive here, because a sticky element is confined
-   to its nearest scrolling ancestor and that is now the wrap again -- readable
-   columns are worth more than a pinned header on a phone. */
-@media (max-width: 1100px) {
+/* Keep all management columns readable on phones, tablets and laptops. The
+   wide desktop table follows page scrolling; narrower layouts scroll only
+   the table horizontally instead of squeezing labels or widening the page. */
+@media (max-width: 1800px) {
   .table-wrap.bases-table-wrap { overflow: auto; }
-  .bases-table { min-width: 860px; }
-  /* Below this the table stops shrinking and scrolls at a fixed 860px, so the
-     actions column's 280px is 280px the data columns don't get -- and they are
-     the ones actually starved here (Base Name, Owner and Shared With wrap to
-     two or three lines while the buttons sit comfortably). Reclaim it by
-     stacking the controls two-up instead of in one row: an explicit 2-column
-     grid rather than flex-wrap, so the result is a predictable 2x2 for the
-     usual four controls rather than whatever the available width happens to
-     allow. A fifth control (every queue pending at once) wraps to a third row
-     rather than clipping. Above this breakpoint the column stays 280px and
-     the row stays 4x1 -- see the width comment on .bases-actions-column. */
+}
+@media (max-width: 1100px) {
+  /* Stack the four actions two-up on smaller screens. A fifth queued action
+     gets another row without clipping. */
   .bases-table th.bases-actions-column, .bases-table td.bases-actions-column { width: 116px; }
   .bases-table td.bases-actions-column .icon-toggle-group {
     display: inline-grid;
@@ -3926,6 +3917,10 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
    table header, itself not page-sticky at this width. */
 @media (max-width: 900px) {
   .bases-search-row { position: static; }
+}
+@media (max-width: 1800px) {
+  .bases-table-wrap .bases-table > thead > tr > th,
+  .bases-table-wrap .bases-table > tbody > tr.row-expanded { position: static; }
 }
 
 /* Player Summary embeds the same wide Bases table used by the full Bases
@@ -6690,6 +6685,10 @@ td .inline-action-result-wrap { flex: 1 0 100%; justify-content: flex-start; min
 .backup-auto-controls { column-gap: 10px; row-gap: 10px; align-items: end; }
 .backup-auto-controls .checkbox-row { flex: 0 0 auto; min-height: 40px; align-items: center; }
 .backup-auto-controls .compact-select { flex: 0 1 210px; }
+.backup-auto-controls .memory-number-field { flex: 0 1 180px; min-width: 150px; max-width: none; }
+.backup-number-unit { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.backup-number-unit input { min-width: 90px; flex: 1; }
+.backup-number-unit > span { flex: none; }
 .backup-auto-controls .inline-task-result { margin-left: 4px; }
 /* This panel's sections are direct children of .panel, so they get none of the
    .action-sections grid gap -- each needs its own separation, including
@@ -7006,17 +7005,12 @@ h3 { font-size: clamp(1.05rem, .98rem + .35vw, 1.35rem); }
 }
 .setup-only-shell > main { grid-column: 1 / -1; max-width: 100%; }
 .sidebar {
-  position: sticky;
-  top: 0;
+  position: relative;
   align-self: start;
-  display: flex;
-  flex-direction: column;
-  height: 100dvh;
-  min-height: 0;
-  overflow: hidden;
+  height: auto;
+  min-height: 100dvh;
+  overflow: visible;
 }
-.sidebar-brand { flex: none; }
-.sidebar-nav { min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
 .sidebar-menu-toggle { display: none; }
 
 :where(.panel, .drawer, .action-section, .status-card, .service-card, .check-card, .gauge, .result-panel, .raw-editor-card),
@@ -7118,6 +7112,7 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
   .catalog-search-tools { grid-template-columns: minmax(0, 1fr) auto; }
   .auto-update-settings-row,
   .character-transfer-row { grid-template-columns: minmax(180px, 1fr) minmax(120px, 240px) 32px; }
+  .landsraad-modifier-grid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 900px) {
@@ -7129,15 +7124,15 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
     z-index: 100;
     width: 100%;
     height: auto;
-    max-height: 100dvh;
     min-height: 0;
-    overflow: hidden;
+    overflow: visible;
     padding: 12px clamp(12px, 3vw, 22px);
     border-right: 0;
     border-bottom: 1px solid var(--border);
     background: rgba(14, 15, 17, .97);
     backdrop-filter: blur(12px);
   }
+  .sidebar:has(.sidebar-nav.mobile-open) { position: relative; }
   .sidebar-brand {
     grid-template-columns: minmax(0, 1fr) auto auto;
     align-items: center;
@@ -7198,7 +7193,9 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
   .listing-claim-badge { grid-column: 1 / -1; min-height: 40px; }
   .community-button { width: 100%; min-height: 44px; }
   .panel, .drawer, .action-section { padding: clamp(11px, 3vw, 16px); }
-  .panel-title, .action-row, .action-line { align-items: stretch; }
+  .panel-title { align-items: center; }
+  .action-row { align-items: center; }
+  .action-line { align-items: end; }
   /* stretch makes the StatusBadge grow to the Dismiss button and keep its text
      on the first line, while this badge stays 25px and centres in the row --
      measured 9px lower than its neighbour. Scoped here because the row is
@@ -7354,17 +7351,18 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
 
 @media (max-width: 560px) {
   .playerAdmin_customizationHeader { align-items: stretch; flex-direction: column; }
+  .tab-loading-panel[role="alert"] { display: grid; gap: 10px; }
+  .tab-loading-panel[role="alert"] p { margin: 0; }
+  .tab-loading-panel[role="alert"] button { justify-self: start; }
   .playerAdmin_customizationHeader > button { width: 100%; }
   .playerAdmin_customizationCards { grid-template-columns: 1fr; }
-  .sidebar-brand { grid-template-columns: minmax(0, 1fr) auto; }
-  .stack-version-button { grid-column: 1; grid-row: 2; justify-self: start; max-width: 160px; margin-top: 6px; }
-  .sidebar-menu-toggle { grid-column: 2; grid-row: 1 / span 2; }
   .sidebar-nav.mobile-open { grid-template-columns: 1fr; }
   .sidebar-nav.mobile-open .sidebar-nav-group {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .sidebar-nav.mobile-open .sidebar-nav-heading { grid-column: 1 / -1; }
-  .topbar .topbar-links { grid-template-columns: 1fr; }
+  .topbar .topbar-links { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .community-button { font-size: 13px; padding: 8px; gap: 6px; }
   .community-button, .listing-claim-badge { grid-column: auto; }
   .confirm-modal-details { grid-template-columns: 1fr; row-gap: 3px; }
   .confirm-modal-details div + div dt { margin-top: 5px; }
@@ -7389,6 +7387,21 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
   .spicefields-table tbody td:last-child { grid-column: auto; }
   .action-row > button, .action-line > button { flex: 1 1 140px; min-height: 44px; }
   .service-actions button, .service-actions .button-link { min-height: 44px; }
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]), select { min-height: 44px; }
+  .players-filter-row { align-items: end; }
+  .players-filter-row > .inline-filter-label { display: grid; flex: 1 1 150px; min-width: 0; }
+  .players-filter-row > .inline-filter-label select { width: 100%; min-width: 0; }
+  .players-search-row, .guilds-search-row, .bases-search-row { flex-wrap: wrap; }
+  .action-row.players-search-row > input,
+  .action-row.guilds-search-row > input,
+  .action-row.bases-search-row > input { flex-basis: 100%; }
+  .players-search-row button, .guilds-search-row button, .bases-search-row button { flex: 1 1 0; }
+  .database-pagination-controls { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); align-items: center; }
+  .database-pagination-controls .compact-select { grid-column: 1 / span 2; grid-row: 1; width: auto; min-width: 0; }
+  .database-pagination-controls select { width: 100%; min-width: 0; }
+  .database-pagination-controls .database-page-indicator { grid-column: 3 / span 2; grid-row: 1; min-width: 0; text-align: right; }
+  .database-pagination-controls button { width: 100%; min-width: 0; min-height: 44px; padding-inline: 4px; font-size: 13px; }
+  .health-grid, .health-grid-compact, .summary-cols, .playerAdmin_cardGrid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); }
   label.inline-field, label.compact-field, label.compact-select, label.schedule-notify-field, label.schedule-checkpoints-field {
     width: 100%;
     min-width: 0;
@@ -7431,10 +7444,6 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
   .sidebar { padding-inline: 10px; }
   .panel, .drawer, .action-section { border-radius: 7px; padding-inline: 10px; }
   th, td { padding-inline: 8px; }
-  .database-pagination-controls { align-items: stretch; flex-direction: column; }
-  .database-pagination-controls button,
-  .database-pagination-controls .compact-select { width: 100%; justify-content: center; }
-  .database-pagination-controls select { flex: 1 1 auto; }
   .wizard-controls { display: grid; grid-template-columns: 1fr; }
   .wizard-controls button { width: 100%; }
 }
