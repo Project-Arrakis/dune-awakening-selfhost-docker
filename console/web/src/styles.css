@@ -2976,6 +2976,8 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 
 @media (max-width: 900px) {
   .app-shell, .wizard { grid-template-columns: 1fr; }
+  .stepper { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .stepper button { min-width: 0; white-space: normal; }
   .sidebar { border-right: 0; border-bottom: 1px solid #2f2a25; }
   .sidebar-nav { grid-template-columns: 1fr; }
   .sidebar-nav-group { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -7382,7 +7384,8 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
   .catalog-item-picker, .menu-card-grid, .planned-grid, .playerAdmin_cardGrid {
     grid-template-columns: minmax(0, 1fr);
   }
-  .settings-tabs { grid-template-columns: 1fr; }
+  .stepper { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .settings-tabs > button:last-child:nth-child(odd) { grid-column: 1 / -1; }
   .spicefields-table tbody tr { grid-template-columns: minmax(0, 1fr); }
   .spicefields-table tbody td:first-child,
   .spicefields-table tbody td:last-child { grid-column: auto; }
@@ -7445,7 +7448,7 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
   .sidebar { padding-inline: 10px; }
   .panel, .drawer, .action-section { border-radius: 7px; padding-inline: 10px; }
   th, td { padding-inline: 8px; }
-  .wizard-controls { display: grid; grid-template-columns: 1fr; }
+  .wizard-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .wizard-controls button { width: 100%; }
 }
 

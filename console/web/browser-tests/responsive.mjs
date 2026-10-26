@@ -8,6 +8,7 @@ const { chromium } = await import(process.env.PLAYWRIGHT_MODULE || 'playwright')
 const root = fileURLToPath(new URL('../dist/', import.meta.url));
 const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined, args: ['--no-sandbox'] });
 const sizes = [[320, 740], [390, 844], [768, 1024], [844, 390], [1024, 600], [1280, 720], [1920, 1080], [2560, 1440]];
+let firstRun = false;
 try {
   const page = await browser.newPage({ hasTouch: true });
   const errors = [];
@@ -18,9 +19,9 @@ try {
     const url = new URL(route.request().url());
     if (url.hostname !== 'console.test') return route.abort();
     if (url.pathname.startsWith('/api/')) {
-      let body = { ok: true, stdout: '', items: [], keys: [], areas: [], addons: [], players: [], pending: [], byTarget: [] };
+      let body = { ok: true, stdout: '', items: [], keys: [], areas: [], addons: [], players: [], pending: [], byTarget: [], tasks: [] };
       if (url.pathname === '/api/auth/state') body = { authenticated: true, csrfToken: 'fixture', config: { version: '1.4.52' } };
-      if (url.pathname === '/api/setup/state') body = { files: { complete: true }, config: {} };
+      if (url.pathname === '/api/setup/state') body = { files: { complete: !firstRun }, config: {} };
       if (url.pathname === '/api/settings') body = { config: { port: 8088 }, files: {}, publicDirectory: { available: true, enabled: true }, serverStartup: { settings: { autoStartBattlegroup: true } } };
       if (url.pathname === '/api/settings/api-keys/catalog') body = {namespaces:[{namespace:'players',readActions:['list','profile'],writeActions:['giveItems'],supportsWrite:true}]};
       if (url.pathname === '/api/players/list-settings') body = { settings: { inactiveWeeks: null }, limits: { inactiveWeeks: { min: 1, max: 8 } }, canConfigure: true };
@@ -113,6 +114,20 @@ try {
       }
       assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),`${tab} fits ${width}px`);
     }
+  }
+  firstRun=true;
+  await page.reload();
+  await page.locator('.wizard h2').waitFor();
+  for(const [width,height]of sizes){
+    await page.setViewportSize({width,height});
+    if(width<=900){
+      const stepper=page.locator('.stepper');
+      assert.equal(await stepper.evaluate(e=>getComputedStyle(e).gridTemplateColumns.split(' ').length),width<=560?2:3,'setup steps use available screen width');
+      assert.ok((await stepper.boundingBox()).height<=350,'step list leaves room for the active form');
+      const actions=await page.locator('.wizard-controls button').evaluateAll(es=>es.map(e=>e.getBoundingClientRect().y));
+      assert.ok(Math.max(...actions)-Math.min(...actions)<1,'Back and Next share a row');
+    }
+    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'setup fits the viewport');
   }
   assert.deepEqual(errors, []);
   console.log('PASS navigation, pagination, search, table headers, backup units and matching control heights at eight viewport sizes');
