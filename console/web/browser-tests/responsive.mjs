@@ -103,6 +103,14 @@ try {
           assert.ok(input.x+input.width<=label.x+label.width+1,'schedule input stays inside its field and clear of adjacent actions');
         }
       }
+      if(tab==='Server Control' && width<=560){
+        const pairs=await page.locator('.action-row').evaluateAll(rows=>rows.flatMap(row=>{
+          const buttons=[...row.children].filter(e=>e.tagName==='BUTTON').map(e=>e.getBoundingClientRect()).filter(r=>r.width&&r.height);
+          return buttons.flatMap(a=>buttons.filter(b=>b.x>=a.right&&b.x-a.right<20&&Math.abs(a.y+a.height/2-b.y-b.height/2)<2).map(b=>[a.height,b.height]));
+        }));
+        if(width>=390)assert.ok(pairs.length>0,'server action row is exercised');
+        for(const [a,b]of pairs)assert.ok(Math.abs(a-b)<=2,'adjacent action buttons match height when captions wrap');
+      }
       assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),`${tab} fits ${width}px`);
     }
   }

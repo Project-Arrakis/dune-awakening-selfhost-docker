@@ -7071,6 +7071,7 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
 .action-row > button,
 .action-line > button,
 .panel-title > button { flex: 0 0 auto; }
+.action-row:not(:has(> input, > select, > label, > textarea)) > :is(button, .button-link) { align-self: stretch; }
 .drawer { overflow: hidden; }
 .addon-frame { min-height: clamp(420px, 70dvh, 760px); }
 
