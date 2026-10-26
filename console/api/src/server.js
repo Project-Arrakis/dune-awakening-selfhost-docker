@@ -1462,10 +1462,21 @@ async function addonBridgeRoute(req, res, path) {
   bridgeRateLimiter.record(key);
   const body = await readJson(req);
   const action = String(body.action || "").trim();
+  const dispatch = () => dispatchAddonBridgeAction(req, res, id, body, action);
   if (bridgeActionStartsNewGeneration(action)) {
     bridgeReads.bump();
-    res.once("close", () => bridgeReads.bump());
+    try {
+      return await dispatch();
+    } finally {
+      // A disconnected client does not cancel an in-flight database write.
+      // Invalidate when the operation settles, including failed writes.
+      bridgeReads.bump();
+    }
   }
+  return dispatch();
+}
+
+async function dispatchAddonBridgeAction(req, res, id, body, action) {
   if (action === "leadership.players.list") {
     const addon = assertInstalledAddonPermission(config, id, "players:read");
     const result = await shareInFlight("addonLeadershipPlayers", () => duneDb.addonLeadershipPlayers(db));
