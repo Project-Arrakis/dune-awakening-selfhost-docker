@@ -231,3 +231,37 @@ test("shutdown hooks flush once even when the signal handler is followed by exit
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("an unwritable audit queue is bounded and reports dropped polls once after recovery", async () => {
+  const { flushAuditLog, pendingAuditRowCount } = await import("../src/audit.js");
+  const dir = mkdtempSync(join(tmpdir(), "audit-overflow-"));
+  const blocked = join(dir, "blocked");
+  writeFileSync(blocked, "not a directory");
+  const config = { auditLog: join(blocked, "audit.jsonl") };
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (message) => warnings.push(message);
+  try {
+    for (let n = 0; n < 5003; n++) {
+      audit(config, null, "addons.bridge", { action: "players.summary.list", ok: true, n });
+    }
+    assert.equal(pendingAuditRowCount(), 5000);
+    assert.throws(() => flushAuditLog());
+    assert.equal(pendingAuditRowCount(), 5000, "failed writes retain the bounded queue");
+    rmSync(blocked);
+    flushAuditLog();
+    const rows = readRows(config.auditLog);
+    assert.equal(rows.length, 5000);
+    assert.equal(rows[0].detail.n, 3);
+    assert.equal(rows.at(-1).detail.n, 5002);
+    assert.equal(pendingAuditRowCount(), 0);
+    flushAuditLog();
+    assert.equal(warnings.filter((message) => message.includes("queue is full")).length, 1);
+    assert.equal(warnings.filter((message) => message.includes("3 queued bridge poll row(s) were dropped")).length, 1);
+  } finally {
+    console.warn = originalWarn;
+    rmSync(blocked, { recursive: true, force: true });
+    try { flushAuditLog(); } catch {}
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
