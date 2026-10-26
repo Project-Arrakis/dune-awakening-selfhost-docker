@@ -41,6 +41,7 @@
 * { box-sizing: border-box; }
 body { margin: 0; min-height: 100vh; background: radial-gradient(circle at top left, rgba(170, 111, 45, .18), transparent 38%), var(--bg); }
 button, input, select, textarea { font: inherit; }
+button, .button-link, input, select { line-height: 1.25; }
 button, .button-link {
   border: 1px solid var(--border-strong);
   background: #25201b;
@@ -146,7 +147,8 @@ input, select, textarea {
   padding: 10px 12px;
   border-radius: 6px;
 }
-select { padding-right: 34px; }
+select { height: 42px; padding-right: 34px; }
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]) { min-height: 42px; }
 input[type="file"]::file-selector-button {
   border: 1px solid #4d4032;
   background: #25201b;
@@ -924,6 +926,8 @@ main { padding: 22px; min-width: 0; }
   margin-top: 14px;
 }
 .schedule-action-line .memory-number-field { flex-basis: 86px; max-width: 86px; }
+.schedule-action-line label.compact-select { grid-template-columns: minmax(0, 1fr); white-space: normal; }
+.schedule-action-line label.compact-select input { min-width: 0; height: 42px; }
 .restore-stack-line { align-items: center; }
 .broadcast-line { align-items: end; }
 .broadcast-line button { margin-bottom: 0; }
@@ -1620,8 +1624,8 @@ body.debug .technical-details { display: block; }
 .player-vehicles-panel .panel-title > .players-filter-row > button,
 .player-bases-panel .panel-title > .players-filter-row > button { flex: 0 0 auto; }
 .players-filter-label .players-filter-select {
-  width: 150px;
-  min-width: 150px;
+  width: 172px;
+  min-width: 172px;
   padding-right: 38px;
 }
 .players-inactive-filter select { width: 160px; min-width: 160px; }
@@ -1660,10 +1664,10 @@ body.debug .technical-details { display: block; }
   .playerAdmin_tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .playerAdmin_tabs button { white-space: normal; }
 }
-.playerAdmin_content { display: grid; gap: 12px; }
-.playerAdmin_box, .playerAdmin_toggle { border: 1px solid #302b25; background: #14171a; border-radius: 8px; padding: 14px; display: grid; gap: 12px; }
+.playerAdmin_content { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+.playerAdmin_box, .playerAdmin_toggle { border: 1px solid #302b25; background: #14171a; border-radius: 8px; padding: 14px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
 .playerAdmin_box h4, .playerAdmin_section h5 { margin: 0; color: #ffd08a; font-size: 16px; line-height: 1.25; }
-.playerAdmin_section { display: grid; gap: 10px; }
+.playerAdmin_section { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; gap: 10px; }
 .playerAdmin_factionSection { border-bottom: 1px solid rgba(214, 185, 140, .14); padding-bottom: 12px; }
 .playerAdmin_factionSection > p { margin: 0; font-style: italic; }
 .playerAdmin_dangerSection { border-top: 1px solid rgba(214, 185, 140, .14); padding-top: 12px; }
@@ -1712,12 +1716,13 @@ body.debug .technical-details { display: block; }
 .playerAdmin_repairRow + .playerAdmin_repairRow { border-top: 1px solid rgba(214, 185, 140, .14); padding-top: 12px; }
 .playerAdmin_repairRow button { width: auto; }
 .playerAdmin_repairLabel { min-width: 0; color: #e9dcc8; font-weight: 700; display: grid; gap: 5px; }
-.playerAdmin_repairLabel > span:first-child { white-space: nowrap; }
+.playerAdmin_repairLabel > span:first-child { white-space: normal; }
 .playerAdmin_repairLabel em { color: #cbbd9f; font-size: 12px; font-style: italic; font-weight: 500; line-height: 1.25; }
 .playerAdmin_repairRow .inline-action-result-wrap { align-self: center; min-width: 0; }
-.playerAdmin_characterRecoveryRow { grid-template-columns: minmax(190px, 220px) minmax(500px, 1fr) minmax(0, 1fr); }
-.playerAdmin_characterRecoveryControls { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.playerAdmin_characterRecoveryControls select { flex: 1 1 auto; width: 100%; min-width: 0; color: #f1e4cf; }
+.playerAdmin_characterRecoveryRow { grid-template-columns: minmax(190px, 220px) minmax(0, 1fr); }
+.playerAdmin_characterRecoveryRow .inline-action-result-wrap { grid-column: 2; }
+.playerAdmin_characterRecoveryControls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; min-width: 0; }
+.playerAdmin_characterRecoveryControls select { flex: 1 1 240px; width: 100%; min-width: 0; color: #f1e4cf; }
 .playerAdmin_characterRecoveryControls button { flex: 0 0 auto; white-space: nowrap; }
 .playerAdmin_actionLabel em { color: #cbbd9f; font-size: 12px; font-style: italic; font-weight: 500; line-height: 1.25; }
 .playerAdmin_actionRow input, .playerAdmin_actionRow select, .playerAdmin_filterRow input, .playerAdmin_filterRow select { max-width: 220px; }
@@ -1744,17 +1749,17 @@ body.debug .technical-details { display: block; }
 .playerAdmin_toggleHeader span { font-weight: 700; }
 .playerAdmin_toggleBody { display: grid; gap: 10px; padding: 14px; border-top: 1px solid #302b25; }
 .playerAdmin_tableWrap { overflow: auto; max-height: 360px; border: 1px solid #302b25; border-radius: 8px; }
-.playerAdmin_table { width: max-content; min-width: 100%; border-collapse: collapse; }
-.playerAdmin_compactTable { width: max-content; min-width: max-content; table-layout: auto; }
-.playerAdmin_fullResultTable { width: max-content; min-width: 100%; }
+.playerAdmin_table { width: 100%; border-collapse: collapse; }
+.playerAdmin_compactTable { table-layout: auto; }
+.playerAdmin_fullResultTable { width: 100%; }
 .playerAdmin_fullResultTable th:nth-last-child(2), .playerAdmin_fullResultTable td:nth-last-child(2) { width: 320px; max-width: 360px; }
 .playerAdmin_fullResultTable th:nth-last-child(2) { text-align: center; }
 .playerAdmin_fullResultTable td:nth-last-child(2) { text-align: left; }
 .playerAdmin_fullResultTable th:last-child, .playerAdmin_fullResultTable td:last-child { text-align: center; }
-.playerAdmin_table th, .playerAdmin_table td { border-bottom: 1px solid #302b25; padding: 9px 10px; text-align: left; vertical-align: middle; white-space: nowrap; }
+.playerAdmin_table th, .playerAdmin_table td { border-bottom: 1px solid #302b25; padding: 9px 10px; text-align: left; vertical-align: middle; white-space: normal; }
 .playerAdmin_table th { color: #ffd08a; background: #171a1d; position: sticky; top: 0; }
 .playerAdmin_actionCell { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.playerAdmin_schematicTable { width: 100%; min-width: 1080px; table-layout: fixed; }
+.playerAdmin_schematicTable { width: 100%; min-width: 740px; table-layout: fixed; }
 .playerAdmin_schematicTable th, .playerAdmin_schematicTable td { max-width: none; text-align: center; }
 .playerAdmin_schematicTable th:nth-child(1), .playerAdmin_schematicTable td:nth-child(1) { width: 22%; }
 .playerAdmin_schematicTable th:nth-child(2), .playerAdmin_schematicTable td:nth-child(2) { width: 27%; }
@@ -1780,13 +1785,13 @@ body.debug .technical-details { display: block; }
 .playerAdmin_customizationTable th[data-column="status"],
 .playerAdmin_customizationTable td[data-column="status"] { width: 13%; min-width: 135px; overflow: visible; text-overflow: clip; }
 .playerAdmin_craftingTable th:nth-child(3), .playerAdmin_craftingTable td:nth-child(3) { width: 15%; }
-.playerAdmin_craftingTable th:nth-child(4), .playerAdmin_craftingTable td:nth-child(4) { width: 9%; }
+.playerAdmin_craftingTable th:nth-child(4), .playerAdmin_craftingTable td:nth-child(4) { width: 80px; }
 .playerAdmin_researchTable th:nth-child(3), .playerAdmin_researchTable td:nth-child(3) { width: 10%; }
 .playerAdmin_researchTable th:nth-child(4), .playerAdmin_researchTable td:nth-child(4) { width: 14%; }
 .playerAdmin_schematicTable th.playerAdmin_schematicActionCell,
-.playerAdmin_schematicTable td.playerAdmin_schematicActionCell { width: 12%; min-width: 124px; }
+.playerAdmin_schematicTable td.playerAdmin_schematicActionCell { width: 150px; }
 .playerAdmin_schematicTable th.playerAdmin_schematicResultCell,
-.playerAdmin_schematicTable td.playerAdmin_schematicResultCell { width: 15%; min-width: 170px; white-space: normal; overflow: hidden; text-overflow: clip; }
+.playerAdmin_schematicTable td.playerAdmin_schematicResultCell { width: 15%; white-space: normal; overflow: hidden; text-overflow: clip; }
 .playerAdmin_schematicResultCell .inline-action-result-wrap { width: 100%; min-width: 0; min-height: 28px; align-items: center; justify-content: center; }
 .playerAdmin_schematicResultCell .inline-action-result {
   display: -webkit-box;
@@ -1806,12 +1811,12 @@ body.debug .technical-details { display: block; }
 .playerAdmin_logSection { display: grid; gap: 10px; }
 .playerAdmin_coordinatesRow input { width: 118px; max-width: 118px; }
 .playerAdmin_teleportPanel { display: grid; gap: 8px; margin-bottom: 18px; padding-bottom: 18px; border-bottom: 1px solid rgba(214, 185, 140, .14); }
-.playerAdmin_teleportModeRow { align-items: center; flex-wrap: nowrap; }
+.playerAdmin_teleportModeRow { align-items: center; flex-wrap: wrap; min-width: 0; }
 .playerAdmin_teleportModeRow > span { min-width: 88px; color: #e9dcc8; font-weight: 700; }
 .playerAdmin_teleportModeRow > select { width: min(460px, 100%); max-width: 460px; }
 .playerAdmin_teleportModeRow > select:first-of-type { width: 230px; max-width: 230px; flex: 0 0 230px; }
 .playerAdmin_teleportModeRow > .playerAdmin_destinationBaseSelect { width: min(620px, 100%); max-width: 620px; }
-.playerAdmin_coordinateInputs { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.playerAdmin_coordinateInputs { display: flex; flex-wrap: wrap; flex: 1 1 460px; align-items: center; gap: 8px; min-width: 0; }
 .playerAdmin_coordinateInputs .playerAdmin_coordinatePartitionSelect { width: min(360px, 100%); max-width: 360px; }
 .playerAdmin_coordinateInputs input { width: 112px; max-width: 112px; }
 .playerAdmin_teleportPanel .action-help-note { margin: 0; }
@@ -1857,9 +1862,8 @@ body.debug .technical-details { display: block; }
 .playerAdmin_filterRow .playerAdmin_note { color: #e9dcc8; font-weight: 700; font-size: 15px; }
 .playerAdmin_iconRail { position: relative; width: 100%; margin: 0; padding: 0; }
 .playerAdmin_iconRail::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 3px; transform: translateY(-50%); background: linear-gradient(90deg, rgba(255, 208, 138, .55), rgba(255, 208, 138, .2)); }
-.playerAdmin_iconRailItems { position: relative; z-index: 1; display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 20px; overflow-x: auto; overflow-y: visible; padding: 10px 8px; scrollbar-width: thin; }
-.playerAdmin_iconRailItems::before { content: ""; min-width: 0; }
-.playerAdmin_iconRailIconGroup { display: flex; align-items: center; justify-content: center; gap: 20px; min-width: max-content; }
+.playerAdmin_iconRailItems { position: relative; z-index: 1; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 12px; padding: 10px 8px; }
+.playerAdmin_iconRailIconGroup { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: clamp(6px, 1vw, 20px); min-width: 0; }
 .playerAdmin_iconRailButton { position: relative; flex: 0 0 76px; width: 76px; height: 76px; min-height: 76px; padding: 10px; border: 0; border-radius: 6px; background: #14171a; box-shadow: none; opacity: 1; overflow: visible; }
 .playerAdmin_iconRailButton:hover:not(:disabled), .playerAdmin_iconRailButton.active { opacity: 1; background: #14171a; border: 0; box-shadow: none; }
 .playerAdmin_iconRailButton img { display: block; width: 55px; height: 55px; object-fit: contain; transform: rotate(45deg); filter: drop-shadow(0 2px 5px rgba(0, 0, 0, .45)); pointer-events: none; }
@@ -1898,13 +1902,13 @@ body.debug .technical-details { display: block; }
 .specialization-header-actions button { width: auto; white-space: nowrap; }
 .specialization-header-actions .inline-action-result-wrap { flex: 1 0 100%; justify-content: flex-end; min-height: 0; }
 .playerAdmin_specializationTableWrap { overflow: auto; max-height: none; }
-.playerAdmin_specializationTable { width: 100%; min-width: 1060px; table-layout: fixed; }
+.playerAdmin_specializationTable { width: 100%; min-width: 820px; table-layout: fixed; }
 .playerAdmin_specializationTable .playerAdmin_specTrackCol { width: 20%; }
 .playerAdmin_specializationTable .playerAdmin_specXpCol { width: 11%; }
-.playerAdmin_specializationTable .playerAdmin_specLevelCol { width: 8%; }
+.playerAdmin_specializationTable .playerAdmin_specLevelCol { width: 10%; }
 .playerAdmin_specializationTable .playerAdmin_specKeystoneCol { width: 12%; }
 .playerAdmin_specializationTable .playerAdmin_specAddXpCol { width: 25%; }
-.playerAdmin_specializationTable .playerAdmin_specActionCol { width: 24%; }
+.playerAdmin_specializationTable .playerAdmin_specActionCol { width: 22%; }
 .playerAdmin_specializationTable th,
 .playerAdmin_specializationTable td { max-width: none; box-sizing: border-box; }
 .playerAdmin_specializationTable th { font-size: 12px; text-transform: uppercase; }
@@ -1927,9 +1931,9 @@ body.debug .technical-details { display: block; }
 .spec-level-max, .spec-keystone-yes { color: #8ed0a8; }
 .spec-keystone-no { color: #746c61; }
 .spec-keystone-partial { color: #d6b98c; font-variant-numeric: tabular-nums; }
-.specialization-xp-control { display: flex; align-items: center; justify-content: center; gap: 7px; width: 100%; }
+.specialization-xp-control { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 7px; width: 100%; }
 .specialization-xp-control button { flex: 0 0 104px; width: 104px; min-width: 104px; justify-content: center; padding-inline: 8px; }
-.playerAdmin_specializationTable .playerAdmin_actionCell { display: flex; align-items: center; justify-content: center; flex-wrap: nowrap; gap: 8px; width: 100%; min-width: 0; }
+.playerAdmin_specializationTable .playerAdmin_actionCell { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px; width: 100%; min-width: 0; }
 .playerAdmin_specializationTable .playerAdmin_actionCell button { flex: 0 0 104px; width: 104px; min-width: 104px; padding-inline: 8px; justify-content: center; white-space: nowrap; }
 .playerAdmin_specXpInput { flex: 0 0 132px; width: 132px; min-width: 132px; max-width: 132px; }
 .playerAdmin_note.danger { color: #ff9c8f; }
@@ -2014,8 +2018,9 @@ body.debug .technical-details { display: block; }
 .blueprint-progress-heading span { color: var(--muted-warm); font-size: 13px; }
 .blueprint-progress-track { height: 9px; overflow: hidden; border: 1px solid var(--border); border-radius: 999px; background: #0c0e10; }
 .blueprint-progress-track span { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width .3s ease; }
-.blueprints-table { width: 100%; table-layout: fixed; }
-.blueprints-table th:nth-child(1), .blueprints-table td:nth-child(1) { width: 72px; text-align: center; }
+.blueprints-table { width: 100%; min-width: 720px; table-layout: fixed; }
+.blueprints-table th, .blueprints-table td { padding-inline: 6px; }
+.blueprints-table th:nth-child(1), .blueprints-table td:nth-child(1) { width: 80px; text-align: center; }
 .blueprints-table th:nth-child(2), .blueprints-table td:nth-child(2) { width: auto; }
 .blueprints-table th:nth-child(3), .blueprints-table td:nth-child(3),
 .blueprints-table th:nth-child(4), .blueprints-table td:nth-child(4) { width: 110px; text-align: center; }
@@ -2039,16 +2044,16 @@ body.debug .technical-details { display: block; }
 .community-blueprint-search:focus-within { border-color: var(--accent); }
 .community-blueprint-search input { min-width: 0; padding-left: 0; border: 0; background: transparent; outline: 0; }
 .community-blueprint-table-wrap { max-width: 100%; overflow: auto; border: 1px solid #302b25; border-radius: 8px; background: #101316; }
-.community-blueprint-table { width: 100%; min-width: 1060px; border-collapse: collapse; table-layout: fixed; }
+.community-blueprint-table { width: 100%; min-width: 780px; border-collapse: collapse; table-layout: fixed; }
 .community-blueprint-table th, .community-blueprint-table td { padding: 10px; border-bottom: 1px solid #302b25; text-align: left; vertical-align: middle; }
 .community-blueprint-table th { position: sticky; top: 0; z-index: 1; background: #171a1d; color: #ffd08a; font-size: 12px; }
-.community-blueprint-table th:nth-child(1) { width: 150px; }.community-blueprint-table th:nth-child(2) { width: 190px; }.community-blueprint-table th:nth-child(3) { width: 130px; }.community-blueprint-table th:nth-child(4) { width: 125px; }.community-blueprint-table th:nth-child(5) { width: 110px; }.community-blueprint-table th:nth-child(6) { width: 90px; }.community-blueprint-table th:nth-child(7) { width: 250px; }
+.community-blueprint-table th:nth-child(1) { width: 16%; }.community-blueprint-table th:nth-child(2) { width: 24%; }.community-blueprint-table th:nth-child(3) { width: 13%; }.community-blueprint-table th:nth-child(4) { width: 13%; }.community-blueprint-table th:nth-child(5) { width: 72px; }.community-blueprint-table th:nth-child(6) { width: 104px; }.community-blueprint-table th:nth-child(7) { width: 142px; }
 .community-blueprint-table td > strong, .community-blueprint-table td > small { display: block; }
 .community-blueprint-table td > strong { color: var(--text-strong); overflow: hidden; text-overflow: ellipsis; }
 .community-blueprint-table td > small { margin-top: 4px; color: var(--muted); }
-.community-blueprint-thumbnail { width: 128px; aspect-ratio: 16 / 9; display: grid; place-items: center; overflow: hidden; border: 1px solid #3a342c; border-radius: 6px; background: #171a1d; color: var(--muted); font-size: 11px; }
+.community-blueprint-thumbnail { width: 100%; max-width: 160px; aspect-ratio: 16 / 9; display: grid; place-items: center; overflow: hidden; border: 1px solid #3a342c; border-radius: 6px; background: #171a1d; color: var(--muted); font-size: 11px; }
 .community-blueprint-thumbnail img { width: 100%; height: 100%; display: block; object-fit: cover; }
-.community-blueprint-actions { display: flex; align-items: center; gap: 7px; }
+.community-blueprint-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
 .community-blueprint-actions button { width: auto; min-height: 36px; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .community-blueprint-actions button[aria-expanded="true"] svg { transform: rotate(180deg); }
 .community-blueprint-detail-row td { padding: 0; background: #15181a; }
@@ -2072,42 +2077,20 @@ body.debug .technical-details { display: block; }
 .guild-add-member-selected { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel-soft); font-weight: 700; }
 .guild-add-member-selected span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .guild-add-member-selected button { flex-shrink: 0; }
-.bases-table { width: 100%; min-width: 0; table-layout: fixed; }
-.bases-table th { max-width: none; white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.2; }
+.bases-table { width: 100%; min-width: 1060px; table-layout: fixed; }
+.bases-table th { max-width: none; white-space: normal; overflow-wrap: normal; overflow: visible; text-overflow: clip; line-height: 1.2; }
 .bases-table th, .bases-table td { padding: 8px 6px; font-size: 14px; }
-.bases-table th:nth-child(2), .bases-table td:nth-child(2) { width: 5%; text-align: center; }
-.bases-table th:nth-child(3), .bases-table td:nth-child(3) { width: 12%; }
-.bases-table th:nth-child(4), .bases-table td:nth-child(4) { width: 7%; }
-.bases-table th:nth-child(5), .bases-table td:nth-child(5) { width: 7%; }
+.bases-table th:nth-child(2), .bases-table td:nth-child(2) { width: 54px; text-align: center; }
+.bases-table th:nth-child(3), .bases-table td:nth-child(3) { width: 15%; }
+.bases-table th:nth-child(4), .bases-table td:nth-child(4) { width: 11%; }
+.bases-table th:nth-child(5), .bases-table td:nth-child(5) { width: 12%; }
 .bases-table th:nth-child(6), .bases-table td:nth-child(6) { width: 9%; }
-.bases-table th:nth-child(7), .bases-table td:nth-child(7) { width: 7%; }
-.bases-table th:nth-child(8), .bases-table td:nth-child(8) { width: 17%; }
-.bases-table th:nth-child(9), .bases-table td:nth-child(9) { width: 6%; text-align: center; }
-.bases-table th:nth-child(10), .bases-table td:nth-child(10) { width: 6%; text-align: center; }
-.bases-table th:nth-child(11), .bases-table td:nth-child(11) { width: 10.5%; }
-/* 96px fit two icon-toggle-buttons (Refill Generators, Download); a third
-   (Refill Water) plus the wider queued-refill pills grew this to 148px to
-   comfortably fit all three at once, queued or not. A fourth (Delete Base)
-   plus its own wider queued-delete pill needs more room again -- and this
-   time the worst case is not "one queued slot" but "all three of Refill
-   Generators/Refill Water/Delete queued at once on the same base" (nothing
-   stops an operator queuing a fuel refill, then a water refill, then a
-   delete for the same live-map base). That's 3 pills (~46px each) + the
-   Download button (38px) + 3 gaps (6px) = 194px of content, against a
-   178px box at the old 190px width with 12px of cell padding -- exactly
-   the gap this measured and fixed live: the pills had no flex-shrink:0,
-   so the overflow silently squashed their icons instead of clipping.
-
-   The queued-permission pill added a FIFTH item, and unlike the other four
-   it has no always-present button -- it appears only while a permission
-   change is queued, on top of whatever else is. Re-measured worst case
-   (fuel pill + water pill + Download + delete pill + permission pill):
-   246px of content against the 218px box 230px gave, which clipped the
-   last pill's cancel button out of reach (td { overflow: hidden } and
-   every item is flex-shrink:0, so it truncates rather than squashing).
-   280px restores real margin above 246px+12px=258px. Anything that adds a
-   sixth item to this column must re-measure rather than assume. */
-.bases-table th.bases-actions-column, .bases-table td.bases-actions-column { width: 280px; }
+.bases-table th:nth-child(7), .bases-table td:nth-child(7) { width: 10%; }
+.bases-table th:nth-child(8), .bases-table td:nth-child(8) { width: 12%; }
+.bases-table th:nth-child(9), .bases-table td:nth-child(9) { width: 82px; text-align: center; }
+.bases-table th:nth-child(10), .bases-table td:nth-child(10) { width: 104px; text-align: center; }
+.bases-table th:nth-child(11), .bases-table td:nth-child(11) { width: 110px; }
+.bases-table th.bases-actions-column, .bases-table td.bases-actions-column { width: 116px; }
 .bases-table td { max-width: none; white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }
 .bases-name, .bases-ellipsis-cell { display: block; overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
 
@@ -2498,9 +2481,28 @@ body.debug .technical-details { display: block; }
    the shared cap returns so the detail panel remains close to the table. */
 .table-wrap.players-table-wrap-expanded { max-height: none; }
 .players-detail-anchor { scroll-margin-top: 12px; }
-table { width: max-content; min-width: 100%; border-collapse: collapse; }
-th, td { border-bottom: 1px solid #302b25; padding: 9px 10px; text-align: left; vertical-align: middle; max-width: 360px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-th { color: #ffd08a; background: #171a1d; position: sticky; top: 0; z-index: 1; }
+table { width: 100%; border-collapse: collapse; }
+th, td { border-bottom: 1px solid #302b25; padding: 9px 10px; text-align: left; vertical-align: middle; max-width: 360px; white-space: normal; overflow-wrap: anywhere; overflow: hidden; text-overflow: ellipsis; }
+/* Allocate the available panel width before introducing horizontal scrolling.
+   Long names and IDs can wrap; dense management tables retain a readable floor. */
+.players-table { min-width: 760px; table-layout: fixed; }
+.players-table th, .players-table td { padding-inline: 6px; }
+.players-table th[data-column="character_name"] { width: 18%; }
+.players-table th[data-column="online_status"] { width: 12%; }
+.players-table th[data-column="last_seen"] { width: 18%; }
+.players-table th[data-column="total_playtime_seconds"] { width: 14%; }
+.players-table th[data-column="map"] { width: 14%; }
+.players-table th[data-column="actor_id"] { width: 11%; }
+.players-table th[data-column="fls_id"] { width: 13%; }
+.guilds-table { min-width: 620px; }
+.vehicles-table { min-width: 820px; }
+.data-table td[data-column="status"],
+.data-table td[data-column="piece_count"],
+.data-table td[data-column="placeable_count"],
+.data-table td[data-column="listing_count"],
+.data-table td[data-column="total_stock"],
+.data-table td[data-column="lowest_price"] { white-space: nowrap; }
+th { color: #ffd08a; background: #171a1d; position: sticky; top: 0; z-index: 1; overflow-wrap: normal; }
 th.sortable { cursor: pointer; user-select: none; }
 th.sortable:hover { color: #ffe0a8; }
 .sort-indicator { color: #cbbd9f; }
@@ -2711,8 +2713,8 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .exchange-transaction-summary strong { color: #fff1d4; font-size: 18px; font-variant-numeric: tabular-nums; }
 .action-row.exchange-transaction-filters > select { flex: 0 1 180px; width: auto; min-width: 150px; height: 43px; }
 .exchange-transaction-filters .exchange-id-filter { flex: 0 1 150px; min-width: 120px; }
-.exchange-transaction-table { width: 100%; min-width: 980px; }
-.exchange-transaction-table th { white-space: nowrap; }
+.exchange-transaction-table { width: 100%; min-width: 820px; }
+.exchange-transaction-table th { white-space: normal; }
 .exchange-transaction-time { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .exchange-transaction-party-name { color: #f3efe7; }
 @media (max-width: 700px) {
@@ -2743,15 +2745,15 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .bot-items-summary-row .action-row { justify-content: flex-end; }
 .bot-items-match-actions { flex-wrap: nowrap; }
 .bot-items-match-actions .memory-info-tooltip { flex: 0 0 auto; }
-.bot-items-table { font-variant-numeric: tabular-nums; }
-.bot-items-table th, .bot-items-table td { padding: 10px 12px; }
+.bot-items-table { min-width: 680px; table-layout: fixed; font-variant-numeric: tabular-nums; }
+.bot-items-table th, .bot-items-table td { padding: 10px 8px; }
 .bot-items-table tbody tr:hover { background: rgba(198, 139, 74, .055); }
-.bot-items-table .bot-items-col-item { min-width: 280px; }
-.bot-items-table .bot-items-col-category { min-width: 140px; }
-.bot-items-table .bot-items-col-quality { min-width: 88px; }
-.bot-items-table .bot-items-col-price { min-width: 168px; }
-.bot-items-table .bot-items-col-stock { min-width: 100px; }
-.bot-items-table .bot-items-col-enabled { width: 72px; min-width: 72px; text-align: center; }
+.bot-items-table .bot-items-col-item { width: auto; }
+.bot-items-table .bot-items-col-category { width: 116px; }
+.bot-items-table .bot-items-col-quality { width: 96px; }
+.bot-items-table .bot-items-col-price { width: 160px; }
+.bot-items-table .bot-items-col-stock { width: 92px; }
+.bot-items-table .bot-items-col-enabled { width: 64px; min-width: 64px; text-align: center; }
 .bot-items-sort-button { display: inline-flex; align-items: center; gap: 5px; width: auto; min-width: 0; min-height: 24px; padding: 2px 0; border: 0; border-radius: 3px; background: transparent; color: inherit; font: inherit; box-shadow: none; }
 .bot-items-sort-button:hover, .bot-items-sort-button:focus-visible { border: 0; background: transparent; color: var(--title); box-shadow: none; }
 .bot-items-sort-indicator { color: var(--muted); font-size: 12px; opacity: .55; }
@@ -2760,7 +2762,7 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .bot-items-page-toggle input[type="checkbox"] { margin: 0; cursor: pointer; }
 .bot-items-page-toggle input[type="checkbox"]:disabled { cursor: not-allowed; }
 .bot-items-table input[type="number"] { box-sizing: border-box; text-align: right; }
-.bot-items-table .bot-items-col-price input[type="number"] { width: 144px; }
+.bot-items-table .bot-items-col-price input[type="number"] { width: 100%; }
 .bot-items-table .bot-items-col-stock input[type="number"] { width: 76px; }
 .bot-items-table .bot-items-col-enabled input[type="checkbox"] { display: block; margin-inline: auto; }
 .bot-item-identity { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; }
@@ -2932,7 +2934,7 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
   .maps-startup-settings-save { width: 100%; }
   .maps-host-memory-protection { width: 100%; }
 }
-.maps-overview-table { table-layout: fixed; width: 100%; min-width: 920px; }
+.maps-overview-table { table-layout: fixed; width: 100%; min-width: 680px; }
 .maps-overview-table th:nth-child(1), .maps-overview-table td:nth-child(1) { width: 28%; }
 .maps-overview-table th:nth-child(2), .maps-overview-table td:nth-child(2) { width: 16%; }
 .maps-overview-table th:nth-child(3), .maps-overview-table td:nth-child(3) { width: 16%; }
@@ -2972,6 +2974,8 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 
 @media (max-width: 900px) {
   .app-shell, .wizard { grid-template-columns: 1fr; }
+  .stepper { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .stepper button { min-width: 0; white-space: normal; }
   .sidebar { border-right: 0; border-bottom: 1px solid #2f2a25; }
   .sidebar-nav { grid-template-columns: 1fr; }
   .sidebar-nav-group { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -3003,7 +3007,9 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .advanced-toggle-row { margin: 0; }
 .live-map-view-section { margin-bottom: 16px; }
 .live-map-view-body { display: grid; gap: 14px; align-items: stretch; }
-.live-map-view-controls { width: 50%; min-width: 600px; display: grid; grid-template-columns: minmax(260px, 1fr) minmax(280px, 1fr); gap: 14px; }
+.live-map-view-controls { width: min(100%, 760px); display: flex; flex-wrap: wrap; align-items: end; gap: 14px; }
+.live-map-view-map-field { flex: 0 0 auto; max-width: 100%; }
+.live-map-partition-field { flex: 1 1 240px; }
 .live-map-view-field, .live-map-view-summary { min-width: 0; display: grid; align-content: start; gap: 7px; }
 .live-map-view-summary { padding-top: 12px; border-top: 1px solid rgba(214, 185, 140, .13); }
 .live-map-partition-offline-note { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 6px 10px; margin-top: 3px; padding: 10px 12px; border: 1px solid rgba(198, 139, 74, .38); border-radius: 8px; background: rgba(88, 57, 24, .18); color: var(--muted-warm); font-size: 12px; line-height: 1.45; }
@@ -3053,8 +3059,8 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .live-map-search-control input { min-width: 0; }
 .live-map-search-control button { width: auto; flex: 0 0 auto; }
 .live-map-search-section > .muted { font-size: 11px; line-height: 1.4; }
-.live-map-map-buttons { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
-.live-map-map-buttons button { width: 100%; white-space: normal; min-height: 40px; }
+.live-map-map-buttons { display: flex; flex-wrap: wrap; gap: 7px; }
+.live-map-map-buttons button { width: auto; white-space: nowrap; height: 42px; }
 .live-map-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .live-map-toolbar button { width: auto; }
 .live-map-toolbar label { display: flex; align-items: center; gap: 8px; width: auto; color: #ceb894; }
@@ -3683,32 +3689,35 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .package-items-toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; }
 .package-items-toggle-panel.open .package-items-toggle-row { border-bottom: 1px solid #302b25; }
 .package-items-toggle-row h4 { margin: 0; }
-.package-items-table table { table-layout: fixed; width: 100%; min-width: 860px; }
+.package-items-table table { table-layout: fixed; width: 100%; min-width: 640px; }
 .table-wrap.package-items-table { overflow-x: auto; max-height: none; }
 .package-items-table th:nth-child(1), .package-items-table td:nth-child(1) { width: 96px; text-align: center; }
 .package-items-table th:nth-child(2), .package-items-table td:nth-child(2) { width: 28%; }
 .package-items-table th:nth-child(3), .package-items-table td:nth-child(3) { width: auto; }
 .package-items-table th:nth-child(4), .package-items-table td:nth-child(4) { width: 110px; }
-.package-items-table th:nth-child(5), .package-items-table td:nth-child(5) { width: 260px; min-width: 260px; }
+.package-items-table th:nth-child(5), .package-items-table td:nth-child(5) { width: 166px; }
 .package-items-table tbody tr { min-height: 58px; }
 .package-items-table td { min-height: 58px; }
-.playerAdmin_itemsTable.package-items-table table { min-width: 980px; }
+.playerAdmin_itemsTable.package-items-table table { min-width: 880px; }
+.playerAdmin_itemsTable.package-items-table th,
+.playerAdmin_itemsTable.package-items-table td { padding-inline: 6px; }
+.playerAdmin_itemsTable.package-items-table th { overflow-wrap: normal; }
 .playerAdmin_itemsTable.package-items-table th:nth-child(1),
-.playerAdmin_itemsTable.package-items-table td:nth-child(1) { width: 82px; }
+.playerAdmin_itemsTable.package-items-table td:nth-child(1) { width: 96px; }
 .playerAdmin_itemsTable.package-items-table th:nth-child(2),
-.playerAdmin_itemsTable.package-items-table td:nth-child(2) { width: 18%; }
+.playerAdmin_itemsTable.package-items-table td:nth-child(2) { width: 16%; }
 .playerAdmin_itemsTable.package-items-table th:nth-child(3),
-.playerAdmin_itemsTable.package-items-table td:nth-child(3) { width: 18%; }
+.playerAdmin_itemsTable.package-items-table td:nth-child(3) { width: 16%; }
 .playerAdmin_itemsTable.package-items-table th:nth-child(4),
 .playerAdmin_itemsTable.package-items-table td:nth-child(4),
 .playerAdmin_itemsTable.package-items-table th:nth-child(5),
-.playerAdmin_itemsTable.package-items-table td:nth-child(5) { width: 104px; min-width: 104px; max-width: 104px; text-align: center; }
+.playerAdmin_itemsTable.package-items-table td:nth-child(5) { width: 96px; text-align: center; }
 .playerAdmin_itemsTable.package-items-table th:nth-child(6),
-.playerAdmin_itemsTable.package-items-table td:nth-child(6) { width: 240px; min-width: 240px; max-width: 240px; }
+.playerAdmin_itemsTable.package-items-table td:nth-child(6) { width: 140px; }
 .playerAdmin_itemsTable.package-items-table th:nth-child(7),
-.playerAdmin_itemsTable.package-items-table td:nth-child(7) { width: 118px; min-width: 118px; max-width: 118px; text-align: center; }
+.playerAdmin_itemsTable.package-items-table td:nth-child(7) { width: 100px; text-align: center; }
 .playerAdmin_itemsTable.package-items-table th:nth-child(8),
-.playerAdmin_itemsTable.package-items-table td:nth-child(8) { width: 220px; min-width: 220px; max-width: 220px; }
+.playerAdmin_itemsTable.package-items-table td:nth-child(8) { width: 166px; }
 .package-augment-summary {
   display: -webkit-box;
   -webkit-line-clamp: 3;
@@ -3716,34 +3725,27 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.player-inventory-table th { white-space: normal; overflow-wrap: anywhere; vertical-align: bottom; line-height: 1.2; }
+.player-inventory-table { table-layout: fixed; min-width: 880px; }
+.player-inventory-table th { white-space: normal; overflow-wrap: normal; vertical-align: bottom; line-height: 1.2; }
 /* The Character-tab panel is a stack of nested CSS grids, whose items default to
    min-width:auto (min-content). The wide inventory table would otherwise expand
    that whole chain past the modal instead of scrolling. Zeroing min-width from the
    panel down to the table's own scroll-container parent lets .table-wrap
    (overflow-x:auto) scroll horizontally within the panel. */
-.playerAdmin_content, .playerAdmin_toggle, .playerAdmin_toggleBody, .player-inventory-detail { min-width: 0; }
+.playerAdmin_content, .playerAdmin_box, .playerAdmin_toggle, .playerAdmin_toggleBody, .player-inventory-detail { min-width: 0; }
 
-/* Column widths keyed by column name (not position) so adding/removing a column
-   never shifts the rest. ID and Item Name size to their content. */
-.player-inventory-table th[data-column="id"], .player-inventory-table td[data-column="id"],
-.player-inventory-table th[data-column="item_name"], .player-inventory-table td[data-column="item_name"] {
-  width: 1%;
-  max-width: none;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: clip;
-}
-/* Item Name is content-sized; keep its trailing (i) icon visible on the widest
-   row (overflow:hidden would clip it). The grid min-width:0 rule above stops this
-   from re-expanding the panel. */
-.player-inventory-table th[data-column="item_name"], .player-inventory-table td[data-column="item_name"] { overflow: visible; }
-.player-inventory-table th[data-column="stack_size"], .player-inventory-table td[data-column="stack_size"] { width: 92px; max-width: 92px; }
-.player-inventory-table th[data-column="quality_level"], .player-inventory-table td[data-column="quality_level"] { width: 76px; max-width: 76px; }
-.player-inventory-table th[data-column="position_index"], .player-inventory-table td[data-column="position_index"] { width: 126px; max-width: 126px; }
-.player-inventory-table th[data-column="current_durability"], .player-inventory-table td[data-column="current_durability"] { width: 154px; max-width: 154px; }
-.player-inventory-table th[data-column="max_durability"], .player-inventory-table td[data-column="max_durability"] { width: 132px; max-width: 132px; }
-.player-inventory-table th[data-column="augments"], .player-inventory-table td[data-column="augments"] { width: 150px; max-width: 150px; white-space: normal; }
+/* Names can wrap without squeezing numeric headings into individual letters.
+   Key columns by name so the shorter schematics view keeps its own structure. */
+.player-inventory-table th, .player-inventory-table td { padding-inline: 6px; }
+.player-inventory-table th[data-column="id"] { width: 64px; }
+.player-inventory-table th[data-column="item_name"] { width: auto; }
+.player-inventory-table th[data-column="stack_size"] { width: 92px; }
+.player-inventory-table th[data-column="quality_level"] { width: 68px; }
+.player-inventory-table th[data-column="position_index"] { width: 96px; }
+.player-inventory-table th[data-column="current_durability"] { width: 116px; }
+.player-inventory-table th[data-column="max_durability"] { width: 116px; }
+.player-inventory-table th[data-column="augments"] { width: 104px; }
+.player-inventory-table:not(:has(th[data-column="quality_level"])) { min-width: 620px; }
 .player-inventory-table th[data-column="stack_size"], .player-inventory-table td[data-column="stack_size"],
 .player-inventory-table th[data-column="quality_level"], .player-inventory-table td[data-column="quality_level"],
 .player-inventory-table th[data-column="position_index"], .player-inventory-table td[data-column="position_index"] {
@@ -3751,12 +3753,10 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 }
 .player-inventory-table th.actions-column,
 .player-inventory-table td.actions-column {
-  width: 150px;
-  min-width: 150px;
-  max-width: 150px;
+  width: 100px;
   overflow: visible;
 }
-.player-inventory-table td.actions-column .icon-toggle-group { justify-content: center; flex-wrap: nowrap; gap: 6px; }
+.player-inventory-table td.actions-column .icon-toggle-group { justify-content: center; flex-wrap: wrap; gap: 6px; }
 .inventory-template-id {
   display: block;
   max-width: 100%;
@@ -3764,7 +3764,7 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.inventory-item-name { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.inventory-item-name { display: inline-flex; max-width: 100%; align-items: center; gap: 5px; white-space: normal; }
 .inventory-name-info { display: inline-flex; align-items: center; flex-shrink: 0; color: var(--muted); cursor: help; }
 .inventory-name-info:hover { color: var(--accent); }
 .inventory-augment-list {
@@ -3814,7 +3814,8 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 /* Two-class selector deliberately: a later grouped rule re-declares
    `overflow: auto` on .table-wrap at equal specificity, so a single-class
    override here would lose on source order. */
-.table-wrap.bases-table-wrap { max-height: none; overflow: visible; }
+.table-wrap.bases-table-wrap { max-height: none; overflow: visible; scrollbar-gutter: auto; }
+.table-wrap.bases-table-wrap.has-horizontal-overflow { overflow: auto; }
 /* The desktop wrapper deliberately keeps overflow visible so its sticky
    header follows the page, which means the wrapper itself cannot clip the
    table into its rounded border. Give the table's four outer cells matching
@@ -3830,35 +3831,13 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .bases-table-wrap .bases-table tbody > tr:last-child > td:first-child { border-bottom-left-radius: 7px; }
 .bases-table-wrap .bases-table tbody > tr:last-child > td:last-child { border-bottom-right-radius: 7px; }
 
-/* Below this width the twelve columns have nowhere to go. The table has no
-   intrinsic minimum, so instead of overflowing it crushes -- cells collapse to
-   one character per line and "Advanced Sub-Fief" renders vertically. (That
-   predates the height-cap change: with no min-width the table always shrank to
-   its container, so the wrap's overflow-x never had anything to scroll.)
-   Give it a floor and let the container scroll horizontally again.
-   The sticky header does not survive here, because a sticky element is confined
-   to its nearest scrolling ancestor and that is now the wrap again -- readable
-   columns are worth more than a pinned header on a phone. */
-@media (max-width: 1100px) {
-  .table-wrap.bases-table-wrap { overflow: auto; }
-  .bases-table { min-width: 860px; }
-  /* Below this the table stops shrinking and scrolls at a fixed 860px, so the
-     actions column's 280px is 280px the data columns don't get -- and they are
-     the ones actually starved here (Base Name, Owner and Shared With wrap to
-     two or three lines while the buttons sit comfortably). Reclaim it by
-     stacking the controls two-up instead of in one row: an explicit 2-column
-     grid rather than flex-wrap, so the result is a predictable 2x2 for the
-     usual four controls rather than whatever the available width happens to
-     allow. A fifth control (every queue pending at once) wraps to a third row
-     rather than clipping. Above this breakpoint the column stays 280px and
-     the row stays 4x1 -- see the width comment on .bases-actions-column. */
-  .bases-table th.bases-actions-column, .bases-table td.bases-actions-column { width: 116px; }
-  .bases-table td.bases-actions-column .icon-toggle-group {
-    display: inline-grid;
-    grid-template-columns: repeat(2, auto);
-    justify-content: center;
-    gap: 6px;
-  }
+/* Let queued actions wrap inside their column, including a fifth permission
+   action, instead of reserving a wide strip on every row. */
+.bases-table td.bases-actions-column .icon-toggle-group {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
 }
 /* The shared `th` rule is already position:sticky, but an overflow:auto ancestor
    confines a sticky element to that ancestor's scrollport -- so with the height
@@ -3926,6 +3905,14 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
    table header, itself not page-sticky at this width. */
 @media (max-width: 900px) {
   .bases-search-row { position: static; }
+}
+/* Only tables that actually overflow need their own horizontal scrollport.
+   Keep page-sticky headers on fitting laptop tables as well as large screens. */
+.bases-table-wrap.has-horizontal-overflow .bases-table > thead > tr > th,
+.bases-table-wrap.has-horizontal-overflow .bases-table > tbody > tr.row-expanded { position: static; }
+@media (max-width: 900px) {
+  .bases-table-wrap .bases-table > thead > tr > th,
+  .bases-table-wrap .bases-table > tbody > tr.row-expanded { position: static; }
 }
 
 /* Player Summary embeds the same wide Bases table used by the full Bases
@@ -6212,19 +6199,18 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .admin-history-table { max-height: min(42dvh, 440px); }
 .admin-history-grid {
   width: 100%;
-  min-width: 860px;
-  table-layout: auto;
+  min-width: 720px;
+  table-layout: fixed;
 }
 .admin-history-grid th:first-child,
-.admin-history-grid td:first-child { width: 150px; }
+.admin-history-grid td:first-child { width: 19%; }
 .admin-history-grid th:nth-child(2),
-.admin-history-grid td:nth-child(2) { width: 150px; }
+.admin-history-grid td:nth-child(2) { width: 18%; }
 .admin-history-grid th:nth-child(3),
-.admin-history-grid td:nth-child(3) { width: 200px; }
+.admin-history-grid td:nth-child(3) { width: 22%; }
 .admin-history-grid th:nth-child(4),
-.admin-history-grid td:nth-child(4) { width: 110px; }
+.admin-history-grid td:nth-child(4) { width: 100px; }
 .admin-history-grid td:last-child {
-  min-width: 260px;
   max-width: none;
   white-space: normal;
   overflow-wrap: anywhere;
@@ -6417,9 +6403,9 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
   .addons-table .service-actions { gap: 5px; }
   .addons-table .service-actions button { padding-inline: 5px; font-size: 13px; }
 }
-.package-items-table button { padding: 6px 8px; }
+.package-items-table button { min-height: 42px; padding: 6px 8px; }
 .package-items-table th:last-child, .package-items-table td.package-actions-cell { text-align: center; }
-.package-items-table td.package-actions-cell .service-actions { justify-content: center; flex-wrap: nowrap; min-width: 0; gap: 8px; }
+.package-items-table td.package-actions-cell .service-actions { justify-content: center; flex-wrap: wrap; min-width: 0; gap: 8px; }
 .package-items-table td.package-actions-cell { overflow: visible; }
 .package-items-table td.package-actions-cell button { min-width: 62px; }
 .package-item-quantity-input { width: 72px; max-width: 72px; }
@@ -6572,10 +6558,6 @@ td .inline-action-result-wrap { flex: 1 0 100%; justify-content: flex-start; min
 }
 .admin-history-table { max-height: 300px; overflow: auto; border: 1px solid #302b25; border-radius: 8px; }
 .admin-history-table .table-wrap { border: 0; border-radius: 0; margin: 0; max-height: none; overflow: visible; }
-.admin-history-grid th:first-child, .admin-history-grid td:first-child { width: 132px; white-space: nowrap; }
-.admin-history-grid th:nth-child(2), .admin-history-grid td:nth-child(2) { min-width: 128px; padding-left: 14px; }
-.admin-history-grid th:nth-child(3), .admin-history-grid td:nth-child(3) { min-width: 180px; white-space: nowrap; }
-.admin-history-grid td:last-child { max-width: 420px; }
 .landsraad-panel { display: grid; gap: 16px; }
 .landsraad-admin-body { display: grid; gap: 14px; }
 .landsraad-admin-body .panel-title { margin: 0; }
@@ -6690,6 +6672,10 @@ td .inline-action-result-wrap { flex: 1 0 100%; justify-content: flex-start; min
 .backup-auto-controls { column-gap: 10px; row-gap: 10px; align-items: end; }
 .backup-auto-controls .checkbox-row { flex: 0 0 auto; min-height: 40px; align-items: center; }
 .backup-auto-controls .compact-select { flex: 0 1 210px; }
+.backup-auto-controls .memory-number-field { flex: 0 1 180px; min-width: 150px; max-width: none; }
+.backup-number-unit { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.backup-number-unit input { min-width: 90px; flex: 1; }
+.backup-number-unit > span { flex: none; }
 .backup-auto-controls .inline-task-result { margin-left: 4px; }
 /* This panel's sections are direct children of .panel, so they get none of the
    .action-sections grid gap -- each needs its own separation, including
@@ -6858,15 +6844,17 @@ td .inline-action-result-wrap { flex: 1 0 100%; justify-content: flex-start; min
 .settings-list-table input, .settings-list-table select, .settings-list-table textarea { width: 100%; margin-top: -10px; }
 .settings-list-table tr.settings-list-badge-row + tr input, .settings-list-table tr.settings-list-badge-row + tr select, .settings-list-table tr.settings-list-badge-row + tr textarea { margin-top: 0; }
 .settings-list-table .settings-match-region + input, .settings-list-table .settings-match-region + select, .settings-list-table .settings-match-region + textarea { margin-top: 0; }
-.spicefields-table { min-width: 980px; }
+.spicefields-table { min-width: 600px; }
 .spicefields-table th:nth-child(n), .spicefields-table td:nth-child(n) { width: auto; }
-.spicefields-table th:nth-child(1), .spicefields-table td:nth-child(1) { width: 18%; }
-.spicefields-table th:nth-child(4), .spicefields-table td:nth-child(4) { width: 12%; }
-.spicefields-table th:nth-child(9), .spicefields-table td:nth-child(9) { width: 16%; }
+.spicefields-table th:nth-child(1), .spicefields-table td:nth-child(1) { width: 25%; }
+.spicefields-table th:nth-child(2), .spicefields-table td:nth-child(2) { width: 14%; }
+.spicefields-table th:nth-child(3), .spicefields-table td:nth-child(3) { width: 16%; }
+.spicefields-table th:nth-child(4), .spicefields-table td:nth-child(4) { width: 20%; }
+.spicefields-table th:nth-child(5), .spicefields-table td:nth-child(5) { width: 25%; }
 .choam-terminals-editor { display: grid; gap: 14px; }
 .choam-terminals-toolbar { display: flex; align-items: center; gap: 12px; }
 .choam-terminals-toolbar p { margin: 0; color: #bcae98; }
-.choam-terminals-table { min-width: 1080px; }
+.choam-terminals-table { min-width: 720px; }
 .choam-terminals-table th, .choam-terminals-table td { vertical-align: middle; }
 .choam-terminals-table th:first-child, .choam-terminals-table td:first-child { width: 28%; }
 .choam-terminals-table th:nth-child(2), .choam-terminals-table td:nth-child(2) { width: 18%; text-align: center; }
@@ -6874,9 +6862,9 @@ td .inline-action-result-wrap { flex: 1 0 100%; justify-content: flex-start; min
 .choam-terminals-table th:nth-child(4), .choam-terminals-table td:nth-child(4) { width: 18%; text-align: center; }
 .choam-terminals-table th:last-child, .choam-terminals-table td:last-child { width: 22%; text-align: center; }
 .choam-terminal-status .badge-pass { background: rgba(61, 139, 98, .12); }
-.choam-terminal-actions { justify-content: center; flex-wrap: nowrap; margin: 0; }
+.choam-terminal-actions { justify-content: center; flex-wrap: wrap; margin: 0; }
 .choam-terminal-actions button { min-width: 96px; white-space: nowrap; }
-.choam-terminal-actions .choam-position-toggle { width: 140px; min-width: 140px; justify-content: center; }
+.choam-terminal-actions .choam-position-toggle { width: 128px; min-width: 128px; justify-content: center; padding-inline: 8px; }
 .choam-position-editor-row td { background: var(--panel-soft); }
 .choam-position-editor { display: grid; gap: 12px; padding: 4px 2px; text-align: left; }
 .choam-position-editor-hint { margin: 0; color: var(--text-subtle); }
@@ -6957,6 +6945,7 @@ td .inline-action-result-wrap { flex: 1 0 100%; justify-content: flex-start; min
   .playerAdmin_actionNote { padding-left: 0; }
   .playerAdmin_repairRow { grid-template-columns: 1fr; align-items: start; }
   .playerAdmin_characterRecoveryRow { grid-template-columns: 1fr; }
+  .playerAdmin_characterRecoveryRow .inline-action-result-wrap { grid-column: 1; }
   .playerAdmin_characterRecoveryControls { width: 100%; }
   .playerAdmin_repairRow button { justify-self: start; }
   .playerAdmin_repairRow .inline-action-result-wrap { width: 100%; min-height: 24px; }
@@ -7006,11 +6995,10 @@ h3 { font-size: clamp(1.05rem, .98rem + .35vw, 1.35rem); }
 }
 .setup-only-shell > main { grid-column: 1 / -1; max-width: 100%; }
 .sidebar {
-  position: sticky;
-  top: 0;
+  position: relative;
   align-self: start;
-  min-height: 100dvh;
   height: auto;
+  min-height: 100dvh;
   overflow: visible;
 }
 .sidebar-menu-toggle { display: none; }
@@ -7060,7 +7048,6 @@ h3 { font-size: clamp(1.05rem, .98rem + .35vw, 1.35rem); }
   scrollbar-gutter: stable;
 }
 .table-wrap:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-th, td { overflow-wrap: normal; }
 td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%; }
 
 .action-row > input:not([type="checkbox"]),
@@ -7073,6 +7060,7 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
 .action-row > button,
 .action-line > button,
 .panel-title > button { flex: 0 0 auto; }
+.action-row:not(:has(> input, > select, > label, > textarea)) > :is(button, .button-link) { align-self: stretch; }
 .drawer { overflow: hidden; }
 .addon-frame { min-height: clamp(420px, 70dvh, 760px); }
 
@@ -7081,7 +7069,6 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
   .sidebar { padding-inline: 16px; }
   .catalog-filter-row { grid-template-columns: minmax(240px, 340px) minmax(0, 1fr); }
   .live-map-layout { --live-map-sidebar-width: 290px; }
-  .live-map-view-controls { width: 70%; min-width: 560px; }
 }
 
 @media (min-width: 901px) and (max-height: 820px) {
@@ -7114,6 +7101,7 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
   .catalog-search-tools { grid-template-columns: minmax(0, 1fr) auto; }
   .auto-update-settings-row,
   .character-transfer-row { grid-template-columns: minmax(180px, 1fr) minmax(120px, 240px) 32px; }
+  .landsraad-modifier-grid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 900px) {
@@ -7133,6 +7121,7 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
     background: rgba(14, 15, 17, .97);
     backdrop-filter: blur(12px);
   }
+  .sidebar:has(.sidebar-nav.mobile-open) { position: relative; }
   .sidebar-brand {
     grid-template-columns: minmax(0, 1fr) auto auto;
     align-items: center;
@@ -7162,7 +7151,6 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
   .sidebar-addon-children { padding-left: 10px; }
   .sidebar-addon-children button { min-height: 40px; }
   .live-map-layout { --live-map-sidebar-width: 0px; width: 100%; grid-template-columns: 1fr; }
-  .live-map-view-controls { width: 100%; min-width: 0; }
   .live-map-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .live-map-frame { width: 100%; min-width: 0; height: clamp(420px, 62dvh, 700px); min-height: 0; }
   .map-message-schedule-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -7193,7 +7181,9 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
   .listing-claim-badge { grid-column: 1 / -1; min-height: 40px; }
   .community-button { width: 100%; min-height: 44px; }
   .panel, .drawer, .action-section { padding: clamp(11px, 3vw, 16px); }
-  .panel-title, .action-row, .action-line { align-items: stretch; }
+  .panel-title { align-items: center; }
+  .action-row { align-items: center; }
+  .action-line { align-items: end; }
   /* stretch makes the StatusBadge grow to the Dismiss button and keep its text
      on the first line, while this badge stays 25px and centres in the row --
      measured 9px lower than its neighbour. Scoped here because the row is
@@ -7316,20 +7306,12 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
     transform: none;
   }
   .playerAdmin_iconRailItems {
-    grid-template-columns: minmax(0, 1fr);
     gap: 8px;
-    overflow: visible;
   }
-  .playerAdmin_iconRailItems::before { display: none; }
   .playerAdmin_iconRailIconGroup {
     width: 100%;
     min-width: 0;
-    justify-content: flex-start;
-    overflow-x: auto;
-    overflow-y: hidden;
-    overscroll-behavior-inline: contain;
-    scrollbar-width: thin;
-    -webkit-overflow-scrolling: touch;
+    justify-content: center;
   }
   .playerAdmin_iconRailLabel {
     justify-self: center;
@@ -7349,17 +7331,18 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
 
 @media (max-width: 560px) {
   .playerAdmin_customizationHeader { align-items: stretch; flex-direction: column; }
+  .tab-loading-panel[role="alert"] { display: grid; gap: 10px; }
+  .tab-loading-panel[role="alert"] p { margin: 0; }
+  .tab-loading-panel[role="alert"] button { justify-self: start; }
   .playerAdmin_customizationHeader > button { width: 100%; }
   .playerAdmin_customizationCards { grid-template-columns: 1fr; }
-  .sidebar-brand { grid-template-columns: minmax(0, 1fr) auto; }
-  .stack-version-button { grid-column: 1; grid-row: 2; justify-self: start; max-width: 160px; margin-top: 6px; }
-  .sidebar-menu-toggle { grid-column: 2; grid-row: 1 / span 2; }
   .sidebar-nav.mobile-open { grid-template-columns: 1fr; }
   .sidebar-nav.mobile-open .sidebar-nav-group {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .sidebar-nav.mobile-open .sidebar-nav-heading { grid-column: 1 / -1; }
-  .topbar .topbar-links { grid-template-columns: 1fr; }
+  .topbar .topbar-links { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .community-button { font-size: 13px; padding: 8px; gap: 6px; }
   .community-button, .listing-claim-badge { grid-column: auto; }
   .confirm-modal-details { grid-template-columns: 1fr; row-gap: 3px; }
   .confirm-modal-details div + div dt { margin-top: 5px; }
@@ -7378,12 +7361,28 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
   .catalog-item-picker, .menu-card-grid, .planned-grid, .playerAdmin_cardGrid {
     grid-template-columns: minmax(0, 1fr);
   }
-  .settings-tabs { grid-template-columns: 1fr; }
+  .stepper { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .settings-tabs > button:last-child:nth-child(odd) { grid-column: 1 / -1; }
   .spicefields-table tbody tr { grid-template-columns: minmax(0, 1fr); }
   .spicefields-table tbody td:first-child,
   .spicefields-table tbody td:last-child { grid-column: auto; }
   .action-row > button, .action-line > button { flex: 1 1 140px; min-height: 44px; }
   .service-actions button, .service-actions .button-link { min-height: 44px; }
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]), select { min-height: 44px; }
+  .players-filter-row { align-items: end; }
+  .players-filter-row > .inline-filter-label { display: grid; flex: 1 1 150px; min-width: 0; }
+  .players-filter-row > .inline-filter-label select { width: 100%; min-width: 0; }
+  .players-search-row, .guilds-search-row, .bases-search-row { flex-wrap: wrap; }
+  .action-row.players-search-row > input,
+  .action-row.guilds-search-row > input,
+  .action-row.bases-search-row > input { flex-basis: 100%; }
+  .players-search-row button, .guilds-search-row button, .bases-search-row button { flex: 1 1 0; }
+  .database-pagination-controls { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); align-items: center; }
+  .database-pagination-controls .compact-select { grid-column: 1 / span 2; grid-row: 1; width: auto; min-width: 0; }
+  .database-pagination-controls select { width: 100%; min-width: 0; }
+  .database-pagination-controls .database-page-indicator { grid-column: 3 / span 2; grid-row: 1; min-width: 0; text-align: right; }
+  .database-pagination-controls button { width: 100%; min-width: 0; min-height: 44px; padding-inline: 4px; font-size: 13px; }
+  .health-grid, .health-grid-compact, .summary-cols, .playerAdmin_cardGrid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); }
   label.inline-field, label.compact-field, label.compact-select, label.schedule-notify-field, label.schedule-checkpoints-field {
     width: 100%;
     min-width: 0;
@@ -7403,8 +7402,8 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
   .landsraad-milestone-heading-actions { align-items: stretch; flex-direction: column; }
   .memory-swap-panel label select, .memory-swap-panel label input { width: 100%; }
   .memory-swap-metrics { display: grid; grid-template-columns: 1fr; }
-  .live-map-view-controls { grid-template-columns: 1fr; }
-  .live-map-map-buttons { grid-template-columns: 1fr; }
+  .live-map-view-map-field { flex: 1 1 100%; }
+  .live-map-map-buttons button { flex: 1 1 auto; height: 44px; padding-inline: 10px; }
   .live-map-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .live-map-frame { width: 100%; min-width: 0; height: max(320px, 52dvh); }
   .map-message-schedule-heading { align-items: stretch; flex-direction: column; }
@@ -7426,11 +7425,7 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
   .sidebar { padding-inline: 10px; }
   .panel, .drawer, .action-section { border-radius: 7px; padding-inline: 10px; }
   th, td { padding-inline: 8px; }
-  .database-pagination-controls { align-items: stretch; flex-direction: column; }
-  .database-pagination-controls button,
-  .database-pagination-controls .compact-select { width: 100%; justify-content: center; }
-  .database-pagination-controls select { flex: 1 1 auto; }
-  .wizard-controls { display: grid; grid-template-columns: 1fr; }
+  .wizard-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .wizard-controls button { width: 100%; }
 }
 
@@ -7630,7 +7625,7 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
 .choam-position-section label { font-size: 13px; }
 .choam-position-section input { width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .choam-position-section-facing { flex: 0 0 212px; justify-items: center; }
-.choam-heading-value { width: 104px; }
+.choam-heading-value { position: relative; width: 104px; }
 .choam-heading-value input { text-align: center; }
 .choam-dial { width: 152px; height: 152px; flex: 0 0 auto; touch-action: none; cursor: grab; border-radius: 50%; }
 .choam-dial:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
