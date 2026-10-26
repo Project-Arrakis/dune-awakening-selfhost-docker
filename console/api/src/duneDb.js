@@ -5959,7 +5959,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
       ${partitionJoin}
       ${finalOwnerJoin}
       left join lateral (
-        select jsonb_agg(jsonb_build_object('name', ${permissionIdentity.name}, 'rank', par.rank) order by par.rank asc, ${permissionIdentity.name} asc, par.player_id asc) as entries
+        select jsonb_agg(jsonb_build_object('name', coalesce(nullif(${permissionIdentity.name}, ''), 'Unknown player ' || par.player_id::text), 'rank', par.rank) order by par.rank asc, ${permissionIdentity.name} asc, par.player_id asc) as entries
         from dune.permission_actor_rank par
         ${permissionIdentity.joins}
         where par.permission_actor_id = p.actor_id
