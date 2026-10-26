@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { READ_ONLY_BRIDGE_ACTIONS } from "../src/bridgeReadActions.js";
+import { READ_ONLY_BRIDGE_ACTIONS, bridgeActionStartsNewGeneration } from "../src/bridgeReadActions.js";
 
 const serverSource = readFileSync(fileURLToPath(new URL("../src/server.js", import.meta.url)), "utf8");
 
@@ -23,4 +23,16 @@ test("every listed read-only action is dispatched by the bridge route", () => {
   for (const action of READ_ONLY_BRIDGE_ACTIONS) {
     assert.match(code, new RegExp(`action === "${action.replaceAll(".", "\\.")}"`), `${action} is not handled in server.js`);
   }
+});
+
+test("only actions outside the list start a new in-flight generation", () => {
+  for (const action of READ_ONLY_BRIDGE_ACTIONS) assert.equal(bridgeActionStartsNewGeneration(action), false, action);
+  for (const action of ["rewards.deliver", "database.execute", "admin.items.grant", "something.new", ""]) {
+    assert.equal(bridgeActionStartsNewGeneration(action), true, action);
+  }
+});
+
+test("the bridge route consults the generation decision before dispatching", () => {
+  assert.match(serverSource, /bridgeActionStartsNewGeneration\(action\)/);
+  assert.match(serverSource, /bridgeReads\.bump\(\)/);
 });

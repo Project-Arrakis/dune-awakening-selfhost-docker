@@ -1,6 +1,9 @@
-// Bridge actions that only read. audit.js may batch the audit row of one of
-// these. Every other action (including any new one) takes the safe path: a
-// synchronous audit row. Add an action here only if it cannot change state.
+// Bridge actions that only read. Single source of truth for two decisions that
+// must agree: audit.js may batch the audit row of one of these, and server.js
+// lets concurrent identical calls share one database round trip. Every other
+// action (including any new one) takes the safe path: a synchronous audit row
+// and a fresh in-flight generation. Add an action here only if it cannot change
+// state.
 export const READ_ONLY_BRIDGE_ACTIONS = new Set([
   "leadership.players.list",
   "players.summary.list",
@@ -23,3 +26,9 @@ export const READ_ONLY_BRIDGE_ACTIONS = new Set([
   "ops.combat.deaths",
   "ops.economy.summary"
 ]);
+
+// True when the bridge call may change state, so concurrent read sharing must
+// not carry a read that started before it over to requests that arrive after.
+export function bridgeActionStartsNewGeneration(action) {
+  return !READ_ONLY_BRIDGE_ACTIONS.has(action);
+}
