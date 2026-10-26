@@ -645,7 +645,7 @@ blacklist behaves.
 | POST | `/api/exchange/market/buyback/log` | Read-only dry-run classify of player sell listings (eligible first, then skip reasons; capped at 1000 stored rows with leftovers reserved); appends a log batch (no backup taken). Rate-limited. | body: same optional overrides as the probe |
 | POST | `/api/exchange/market/buyback/log/clear` | Clear stored Buyback Sweep Log batches. Requires `exchange:market-write`. Rate-limited. | None |
 | POST | `/api/exchange/market/buyback/schedule` | Save the buyback schedule (audited, rate-limited) | body: `enabled`, `intervalMinutes`, `exchangeId`, `priceMultiplier`, `augmentMultiplier`, `rankedArmorMultiplier`, `rankedWeaponMultiplier`, `buybackPercent`, `buybackPriceBasis`, `maxBuys` |
-| POST | `/api/exchange/market/seed/schedule` | Save the market reseed schedule (audited, rate-limited) | body: `enabled`, `intervalMinutes`, `exchangeId`, `priceMultiplier`, `augmentMultiplier`, `rankedArmorMultiplier`, `rankedWeaponMultiplier`, `augmentPricing` (`discounted`\|`original`), `commodityStacks` (object of templateId → 1–20 listing counts for allowlisted commodities) |
+| POST | `/api/exchange/market/seed/schedule` | Save the market reseed schedule (audited, rate-limited) | body: `enabled`, `intervalMinutes`, `exchangeId`, `priceMultiplier`, `augmentMultiplier`, `rankedArmorMultiplier`, `rankedWeaponMultiplier`, `augmentPricing` (`discounted`\|`original`), `commodityStacks` (object of templateId → 1–20 listing counts for allowlisted commodities) , `durabilityPercent` (integer 100–200 or `null`; blank/null keeps each plan row's own durability)|
 | POST | `/api/exchange/market/buyback/run` | Run a buyback sweep now with the saved schedule (probe → backup → sweep) | None |
 | POST | `/api/exchange/market/seed/run` | Run a market reseed now with the saved schedule (backup → clear bot listings → seed) | None |
 | POST | `/api/exchange/market/seed/clear` | Remove the bot's NPC listings from one exchange without reseeding (probe → backup → clear; no backup when the bot has none). Player listings and pending seller payments are never touched. Requires `exchange:market-write`. Rate-limited. | body: `exchangeId?` (defaults to the saved seed schedule's exchange) |
@@ -673,6 +673,11 @@ allowlisted commodities a reseed lists (1–20, default 2). Unknown template ids
 are ignored. Units per stack stay at the plan `stack_size`. The catalog of
 editable items is returned on `GET /api/exchange/market` as
 `commodityStackCatalog` / `commodityStackGroups`.
+
+The seed schedule's optional `durabilityPercent` (integer 100–200, `null` = unset)
+sets current, maximum and decayed-maximum durability of every item a reseed lists,
+overriding each plan row's own value and any per-item durability set on Bot items.
+Existing listings change on the next reseed.
 
 The `/api/exchange/market/items*` routes are a separate, per-item override layer
 on top of the bundled seed plan (`runtime/generated/market-bot/items.json`, never

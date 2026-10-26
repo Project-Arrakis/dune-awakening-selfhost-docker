@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { EDA_EXCHANGE_BOT_ADDON_ID, buildBotListingCountSql, buildMarketSeedSql, buildMarketUnseedSql, createListedMarketUnitPrice, loadMarketSeedPlan, normalizeSeedSchedule, seedRowCategoryMultiplier, seedRowListingCount, COMMODITY_STACK_CATALOG, COMMODITY_STACK_DEFAULT, COMMODITY_STACK_MAX } from "../src/addonSeedJob.js";
+import { EDA_EXCHANGE_BOT_ADDON_ID, buildBotListingCountSql, buildMarketSeedSql, buildMarketUnseedSql, createListedMarketUnitPrice, loadMarketSeedPlan, normalizeSeedSchedule, readSeedSchedule, saveSeedSchedule, seedRowItemStats, seedRowCategoryMultiplier, seedRowListingCount, COMMODITY_STACK_CATALOG, COMMODITY_STACK_DEFAULT, COMMODITY_STACK_MAX } from "../src/addonSeedJob.js";
 
 const REPO_ROOT = resolve(import.meta.dirname, "../../..");
 
@@ -479,4 +479,70 @@ test("bundled plan lists two full stacks of iodine pills", () => {
   assert.equal(rows[0].listings, 2);
   assert.equal(rows[0].stack_size, 20);
   assert.equal(rows[0].price, 800);
+});
+
+test("seed schedule durability is optional, bounded, and kept across partial saves", () => {
+  assert.equal(normalizeSeedSchedule({}).durabilityPercent, null);
+  assert.equal(normalizeSeedSchedule({ durabilityPercent: 150 }).durabilityPercent, 150);
+  assert.equal(normalizeSeedSchedule({ durabilityPercent: "" }).durabilityPercent, null);
+  assert.equal(normalizeSeedSchedule({ durabilityPercent: null }, { durabilityPercent: 150 }).durabilityPercent, null);
+  // Saves that omit the field (for example through the addon bridge) keep the stored value.
+  assert.equal(normalizeSeedSchedule({ intervalMinutes: 20 }, { durabilityPercent: 150 }).durabilityPercent, 150);
+  assert.equal(normalizeSeedSchedule({ durabilityPercent: 100 }).durabilityPercent, 100);
+  assert.equal(normalizeSeedSchedule({ durabilityPercent: 200 }).durabilityPercent, 200);
+  assert.equal(normalizeSeedSchedule({ durabilityPercent: "150" }).durabilityPercent, 150);
+  assert.equal(normalizeSeedSchedule({ durabilityPercent: "" }, { durabilityPercent: 150 }).durabilityPercent, null);
+  for (const bad of [99, 201, 120.5, -5, "abc", true]) {
+    assert.throws(() => normalizeSeedSchedule({ durabilityPercent: bad }), /durabilityPercent must be an integer from 100 to 200/);
+  }
+  // A bad value already on disk degrades to unset instead of throwing, so it cannot reset the schedule.
+  assert.equal(normalizeSeedSchedule({ intervalMinutes: 20 }, { durabilityPercent: 250 }).durabilityPercent, null);
+});
+
+test("seed SQL applies the schedule durability to every row and keeps augment rolls", () => {
+  const repoRoot = makeRepoRoot();
+  try {
+    const plan = loadMarketSeedPlan({ repoRoot });
+    const base = { enabled: true, exchangeId: "7", priceMultiplier: 5 };
+    const plain = buildMarketSeedSql(plan, base);
+    assert.match(plain, /"CurrentDurability":110/);
+    for (const value of ["110", "184", "192"]) assert.match(plain, new RegExp(`"CurrentDurability":${value}`));
+    assert.equal(buildMarketSeedSql(plan, { ...base, durabilityPercent: null }), plain);
+    const sql = buildMarketSeedSql(plan, { ...base, durabilityPercent: 150 });
+    assert.equal((sql.match(/"CurrentDurability":150,/g) || []).length, plan.rows.length);
+    assert.doesNotMatch(sql, /"CurrentDurability":(110|184|192)/);
+    assert.match(sql, /"CurrentDurability":150,"MaxDurability":150,"DecayedMaxDurability":150/);
+    assert.match(sql, /"StatRolls":\[0\.2,0\.2\]/);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("seedRowItemStats only rewrites rows that carry a durability block, and wins over per-item values", () => {
+  const stats = (cur, max) => JSON.stringify({ FItemStackAndDurabilityStats: [[], { CurrentDurability: cur, MaxDurability: max, DecayedMaxDurability: max }] });
+  // An operator-added item with its own durability is overridden by the schedule value.
+  const rewritten = JSON.parse(seedRowItemStats({ itemStats: stats(140, 180) }, { durabilityPercent: 120 }));
+  assert.deepEqual(rewritten.FItemStackAndDurabilityStats[1], { CurrentDurability: 120, MaxDurability: 120, DecayedMaxDurability: 120 });
+  // Unset, undefined schedule, or a non-integer value leave the stats byte-identical.
+  const original = stats(140, 180);
+  assert.equal(seedRowItemStats({ itemStats: original }, { durabilityPercent: null }), original);
+  assert.equal(seedRowItemStats({ itemStats: original }, undefined), original);
+  assert.equal(seedRowItemStats({ itemStats: original }, { durabilityPercent: "150" }), original);
+  // A row without a durability block is left alone.
+  assert.equal(seedRowItemStats({ itemStats: "{}" }, { durabilityPercent: 150 }), "{}");
+});
+
+test("durabilityPercent survives a save and read of the schedule file, and old files read as unset", () => {
+  const repoRoot = makeRepoRoot();
+  try {
+    const config = { repoRoot };
+    const saved = saveSeedSchedule(config, { enabled: false, durabilityPercent: 175 }, { source: "console" });
+    assert.equal(saved.durabilityPercent, 175);
+    assert.equal(readSeedSchedule(config).durabilityPercent, 175);
+    // A later partial save (for example from the addon bridge) keeps the stored value.
+    assert.equal(saveSeedSchedule(config, { intervalMinutes: 30 }, { source: "addon" }).durabilityPercent, 175);
+    assert.equal(saveSeedSchedule(config, { durabilityPercent: null }, { source: "console" }).durabilityPercent, null);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
 });

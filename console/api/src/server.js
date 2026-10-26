@@ -3346,7 +3346,7 @@ async function addonSchedulerBridgeAction(req, res, id, action, body) {
     if (!applyMutationRateLimit(req, res, `addon:${id}:scheduler.seed.schedule.set`)) return;
     try {
       const result = saveSeedSchedule(config, payload, { source: "addon" });
-      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, enabled: result.enabled, intervalMinutes: result.intervalMinutes, exchangeId: result.exchangeId, priceMultiplier: result.priceMultiplier, ok: true });
+      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, enabled: result.enabled, intervalMinutes: result.intervalMinutes, exchangeId: result.exchangeId, priceMultiplier: result.priceMultiplier, durabilityPercent: result.durabilityPercent ?? null, ok: true });
       return json(res, 200, { ok: true, result });
     } catch (error) {
       audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: false, error: redact(error?.message || "Unexpected error.") });
@@ -4123,7 +4123,7 @@ async function marketScheduleSaveRoute(req, res, job) {
   const payload = body?.schedule && typeof body.schedule === "object" ? body.schedule : (body || {});
   try {
     const result = job === "seed" ? saveMarketSeedSchedule(config, payload) : saveMarketBuybackSchedule(config, payload);
-    audit(config, req, "exchange.market", { op: `${job}-schedule`, enabled: result.enabled, intervalMinutes: result.intervalMinutes, exchangeId: result.exchangeId, ok: true });
+    audit(config, req, "exchange.market", { op: `${job}-schedule`, enabled: result.enabled, intervalMinutes: result.intervalMinutes, exchangeId: result.exchangeId, ...(job === "seed" ? { durabilityPercent: result.durabilityPercent ?? null } : {}), ok: true });
     return json(res, 200, result);
   } catch (error) {
     audit(config, req, "exchange.market", { op: `${job}-schedule`, ok: false, error: redact(error?.message || "Unexpected error.") });
