@@ -1261,7 +1261,7 @@ async function handleApi(req, res, path) {
   }
   // Enrollment-only sessions (RFC §4) may reach ONLY the enrollment endpoints
   // plus /me and /logout. This single allowlist guard sits above every
-  // authenticated route -- including the pre-gate /api/auth/* data routes (e.g.
+  // authenticated route -- including the pre-gate /api/auth/... data routes (e.g.
   // /characters) that only call requireAuth -- so a restricted session can never
   // escape its scope through a route handled before the central policy gate.
   // (/health, /state, /login are public and sit above this.) Skipped entirely

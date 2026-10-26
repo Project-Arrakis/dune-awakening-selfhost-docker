@@ -15,6 +15,8 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ### Changed
 
+- **Upstream sync to v1.4.53 (issues #1257, #1258).** Merges Red-Blink v1.4.53: responsive Console layout (compact setup navigation, mobile settings tabs, tables and map controls fit available space), shared in-flight and batched read-only bridge polling (audit rows for read-only bridge actions are batched; state-changing and failed rows stay synchronous), a schema lookup cache invalidated by DDL, and Tank-aware auto-update (`updateConsole`, `manageTanks` on `POST /api/updates/auto-game`). Fork-side resolutions: `db.js` transactions both invalidate the schema cache and keep `transactionError`; web dependencies stay on the fork's newer pins. No operator action required.
+
 - **Upstream sync to v1.4.52 (#1244).** Merges Red-Blink v1.4.52: map readiness no longer misreads stale Docker log windows (`farm-readiness.sh`, `filter-container-logs.py`), base-owner labels match the permission roster identities, the experimental Regis tank patch is rebuilt for game build 2162777, and the admin item catalog gains the Ixian Icon building unlock. One conflict, `runtime/data/admin-items.json`: kept this fork's per-item stack limits (#1217) and appended upstream's `MTX_IxianTotem_Patent`. No operator action needed.
 
 - **Web test tooling: vitest and @vitest/coverage-v8 5.0.4** (#1241, replaces Dependabot #1213). The coverage package requires an exactly matching vitest, so both move together. Dev tooling only; no shipped code changes. Web suite 1641/1641 with and without `--coverage`.
