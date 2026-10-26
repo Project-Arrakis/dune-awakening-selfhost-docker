@@ -1017,7 +1017,7 @@ async function handleApi(req, res) {
   }
   // Enrollment-only sessions (RFC §4) may reach ONLY the enrollment endpoints
   // plus /me and /logout. This single allowlist guard sits above every
-  // authenticated route -- including the pre-gate /api/auth/* data routes (e.g.
+  // authenticated route -- including the pre-gate /api/auth/... data routes (e.g.
   // /characters) that only call requireAuth -- so a restricted session can never
   // escape its scope through a route handled before the central policy gate.
   // (/health, /state, /login are public and sit above this.) Skipped entirely
@@ -3366,7 +3366,7 @@ async function recoveryCodesRegenerateRoute(req, res) {
   // Fail closed on session/CSRF regardless of where this route is registered
   //. Its only authentication used to be its physical position below the
   // central gate: moving the registration line up beside the other
-  // /api/auth/2fa/* routes made it answer unauthenticated POSTs with 10 live
+  // /api/auth/2fa/... routes made it answer unauthenticated POSTs with 10 live
   // recovery codes, with the whole suite still green.
   const session = auth.requireAuth(req, res);
   if (!session) return;
