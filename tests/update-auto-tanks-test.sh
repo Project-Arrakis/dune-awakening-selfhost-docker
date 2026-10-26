@@ -41,12 +41,16 @@ cat > "$project/runtime/scripts/experimental-tanks.sh" <<EOF
 state_file="$test_root/state/tanks"
 case "\$1" in
   status)
+    if [ -n "\${MOCK_TANKS_STATUS_JSON:-}" ] && [ "\$(cat "\$state_file")" = off ]; then printf '%s\\n' "\$MOCK_TANKS_STATUS_JSON"; exit 0; fi
     enabled=false; [ "\$(cat "\$state_file")" = on ] && enabled=true
-    echo "{\"enabled\": \$enabled, \"supported\": \${MOCK_TANKS_SUPPORTED:-true}, \"build\": \"\$(cat "$test_root/state/build")\", \"applying\": false, \"error\": \"\"}" ;;
+    applying=\${MOCK_TANKS_APPLYING:-false}
+    [ -f "$test_root/state/apply-unsettled" ] && applying=true
+    echo "{\"enabled\": \$enabled, \"supported\": \${MOCK_TANKS_SUPPORTED:-true}, \"build\": \"\$(cat "$test_root/state/build")\", \"applying\": \$applying, \"error\": \"\${MOCK_TANKS_ERROR:-}\"}" ;;
   apply)
     echo "tanks apply \$2" >> "$log"
     if [ "\$2" = false ] && [ -n "\${MOCK_APPLY_FALSE_FAILS:-}" ]; then echo "cannot switch" >&2; exit 1; fi
-    [ "\$2" = true ] && echo on > "\$state_file" || echo off > "\$state_file" ;;
+    [ "\$2" = true ] && echo on > "\$state_file" || echo off > "\$state_file"
+    if [ "\$2" = true ] && [ -n "\${MOCK_APPLY_TRUE_UNSETTLED:-}" ]; then touch "$test_root/state/apply-unsettled"; fi ;;
   update-guard)
     echo "update-guard" >> "$log"
     if [ "\$(cat "\$state_file")" = on ]; then echo "Disable Experimental Tanks in Settings before updating game-server files." >&2; exit 1; fi ;;
@@ -73,7 +77,7 @@ reset() {
   echo "$3" > "$test_root/state/tanks"
   echo "v1.0.0" > "$project/VERSION"
   echo '{"enabled": true}' > "$project/runtime/generated/experimental-tanks.json"
-  rm -f "$pending_file" "$tanks_file" "$test_root/state/game-applied"
+  rm -f "$pending_file" "$tanks_file" "$test_root/state/game-applied" "$test_root/state/apply-unsettled"
   echo b1 > "$test_root/state/build"
   : > "$log"
 }
@@ -152,7 +156,10 @@ reset 1 1 on
 MOCK_TANKS_SUPPORTED=false auto_run >/dev/null
 [ "$(cat "$test_root/state/tanks")" = off ]
 grep -Fq "DUNE_AUTO_TANKS_BASE_VERSION=v9.9.9" "$tanks_file"
-grep -Fq "DUNE_AUTO_TANKS_BUILD=b2" "$tanks_file"
+grep -Fq "DUNE_AUTO_TANKS_BUILD=b1" "$tanks_file"
+: > "$log"
+MOCK_TANKS_SUPPORTED=false auto_run >/dev/null
+! grep -Fq "tanks apply true" "$log"
 
 # 5. Tanks cannot be switched off: the game update must not start.
 reset 1 1 on
@@ -200,5 +207,43 @@ reset 0 1 on
 MOCK_CONSOLE_UPDATE=1 auto_run >/dev/null
 ! grep -Fq "console install" "$log"
 [ "$(cat "$test_root/state/tanks")" = off ]
+
+# A disabled flag alone is not proof that the previous switch has finished.
+reset 0 1 off
+if MOCK_TANKS_APPLYING=true auto_run >/dev/null; then echo "applying Tanks allowed a game update" >&2; exit 1; fi
+! grep -Fq "GAME UPDATE APPLIED" "$log"
+reset 0 1 off
+if MOCK_TANKS_ERROR="Rollback needs attention" auto_run >/dev/null; then echo "Tank error allowed a game update" >&2; exit 1; fi
+! grep -Fq "GAME UPDATE APPLIED" "$log"
+
+# Missing status fields must fail closed, including after switch-off.
+reset 0 1 on
+if MOCK_TANKS_STATUS_JSON='{"enabled":false}' auto_run >/dev/null; then echo "incomplete Tank status was accepted" >&2; exit 1; fi
+! grep -Fq "GAME UPDATE APPLIED" "$log"
+
+# An apply command exiting successfully is not enough to clear restore intent.
+reset 1 1 on
+MOCK_APPLY_TRUE_UNSETTLED=1 auto_run >/dev/null
+[ -f "$tanks_file" ]
+
+# A rollback to an older Console is not a newer, reviewed Tank release.
+reset 0 1 on
+auto_run >/dev/null
+echo v0.9.0 > "$project/VERSION"
+: > "$log"
+auto_run >/dev/null
+! grep -Fq "tanks apply true" "$log"
+[ -f "$tanks_file" ]
+
+# VERSION may have changed even when the Console rebuild failed. Keep Tanks
+# disabled and retry the install on the next run instead of trusting VERSION.
+reset 1 1 on
+if MOCK_CONSOLE_INSTALL_RC=1 auto_run >/dev/null; then echo "failed Console update reported success" >&2; exit 1; fi
+! grep -Fq "tanks apply true" "$log"
+grep -Fqx 'DUNE_AUTO_TANKS_CONSOLE_INSTALL_PENDING=1' "$tanks_file"
+: > "$log"
+auto_run >/dev/null
+expect_order "console install" "tanks apply true"
+[ ! -f "$tanks_file" ]
 
 echo "update-auto-tanks tests passed"

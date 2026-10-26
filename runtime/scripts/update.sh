@@ -778,6 +778,13 @@ auto_console_version() {
   [ -f VERSION ] && tr -d '[:space:]' < VERSION || echo unknown
 }
 
+auto_console_version_newer() {
+  local previous="$1" current="$2"
+  [[ "$previous" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  [[ "$current" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  [ "$previous" != "$current" ] && [ "$(printf '%s\n%s\n' "$previous" "$current" | sort -V | tail -n1)" = "$current" ]
+}
+
 auto_tanks_json_field() {
   python3 -c 'import json, sys
 try:
@@ -789,24 +796,26 @@ print("" if value is None else str(value).lower() if isinstance(value, bool) els
 
 # 0 = enabled, 1 = disabled, 2 = unknown
 auto_tanks_state() {
-  local json value
+  local json
   json="$(runtime/scripts/experimental-tanks.sh status 2>/dev/null)" || return 2
-  value="$(auto_tanks_json_field "$json" enabled)" || return 2
-  case "$value" in
-    true) return 0 ;;
-    false) return 1 ;;
-    *) return 2 ;;
-  esac
+  python3 -c 'import json, sys
+try:
+    state = json.loads(sys.argv[1])
+    if (type(state.get("enabled")) is not bool
+        or state.get("applying") is not False
+        or state.get("error") != ""):
+        sys.exit(2)
+    sys.exit(0 if state["enabled"] else 1)
+except (ValueError, AttributeError):
+    sys.exit(2)' "$json"
 }
 
 # Switches Tanks off and only reports success once the settings say so.
 auto_tanks_disable_confirmed() {
-  local json
+  local rc=0
   runtime/scripts/experimental-tanks.sh apply false || return 1
-  json="$(runtime/scripts/experimental-tanks.sh status 2>/dev/null)" || return 1
-  [ "$(auto_tanks_json_field "$json" enabled)" = "false" ] \
-    && [ "$(auto_tanks_json_field "$json" applying)" != "true" ] \
-    && [ -z "$(auto_tanks_json_field "$json" error)" ]
+  auto_tanks_state || rc=$?
+  [ "$rc" -eq 1 ]
 }
 
 auto_tanks_write_pending() {
@@ -822,6 +831,19 @@ auto_tanks_write_pending() {
   mv -f "$tmp" "$AUTO_TANKS_FILE"
 }
 
+auto_tanks_console_install_pending() {
+  grep -qx 'DUNE_AUTO_TANKS_CONSOLE_INSTALL_PENDING=1' "$AUTO_TANKS_FILE" 2>/dev/null
+}
+
+auto_tanks_set_console_install_pending() {
+  [ -f "$AUTO_TANKS_FILE" ] || return 0
+  local tmp="${AUTO_TANKS_FILE}.$$"
+  sed '/^DUNE_AUTO_TANKS_CONSOLE_INSTALL_PENDING=/d' "$AUTO_TANKS_FILE" > "$tmp"
+  printf 'DUNE_AUTO_TANKS_CONSOLE_INSTALL_PENDING=%s\n' "$1" >> "$tmp"
+  chmod 644 "$tmp"
+  mv -f "$tmp" "$AUTO_TANKS_FILE"
+}
+
 # 0 = Console was updated, 1 = nothing to do, 2 = check or install failed
 auto_console_update_step() {
   [ "${DUNE_AUTO_UPDATE_CONSOLE_ENABLED:-0}" = "1" ] || return 1
@@ -832,10 +854,18 @@ auto_console_update_step() {
   set -e
   case "$rc" in
     100) ;;
-    0) echo "Dune Docker Console is up to date."; return 1 ;;
+    0)
+      # A failed install can already have replaced VERSION before the Console
+      # rebuild fails. Finish that install rather than treating it as deployed.
+      if ! auto_tanks_console_install_pending; then
+        echo "Dune Docker Console is up to date."
+        return 1
+      fi
+      ;;
     *) echo "Dune Docker Console update check failed with exit code: $rc"; return 2 ;;
   esac
   echo "A Dune Docker Console update from RedBlink is available. Installing it."
+  auto_tanks_set_console_install_pending 1
   set +e
   runtime/scripts/self-update.sh install latest
   rc=$?
@@ -844,6 +874,7 @@ auto_console_update_step() {
     echo "Dune Docker Console update failed with exit code: $rc"
     return 2
   fi
+  auto_tanks_set_console_install_pending 0
   return 0
 }
 
@@ -856,7 +887,10 @@ auto_tanks_followup() {
   [ -f "$AUTO_TANKS_FILE" ] || return 0
   [ "${DUNE_AUTO_UPDATE_MANAGE_TANKS:-0}" = "1" ] || return 0
 
-  local DUNE_AUTO_TANKS_BUILD="" DUNE_AUTO_TANKS_BASE_VERSION="" DUNE_AUTO_TANKS_SINCE="" state_rc=0 current_version json
+  local DUNE_AUTO_TANKS_BUILD="" DUNE_AUTO_TANKS_BASE_VERSION="" state_rc=0 current_version json
+  # Keep the other sourced fields local even though decisions use the helpers.
+  # shellcheck disable=SC2034
+  local DUNE_AUTO_TANKS_SINCE="" DUNE_AUTO_TANKS_CONSOLE_INSTALL_PENDING=""
   # shellcheck disable=SC1090
   . "$AUTO_TANKS_FILE"
 
@@ -880,11 +914,17 @@ auto_tanks_followup() {
     auto_tanks_restore
     return 0
   fi
-  if [ "$current_version" = "$DUNE_AUTO_TANKS_BASE_VERSION" ]; then
-    auto_console_update_step || true
+  if auto_tanks_console_install_pending || ! auto_console_version_newer "$DUNE_AUTO_TANKS_BASE_VERSION" "$current_version"; then
+    local console_rc=0
+    auto_console_update_step || console_rc=$?
+    [ "$console_rc" -ne 2 ] || return 2
     current_version="$(auto_console_version)"
   fi
-  if [ "$current_version" = "$DUNE_AUTO_TANKS_BASE_VERSION" ]; then
+  if auto_tanks_console_install_pending; then
+    echo "Regis Tanks stay disabled: the Console update has not completed successfully."
+    return 0
+  fi
+  if ! auto_console_version_newer "$DUNE_AUTO_TANKS_BASE_VERSION" "$current_version"; then
     echo "Regis Tanks stay disabled: no Dune Docker update from RedBlink is installed since the game update."
     return 0
   fi
@@ -893,7 +933,7 @@ auto_tanks_followup() {
   if [ "$(auto_tanks_json_field "$json" supported 2>/dev/null)" != "true" ]; then
     echo "Regis Tanks stay disabled: Dune Docker $current_version has no Tank patch for game build $(auto_tanks_json_field "$json" build 2>/dev/null || echo unknown) yet."
     # Wait for the next release rather than re-checking the same one.
-    auto_tanks_write_pending "$(auto_tanks_json_field "$json" build 2>/dev/null || echo "${DUNE_AUTO_TANKS_BUILD:-unknown}")" "$current_version"
+    auto_tanks_write_pending "$DUNE_AUTO_TANKS_BUILD" "$current_version"
     return 0
   fi
 
@@ -919,7 +959,7 @@ run_auto_update_policy() {
     return 0
   }
 
-  local check_log check_rc remote_build now first_seen sent_checkpoints players age_seconds max_wait_seconds tanks_rc
+  local check_log check_rc remote_build now first_seen sent_checkpoints players age_seconds max_wait_seconds tanks_rc console_rc=0
   check_log="$(mktemp)"
   set +e
   "${DUNE_AUTO_UPDATE_SELF:-$0}" check >"$check_log" 2>&1
@@ -1023,7 +1063,8 @@ run_auto_update_policy() {
   "${DUNE_AUTO_UPDATE_SELF:-$0}" --yes
   rm -f "$AUTO_PENDING_FILE"
 
-  auto_console_update_step || true
+  auto_console_update_step || console_rc=$?
+  [ "$console_rc" -ne 2 ] || return 2
   auto_tanks_followup
 }
 
