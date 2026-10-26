@@ -70,6 +70,8 @@ export const updatesApi = {
     notifyMinutes: string;
     waitUntilEmpty: boolean;
     maxWaitMinutes: number;
+    updateConsole: boolean;
+    manageTanks: boolean;
     confirmation: string;
   }) => post<{ task: Task }>("/api/updates/auto-game", body)
 };
