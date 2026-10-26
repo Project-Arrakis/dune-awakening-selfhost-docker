@@ -77,10 +77,11 @@ export function createSchemaCache({ ttlMs = DEFAULT_SCHEMA_CACHE_TTL_MS, negativ
   let wasPaused = false;
   const cache = {
     enabled: ttlMs > 0,
-    // Samples the restore flag. Called by createDb's watcher (not per lookup, so
-    // a cache hit costs no syscall) and by db.query when it refuses a statement.
-    // Clears the cache while a restore runs and once more after it ended, so a
-    // restore that finished between two samples still drops the old schema.
+    // Samples the restore flag on lookup, from createDb's watcher, and when
+    // db.query refuses a statement. A cache hit must honor a restore immediately,
+    // without waiting for the watcher to observe the maintenance flag.
+    // An observed restore clears the cache while active and once more after
+    // it ends. Task completion also invalidates restores shorter than a tick.
     refresh() {
       const paused = isPaused();
       if (paused || wasPaused) cache.invalidate();
@@ -89,7 +90,7 @@ export function createSchemaCache({ ttlMs = DEFAULT_SCHEMA_CACHE_TTL_MS, negativ
     },
     async get(key, load, isNegative = () => false) {
       if (ttlMs <= 0) return load();
-      if (wasPaused) return load();
+      if (cache.refresh()) return load();
       const hit = entries.get(key);
       if (hit && hit.expires > now()) return hit.value;
       const started = generation;

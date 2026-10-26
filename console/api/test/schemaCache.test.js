@@ -141,3 +141,24 @@ test("createDb exposes a schema cache that a restore maintenance flag bypasses",
     rmSync(repoRoot, { recursive: true, force: true });
   }
 });
+
+test("a warm schema cache cannot bypass a restore that started before the watcher tick", async () => {
+  const { createDb } = await import("../src/db.js");
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const repoRoot = mkdtempSync(join(tmpdir(), "schema-cache-restore-race-"));
+  const db = createDb({ repoRoot });
+  try {
+    await db.schemaCache.get("t:dune.actors", async () => true);
+    await db.schemaCache.get("c:dune.actors", async () => new Set(["id"]));
+    mkdirSync(join(repoRoot, "runtime/generated"), { recursive: true });
+    writeFileSync(join(repoRoot, "runtime/generated/db-restore-maintenance"), "1");
+    // No db.query or timer tick has sampled the new flag yet.
+    await assert.rejects(tableExists(db, "actors"), /restore is in progress/);
+    await assert.rejects(columnsFor(db, "actors"), /restore is in progress/);
+  } finally {
+    await db.close();
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
