@@ -2731,6 +2731,7 @@ import re
 import sys
 
 refusal = re.compile(
+    r"requested WorldPartition \{.*?\}\. "
     r"Teleport not allowed, returning to WorldPartition \{ "
     r"PartitionId = ([0-9]+), ServerId = , Map = DeepDesert_1,"
 )
@@ -2751,10 +2752,12 @@ scan_deepdesert_login_resumes() {
 
   director_heal_due deepdesert_login_resume 5 || return 0
   director_logs_or_defer deepdesert_login_resume || return 0
-  map_is_disabled "DeepDesert_1" && return 0
 
-  partitions="$(director_logs --since 60s 2>/dev/null | deepdesert_login_resume_partitions || true)"
+  # The Director logs the refusal once per login attempt. The window is a little over two
+  # cooldowns so one failed spawn is retried while the line is still readable.
+  partitions="$(director_logs --since 150s 2>/dev/null | deepdesert_login_resume_partitions || true)"
   [ -n "$partitions" ] || return 0
+  map_is_disabled "DeepDesert_1" && return 0
 
   while IFS= read -r partition_id; do
     [[ "$partition_id" =~ ^[0-9]+$ ]] || continue
@@ -2770,13 +2773,18 @@ scan_deepdesert_login_resumes() {
     # A container that is still starting has no server_id bound yet in some windows; do not stack.
     [ -z "$(dynamic_container_name_for_partition "$partition_id" 2>/dev/null || true)" ] || continue
     # One spawn attempt per partition per window, even if the spawn fails.
-    director_heal_due "deepdesert_login_spawn_${partition_id}" 120 || continue
+    director_heal_due "deepdesert_login_spawn_${partition_id}" 60 || continue
 
     echo "SPAWN deepdesert-login-resume partition=$partition_id"
-    runtime/scripts/spawn-server.sh "$partition_id" || {
-      echo "ERROR failed to spawn DeepDesert_1 partition=$partition_id for login resume"
-      continue
-    }
+    # spawn-server.sh waits for the server to bind and can take tens of seconds. This runs in the
+    # fast follower, which must keep serving Survival_1/Overmap allocation demand meanwhile, so
+    # the spawn runs in the background with a hard timeout. A second spawn of the same partition
+    # is prevented by the database and container checks above (the server id is bound early).
+    (
+      timeout --kill-after=5s 180s runtime/scripts/spawn-server.sh "$partition_id" || {
+        echo "ERROR failed to spawn DeepDesert_1 partition=$partition_id for login resume"
+      }
+    ) &
   done <<< "$partitions"
 }
 
