@@ -69,6 +69,12 @@ jobs:
         run: node --test --test-concurrency=1 test/*.test.js
         working-directory: console/api
 
+      - name: Test addon companion uninstall against Docker and PostgreSQL
+        run: |
+          docker pull alpine:3.22
+          DUNE_ADDON_UNINSTALL_DOCKER_TEST=1 node --test test/addonUninstall.integration.test.js
+        working-directory: console/api
+
   metrics-unit:
     runs-on: ubuntu-latest
     steps:

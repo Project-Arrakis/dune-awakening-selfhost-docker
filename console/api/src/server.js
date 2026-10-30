@@ -125,7 +125,7 @@ const statusCommandCache = createReadCommandCache({ ttlMs: 5000, staleMs: 30000 
 const CONSOLE_PROCESS_STARTED_AT = Date.now();
 let edaRetirement = { retired: false, addonRemoved: false, migrated: false, changed: false, backupDir: "", cleanupError: "" };
 try {
-  edaRetirement = retireLegacyEdaExchangeBot(config);
+  edaRetirement = await retireLegacyEdaExchangeBot(config);
   if (edaRetirement.changed) {
     console.log(`EDA Exchange Bot retirement complete; Market Bot is managed under Exchange.${edaRetirement.backupDir ? ` Backup: ${edaRetirement.backupDir}` : ""}`);
   }
@@ -1177,7 +1177,7 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/addons\/installed\/[^/]+\/content\/.+$/) && req.method === "GET") return addonContentRoute(req, res, path);
   if (path.match(/^\/api\/addons\/installed\/[^/]+$/) && req.method === "DELETE") {
     const id = decodeURIComponent(path.split("/").pop());
-    const result = removeInstalledAddon(config, id);
+    const result = await removeInstalledAddon(config, id, { db });
     audit(config, req, "addons.remove", { id, ok: true });
     return json(res, 200, result);
   }
