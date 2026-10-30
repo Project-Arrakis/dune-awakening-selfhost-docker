@@ -68,6 +68,31 @@ beforeEach(() => {
   });
 });
 
+it("explains companion and database removal before uninstalling Airdrop", async () => {
+  const notice = "This stops the companion and deletes its reward queues and database triggers.";
+  vi.mocked(addonsApi.installed).mockResolvedValue({ addons: [{ ...installedAddon, uninstallNotice: notice }] });
+  const confirmAction = vi.fn().mockResolvedValue(false);
+  render(<AddonsPanel pinnedAddons={[]} setPinnedAddons={vi.fn()} selectedAddonId=""
+    clearSelectedAddon={vi.fn()} setAddonUpdateAvailable={vi.fn()} confirmAction={confirmAction} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Uninstall" }));
+  expect(confirmAction).toHaveBeenCalledWith(expect.stringContaining(notice), { danger: true, confirmLabel: "Uninstall" });
+  expect(addonsApi.remove).not.toHaveBeenCalled();
+});
+
+it("reports failed cleanup and keeps the addon visible and disabled for retry", async () => {
+  vi.mocked(addonsApi.remove).mockRejectedValue(new Error("Companion cleanup failed. Retry Uninstall."));
+  vi.mocked(addonsApi.installed).mockResolvedValueOnce({ addons: [installedAddon] })
+    .mockResolvedValue({ addons: [{ ...installedAddon, enabled: false, status: "Disabled" }] });
+  render(<AddonsPanel pinnedAddons={[]} setPinnedAddons={vi.fn()} selectedAddonId=""
+    clearSelectedAddon={vi.fn()} setAddonUpdateAvailable={vi.fn()} confirmAction={vi.fn().mockResolvedValue(true)} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Uninstall" }));
+  expect(await screen.findByText(/^Uninstall Failed\./)).toBeInTheDocument();
+  expect(screen.getByText("Companion cleanup failed. Retry Uninstall.")).toBeInTheDocument();
+  expect(screen.getByText("Disabled")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Uninstall" })).toBeEnabled();
+  expect(screen.queryByText(/^Addon Uninstalled/)).not.toBeInTheDocument();
+});
+
 describe("AddonsPanel updates", () => {
   it("keeps multiple permission labels contained beside addon status", async () => {
     render(<AddonsPanel

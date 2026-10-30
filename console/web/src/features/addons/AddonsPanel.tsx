@@ -114,7 +114,7 @@ export function AddonsPanel({ pinnedAddons, setPinnedAddons, selectedAddonId, cl
   }
 
   async function removeAddon(addon: InstalledAddon) {
-    if (!(await confirmAction(`Uninstall ${addon.name}? This deletes the local installed addon files.`, { danger: true, confirmLabel: "Uninstall" }))) return;
+    if (!(await confirmAction(`Uninstall ${addon.name}? ${addon.uninstallNotice || "This removes the addon files, Console jobs, and stored addon data. Any manually installed external services must be removed separately."}`, { danger: true, confirmLabel: "Uninstall" }))) return;
     setBusyAddonId(addon.id);
     setNotice(null);
     try {
@@ -123,6 +123,7 @@ export function AddonsPanel({ pinnedAddons, setPinnedAddons, selectedAddonId, cl
       await load();
       setNotice({ title: "Addon Uninstalled", message: `${addon.name} was uninstalled.`, tone: "ok" });
     } catch (err) {
+      await load();
       setNotice({ title: "Uninstall Failed", message: formatAddonError(err), tone: "fail" });
     } finally {
       setBusyAddonId("");
