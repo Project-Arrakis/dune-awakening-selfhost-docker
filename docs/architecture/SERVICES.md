@@ -250,3 +250,25 @@ own `start-*.sh`.
 | Login/session problems specific to a battlegroup | Director |
 | A Deep Desert reset event fires in-game but the host never restarts | Coriolis coordinator ([§4](#4-coriolis-coordinator-dune-coriolis-coordinator)) |
 | A published game-broker management port is unreachable | host firewall / port mapping — see [MULTI-SERVER-SINGLE-PUBLIC-IP.md](../runtime/MULTI-SERVER-SINGLE-PUBLIC-IP.md) |
+| A player sits in an endless login queue after logging out inside Deep Desert | [Deep Desert login queue](#deep-desert-login-queue) below |
+
+### Deep Desert login queue
+
+Deep Desert servers are on-demand and despawn when idle. A player who logged out inside a Deep Desert
+dimension and logs back in after that dimension's server despawned is refused by the Director and
+queued for a partition that has no server. The Director logs, once per login attempt,
+`Player <FLS id> requested WorldPartition {...}. Teleport not allowed, returning to WorldPartition { PartitionId = N, ServerId = , Map = DeepDesert_1, ...`,
+and `Failed to process travel queue for partition N` about once a second.
+
+The autoscaler starts that partition itself: it reads the refusal, checks that partition `N` has no live
+server and no container, and runs `spawn-server.sh N`. Look in the autoscaler log for
+`SPAWN deepdesert-login-resume partition=N player=<FLS id>`, then `DONE ... rc=0` (the script finished; it also
+exits 0 when a spawn for that partition was already in progress) or `ERROR failed to spawn ... rc=<code>`.
+`SKIP deepdesert-login-resume ... reason=map-disabled` means Deep Desert is disabled;
+`reason=container-present-unbound` means a container for the partition exists but is not bound to it, which needs
+an operator (`docker logs dune-server-deepdesert-1-N`, then `dune despawn N` and `dune spawn N`).
+
+What the player does: the spawn takes about a minute. If the loading screen times out first, wait a minute and log in
+again. The server then exists and the Director routes the login normally. If it never starts, `dune spawn N` starts the
+partition by hand. A refusal that was not seen within 150 seconds (the autoscaler's log follower was down, for example)
+is recovered by the player's next login attempt. Each Deep Desert partition costs 16 GB of memory while it runs.

@@ -2586,66 +2586,110 @@ PY
 # server despawned is refused by the Director and queued for a partition that has no server. The
 # Deep Desert travel-response handler only runs for Overmap travel flows, never for a login, and
 # bare DeepDesert_1 demand deliberately never spawns, so nothing would ever start that partition
-# and the client would wait forever (#1271). Print each DeepDesert_1 partition a Director refusal
-# says the player must return to while it has no server, once per partition.
+# and the client would wait forever (#1271). Print "<partition id> <player FLS id>" for each
+# DeepDesert_1 partition a Director login refusal says the player must return to, once per
+# partition. The ServerId is not matched here: whether that server is really alive is decided
+# against the database, which also covers a partition still bound to a crashed server.
+# The Director log is not a trust boundary we control, so the match is anchored on the
+# "Player <FLS id> requested WorldPartition" shape, every line is cut to 8 KiB first, and the
+# text between the two WorldPartition blocks is bounded, so a long or crafted line cannot stall
+# the fast follower that runs this.
 deepdesert_login_resume_partitions() {
   python3 -c '
 import re
 import sys
 
 refusal = re.compile(
-    r"requested WorldPartition \{.*?\}\. "
+    r"Player ([A-F0-9]+) requested WorldPartition \{.{0,2000}?\}\. "
     r"Teleport not allowed, returning to WorldPartition \{ "
-    r"PartitionId = ([0-9]+), ServerId = , Map = DeepDesert_1,"
+    r"PartitionId = ([0-9]+), ServerId = [A-Za-z0-9_+/-]*, Map = DeepDesert_1,"
 )
-seen = []
+seen = {}
 for line in sys.stdin:
-    match = refusal.search(line)
-    if match and match.group(1) not in seen:
-        seen.append(match.group(1))
-for partition_id in seen:
-    print(partition_id)
+    match = refusal.search(line[:8192])
+    if match and match.group(2) not in seen:
+        seen[match.group(2)] = match.group(1)
+for partition_id, player_id in seen.items():
+    print(partition_id, player_id)
 '
 }
 
 # Spawn exactly the partition the player must return to. Never the bare-map form, which picks the
 # first unassigned dimension and races the travel-response handler for a different player.
+#
+# What actually prevents a double spawn of one partition is the per-partition flock inside
+# spawn-server.sh (a second caller prints "Spawn already in progress" and exits 0). The database
+# and container checks below only avoid pointless calls. spawn-server.sh also clears a partition
+# still bound to a dead server, so a dead binding counts as free here.
+#
+# The spawn runs in the background with no timeout: it waits for the server to bind (tens of
+# seconds) and this runs in the fast follower, which must keep serving Survival_1/Overmap
+# allocation demand. There is deliberately no kill: terminating spawn-server.sh after docker run
+# but before it finishes would release the port reservation of a running container. The existing
+# travel-response spawn has no timeout either.
 scan_deepdesert_login_resumes() {
-  local partitions partition_id partition_state
+  local logs partitions partition_id player_id partition_state started
 
   director_heal_due deepdesert_login_resume 5 || return 0
 
-  # The Director logs the refusal once per login attempt. The window is a little over two
-  # cooldowns so one failed spawn is retried while the line is still readable.
-  partitions="$(director_logs --since 150s 2>/dev/null | deepdesert_login_resume_partitions || true)"
+  if ! logs="$(director_logs --since 150s 2>/dev/null)"; then
+    director_heal_due deepdesert_login_resume_reader 60 \
+      && echo "WARN Deep Desert login resume scan could not read the Director log"
+    return 0
+  fi
+  # The window is a little over two cooldowns so one failed spawn is retried while the refusal is
+  # still readable. A refusal missed for longer than that is recovered by the next login attempt.
+  partitions="$(printf '%s\n' "$logs" | deepdesert_login_resume_partitions || true)"
   [ -n "$partitions" ] || return 0
-  map_is_disabled "DeepDesert_1" && return 0
 
-  while IFS= read -r partition_id; do
+  if map_is_disabled "DeepDesert_1"; then
+    director_heal_due deepdesert_login_resume_disabled 60 \
+      && echo "SKIP deepdesert-login-resume reason=map-disabled"
+    return 0
+  fi
+
+  while read -r partition_id player_id; do
     [[ "$partition_id" =~ ^[0-9]+$ ]] || continue
-    # Re-checked against the database, not the log: the log line can be a minute old.
+    # Re-checked against the database, not the log: the log line can be minutes old. Free means
+    # no server is bound, or the bound server has no live farm_state row (a crashed server).
     partition_state="$(psql_value "
-      select case when coalesce(server_id, '') = '' then 'free' else 'taken' end
-      from dune.world_partition
-      where partition_id = ${partition_id}
-        and map = 'DeepDesert_1'
+      select case
+        when coalesce(wp.server_id, '') = '' then 'free'
+        when not exists (
+          select 1 from dune.farm_state fs
+          where fs.server_id = wp.server_id and coalesce(fs.alive, false)
+        ) then 'free'
+        else 'taken'
+      end
+      from dune.world_partition wp
+      where wp.partition_id = ${partition_id}
+        and wp.map = 'DeepDesert_1'
+        and wp.blocked = false
       limit 1;
     " 2>/dev/null || true)"
     [ "$partition_state" = "free" ] || continue
-    # A container that is still starting has no server_id bound yet in some windows; do not stack.
-    [ -z "$(dynamic_container_name_for_partition "$partition_id" 2>/dev/null || true)" ] || continue
-    # One spawn attempt per partition per window, even if the spawn fails.
+    # A container for this partition that is not bound to it is a spawn that did not finish
+    # binding. Do not stack another one on top; say so, because nothing else will.
+    if [ -n "$(dynamic_container_name_for_partition "$partition_id" 2>/dev/null || true)" ]; then
+      director_heal_due "deepdesert_login_skip_${partition_id}" 60 \
+        && echo "SKIP deepdesert-login-resume partition=$partition_id reason=container-present-unbound player=$player_id"
+      continue
+    fi
+    # One spawn attempt per partition per cooldown, even if the spawn fails.
     director_heal_due "deepdesert_login_spawn_${partition_id}" 60 || continue
 
-    echo "SPAWN deepdesert-login-resume partition=$partition_id"
-    # spawn-server.sh waits for the server to bind and can take tens of seconds. This runs in the
-    # fast follower, which must keep serving Survival_1/Overmap allocation demand meanwhile, so
-    # the spawn runs in the background with a hard timeout. A second spawn of the same partition
-    # is prevented by the database and container checks above (the server id is bound early).
+    echo "SPAWN deepdesert-login-resume partition=$partition_id player=$player_id"
+    started="$(date +%s)"
     (
-      timeout --kill-after=5s 180s runtime/scripts/spawn-server.sh "$partition_id" || {
-        echo "ERROR failed to spawn DeepDesert_1 partition=$partition_id for login resume"
-      }
+      # spawn-server.sh exits 0 for "Spawn already in progress" as well, so the exit code says
+      # whether it ran to completion, not whether this call started the server.
+      rc=0
+      runtime/scripts/spawn-server.sh "$partition_id" || rc=$?
+      if [ "$rc" -eq 0 ]; then
+        echo "DONE deepdesert-login-resume partition=$partition_id rc=0 elapsed=$(( $(date +%s) - started ))s"
+      else
+        echo "ERROR failed to spawn DeepDesert_1 partition=$partition_id for login resume rc=$rc elapsed=$(( $(date +%s) - started ))s"
+      fi
     ) &
   done <<< "$partitions"
 }
