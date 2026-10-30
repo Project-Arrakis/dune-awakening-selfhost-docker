@@ -183,6 +183,8 @@ jobs:
           tests/deferred-reconcile-test.sh
           tests/memory-status-effective-defaults-test.sh
           tests/world-partition-reconcile-test.sh
+          python3 tests/test_event_partitions.py
+          bash tests/event-partition-reconcile-test.sh
           tests/status-bounded-log-read-test.sh
           tests/always-on-memory-safety-test.sh
           tests/autoscaler-browser-heal-safety-test.sh
