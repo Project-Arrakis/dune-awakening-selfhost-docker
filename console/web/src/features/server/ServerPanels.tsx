@@ -134,6 +134,7 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
   const [performance, setPerformance] = useState<PerformanceSnapshot | null>(null);
   const [performanceError, setPerformanceError] = useState("");
   const [restartHistory, setRestartHistory] = useState<RestartHistoryResponse | null>(null);
+  const restartHistoryRequestId = useRef(0);
   const [hasLoaded, setHasLoaded] = useState(Boolean(status || readiness));
   const homeActionRunId = useRef(0);
   const homeActionStartedAt = useRef(0);
@@ -162,8 +163,12 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
     setLocalError("");
     setReadinessWarning("");
     try {
-      const result = await onLoad();
+      const historyRequestId = ++restartHistoryRequestId.current;
+      const [result, history] = await Promise.all([
+        onLoad(), serverApi.restartHistory().catch(() => null)
+      ]);
       if (!isActive() || refreshRunId.current !== runId) return;
+      if (history && restartHistoryRequestId.current === historyRequestId) setRestartHistory(history);
       if (result.statusLoaded || result.readinessLoaded) {
         applyHomeLoadResult(result);
       } else {
@@ -274,10 +279,24 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
 
   useEffect(() => {
     let active = true;
-    Promise.resolve().then(() => serverApi.restartHistory()).then((result) => {
-      if (active) setRestartHistory(result);
-    }).catch(() => null);
-    return () => { active = false; };
+    async function refreshHistory() {
+      const requestId = ++restartHistoryRequestId.current;
+      try {
+        const result = await serverApi.restartHistory();
+        if (active && restartHistoryRequestId.current === requestId) setRestartHistory(result);
+      } catch { /* Keep the last known history during a restart. */ }
+    }
+    // Readiness can turn green before the restart task finishes and journals
+    // its outcome. Keep watching after the success card has stopped changing.
+    if (taskResult) void refreshHistory();
+    const timer = window.setInterval(() => { if (!document.hidden) void refreshHistory(); }, 30000);
+    const onFocus = () => { void refreshHistory(); };
+    window.addEventListener("focus", onFocus);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      window.removeEventListener("focus", onFocus);
+    };
   }, [taskResult?.status, taskResult?.title]);
 
   useEffect(() => {
