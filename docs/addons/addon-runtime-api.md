@@ -158,3 +158,29 @@ submitted a reward or message, the core owns its queue and continues processing
 it after the iframe closes or the Console restarts. Eligibility scans and
 season-rule evaluation remain the addon's responsibility; third-party
 JavaScript is not executed as an unrestricted server process.
+
+## Addon Removal
+
+Uninstall disables the addon first, then removes its Console jobs, stored data,
+delivery state, and installed files. The confirmation explains what is removed.
+Manually installed external services are separate unless the Console explicitly
+supports their cleanup.
+
+For the legacy `dune-airdrop-addon`, Uninstall also removes its companion
+containers and reward automation before deleting the addon files. The Console
+matches companions to this server using their repository mounts or both labels
+`io.dunedocker.addon.id=dune-airdrop-addon` and
+`io.dunedocker.project.root=<absolute host repository path>`. A container name
+alone is insufficient. It disables container restart, stops the companions,
+removes the verified playtime triggers and isolated `dune_airdrop` schema in a
+database transaction, and removes the stopped containers. Shared legacy tables
+under `dune` are preserved.
+
+Docker and the database must be available. If cleanup cannot be completed, the
+addon stays installed and disabled, and the Console reports an error. Correct the
+reported access or ownership problem and retry Uninstall. No game service needs
+to be restarted.
+
+If an older Console already removed the Airdrop files while leaving its daemon
+running, reinstall the addon, leave it disabled, and select Uninstall again using
+the updated Console. Do not initialize its database schema or enable it first.
