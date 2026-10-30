@@ -29,7 +29,7 @@ code="$(grep -v '^[[:space:]]*#' <<<"$scan")"
 grep -q 'director_heal_due deepdesert_login_resume 5' <<<"$code"
 grep -qF 'director_logs --timestamps --since 150s' <<<"$code"
 grep -qF 'deepdesert_partition_spawn_in_progress "$partition_id" && continue' <<<"$code"
-grep -qF 'DEEPDESERT_LOGIN_SPAWNED_AT[$partition_id]="$started"' <<<"$code"
+grep -qF 'DEEPDESERT_LOGIN_ATTEMPTED_AT[$partition_id]="$started"' <<<"$code"
 grep -q 'map_is_disabled "DeepDesert_1"' <<<"$code"
 # Exactly one spawn call, and it is the exact-partition form. Never the bare-map form (or any
 # other argument): that picks the first unassigned dimension, not the one the player is in.
@@ -164,6 +164,7 @@ run_scan() {
 $parser
 $scan_fn
 declare -A DEEPDESERT_LOGIN_SPAWNED_AT=()
+declare -A DEEPDESERT_LOGIN_ATTEMPTED_AT=()
 [ -z \"\$SPAWNED_AT8\" ] || DEEPDESERT_LOGIN_SPAWNED_AT[8]=\"\$SPAWNED_AT8\"
 director_heal_due() {
   case \" \$HELD \" in *\" \${1#deepdesert_login_spawn_} \"*) return 1 ;; esac
@@ -186,7 +187,21 @@ scan_deepdesert_login_resumes
 t1=\$(date +%s%N)
 wait
 t2=\$(date +%s%N)
-printf 'scan_ms=%s total_ms=%s\n' \$(( (t1 - t0) / 1000000 )) \$(( (t2 - t0) / 1000000 )) >timing"
+printf 'scan_ms=%s total_ms=%s\n' \$(( (t1 - t0) / 1000000 )) \$(( (t2 - t0) / 1000000 )) >timing
+if [ \"\${REPEAT_SCAN:-0}\" = 1 ]; then
+  # The test cooldown stub allows another attempt; production waits 60s.
+  export SPAWN_MODE=ok
+  scan_deepdesert_login_resumes
+  wait
+  test \"\$(grep -c '^SPAWNED 8$' \"\$SPAWN_LOG\")\" -eq 2
+  export STATE8=taken
+  scan_deepdesert_login_resumes
+  wait
+  export STATE8=free
+  scan_deepdesert_login_resumes
+  wait
+  test \"\$(grep -c '^SPAWNED 8$' \"\$SPAWN_LOG\")\" -eq 2
+fi"
     wait
   ) >"$fixture/scan.out"
 }
@@ -248,6 +263,11 @@ run_scan free free taken "" "" no fail ok
 test "$(spawned)" = "8 40"
 test "$(grep -c '^ERROR failed to spawn DeepDesert_1 partition=[0-9]* for login resume rc=3 ' "$fixture/scan.out")" -eq 2
 ! grep -q '^DONE' "$fixture/scan.out"
+
+# A failed attempt must not consume the refusal: retry it after the cooldown.
+# Once the DB confirms a live assignment, that same old refusal stays consumed
+# even if the server later idles out. All four scans share the actual arrays.
+REPEAT_SCAN=1 run_scan free taken taken "" "" no fail ok
 
 # The spawn is backgrounded: the scan returns while a slow spawn (1 s here, tens of seconds for
 # real) is still running, so the fast follower keeps serving other players' allocation demand.

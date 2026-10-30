@@ -2598,6 +2598,7 @@ PY
 # so a long or crafted line cannot stall the fast follower that runs this. A line without a
 # readable timestamp counts as "now".
 declare -A DEEPDESERT_LOGIN_SPAWNED_AT=()
+declare -A DEEPDESERT_LOGIN_ATTEMPTED_AT=()
 deepdesert_login_resume_partitions() {
   python3 -c '
 import calendar
@@ -2699,6 +2700,15 @@ scan_deepdesert_login_resumes() {
         and wp.blocked = false
       limit 1;
     " 2>/dev/null || true)"
+    if [ "$partition_state" = "taken" ]; then
+      # A successful command alone does not prove a server bound (the spawn
+      # command also returns zero when another spawn owns the lock). Only
+      # consume the refusal after the database confirms a live assignment.
+      if [ -n "${DEEPDESERT_LOGIN_ATTEMPTED_AT[$partition_id]:-}" ]; then
+        DEEPDESERT_LOGIN_SPAWNED_AT[$partition_id]="${DEEPDESERT_LOGIN_ATTEMPTED_AT[$partition_id]}"
+      fi
+      continue
+    fi
     [ "$partition_state" = "free" ] || continue
     # With no spawn running, a container for this partition that is not bound to it is a spawn
     # that did not finish binding. Do not stack another one on top; say so, because nothing else
@@ -2713,7 +2723,7 @@ scan_deepdesert_login_resumes() {
 
     echo "SPAWN deepdesert-login-resume partition=$partition_id player=$player_id"
     started="$(date +%s)"
-    DEEPDESERT_LOGIN_SPAWNED_AT[$partition_id]="$started"
+    DEEPDESERT_LOGIN_ATTEMPTED_AT[$partition_id]="$started"
     (
       # spawn-server.sh exits 0 for "Spawn already in progress" as well, so the exit code says
       # whether it ran to completion, not whether this call started the server.
