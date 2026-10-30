@@ -190,6 +190,7 @@ jobs:
           tests/autoscaler-heal-scan-rate-limit-test.sh
           tests/autoscaler-scan-gating-inventory-test.sh
           tests/autoscaler-story-return-test.sh
+          tests/autoscaler-dd-login-resume-test.sh
           tests/autoscaler-dedicated-occupancy-test.sh
           tests/autoscaler-env-forwarding-test.sh
           tests/autoscaler-log-follower-down-test.sh

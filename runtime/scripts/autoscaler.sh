@@ -2719,6 +2719,67 @@ PY
   done <<< "$rejected_rows"
 }
 
+# A player who logs out inside a Deep Desert dimension and returns after that dimension's idle
+# server despawned is refused by the Director and queued for a partition that has no server. The
+# Deep Desert travel-response handler only runs for Overmap travel flows, never for a login, and
+# bare DeepDesert_1 demand deliberately never spawns, so nothing would ever start that partition
+# and the client would wait forever (#1271). Print each DeepDesert_1 partition a Director refusal
+# says the player must return to while it has no server, once per partition.
+deepdesert_login_resume_partitions() {
+  python3 -c '
+import re
+import sys
+
+refusal = re.compile(
+    r"Teleport not allowed, returning to WorldPartition \{ "
+    r"PartitionId = ([0-9]+), ServerId = , Map = DeepDesert_1,"
+)
+seen = []
+for line in sys.stdin:
+    match = refusal.search(line)
+    if match and match.group(1) not in seen:
+        seen.append(match.group(1))
+for partition_id in seen:
+    print(partition_id)
+'
+}
+
+# Spawn exactly the partition the player must return to. Never the bare-map form, which picks the
+# first unassigned dimension and races the travel-response handler for a different player.
+scan_deepdesert_login_resumes() {
+  local partitions partition_id partition_state
+
+  director_heal_due deepdesert_login_resume 5 || return 0
+  director_logs_or_defer deepdesert_login_resume || return 0
+  map_is_disabled "DeepDesert_1" && return 0
+
+  partitions="$(director_logs --since 60s 2>/dev/null | deepdesert_login_resume_partitions || true)"
+  [ -n "$partitions" ] || return 0
+
+  while IFS= read -r partition_id; do
+    [[ "$partition_id" =~ ^[0-9]+$ ]] || continue
+    # Re-checked against the database, not the log: the log line can be a minute old.
+    partition_state="$(psql_value "
+      select case when coalesce(server_id, '') = '' then 'free' else 'taken' end
+      from dune.world_partition
+      where partition_id = ${partition_id}
+        and map = 'DeepDesert_1'
+      limit 1;
+    " 2>/dev/null || true)"
+    [ "$partition_state" = "free" ] || continue
+    # A container that is still starting has no server_id bound yet in some windows; do not stack.
+    [ -z "$(dynamic_container_name_for_partition "$partition_id" 2>/dev/null || true)" ] || continue
+    # One spawn attempt per partition per window, even if the spawn fails.
+    director_heal_due "deepdesert_login_spawn_${partition_id}" 120 || continue
+
+    echo "SPAWN deepdesert-login-resume partition=$partition_id"
+    runtime/scripts/spawn-server.sh "$partition_id" || {
+      echo "ERROR failed to spawn DeepDesert_1 partition=$partition_id for login resume"
+      continue
+    }
+  done <<< "$partitions"
+}
+
 scan_idle_servers() {
   local scope="${1:-standard}"
   local map_filter
@@ -3026,6 +3087,7 @@ follow_director_travel_demand() {
     # Recover exact credits-return refusals before considering the generic
     # map demand emitted by the Director for the same login attempt.
     scan_rejected_story_returns || echo "WARN story return scan failed; retrying"
+    scan_deepdesert_login_resumes || echo "WARN Deep Desert login resume scan failed; retrying"
     scan_travel_demand || echo "WARN travel demand scan failed; retrying"
     sleep "$DEMAND_INTERVAL"
   done
