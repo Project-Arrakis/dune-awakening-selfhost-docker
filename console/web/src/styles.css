@@ -2951,18 +2951,23 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .map-display-name-primary { display: flex; align-items: center; gap: 7px; min-width: 0; color: #e9dcc8; }
 .map-display-name-primary svg { flex: 0 0 auto; color: #d8b15f; }
 .map-display-name-primary strong { min-width: 0; overflow-wrap: anywhere; line-height: 1.25; }
-.combat-status-badge { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; gap: 3px; min-width: 38px; padding: 2px 5px 2px 7px; border: 1px solid currentColor; border-radius: 0; font-size: 10px; font-weight: 800; line-height: 1.25; letter-spacing: .02em; }
-.combat-status-badge .memory-info-button, .combat-status-badge .memory-info-button svg { color: inherit; }
+.combat-status-badge { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; gap: 4px; height: 22px; padding: 0 5px 0 8px; border: 1px solid transparent; border-radius: 999px; font-size: 10px; font-weight: 700; line-height: 1; letter-spacing: .02em; white-space: nowrap; }
+.combat-status-badge .memory-info-button { position: relative; flex: 0 0 14px; width: 14px; min-width: 14px; height: 14px; min-height: 14px; padding: 0; color: inherit; }
+.combat-status-badge .memory-info-button svg { width: 12px; height: 12px; color: inherit; opacity: .75; }
+/* Keep the small visual pill easy to tap without enlarging the map row. */
+.combat-status-badge .memory-info-button::before { content: ""; position: absolute; inset: -15px; border-radius: 50%; }
+.combat-status-badge .memory-info-button:hover, .combat-status-badge .memory-info-button:focus-visible { color: inherit; }
+.combat-status-badge .memory-info-button:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
 .combat-settings-notice { display: grid; gap: 10px; padding: 14px 16px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--panel-muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
 .combat-settings-notice p { margin: 0; }
 .combat-settings-notice .attention-text { color: #ffd9a8; }
 .combat-settings-notice dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: 10px 20px; margin: 0; }
 .combat-settings-notice dt { color: var(--muted); }
 .combat-settings-notice dd { margin: 2px 0 0; font-weight: 700; }
-.combat-status-pve { color: #9be6bd; background: rgba(64, 173, 115, .12); }
-.combat-status-pvp { color: #ff9c8f; background: rgba(211, 76, 64, .12); }
-.combat-status-conflict { color: #ffd08a; background: rgba(216, 177, 95, .12); }
-.combat-status-unknown { color: #aaa093; background: rgba(170, 160, 147, .08); }
+.combat-status-pve { color: #9be6bd; border-color: rgba(110, 203, 151, .28); background: rgba(64, 173, 115, .09); }
+.combat-status-pvp { color: #ff9c8f; border-color: rgba(235, 124, 112, .28); background: rgba(211, 76, 64, .09); }
+.combat-status-conflict { color: #ffd08a; border-color: rgba(216, 177, 95, .28); background: rgba(216, 177, 95, .09); }
+.combat-status-unknown { color: #aaa093; border-color: rgba(170, 160, 147, .22); background: rgba(170, 160, 147, .06); }
 .map-display-name-details { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .map-display-name-id { display: block; min-width: 0; color: #9f927d; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; line-height: 1.25; overflow-wrap: anywhere; }
 .map-name-with-lock { display: inline-flex; align-items: center; gap: 7px; min-width: 0; color: #e9dcc8; font-weight: 700; }
