@@ -265,8 +265,8 @@ server and no container, and runs `spawn-server.sh N`. Look in the autoscaler lo
 `SPAWN deepdesert-login-resume partition=N player=<FLS id>`, then `DONE ... rc=0` (the script finished; it also
 exits 0 when a spawn for that partition was already in progress) or `ERROR failed to spawn ... rc=<code>`.
 `SKIP deepdesert-login-resume ... reason=map-disabled` means Deep Desert is disabled;
-`reason=container-present-unbound` means a container for the partition exists but is not bound to it, which needs
-an operator (`docker logs dune-server-deepdesert-1-N`, then `dune despawn N` and `dune spawn N`).
+`reason=container-present-unbound` means no spawn is running, yet a container for the partition exists and is not
+bound to it (a spawn that did not finish binding), which needs an operator (`docker logs dune-server-deepdesert-1-N`, then `dune despawn N` and `dune spawn N`).
 
 What the player does: the spawn takes about a minute. If the loading screen times out first, wait a minute and log in
 again. The server then exists and the Director routes the login normally. If it never starts, `dune spawn N` starts the
