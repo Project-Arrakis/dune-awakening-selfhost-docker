@@ -61,6 +61,7 @@ import { handleDiscordAdapterRoute, isDiscordAdapterRoute } from "./integrations
 import { discordAdapterEnabled } from "./integrations/discord/adapter.js";
 import { initializeDiscordAdapterSchema } from "./integrations/discord/schema.js";
 import { actionForRoute, ROUTE_ACTIONS, NAMESPACES } from "./actions.js";
+import { playerMayCall, mapPlayersForSession } from "./playerScope.js";
 // Merged during the 2026-09-21 upstream rebase: upstream/main independently
 // added the customization-grant exports below while this branch added
 // resolveAllowedActions -- both are genuinely used (by unrelated features),
@@ -940,6 +941,13 @@ function requireAction(req, res, action) {
   return true;
 }
 
+// The live map lists every player. The `player` tier gets only its own marker
+// (#1276); other tiers are unchanged.
+async function liveMapPlayersForSession(session, map) {
+  const result = await duneDb.liveMapPlayers(db, map);
+  return mapPlayersForSession(session, result, (discordUserId) => duneDb.getLinkedPlayer(db, discordUserId));
+}
+
 async function handleApi(req, res) {
   const url = new URL(req.url, "http://localhost");
   const path = url.pathname;
@@ -1471,6 +1479,12 @@ async function handleApi(req, res) {
 
   const action = actionForRoute(path, req.method);
   if (!action || !evaluate(session, action)) {
+    return json(res, 403, { error: "Your account does not have permission to access this resource." });
+  }
+  // Second gate for the `player` tier (#1276): deny by default, independent of
+  // the stored IAM policy. Everything listed in playerScope.js is scoped to the
+  // caller in its own handler; nothing else is reachable.
+  if (session.tier === "player" && !playerMayCall(req.method, path)) {
     return json(res, 403, { error: "Your account does not have permission to access this resource." });
   }
   // The key's own scope grid, applied on top of the policy engine. This is the
@@ -2113,7 +2127,7 @@ async function handleApi(req, res) {
   if (path === "/api/map/teleport-player" && req.method === "POST") return liveMapTeleportPlayerRoute(req, res);
   if (path === "/api/map/partitions") return dbJson(res, () => duneDb.liveMapPartitions(db));
   if (path === "/api/map/markers") return liveMapMarkersRoute(res, url);
-  if (path === "/api/map/players") return dbJson(res, () => duneDb.liveMapPlayers(db, url.searchParams.get("map") || ""));
+  if (path === "/api/map/players") return dbJson(res, () => liveMapPlayersForSession(req.authSession, url.searchParams.get("map") || ""));
   if (path === "/api/map/bases") return dbJson(res, () => duneDb.liveMapBases(db, url.searchParams.get("map") || ""));
   if (path === "/api/map/storage") return dbJson(res, () => duneDb.liveMapStorage(db, url.searchParams.get("map") || ""));
   if (path === "/api/map/services") return dbJson(res, () => duneDb.liveMapServices(db, url.searchParams.get("map") || ""));
