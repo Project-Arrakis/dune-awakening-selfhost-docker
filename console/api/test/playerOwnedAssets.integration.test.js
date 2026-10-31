@@ -170,7 +170,8 @@ test("real PostgreSQL: the handler returns notLinked, never data, for an unlinke
     // Linked, but the character has no pawn yet: getLinkedPlayer falls back to "0".
     await pool.query("update dune.player_state set player_pawn_id = null where player_controller_id = 77");
     const unspawned = await call({ userId: "d-hawat", db, tier: "player" }, "/api/bases", {});
-    assert.equal(unspawned.notLinked, true);
+    assert.equal(unspawned.notLinked, undefined, "linking again would not help");
+    assert.equal(unspawned.notSpawned, true);
     assert.deepEqual(unspawned.rows, []);
   });
 });

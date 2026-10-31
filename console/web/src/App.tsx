@@ -12,6 +12,7 @@ import { playersApi } from "./api/players";
 import { setupApi, type Task } from "./api/setup";
 import { isPlayerTier, tabAllowedForTier } from "./lib/playerTabs";
 import { PlayerHome } from "./features/home/PlayerHome";
+import { PlayerAssetsPage, PlayerCharacterPage, PlayerGuildPage } from "./features/player/PlayerPages";
 import { SetupWizard } from "./components/SetupWizard";
 import { TaskProgress } from "./components/TaskProgress";
 import { ConfirmDialog, type ConfirmDialogDetail, type ConfirmDialogOutcome, type ConfirmDialogRequest } from "./components/common/ConfirmDialog";
@@ -1256,10 +1257,14 @@ export function App() {
           setRedeploySetupOpen(true);
         }} />}
         {!redeploySetupOpen && tab === "Services" && <LazyTabBoundary label="Loading Services"><ServicesPanel services={services} setServices={setServices} setTask={setTask} openLogs={(service) => { setRedeploySetupOpen(false); setSelectedLogService(service); setTab("Logs"); }} onError={setError} confirmAction={confirmDialog} restartGate={restartGateChoice} /></LazyTabBoundary>}
-        {!redeploySetupOpen && tab === "Players" && <LazyTabBoundary label="Loading Players"><PlayersPanel onError={setError} confirmAction={confirmDialog} onOpenBase={(baseId) => { setBaseFocusRequest((current) => ({ baseId, nonce: current.nonce + 1 })); setTab("Bases"); }} renderCharacterAdmin={(props) => <LazyTabBoundary label="Loading Player Details"><CharacterAdminUI {...props} onError={setError} confirmAction={confirmDialog} waitForTask={waitForTaskSilently} formatMutationResult={formatMutationResult} restartGate={restartGateChoice} /></LazyTabBoundary>} /></LazyTabBoundary>}
-        {!redeploySetupOpen && tab === "Guilds" && <LazyTabBoundary label="Loading Guilds"><GuildsPanel onError={setError} confirmAction={confirmDialog} /></LazyTabBoundary>}
-        {!redeploySetupOpen && tab === "Bases" && <LazyTabBoundary label="Loading Bases"><BasesPage onError={setError} confirmAction={confirmDialog} restartGate={restartGateChoice} formatMutationResult={formatMutationResult} focusRequest={baseFocusRequest} /></LazyTabBoundary>}
-        {!redeploySetupOpen && tab === "Vehicles" && <LazyTabBoundary label="Loading Vehicles"><VehiclesPanel onError={setError} confirmAction={confirmDialog} formatMutationResult={formatMutationResult} focusRequest={vehicleFocusRequest} /></LazyTabBoundary>}
+        {!redeploySetupOpen && tab === "Players" && isPlayerTier(userInfo?.tier) && <PlayerCharacterPage />}
+        {!redeploySetupOpen && tab === "Players" && !isPlayerTier(userInfo?.tier) && <LazyTabBoundary label="Loading Players"><PlayersPanel onError={setError} confirmAction={confirmDialog} onOpenBase={(baseId) => { setBaseFocusRequest((current) => ({ baseId, nonce: current.nonce + 1 })); setTab("Bases"); }} renderCharacterAdmin={(props) => <LazyTabBoundary label="Loading Player Details"><CharacterAdminUI {...props} onError={setError} confirmAction={confirmDialog} waitForTask={waitForTaskSilently} formatMutationResult={formatMutationResult} restartGate={restartGateChoice} /></LazyTabBoundary>} /></LazyTabBoundary>}
+        {!redeploySetupOpen && tab === "Guilds" && isPlayerTier(userInfo?.tier) && <PlayerGuildPage />}
+        {!redeploySetupOpen && tab === "Guilds" && !isPlayerTier(userInfo?.tier) && <LazyTabBoundary label="Loading Guilds"><GuildsPanel onError={setError} confirmAction={confirmDialog} /></LazyTabBoundary>}
+        {!redeploySetupOpen && tab === "Bases" && isPlayerTier(userInfo?.tier) && <PlayerAssetsPage kind="bases" />}
+        {!redeploySetupOpen && tab === "Bases" && !isPlayerTier(userInfo?.tier) && <LazyTabBoundary label="Loading Bases"><BasesPage onError={setError} confirmAction={confirmDialog} restartGate={restartGateChoice} formatMutationResult={formatMutationResult} focusRequest={baseFocusRequest} /></LazyTabBoundary>}
+        {!redeploySetupOpen && tab === "Vehicles" && isPlayerTier(userInfo?.tier) && <PlayerAssetsPage kind="vehicles" />}
+        {!redeploySetupOpen && tab === "Vehicles" && !isPlayerTier(userInfo?.tier) && <LazyTabBoundary label="Loading Vehicles"><VehiclesPanel onError={setError} confirmAction={confirmDialog} formatMutationResult={formatMutationResult} focusRequest={vehicleFocusRequest} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Exchange" && <LazyTabBoundary label="Loading Market Board"><ExchangePanel onError={setError} confirmAction={confirmDialog} formatMutationResult={formatMutationResult} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Landsraad" && <LazyTabBoundary label="Loading Landsraad"><LandsraadPanel onError={setError} confirmAction={confirmDialog} restartGate={restartGateChoice} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Admin Tools" && <LazyTabBoundary label="Loading Admin Tools"><AdminToolsPanel onError={setError} confirmAction={confirmDialog} /></LazyTabBoundary>}
@@ -1268,7 +1273,8 @@ export function App() {
         {!redeploySetupOpen && tab === "Care Package" && <LazyTabBoundary label="Loading Care Package"><CarePackagePanel onError={setError} confirmAction={confirmDialog} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Addons" && <LazyTabBoundary label="Loading Addons"><AddonsPanel pinnedAddons={pinnedAddons} setPinnedAddons={setPinnedAddons} selectedAddonId={selectedPinnedAddonId} clearSelectedAddon={() => setSelectedPinnedAddonId("")} setAddonUpdateAvailable={setAddonUpdatesAvailable} confirmAction={confirmDialog} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Database" && <LazyTabBoundary label="Loading Database"><DatabasePanel /></LazyTabBoundary>}
-        {!redeploySetupOpen && tab === "Storage" && <LazyTabBoundary label="Loading Storage"><StoragePanel onError={setError} confirmAction={confirmDialog} formatMutationResult={formatMutationResult} /></LazyTabBoundary>}
+        {!redeploySetupOpen && tab === "Storage" && isPlayerTier(userInfo?.tier) && <PlayerAssetsPage kind="storage" />}
+        {!redeploySetupOpen && tab === "Storage" && !isPlayerTier(userInfo?.tier) && <LazyTabBoundary label="Loading Storage"><StoragePanel onError={setError} confirmAction={confirmDialog} formatMutationResult={formatMutationResult} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Backups" && <LazyTabBoundary label="Loading Backups"><BackupsPanel
             backupRestoreTask={backupRestoreTask}
             setBackupRestoreTask={setBackupRestoreTask}

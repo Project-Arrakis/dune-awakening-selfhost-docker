@@ -158,12 +158,16 @@ export function playerServerStatusView(body) {
 // Body of GET /api/bases | /api/vehicles | /api/storage for a `player` session.
 // Dependencies are injected so the whole handler runs under test against a real
 // database without a running server. `notLinked` is returned (not thrown) for an
-// unlinked character and for a linked one whose pawn id is not a positive integer.
+// unlinked character; a linked one whose pawn id is not a positive integer gets `notSpawned` instead.
 export async function playerOwnedAssetsBody({ duneDb, db, session, path, query, linkInstructions }) {
   const linked = await duneDb.getLinkedPlayer(db, session.userId);
   const options = ownedListOptions(linked, query);
-  if (!linked || !options) {
+  if (!linked) {
     return { capabilities: {}, totalCount: 0, rows: [], notLinked: true, reason: linkInstructions.reason, linkInstructions };
+  }
+  // Linked, but no spawned character yet (pawn id missing or "0"): linking again would not help.
+  if (!options) {
+    return { capabilities: {}, totalCount: 0, rows: [], notSpawned: true, reason: "Your character hasn't entered the world yet, so there is nothing to list." };
   }
   if (path === "/api/storage") return duneDb.listOwnedStorage(db, linked.player_controller_id);
   const result = path === "/api/bases" ? await duneDb.listBases(db, options) : await duneDb.listVehicles(db, options);
