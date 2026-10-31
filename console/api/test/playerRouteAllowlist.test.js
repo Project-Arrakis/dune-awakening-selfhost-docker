@@ -11,6 +11,11 @@ import { playerMayCall } from "../src/playerScope.js";
 // top of the IAM policy so that a stored policy file cannot widen it.
 
 const LEAKS = [
+  "/api/map/players",
+  "/api/map/poi",
+  "/api/map/spice",
+  "/api/map/partitions",
+  "/api/map/capabilities",
   "/api/players/deleted-characters",
   "/api/map/bases",
   "/api/map/storage",
@@ -52,7 +57,6 @@ const OWN_DATA = [
   "/api/players/abc123/inventory",
   "/api/guilds",
   "/api/guilds/42/members",
-  "/api/map/players",
 ];
 
 for (const path of OWN_DATA) {
@@ -102,11 +106,6 @@ test("every exact route a player can reach by policy is either allowed on purpos
   assert.deepEqual(allowed.sort(), [
     "/api/bases",
     "/api/guilds",
-    "/api/map/capabilities",
-    "/api/map/partitions",
-    "/api/map/players",
-    "/api/map/poi",
-    "/api/map/spice",
     "/api/players",
     "/api/players/online",
     "/api/players/search",
@@ -193,6 +192,6 @@ test("every reserved player path segment is denied on its own and with a sub-pat
 test("the player tier holds exactly this action set, so a policy over-grant is a visible change", async () => {
   const { resolveAllowedActions } = await import("../src/policy.js");
   assert.deepEqual([...resolveAllowedActions("player")].sort(), [
-    "bases:read", "guilds:read", "maps:read", "players:read", "server:read", "storage:read", "vehicles:read",
+    "bases:read", "guilds:read", "players:read", "server:read", "storage:read", "vehicles:read",
   ].sort());
 });

@@ -424,7 +424,7 @@ substitute for. Results below are still blank pending that pass.
 
 **Expected**
 - Players and Guilds list only P1's character and guild (the roster of their own guild only). Bases, Vehicles and Storage list only what P1 owns; the shared base is absent, and no other player's name appears on any row. Searching for P2's name or base finds nothing.
-- Live Map shows only P1's own marker.
+- There is no Live Map tab for P1, and `/api/map/players`, `/api/map/poi` and every other `/api/map/*` route return 403.
 - Directly requesting `/api/map/bases`, `/api/maps/user-settings/raw`, `/api/players/deleted-characters`, `/api/server/doctor`, `/api/server/readiness`, `/api/players/<P1 id>/teleport-destinations` or any POST returns 403. `/api/server/status` carries no container names, listener ports, server IP or battlegroup id.
 - An unlinked Discord account sees the link instructions, not an empty list.
 

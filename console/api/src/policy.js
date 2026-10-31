@@ -666,7 +666,7 @@ export const DEFAULT_POLICIES = {
 
   // PLAYER -- a tight read-only self-service view: Home (server health), their
   // own character, their guild and its roster, the bases/vehicles/storage they
-  // own (permission rank 1 only), and the world Live Map. Deliberately does NOT
+  // own (permission rank 1 only). Deliberately does NOT
   // include the broad game-world reads (blueprints/exchange/landsraad/sietches/
   // deepdesert) an operator does not want ordinary players browsing.
   // These grants are tier-wide, so they are NOT the scoping: playerScope.js is a
@@ -681,7 +681,6 @@ export const DEFAULT_POLICIES = {
         "server:read",   // Home: performance / readiness / health
         "players:read",  // Players (the handlers return only the caller's own character)
         "guilds:read",   // Guilds (the caller's own guild and its roster)
-        "maps:read",     // Live Map (world data; players reduced to the caller's marker)
         "bases:read",    // Bases (rank-1 owned only; playerScope.js allows the list route alone)
         "vehicles:read", // Vehicles (owned only)
         "storage:read",  // Storage (owned only)

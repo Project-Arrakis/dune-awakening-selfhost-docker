@@ -10,6 +10,8 @@ import { updatesApi } from "./api/updates";
 import { addonsApi } from "./api/addons";
 import { playersApi } from "./api/players";
 import { setupApi, type Task } from "./api/setup";
+import { isPlayerTier, tabAllowedForTier } from "./lib/playerTabs";
+import { PlayerHome } from "./features/home/PlayerHome";
 import { SetupWizard } from "./components/SetupWizard";
 import { TaskProgress } from "./components/TaskProgress";
 import { ConfirmDialog, type ConfirmDialogDetail, type ConfirmDialogOutcome, type ConfirmDialogRequest } from "./components/common/ConfirmDialog";
@@ -347,6 +349,7 @@ const navGroups: { title: string; items: { tab: Tab; icon: React.ReactNode }[] }
       { tab: "Guilds", icon: <Shield size={18} /> },
       { tab: "Bases", icon: <Building2 size={18} /> },
       { tab: "Vehicles", icon: <Car size={18} /> },
+      { tab: "Storage", icon: <Database size={18} /> },
       { tab: "Exchange", icon: <Store size={18} /> },
       { tab: "Live Map", icon: <MapIcon size={18} /> },
       { tab: "Landsraad", icon: <Landmark size={18} /> },
@@ -584,6 +587,12 @@ export function App() {
     return () => { cancelled = true; };
   }, [auth]);
 
+  // A player never lands on a page the API refuses: a persisted tab from an
+  // earlier session, or a deep link, falls back to Home once the tier is known.
+  useEffect(() => {
+    if (meLoaded && isPlayerTier(userInfo?.tier) && !tabAllowedForTier(tab, userInfo?.tier)) setTab("Home");
+  }, [meLoaded, userInfo?.tier, tab, setTab]);
+
   useEffect(() => {
     const handleSessionExpired = () => {
       setCsrfToken(null);
@@ -681,7 +690,7 @@ export function App() {
   }, [auth, meLoaded, meFetchFailed, allowedActions]);
 
   useEffect(() => {
-    if (!auth) return;
+    if (!auth || !meLoaded || isPlayerTier(userInfo?.tier)) return;
     let cancelled = false;
     const refreshDirectoryStatus = async () => {
       try {
@@ -699,10 +708,10 @@ export function App() {
       window.clearInterval(timer);
       window.removeEventListener("public-directory-claim-changed", refreshDirectoryStatus);
     };
-  }, [auth]);
+  }, [auth, meLoaded, userInfo?.tier]);
 
   useEffect(() => {
-    if (!auth) return;
+    if (!auth || !meLoaded || isPlayerTier(userInfo?.tier)) return;
     let cancelled = false;
     const refreshAddonUpdates = async () => {
       try {
@@ -718,7 +727,7 @@ export function App() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [auth]);
+  }, [auth, meLoaded, userInfo?.tier]);
 
   useEffect(() => {
     if (!auth) return;
@@ -1167,6 +1176,8 @@ export function App() {
             <section className="sidebar-nav-group" key={group.title} aria-label={group.title}>
               <p className="sidebar-nav-heading">{group.title}</p>
               {group.items.filter((item) => {
+                if (!tabAllowedForTier(item.tab, userInfo?.tier)) return false;
+                if (item.tab === "Storage" && !isPlayerTier(userInfo?.tier) && allowedActions.length > 0 && !allowedActions.includes("storage:read")) return false;
                 if (item.tab !== "Settings" && item.tab !== "Access Control") return true;
                 const hasSettingsAccess = allowedActions.length === 0 || allowedActions.some((a) => a.startsWith("settings:"));
                 if (!hasSettingsAccess) return false;
@@ -1237,7 +1248,8 @@ export function App() {
         </header>
         {error && <div className="error-banner">{error}</div>}
         {redeploySetupOpen && <SetupWizard initialStep={setupJump.step} jumpNonce={setupJump.nonce} mode="redeploy" onSetupComplete={async () => setSetupState(await setupApi.state())} />}
-        {!redeploySetupOpen && tab === "Home" && <HomePanel status={status} readiness={readiness} taskResult={homeTaskResult} setTaskResult={setHomeTaskResult} funcomTokenResult={funcomTokenResult} setFuncomTokenResult={setFuncomTokenResult} runningAction={homeRunningAction} restartStartObserved={homeRestartStarted} setRunningAction={setHomeRunningAction} onLoad={loadStackStatus} confirmAction={confirmDialog} restartGate={restartGateChoice} />}
+        {!redeploySetupOpen && tab === "Home" && isPlayerTier(userInfo?.tier) && <PlayerHome />}
+        {!redeploySetupOpen && tab === "Home" && !isPlayerTier(userInfo?.tier) && <HomePanel status={status} readiness={readiness} taskResult={homeTaskResult} setTaskResult={setHomeTaskResult} funcomTokenResult={funcomTokenResult} setFuncomTokenResult={setFuncomTokenResult} runningAction={homeRunningAction} restartStartObserved={homeRestartStarted} setRunningAction={setHomeRunningAction} onLoad={loadStackStatus} confirmAction={confirmDialog} restartGate={restartGateChoice} />}
         {!redeploySetupOpen && tab === "Server Control" && <ServerPanel setTask={setTask} setStatus={setStatus} status={status} setReadiness={setReadiness} setPorts={setPorts} setDoctor={setDoctor} ports={ports} readiness={readiness} doctor={doctor} taskResult={homeTaskResult} setTaskResult={setHomeTaskResult} funcomTokenResult={funcomTokenResult} setFuncomTokenResult={setFuncomTokenResult} runningAction={homeRunningAction} restartStartObserved={homeRestartStarted} setRunningAction={setHomeRunningAction} onError={setError} confirmAction={confirmDialog} restartGate={restartGateChoice} onRedeploy={() => {
           setSetupJump((current) => ({ step: 0, nonce: current.nonce + 1 }));
           setSelectedPinnedAddonId("");

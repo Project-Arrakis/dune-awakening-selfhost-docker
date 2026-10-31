@@ -31,13 +31,8 @@ const PLAYER_EXACT_GET_ROUTES = new Set([
   "/api/players/online",
   "/api/players/search",
   "/api/guilds",
-  // Map: world data only. /api/map/players is reduced to the caller's own
-  // marker in its handler.
-  "/api/map/capabilities",
-  "/api/map/partitions",
-  "/api/map/poi",
-  "/api/map/spice",
-  "/api/map/players",
+  // No /api/map/* routes: the player tier has no Live Map (operator decision,
+  // #1276).
   // Owned assets: the handlers force the caller's own id and rank-1 access,
   // ignore any client-supplied filter and strip other players' names.
   "/api/bases",
