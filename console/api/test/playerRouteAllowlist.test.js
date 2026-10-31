@@ -95,6 +95,7 @@ test("every exact route a player can reach by policy is either allowed on purpos
   const allowed = reachable.filter((path) => playerMayCall("GET", path));
   // Pinned so that widening the allowlist is a visible, reviewed change.
   assert.deepEqual(allowed.sort(), [
+    "/api/bases",
     "/api/guilds",
     "/api/map/capabilities",
     "/api/map/partitions",
@@ -109,6 +110,8 @@ test("every exact route a player can reach by policy is either allowed on purpos
     "/api/server/readiness",
     "/api/server/restart-history",
     "/api/server/status",
+    "/api/storage",
+    "/api/vehicles",
   ]);
 });
 
@@ -124,4 +127,15 @@ test("only the exact guild roster path is open, not other guild routes", () => {
   for (const path of ["/api/guilds/42", "/api/guilds/42/members/extra", "/api/guilds/a/b/members", "/api/guilds//members", "/api/guilds/42/members/", "/api/guilds/42/storage"]) {
     assert.equal(playerMayCall("GET", path), false, path);
   }
+});
+
+test("/api/auth/me reports no allowed actions for a session whose tier the policy engine rejects", async () => {
+  const { resolveAllowedActions, resolveSessionTier } = await import("../src/policy.js");
+  for (const session of [{}, { tier: "" }, { tier: "root" }, { tier: undefined }, null]) {
+    assert.deepEqual(resolveAllowedActions(resolveSessionTier(session)), [], JSON.stringify(session));
+  }
+  assert.ok(resolveAllowedActions(resolveSessionTier({ tier: "owner" })).length > 0);
+  const src = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  assert.match(src, /resolveAllowedActions\(resolveSessionTier\(session\)\)/);
+  assert.doesNotMatch(src, /resolveAllowedActions\(session\.tier \|\| "owner"\)/);
 });

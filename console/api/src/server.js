@@ -61,12 +61,12 @@ import { handleDiscordAdapterRoute, isDiscordAdapterRoute } from "./integrations
 import { discordAdapterEnabled } from "./integrations/discord/adapter.js";
 import { initializeDiscordAdapterSchema } from "./integrations/discord/schema.js";
 import { actionForRoute, ROUTE_ACTIONS, NAMESPACES } from "./actions.js";
-import { playerMayCall, mapPlayersForSession } from "./playerScope.js";
+import { playerMayCall, mapPlayersForSession, redactSharedWith, ownedListOptions } from "./playerScope.js";
 // Merged during the 2026-09-21 upstream rebase: upstream/main independently
 // added the customization-grant exports below while this branch added
 // resolveAllowedActions -- both are genuinely used (by unrelated features),
 // so this is a union, not a pick-one-side choice.
-import { evaluate, loadPolicies, getAllPolicies, setPolicies, allKnownActions, resolveAllowedActions } from "./policy.js";
+import { evaluate, loadPolicies, getAllPolicies, setPolicies, allKnownActions, resolveAllowedActions, resolveSessionTier } from "./policy.js";
 import { customizationGrantOutcome, liveItemGrantOk, liveItemGrantPublished, liveItemGrantWarning, summarizeCustomizationGrantResults } from "./grantResults.js";
 import { primeMessageOfTheDayOnlineState, readMessageOfTheDay, recordMessageOfTheDayScanFailure, restoreMessageOfTheDay, runMessageOfTheDayScan, saveMessageOfTheDay } from "./services/messageOfTheDay.js";
 import { primePlayerAnnouncementOnlineState, readPlayerAnnouncements, restorePlayerAnnouncements, runPlayerAnnouncementScan, savePlayerAnnouncements } from "./services/playerAnnouncements.js";
@@ -943,6 +943,28 @@ function requireAction(req, res, action) {
 
 // The live map lists every player. The `player` tier gets only its own marker
 // (#1276); other tiers are unchanged.
+// Player-tier view of a bases/vehicles list: other players' names are removed
+// from every row. Other tiers get the result untouched.
+function playerOwnedView(session, result) {
+  return session.tier === "player" ? redactSharedWith(result) : result;
+}
+
+// GET /api/bases | /api/vehicles | /api/storage for the `player` tier: only the
+// assets the caller owns (permission rank 1; not co-owned, not shared). The
+// scope comes from the linked character, never from the request.
+async function playerOwnedAssetsRoute(res, session, path, url) {
+  const linked = await duneDb.getLinkedPlayer(db, session.userId);
+  const options = ownedListOptions(linked, Object.fromEntries(url.searchParams));
+  if (!linked || !options) {
+    return json(res, 200, { capabilities: {}, totalCount: 0, rows: [], notLinked: true, reason: PLAYER_LINK_INSTRUCTIONS.reason, linkInstructions: PLAYER_LINK_INSTRUCTIONS });
+  }
+  return dbJson(res, async () => {
+    if (path === "/api/storage") return duneDb.listOwnedStorage(db, linked.player_controller_id);
+    const result = path === "/api/bases" ? await duneDb.listBases(db, options) : await duneDb.listVehicles(db, options);
+    return redactSharedWith(result);
+  });
+}
+
 async function liveMapPlayersForSession(session, map) {
   const result = await duneDb.liveMapPlayers(db, map);
   return mapPlayersForSession(session, result, (discordUserId) => duneDb.getLinkedPlayer(db, discordUserId));
@@ -1329,8 +1351,11 @@ async function handleApi(req, res) {
       secondFactorEnrolled,
       secondFactorUnavailable: factorStoreUnavailable,
       // What the policy engine will allow this session, so the UI can hide what
-      // a 403 would refuse anyway. Enrollment-scope sessions get nothing.
-      allowedActions: SETUP_SCOPES.has(session.scope) ? [] : resolveAllowedActions(session.tier || "owner")
+      // a 403 would refuse anyway. Enrollment-scope sessions get nothing, and so
+      // does a session whose tier the policy engine does not recognise: evaluate()
+      // denies it everything, so reporting owner's actions here (the old
+      // `tier || "owner"`) would show a UI the server then refuses (#1276).
+      allowedActions: SETUP_SCOPES.has(session.scope) ? [] : resolveAllowedActions(resolveSessionTier(session))
     });
   }
   if (path === "/api/auth/discord/start" && req.method === "GET") {
@@ -1892,6 +1917,7 @@ async function handleApi(req, res) {
     }
     return dbJson(res, () => duneDb.guildMembers(db, guildId));
   }
+  if (session.tier === "player" && (path === "/api/bases" || path === "/api/vehicles" || path === "/api/storage")) return playerOwnedAssetsRoute(res, session, path, url);
   if (path === "/api/bases") return dbJson(res, () => duneDb.listBases(db, {
     q: url.searchParams.get("q") || "",
     page: url.searchParams.get("page") || 0,
@@ -2068,16 +2094,16 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/players\/[^/]+\/customizations$/) && req.method === "GET") return customizationGrantsRoute(req, res, path);
   if (path.match(/^\/api\/players\/[^/]+\/journey$/)) return dbPlayerRoute(req, res, path, (database, playerId) => duneDb.playerJourney(database, playerId, journeyTagsData));
   if (path.match(/^\/api\/players\/[^/]+\/inventory$/)) return dbPlayerRoute(req, res, path, duneDb.playerInventoryAll);
-  if (path.match(/^\/api\/players\/[^/]+\/vehicles$/) && req.method === "GET") return dbPlayerRoute(req, res, path, (database, playerId) => duneDb.listVehicles(database, { playerId, pageSize: 200, access: playerAccessParam(url) }));
-  if (path.match(/^\/api\/players\/[^/]+\/bases$/) && req.method === "GET") return dbPlayerRoute(req, res, path, (database, playerId) => duneDb.listBases(database, {
+  if (path.match(/^\/api\/players\/[^/]+\/vehicles$/) && req.method === "GET") return dbPlayerRoute(req, res, path, async (database, playerId) => playerOwnedView(session, await duneDb.listVehicles(database, { playerId, pageSize: 200, access: session.tier === "player" ? "owner" : playerAccessParam(url) })));
+  if (path.match(/^\/api\/players\/[^/]+\/bases$/) && req.method === "GET") return dbPlayerRoute(req, res, path, async (database, playerId) => playerOwnedView(session, await duneDb.listBases(database, {
     playerId,
     q: url.searchParams.get("q") || "",
     page: 0,
     pageSize: 5000,
-    access: playerAccessParam(url),
+    access: session.tier === "player" ? "owner" : playerAccessParam(url),
     sortColumn: url.searchParams.get("sortColumn") || "name",
     sortDirection: url.searchParams.get("sortDirection") || "asc"
-  }));
+  })));
   if (path.match(/^\/api\/players\/[^/]+\/currency$/)) return dbPlayerRoute(req, res, path, duneDb.playerCurrency);
   if (path.match(/^\/api\/players\/[^/]+\/solaris-coin$/)) return dbPlayerRoute(req, res, path, duneDb.playerSolarisCoinTotal);
   if (path.match(/^\/api\/players\/[^/]+\/factions$/)) return dbPlayerRoute(req, res, path, (database, playerId) => duneDb.playerFactions(database, playerId, journeyTagsData));

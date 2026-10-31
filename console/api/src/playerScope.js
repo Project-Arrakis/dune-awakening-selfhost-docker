@@ -35,6 +35,11 @@ const PLAYER_EXACT_GET_ROUTES = new Set([
   "/api/map/poi",
   "/api/map/spice",
   "/api/map/players",
+  // Owned assets: the handlers force the caller's own id and rank-1 access,
+  // ignore any client-supplied filter and strip other players' names.
+  "/api/bases",
+  "/api/vehicles",
+  "/api/storage",
 ]);
 
 // /api/players/<id>[/...] is guarded per handler by requireOwnPlayerAccess.
@@ -80,4 +85,38 @@ export async function mapPlayersForSession(session, result, getLinkedPlayer) {
   if (session?.tier !== "player") return result;
   const linked = await getLinkedPlayer(session.userId);
   return { capabilities: result?.capabilities, rows: ownMapPlayerRows(result?.rows, linked?.player_pawn_id) };
+}
+
+// Bases and vehicles list rows carry `shared_with`: the names and ranks of every
+// other player with access. A player may see the assets they own, never who
+// else is on them (#1276).
+export function redactSharedWith(result) {
+  if (!result || !Array.isArray(result.rows)) return result;
+  return { ...result, rows: result.rows.map((row) => ({ ...row, shared_with: [] })) };
+}
+
+// Pawn actor id of the session's linked character, or null when it is not a
+// positive safe integer (unlinked, or the "0" getLinkedPlayer falls back to).
+export function ownPawnId(linked) {
+  const id = Number(linked?.player_pawn_id);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
+// Options for duneDb.listBases / listVehicles for a player session. Everything
+// the client could use to widen the scope (playerId, access) is fixed here;
+// only paging, sort and search pass through, and page size is capped.
+export function ownedListOptions(linked, query) {
+  const playerId = ownPawnId(linked);
+  if (playerId === null) return null;
+  const size = Number(query?.pageSize);
+  return {
+    playerId,
+    access: "owner",
+    q: typeof query?.q === "string" ? query.q : "",
+    page: query?.page ?? 0,
+    pageSize: Number.isSafeInteger(size) && size >= 1 && size <= 200 ? size : 50,
+    sortColumn: query?.sortColumn || "name",
+    sortDirection: query?.sortDirection || "asc",
+    ...(query?.status ? { status: query.status } : {}),
+  };
 }
