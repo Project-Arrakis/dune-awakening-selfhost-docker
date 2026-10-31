@@ -76,26 +76,6 @@ export function playerMayCall(method, path) {
   return false;
 }
 
-// /api/map/players returns every player on the map (names, FLS/Funcom/account
-// ids, positions). A player session gets only its own marker. `ownPawnId` is
-// the linked character's pawn actor id; anything that is not a positive
-// integer matching a row returns nothing (fail closed).
-export function ownMapPlayerRows(rows, ownPawnId) {
-  if (!Array.isArray(rows)) return [];
-  const own = Number(ownPawnId);
-  if (!Number.isSafeInteger(own) || own <= 0) return [];
-  return rows.filter((row) => Number(row?.id) === own);
-}
-
-// Applies the own-marker rule to a liveMapPlayers() result for a session.
-// `getLinkedPlayer` is injected (duneDb.getLinkedPlayer) so this is testable
-// without a database. Non-player tiers get the result untouched.
-export async function mapPlayersForSession(session, result, getLinkedPlayer) {
-  if (session?.tier !== "player") return result;
-  const linked = await getLinkedPlayer(session.userId);
-  return { capabilities: result?.capabilities, rows: ownMapPlayerRows(result?.rows, linked?.player_pawn_id) };
-}
-
 // Bases and vehicles list rows carry `shared_with`: the names and ranks of every
 // other player with access. A player may see the assets they own, never who
 // else is on them (#1276).
@@ -103,12 +83,29 @@ export async function mapPlayersForSession(session, result, getLinkedPlayer) {
 // The same view also drops what is not the caller's: totalVehicles is a count
 // over every vehicle on the server, and a failed query's `reason` carries raw
 // database error text.
+//
+// `owner` is the rank-1 holder's name, which for a vehicle re-permissioned to
+// someone else is another player; every row the caller sees is theirs, so it is
+// shown as "You".
 export function redactSharedWith(result) {
-  if (!result || !Array.isArray(result.rows)) return result;
-  const out = { ...result, rows: result.rows.map((row) => ({ ...row, shared_with: [] })) };
+  if (!result) return result;
+  const out = { ...result };
+  if (Array.isArray(result.rows)) {
+    out.rows = result.rows.map((row) => {
+      const next = { ...row, shared_with: [] };
+      for (const key of ["owner", "owner_name"]) if (key in next) next[key] = "You";
+      return next;
+    });
+  }
   if ("totalVehicles" in out) out.totalVehicles = Number(out.totalCount) || 0;
   if ("reason" in out) out.reason = "This list is unavailable right now.";
   return out;
+}
+
+// Guild roster for a player: names and roles only, not internal controller ids.
+export function guildRosterForSession(session, result) {
+  if (session?.tier !== "player" || !result || !Array.isArray(result.rows)) return result;
+  return { ...result, rows: result.rows.map((m) => ({ character_name: m?.character_name ?? "", role_id: m?.role_id ?? "" })) };
 }
 
 // Pawn actor id of the session's linked character, or null when it is not a
@@ -130,6 +127,7 @@ export function ownedListOptions(linked, query) {
     access: "owner",
     q: typeof query?.q === "string" ? query.q : "",
     page: query?.page ?? 0,
+    includeGenerators: false,
     pageSize: Number.isSafeInteger(size) && size >= 1 && size <= 200 ? size : 50,
     // shared_with would order the caller's rows by how many other players have access.
     sortColumn: query?.sortColumn && query.sortColumn !== "shared_with" ? query.sortColumn : "name",
@@ -169,7 +167,7 @@ export async function playerOwnedAssetsBody({ duneDb, db, session, path, query, 
   if (!options) {
     return { capabilities: {}, totalCount: 0, rows: [], notSpawned: true, reason: "Your character hasn't entered the world yet, so there is nothing to list." };
   }
-  if (path === "/api/storage") return duneDb.listOwnedStorage(db, linked.player_controller_id);
+  if (path === "/api/storage") return redactSharedWith(await duneDb.listOwnedStorage(db, linked.player_controller_id));
   const result = path === "/api/bases" ? await duneDb.listBases(db, options) : await duneDb.listVehicles(db, options);
   return redactSharedWith(result);
 }

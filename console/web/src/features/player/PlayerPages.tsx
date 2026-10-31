@@ -32,9 +32,9 @@ export function visibleRows(rows: Row[]): Row[] {
 function usePlayerList(path: string) {
   const [result, setResult] = useState<ListResult | null>(null);
   const [failed, setFailed] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(Boolean(path));
   useEffect(() => {
-    if (!path) { setLoading(false); return; }
+    if (!path) { setResult(null); setLoading(false); return; }
     let cancelled = false;
     setLoading(true);
     api<ListResult>(path)

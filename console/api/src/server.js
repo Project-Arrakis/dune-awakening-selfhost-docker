@@ -61,7 +61,7 @@ import { handleDiscordAdapterRoute, isDiscordAdapterRoute } from "./integrations
 import { discordAdapterEnabled } from "./integrations/discord/adapter.js";
 import { initializeDiscordAdapterSchema } from "./integrations/discord/schema.js";
 import { actionForRoute, ROUTE_ACTIONS, NAMESPACES } from "./actions.js";
-import { playerMayCall, mapPlayersForSession, playerOwnedAssetsBody, effectiveAccess, ownedViewForSession, statusBodyForSession } from "./playerScope.js";
+import { playerMayCall, guildRosterForSession, playerOwnedAssetsBody, effectiveAccess, ownedViewForSession, statusBodyForSession } from "./playerScope.js";
 // Merged during the 2026-09-21 upstream rebase: upstream/main independently
 // added the customization-grant exports below while this branch added
 // resolveAllowedActions -- both are genuinely used (by unrelated features),
@@ -941,18 +941,11 @@ function requireAction(req, res, action) {
   return true;
 }
 
-// The live map lists every player. The `player` tier gets only its own marker
-// (#1276); other tiers are unchanged.
 // GET /api/bases | /api/vehicles | /api/storage for the `player` tier: only the
 // assets the caller owns (permission rank 1; not co-owned, not shared). The
 // scope comes from the linked character, never from the request.
 function playerOwnedAssetsRoute(res, session, path, url) {
   return dbJson(res, () => playerOwnedAssetsBody({ duneDb, db, session, path, query: Object.fromEntries(url.searchParams), linkInstructions: PLAYER_LINK_INSTRUCTIONS }));
-}
-
-async function liveMapPlayersForSession(session, map) {
-  const result = await duneDb.liveMapPlayers(db, map);
-  return mapPlayersForSession(session, result, (discordUserId) => duneDb.getLinkedPlayer(db, discordUserId));
 }
 
 async function handleApi(req, res) {
@@ -1900,7 +1893,7 @@ async function handleApi(req, res) {
       if (!scope.linked) return json(res, 200, { capabilities: { guildMembers: true }, rows: [], notLinked: true, reason: PLAYER_LINK_INSTRUCTIONS.reason, linkInstructions: PLAYER_LINK_INSTRUCTIONS });
       if (!scope.guildId || scope.guildId !== guildId) return json(res, 403, { error: "You can only view your own guild's roster." });
     }
-    return dbJson(res, () => duneDb.guildMembers(db, guildId));
+    return dbJson(res, async () => guildRosterForSession(session, await duneDb.guildMembers(db, guildId)));
   }
   if (session.tier === "player" && (path === "/api/bases" || path === "/api/vehicles" || path === "/api/storage")) return playerOwnedAssetsRoute(res, session, path, url);
   if (path === "/api/bases") return dbJson(res, () => duneDb.listBases(db, {
@@ -2138,7 +2131,7 @@ async function handleApi(req, res) {
   if (path === "/api/map/teleport-player" && req.method === "POST") return liveMapTeleportPlayerRoute(req, res);
   if (path === "/api/map/partitions") return dbJson(res, () => duneDb.liveMapPartitions(db));
   if (path === "/api/map/markers") return liveMapMarkersRoute(res, url);
-  if (path === "/api/map/players") return dbJson(res, () => liveMapPlayersForSession(req.authSession, url.searchParams.get("map") || ""));
+  if (path === "/api/map/players") return dbJson(res, () => duneDb.liveMapPlayers(db, url.searchParams.get("map") || ""));
   if (path === "/api/map/bases") return dbJson(res, () => duneDb.liveMapBases(db, url.searchParams.get("map") || ""));
   if (path === "/api/map/storage") return dbJson(res, () => duneDb.liveMapStorage(db, url.searchParams.get("map") || ""));
   if (path === "/api/map/services") return dbJson(res, () => duneDb.liveMapServices(db, url.searchParams.get("map") || ""));

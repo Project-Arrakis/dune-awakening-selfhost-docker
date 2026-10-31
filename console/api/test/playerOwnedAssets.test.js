@@ -109,3 +109,17 @@ test("a player cannot sort by who else has access", () => {
   assert.equal(ownedListOptions(linked, { sortColumn: "shared_with" }).sortColumn, "name");
   assert.equal(ownedListOptions(linked, { sortColumn: "owner_name" }).sortColumn, "owner_name");
 });
+
+test("Layer 3: owner names, storage reasons and roster ids are not shown to a player", async () => {
+  const { redactSharedWith, guildRosterForSession, ownedListOptions } = await import("../src/playerScope.js");
+  const vehicles = redactSharedWith({ rows: [{ id: 1, owner: "Someone Else", shared_with: [{ name: "X" }] }], totalCount: 1, totalVehicles: 900 });
+  assert.equal(vehicles.rows[0].owner, "You");
+  assert.deepEqual(vehicles.rows[0].shared_with, []);
+  assert.equal(vehicles.totalVehicles, 1);
+  const storage = redactSharedWith({ capabilities: {}, rows: undefined, reason: "Unsupported by detected schema. Missing required table(s): dune.placeables" });
+  assert.ok(!JSON.stringify(storage).includes("dune.placeables"));
+  assert.equal(ownedListOptions({ player_pawn_id: "5" }, {}).includeGenerators, false);
+  const roster = { rows: [{ player_id: "controller-9", role_id: "100", character_name: "Mate" }] };
+  assert.deepEqual(guildRosterForSession({ tier: "player" }, roster).rows, [{ character_name: "Mate", role_id: "100" }]);
+  assert.equal(guildRosterForSession({ tier: "admin" }, roster), roster);
+});

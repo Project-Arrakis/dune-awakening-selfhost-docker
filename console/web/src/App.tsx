@@ -731,7 +731,7 @@ export function App() {
   }, [auth, meLoaded, userInfo?.tier]);
 
   useEffect(() => {
-    if (!auth) return;
+    if (!auth || !meLoaded || isPlayerTier(userInfo?.tier)) return;
     let cancelled = false;
     async function refreshOnlinePlayers() {
       try {
@@ -747,7 +747,7 @@ export function App() {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [auth]);
+  }, [auth, meLoaded, userInfo?.tier]);
 
   useEffect(() => {
     openConfirmDialog = (request) => setConfirmRequest(request);
@@ -967,7 +967,7 @@ export function App() {
   }, [homeTaskResult?.status, homeTaskResult?.title]);
 
   useEffect(() => {
-    if (!auth || !setupComplete) return;
+    if (!auth || !setupComplete || !meLoaded || isPlayerTier(userInfo?.tier)) return;
     let cancelled = false;
     void (async () => {
       try {
@@ -978,7 +978,7 @@ export function App() {
       }
     })();
     return () => { cancelled = true; };
-  }, [auth, setupComplete]);
+  }, [auth, setupComplete, meLoaded, userInfo?.tier]);
 
   if (setupMode) {
     return <TotpSetupScreen mode={setupMode} onComplete={afterTotpSetup} onCancel={afterTotpSetup} />;
@@ -1178,7 +1178,8 @@ export function App() {
               <p className="sidebar-nav-heading">{group.title}</p>
               {group.items.filter((item) => {
                 if (!tabAllowedForTier(item.tab, userInfo?.tier)) return false;
-                if (item.tab === "Storage" && !isPlayerTier(userInfo?.tier) && allowedActions.length > 0 && !allowedActions.includes("storage:read")) return false;
+                // Storage has never had an entry for operators; only players get one.
+                if (item.tab === "Storage" && !isPlayerTier(userInfo?.tier)) return false;
                 if (item.tab !== "Settings" && item.tab !== "Access Control") return true;
                 const hasSettingsAccess = allowedActions.length === 0 || allowedActions.some((a) => a.startsWith("settings:"));
                 if (!hasSettingsAccess) return false;
