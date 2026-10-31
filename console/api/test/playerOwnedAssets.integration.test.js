@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import * as duneDb from "../src/duneDb.js";
 import { listBases, listOwnedStorage } from "../src/duneDb.js";
-import { ownedListOptions, redactSharedWith } from "../src/playerScope.js";
+import { ownedListOptions, redactSharedWith, playerOwnedAssetsBody } from "../src/playerScope.js";
 import { pgTransactionalDb, withIsolatedDatabase } from "../test-support/pgIntegrationDb.js";
 
 // #1276 against real rows: a player sees only what they OWN (rank 1). A base,
@@ -30,6 +31,7 @@ const SCHEMA = `
   create table dune.inventories (id bigint primary key, actor_id bigint, max_item_count integer, max_item_volume real);
   create table dune.items (id bigint primary key, inventory_id bigint, stack_size bigint, position_index bigint, template_id text);
   create table dune.map_names (map_name_id smallint primary key, map_name text not null);
+  create table dune.discord_player_links (discord_user_id text primary key, player_controller_id text unique);
 `;
 
 const DUNCAN = { pawn: 21, controller: 11, account: 100 };
@@ -78,6 +80,17 @@ const SEED = `
   ${chest(2002, 1002, 1)}
   ${chest(2003, 1003, 1)}
   ${chest(2004, 1004, 3)}
+  ${chest(2005, 1001, 1)}
+  ${chest(2006, 1001, 1)}
+  ${chest(2007, 1001, 1)}
+  update dune.placeables set is_hologram = true where id = 2005;
+  update dune.placeables set building_type = 'SpiceSilo_Placeable' where id = 2006;
+  update dune.placeables set building_type = 'Workbench_Placeable' where id = 2007;
+  -- A second rank row and a second permission row on one base must not multiply its item count.
+  insert into dune.permission_actor_rank (permission_actor_id, player_id, rank) values (1001, 77, 2);
+  insert into dune.player_state (id, account_id, player_controller_id, player_pawn_id, character_name) values (3, 300, 77, 23, 'Hawat');
+  insert into dune.actors (id, class, owner_account_id) values (77, null, 300), (23, '/Game/Characters/BP_PlayerCharacter.BP_PlayerCharacter_C', 300);
+  insert into dune.discord_player_links (discord_user_id, player_controller_id) values ('d-duncan', '${DUNCAN.controller}'), ('d-hawat', '77');
 `;
 
 async function withDatabase(t, run) {
@@ -121,12 +134,60 @@ test("real PostgreSQL: the unredacted base row does carry the other player (so r
 test("real PostgreSQL: owned storage excludes co-owned, associate and other players' chests", async (t) => {
   await withDatabase(t, async (db) => {
     const duncan = await listOwnedStorage(db, DUNCAN.controller);
-    assert.deepEqual(duncan.rows.map((r) => Number(r.id)), [2001]);
+    assert.deepEqual(duncan.rows.map((r) => Number(r.id)), [2001, 2006], "owned storage and silo; no hologram, no non-storage placeable");
     assert.equal(duncan.rows[0].item_count, 2, "no row multiplication from the roster join");
     assert.equal(duncan.rows[0].owner_name, "Duncan");
     assert.ok(!JSON.stringify(duncan).includes("Gurney"));
     const gurney = await listOwnedStorage(db, GURNEY.controller);
     assert.deepEqual(gurney.rows.map((r) => Number(r.id)), [2002, 2003, 2004]);
     assert.deepEqual((await listOwnedStorage(db, 999)).rows, []);
+  });
+});
+
+const instructions = { reason: "not linked", message: "link it" };
+const call = (session, path, query = {}) => playerOwnedAssetsBody({ duneDb, db: session.db, session, path, query, linkInstructions: instructions });
+
+test("real PostgreSQL: the handler serves each list for a linked player and nothing from another", async (t) => {
+  await withDatabase(t, async (db) => {
+    const session = { userId: "d-duncan", db, tier: "player" };
+    const hostile = { playerId: String(GURNEY.pawn), access: "all", pageSize: "100000" };
+    const bases = await call(session, "/api/bases", hostile);
+    assert.deepEqual(bases.rows.map((r) => r.base_id), ["1001"]);
+    assert.ok(!JSON.stringify(bases).includes("Gurney"));
+    const storage = await call(session, "/api/storage", hostile);
+    assert.deepEqual(storage.rows.map((r) => Number(r.id)), [2001, 2006]);
+    assert.ok(!JSON.stringify(storage).includes("Gurney"));
+  });
+});
+
+test("real PostgreSQL: the handler returns notLinked, never data, for an unlinked or unspawned player", async (t) => {
+  await withDatabase(t, async (db, pool) => {
+    for (const path of ["/api/bases", "/api/vehicles", "/api/storage"]) {
+      const unlinked = await call({ userId: "nobody", db, tier: "player" }, path, { playerId: String(DUNCAN.pawn) });
+      assert.equal(unlinked.notLinked, true, path);
+      assert.deepEqual(unlinked.rows, [], path);
+    }
+    // Linked, but the character has no pawn yet: getLinkedPlayer falls back to "0".
+    await pool.query("update dune.player_state set player_pawn_id = null where player_controller_id = 77");
+    const unspawned = await call({ userId: "d-hawat", db, tier: "player" }, "/api/bases", {});
+    assert.equal(unspawned.notLinked, true);
+    assert.deepEqual(unspawned.rows, []);
+  });
+});
+
+test("real PostgreSQL: a chest's item count is not multiplied by a second character on the owner's account", async (t) => {
+  await withDatabase(t, async (db, pool) => {
+    await pool.query(`insert into dune.player_state (id, account_id, player_controller_id, player_pawn_id, character_name) values (9, ${DUNCAN.account}, 999, 29, 'Duncan II')`);
+    const rows = (await listOwnedStorage(db, DUNCAN.controller)).rows;
+    assert.equal(rows.find((r) => Number(r.id) === 2001).item_count, 2);
+  });
+});
+
+test("real PostgreSQL: owned storage reports unsupported, not a crash, when a table is missing", async (t) => {
+  await withDatabase(t, async (db, pool) => {
+    await pool.query("drop table dune.items");
+    const result = await listOwnedStorage(db, DUNCAN.controller);
+    assert.equal(result.capabilities.storage, false);
+    assert.deepEqual(result.rows, []);
   });
 });

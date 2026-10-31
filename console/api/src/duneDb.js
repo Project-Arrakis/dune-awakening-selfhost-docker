@@ -6408,14 +6408,16 @@ export async function listStorage(db) {
 // which is also the ownership test, and owner_name is therefore always the
 // caller. `controllerId` is the linked character's player controller id.
 export async function listOwnedStorage(db, controllerId) {
-  if (!(await tableExists(db, "placeables"))) return unsupported("storage", ["dune.placeables"]);
+  const requiredTables = ["placeables", "actors", "permission_actor", "permission_actor_rank", "inventories", "items", "actor_fgl_entities", "player_state"];
+  const present = await Promise.all(requiredTables.map((table) => tableExists(db, table)));
+  if (present.some((exists) => !exists)) return unsupported("storage", requiredTables.map((t) => `dune.${t}`));
   const owner = intParam(controllerId, "player controller id", 1);
   const result = await db.query(`
     select p.id,
            coalesce(max(case when pa.actor_name not like '##%' and pa.actor_name <> 'None' then pa.actor_name end), '') as name,
            p.building_type as class,
            coalesce(a.map, '') as map,
-           count(i.id)::int as item_count,
+           count(distinct i.id)::int as item_count,
            coalesce(max(ps.character_name), '') as owner_name
     from dune.placeables p
     left join dune.actors a on a.id = p.id

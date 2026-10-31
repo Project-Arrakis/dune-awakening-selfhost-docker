@@ -28,6 +28,13 @@ const LEAKS = [
   "/api/server/funcom-token/check",
   "/api/maps/memory",
   "/api/maps/autoscaler",
+  "/api/server/readiness",
+  "/api/map/status",
+  "/api/players/abc123/teleport-destinations",
+  "/api/players/abc123/ban",
+  "/api/players/abc123/character-recovery",
+  "/api/players/abc123/unknown-new-resource",
+  "/api/players/abc123/inventory/extra",
 ];
 
 for (const path of LEAKS) {
@@ -38,7 +45,6 @@ for (const path of LEAKS) {
 
 const OWN_DATA = [
   "/api/server/status",
-  "/api/server/readiness",
   "/api/players",
   "/api/players/online",
   "/api/players/search",
@@ -47,7 +53,6 @@ const OWN_DATA = [
   "/api/guilds",
   "/api/guilds/42/members",
   "/api/map/players",
-  "/api/map/status",
 ];
 
 for (const path of OWN_DATA) {
@@ -102,12 +107,10 @@ test("every exact route a player can reach by policy is either allowed on purpos
     "/api/map/players",
     "/api/map/poi",
     "/api/map/spice",
-    "/api/map/status",
     "/api/players",
     "/api/players/online",
     "/api/players/search",
     "/api/server/performance",
-    "/api/server/readiness",
     "/api/server/restart-history",
     "/api/server/status",
     "/api/storage",
@@ -138,4 +141,58 @@ test("/api/auth/me reports no allowed actions for a session whose tier the polic
   const src = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
   assert.match(src, /resolveAllowedActions\(resolveSessionTier\(session\)\)/);
   assert.doesNotMatch(src, /resolveAllowedActions\(session\.tier \|\| "owner"\)/);
+});
+
+test("every own-data player sub-resource is admitted, and only those", () => {
+  for (const r of ["crafting-recipes", "research-items", "building-unlocks", "customizations", "journey", "inventory", "vehicles", "bases", "currency", "solaris-coin", "factions", "intel", "specs", "position", "progression", "vitals", "events", "stats", "history"]) {
+    assert.equal(playerMayCall("GET", `/api/players/42/${r}`), true, r);
+  }
+  for (const r of ["teleport-destinations", "ban", "character-recovery", "give-item", "x"]) assert.equal(playerMayCall("GET", `/api/players/42/${r}`), false, r);
+});
+
+test("the server status a player gets has no raw output, addresses, containers or ports", async () => {
+  const { playerServerStatusView } = await import("../src/playerScope.js");
+  const body = {
+    stdout: "Server IP: 1.2.3.4", stderr: "", exitCode: 0, schemaVersion: 1, ok: true,
+    data: {
+      summary: { overall: "READY", title: "T", region: "R", mode: "M", serverIp: "1.2.3.4", battlegroup: "sh-secret", population: { current: 1, max: 180 } },
+      containers: [{ name: "dune-postgres" }], listeners: [{ name: "pg", port: 5432 }],
+      gameServers: [{ map: "Survival_1", status: "Ready", uptime: "1h", serverId: "srv-9", gamePort: 7777 }],
+      rabbitmq: { details: "amqp://x" }, fls: { gatewayDbMonitoring: "x" }, database: { worldPartitions: 3 },
+    },
+  };
+  const out = playerServerStatusView(body);
+  const text = JSON.stringify(out);
+  for (const leak of ["1.2.3.4", "sh-secret", "dune-postgres", "5432", "srv-9", "7777", "amqp", "stdout", "worldPartitions"]) assert.ok(!text.includes(leak), leak);
+  assert.equal(out.ok, true);
+  assert.equal(out.data.summary.overall, "READY");
+  assert.deepEqual(out.data.gameServers, [{ map: "Survival_1", status: "Ready", uptime: "1h" }]);
+  assert.deepEqual(playerServerStatusView(null).data.gameServers, []);
+  const src = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  assert.match(src, /json\(res, 200, statusBodyForSession\(session, body\)\)/);
+  const { statusBodyForSession } = await import("../src/playerScope.js");
+  assert.equal(statusBodyForSession({ tier: "admin" }, body), body, "operators keep the full status");
+  assert.ok(!JSON.stringify(statusBodyForSession({ tier: "player" }, body)).includes("1.2.3.4"));
+});
+
+test("HEAD, OPTIONS and lower-case verbs are never admitted for the player tier", () => {
+  for (const method of ["HEAD", "OPTIONS", "TRACE", "CONNECT", "", undefined, null]) assert.equal(playerMayCall(method, "/api/players"), false, String(method));
+  assert.equal(playerMayCall("get", "/api/players"), true, "verbs are case-insensitive, as Node delivers them upper-case");
+});
+
+test("every reserved player path segment is denied on its own and with a sub-path", () => {
+  for (const seg of ["deleted-characters", "list-settings", "kick-all-online"]) {
+    assert.equal(playerMayCall("GET", `/api/players/${seg}`), false, seg);
+    assert.equal(playerMayCall("GET", `/api/players/${seg}/inventory`), false, seg);
+  }
+  assert.equal(playerMayCall("GET", "/api/players/online/inventory"), false);
+  assert.equal(playerMayCall("GET", "/api/players/42/inventory/"), false);
+  assert.equal(playerMayCall("GET", "/api/players/%2e%2e/bases"), true, "percent-encoded id is just an id; the handler's own-id check refuses it");
+});
+
+test("the player tier holds exactly this action set, so a policy over-grant is a visible change", async () => {
+  const { resolveAllowedActions } = await import("../src/policy.js");
+  assert.deepEqual([...resolveAllowedActions("player")].sort(), [
+    "bases:read", "guilds:read", "maps:read", "players:read", "server:read", "storage:read", "vehicles:read",
+  ].sort());
 });

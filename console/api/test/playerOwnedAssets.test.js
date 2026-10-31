@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { redactSharedWith, ownedListOptions, ownPawnId, playerMayCall } from "../src/playerScope.js";
+import { redactSharedWith, ownedListOptions, ownPawnId, playerMayCall, effectiveAccess, ownedViewForSession, statusBodyForSession } from "../src/playerScope.js";
 import { listOwnedStorage } from "../src/duneDb.js";
 
 // #1276: a player sees only the bases/vehicles/storage they OWN (rank 1), and
@@ -78,9 +78,34 @@ test("listOwnedStorage rejects a missing or non-numeric controller id", async ()
   for (const bad of ["", null, undefined, "abc", 0, -1]) await assert.rejects(() => listOwnedStorage(db, bad), undefined, String(bad));
 });
 
-test("server wiring: player tier takes the owned route and by-id routes force owner access", () => {
+test("server wiring: the handlers call the tested helpers (behaviour is covered by the helper tests)", () => {
   const src = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
   assert.match(src, /session\.tier === "player" && \(path === "\/api\/bases" \|\| path === "\/api\/vehicles" \|\| path === "\/api\/storage"\)\) return playerOwnedAssetsRoute\(/);
-  assert.equal((src.match(/access: session\.tier === "player" \? "owner" : playerAccessParam\(url\)/g) || []).length, 2);
-  assert.equal((src.match(/playerOwnedView\(session, await duneDb\.list(Bases|Vehicles)\(/g) || []).length, 2);
+  assert.match(src, /playerOwnedAssetsBody\(\{ duneDb, db, session, path/);
+  assert.equal((src.match(/access: effectiveAccess\(session, playerAccessParam\(url\)\)/g) || []).length, 2);
+  assert.equal((src.match(/ownedViewForSession\(session, await duneDb\.list(Bases|Vehicles)\(/g) || []).length, 2);
+});
+
+test("effectiveAccess and ownedViewForSession only change what a player gets", () => {
+  const player = { tier: "player" };
+  for (const requested of ["all", "coowner", "owner", undefined]) {
+    assert.equal(effectiveAccess(player, requested), "owner");
+    assert.equal(effectiveAccess({ tier: "admin" }, requested), requested);
+    assert.equal(effectiveAccess(null, requested), requested);
+  }
+  const result = { rows: [{ shared_with: [{ name: "Bob" }] }] };
+  assert.equal(ownedViewForSession({ tier: "admin" }, result), result);
+  assert.deepEqual(ownedViewForSession(player, result).rows[0].shared_with, []);
+});
+
+test("the player view drops fleet-wide totals and raw database error text", () => {
+  const out = redactSharedWith({ totalCount: 2, totalVehicles: 4812, reason: "Vehicles query failed: relation dune.secret_table does not exist", rows: [] });
+  assert.equal(out.totalVehicles, 2);
+  assert.ok(!JSON.stringify(out).includes("secret_table"));
+  assert.deepEqual(redactSharedWith({ rows: [] }), { rows: [] }, "no reason or totals invented");
+});
+
+test("a player cannot sort by who else has access", () => {
+  assert.equal(ownedListOptions(linked, { sortColumn: "shared_with" }).sortColumn, "name");
+  assert.equal(ownedListOptions(linked, { sortColumn: "owner_name" }).sortColumn, "owner_name");
 });

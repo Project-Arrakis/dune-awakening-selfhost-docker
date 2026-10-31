@@ -61,7 +61,7 @@ import { handleDiscordAdapterRoute, isDiscordAdapterRoute } from "./integrations
 import { discordAdapterEnabled } from "./integrations/discord/adapter.js";
 import { initializeDiscordAdapterSchema } from "./integrations/discord/schema.js";
 import { actionForRoute, ROUTE_ACTIONS, NAMESPACES } from "./actions.js";
-import { playerMayCall, mapPlayersForSession, redactSharedWith, ownedListOptions } from "./playerScope.js";
+import { playerMayCall, mapPlayersForSession, playerOwnedAssetsBody, effectiveAccess, ownedViewForSession, statusBodyForSession } from "./playerScope.js";
 // Merged during the 2026-09-21 upstream rebase: upstream/main independently
 // added the customization-grant exports below while this branch added
 // resolveAllowedActions -- both are genuinely used (by unrelated features),
@@ -943,26 +943,11 @@ function requireAction(req, res, action) {
 
 // The live map lists every player. The `player` tier gets only its own marker
 // (#1276); other tiers are unchanged.
-// Player-tier view of a bases/vehicles list: other players' names are removed
-// from every row. Other tiers get the result untouched.
-function playerOwnedView(session, result) {
-  return session.tier === "player" ? redactSharedWith(result) : result;
-}
-
 // GET /api/bases | /api/vehicles | /api/storage for the `player` tier: only the
 // assets the caller owns (permission rank 1; not co-owned, not shared). The
 // scope comes from the linked character, never from the request.
-async function playerOwnedAssetsRoute(res, session, path, url) {
-  const linked = await duneDb.getLinkedPlayer(db, session.userId);
-  const options = ownedListOptions(linked, Object.fromEntries(url.searchParams));
-  if (!linked || !options) {
-    return json(res, 200, { capabilities: {}, totalCount: 0, rows: [], notLinked: true, reason: PLAYER_LINK_INSTRUCTIONS.reason, linkInstructions: PLAYER_LINK_INSTRUCTIONS });
-  }
-  return dbJson(res, async () => {
-    if (path === "/api/storage") return duneDb.listOwnedStorage(db, linked.player_controller_id);
-    const result = path === "/api/bases" ? await duneDb.listBases(db, options) : await duneDb.listVehicles(db, options);
-    return redactSharedWith(result);
-  });
+function playerOwnedAssetsRoute(res, session, path, url) {
+  return dbJson(res, () => playerOwnedAssetsBody({ duneDb, db, session, path, query: Object.fromEntries(url.searchParams), linkInstructions: PLAYER_LINK_INSTRUCTIONS }));
 }
 
 async function liveMapPlayersForSession(session, map) {
@@ -1551,7 +1536,7 @@ async function handleApi(req, res) {
   if (path === "/api/public-directory/status") return json(res, 200, publicDirectory.publicState());
   if (path.startsWith("/api/setup/tasks/")) return taskRoute(req, res, path);
 
-  if (path === "/api/server/status") return serverStatusRoute(res, url);
+  if (path === "/api/server/status") return serverStatusRoute(res, url, session);
   if (path === "/api/server/performance") return json(res, 200, await collectPerformanceSnapshot(config.repoRoot));
   if (path === "/api/server/restart-history") return json(res, 200, readRestartHistory(config));
   if (path === "/api/server/readiness") return safeCommandJson(res, "readiness");
@@ -2094,13 +2079,13 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/players\/[^/]+\/customizations$/) && req.method === "GET") return customizationGrantsRoute(req, res, path);
   if (path.match(/^\/api\/players\/[^/]+\/journey$/)) return dbPlayerRoute(req, res, path, (database, playerId) => duneDb.playerJourney(database, playerId, journeyTagsData));
   if (path.match(/^\/api\/players\/[^/]+\/inventory$/)) return dbPlayerRoute(req, res, path, duneDb.playerInventoryAll);
-  if (path.match(/^\/api\/players\/[^/]+\/vehicles$/) && req.method === "GET") return dbPlayerRoute(req, res, path, async (database, playerId) => playerOwnedView(session, await duneDb.listVehicles(database, { playerId, pageSize: 200, access: session.tier === "player" ? "owner" : playerAccessParam(url) })));
-  if (path.match(/^\/api\/players\/[^/]+\/bases$/) && req.method === "GET") return dbPlayerRoute(req, res, path, async (database, playerId) => playerOwnedView(session, await duneDb.listBases(database, {
+  if (path.match(/^\/api\/players\/[^/]+\/vehicles$/) && req.method === "GET") return dbPlayerRoute(req, res, path, async (database, playerId) => ownedViewForSession(session, await duneDb.listVehicles(database, { playerId, pageSize: 200, access: effectiveAccess(session, playerAccessParam(url)) })));
+  if (path.match(/^\/api\/players\/[^/]+\/bases$/) && req.method === "GET") return dbPlayerRoute(req, res, path, async (database, playerId) => ownedViewForSession(session, await duneDb.listBases(database, {
     playerId,
     q: url.searchParams.get("q") || "",
     page: 0,
     pageSize: 5000,
-    access: session.tier === "player" ? "owner" : playerAccessParam(url),
+    access: effectiveAccess(session, playerAccessParam(url)),
     sortColumn: url.searchParams.get("sortColumn") || "name",
     sortDirection: url.searchParams.get("sortDirection") || "asc"
   })));
@@ -3139,9 +3124,10 @@ function includeRawStatus(url) {
   return !["0", "false", "no"].includes(value);
 }
 
-async function serverStatusRoute(res, url) {
+async function serverStatusRoute(res, url, session) {
   const result = config.mockMode ? mockCommand("status") : await safeCommand("status", {}, statusCommandCache);
-  return json(res, 200, buildServerStatusResponse(result, { includeRaw: includeRawStatus(url) }));
+  const body = buildServerStatusResponse(result, { includeRaw: includeRawStatus(url) });
+  return json(res, 200, statusBodyForSession(session, body));
 }
 
 async function structuredVehiclesRoute(res) {
