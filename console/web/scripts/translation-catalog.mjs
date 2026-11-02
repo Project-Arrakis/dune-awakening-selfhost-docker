@@ -111,7 +111,9 @@ export function collectUiContexts(sourceDir) {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const web = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const seed = JSON.parse(fs.readFileSync(path.resolve(web, "../api/data/i18n-translations-db.json"), "utf8"));
-  const missing = missingUiPhrases(collectUiPhrases(path.join(web, "src")), seed.sourceStrings);
+  // Fork-only phrases still awaiting reviewed translations (see translation-pending.json).
+  const pending = JSON.parse(fs.readFileSync(path.resolve(web, "scripts/translation-pending.json"), "utf8")).phrases;
+  const missing = missingUiPhrases(collectUiPhrases(path.join(web, "src")), [...seed.sourceStrings, ...pending]);
   if (process.argv[2] === "list") console.log(JSON.stringify(missing, null, 2));
   else if (missing.length) {
     console.error(`${missing.length} static UI phrases are missing from the reviewed catalog. Run npm run list:i18n to review them.`);
