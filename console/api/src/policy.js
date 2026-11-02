@@ -477,6 +477,7 @@ export const DEFAULT_POLICIES = {
     version: 1,
     tier: "admin",
     statements: [
+      { Effect: "Allow", Action: "community:suggest-translation" },
       { Effect: "Allow", Action: [
         "setup:*",
         "server:*",
@@ -554,6 +555,7 @@ export const DEFAULT_POLICIES = {
     version: 1,
     tier: "moderator",
     statements: [
+      { Effect: "Allow", Action: "community:suggest-translation" },
       { Effect: "Allow", Action: [
         "server:read",
         "maps:read",

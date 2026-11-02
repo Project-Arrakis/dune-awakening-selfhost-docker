@@ -28,6 +28,7 @@ console/web/node_modules/
 # not cover it -- a cache artifact reached main that way (see #538).
 node_modules/
 console/web/dist/
+console/web/dist-preview/
 *.tsbuildinfo
 **/bin/
 **/obj/
