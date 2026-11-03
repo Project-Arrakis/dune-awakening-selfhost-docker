@@ -203,6 +203,14 @@
     "policy to review it, or save again to replace it with your edits.",
     "to apply this change. It will be briefly unreachable.",
     "to get started.",
-    "— see the sign-in page's error for recovery guidance."
+    "— see the sign-in page's error for recovery guidance.",
+    "Loading server status…",
+    "Server status is unavailable right now.",
+    "Your Bases",
+    "Your Discord account isn't linked to a character yet.",
+    "Your Storage",
+    "Your Vehicles",
+    "Your character isn't in a guild.",
+    "is unavailable right now."
   ]
 }

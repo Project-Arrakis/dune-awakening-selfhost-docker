@@ -493,11 +493,13 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join as joinPath } from "node:path";
 
-test("DEFAULT_POLICIES has no observer tier and the player tier is only players:read + guilds:read", () => {
+test("DEFAULT_POLICIES has no observer tier and the player tier holds only the scoped reads", () => {
   assert.equal(Object.hasOwn(DEFAULT_POLICIES, "observer"), false);
   const actions = DEFAULT_POLICIES.player.statements.flatMap((s) => s.Action);
-  assert.deepEqual([...actions].sort(), ["guilds:read", "players:read"]);
-  for (const action of ["server:read", "maps:read", "bases:read", "storage:read", "vehicles:read", "blueprints:read", "exchange:read", "landsraad:read"]) {
+  // bases/vehicles/storage:read are tier-wide grants narrowed to the caller's own rank-1 assets
+  // by playerTierGate.js + playerOwnedScope.js (#1276); server:read is health only.
+  assert.deepEqual([...actions].sort(), ["bases:read", "guilds:read", "players:read", "server:read", "storage:read", "vehicles:read"]);
+  for (const action of ["maps:read", "blueprints:read", "exchange:read", "landsraad:read", "sietches:read", "deepdesert:read", "backups:read", "database:read"]) {
     assert.equal(evaluate({ tier: "player" }, action, DEFAULT_POLICIES), false, `player must not hold ${action}`);
   }
   assert.equal(evaluate({ tier: "player" }, "players:read", DEFAULT_POLICIES), true);
@@ -506,7 +508,7 @@ test("DEFAULT_POLICIES has no observer tier and the player tier is only players:
 test("a legacy observer session resolves to the player tier and never to something broader", () => {
   assert.equal(normalizeTier("observer"), "player");
   assert.equal(resolveSessionTier({ tier: "observer" }), "player");
-  assert.equal(evaluate({ tier: "observer" }, "bases:read", DEFAULT_POLICIES), false);
+  assert.equal(evaluate({ tier: "observer" }, "maps:read", DEFAULT_POLICIES), false);
   assert.equal(evaluate({ tier: "observer" }, "players:read", DEFAULT_POLICIES), true);
 });
 
@@ -532,8 +534,8 @@ test("a saved iam-policies.json that still has an observer key loads, drops it, 
 
 test("a saved player policy that predates the strict tier reports the grants the cap makes dead", async () => {
   const { playerCappedActions } = await import("../src/policy.js");
-  const docs = { ...DEFAULT_POLICIES, player: { version: 1, tier: "player", statements: [{ Effect: "Allow", Action: ["players:read", "bases:read", "server:read"] }] } };
-  assert.deepEqual(playerCappedActions(docs).sort(), ["bases:read", "server:read"]);
+  const docs = { ...DEFAULT_POLICIES, player: { version: 1, tier: "player", statements: [{ Effect: "Allow", Action: ["players:read", "bases:read", "maps:read", "backups:read"] }] } };
+  assert.deepEqual(playerCappedActions(docs).sort(), ["backups:read", "maps:read"]);
   assert.deepEqual(playerCappedActions(DEFAULT_POLICIES), []);
 });
 
