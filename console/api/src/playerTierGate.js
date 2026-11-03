@@ -12,7 +12,10 @@
 // added later is closed to players until it is listed deliberately.
 
 // Actions a player-tier session may ever hold, whatever its saved policy says.
-export const PLAYER_TIER_ACTIONS = Object.freeze(new Set(["players:read", "guilds:read"]));
+// server:read, bases:read, vehicles:read and storage:read are tier-wide grants (#1276): the
+// routes they unlock for a player are only those listed in playerOwnedScope.js, each scoped
+// or reduced in its own handler. Every other route carrying them is refused as "open".
+export const PLAYER_TIER_ACTIONS = Object.freeze(new Set(["players:read", "guilds:read", "server:read", "bases:read", "vehicles:read", "storage:read"]));
 
 // Own-character sub-resources a player may read: their profile and their items.
 // Deliberately excluded: position, vitals, teleport-destinations,

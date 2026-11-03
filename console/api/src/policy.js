@@ -28,6 +28,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { ROUTE_ACTIONS, REGEX_ACTIONS, REGEX_ACTIONS_BY_METHOD, REGEX_ACTIONS_BY_METHOD_PATTERN, CONTENT_CONDITIONAL_ACTIONS, REMOVED_ACTION_ALIASES } from "./actions.js";
 import { writeJsonAtomic } from "./jsonStore.js";
+import { PLAYER_TIER_ACTIONS } from "./playerTierGate.js";
 
 // ---- Policy evaluation ----
 
@@ -141,14 +142,14 @@ export function normalizeTier(tier) {
 }
 
 // Actions a saved `player` document grants that the player tier can never use,
-// because playerTierGate caps the tier at players:read + guilds:read. Reported so an
+// because playerTierGate caps the tier at PLAYER_TIER_ACTIONS. Reported so an
 // operator whose stored policy predates the strict tier is told why a grant does nothing.
 export function playerCappedActions(docs) {
   const player = docs && docs.player;
   if (!player) return [];
   const capped = [];
   for (const action of allKnownActions()) {
-    if (action === "players:read" || action === "guilds:read") continue;
+    if (PLAYER_TIER_ACTIONS.has(action)) continue;
     if (evaluate({ tier: "player" }, action, docs)) capped.push(action);
   }
   return capped;
@@ -579,16 +580,22 @@ export const DEFAULT_POLICIES = {
   // Strict, own-record-scoped read tier (replaces the former `observer`, which
   // held the same server-wide read grants). Everything a player may read is
   // narrowed to their own characters/items and guild by playerTierGate.js and
-  // listPlayers/listGuilds scoping; only actions that have such scoping are
-  // granted. Further reads (bases, storage, vehicles, ...) stay off until each
-  // has its own ownership scoping.
+  // listPlayers/listGuilds scoping, plus (#1276) the bases/vehicles/storage they
+  // OWN (permission rank 1 only) and server health. These grants are tier-wide, so
+  // they are not the scoping: playerTierGate.js caps the tier at PLAYER_TIER_ACTIONS and
+  // playerOwnedScope.js admits only the exact routes whose handlers scope or reduce the
+  // result. Further reads stay off until each has its own ownership scoping.
   player: {
     version: 1,
     tier: "player",
     statements: [
       { Effect: "Allow", Action: [
+        "server:read",   // Home: server health only (status is reduced for players)
         "players:read",
         "guilds:read",
+        "bases:read",    // rank-1 owned only; playerOwnedScope.js admits the list route alone
+        "vehicles:read", // owned only
+        "storage:read",  // owned only
       ]},
     ]
   },

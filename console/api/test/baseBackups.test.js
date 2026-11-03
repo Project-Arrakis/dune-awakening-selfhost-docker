@@ -10,6 +10,7 @@ import {
   checkBaseBackupDeletable, deleteBaseBackup, exportLiveBase, clientQueryTimeoutMs
 } from "../src/baseBackups.js";
 import { scopeAllowsAction } from "../src/apiKeyScopes.js";
+import { playerMayCall } from "../src/playerOwnedScope.js";
 import { parseAppManifestBuildId, readSteamBuildId, steamAppId } from "../src/services/steamBuild.js";
 import { actionForRoute } from "../src/actions.js";
 import { evaluate } from "../src/policy.js";
@@ -352,12 +353,15 @@ test("base backup routes resolve to their own actions, and import is admin-only 
   for (const tier of ["owner", "admin"]) assert.equal(evaluate({ tier }, "bases:import-backup"), true);
   assert.equal(evaluate({ tier: "moderator" }, "bases:import-backup"), false);
   assert.equal(evaluate({ tier: "moderator" }, "bases:read"), true);
-  // The player tier is strict (own characters and guild only) and holds no base reads;
-  // the legacy "observer" name is an alias for it.
+  // The player tier holds bases:read for its own base list only (#1276); the route
+  // allowlist keeps every other bases:read route, base backups included, closed.
+  // The legacy "observer" name is an alias for the player tier.
   for (const tier of ["player", "observer"]) {
     assert.equal(evaluate({ tier }, "bases:import-backup"), false);
-    assert.equal(evaluate({ tier }, "bases:read"), false);
+    assert.equal(evaluate({ tier }, "bases:read"), true);
   }
+  assert.equal(playerMayCall("GET", "/api/base-backups"), false);
+  assert.equal(playerMayCall("GET", "/api/base-backups/7/export"), false);
   // A hand-authored policy granting bases:mutate must not gain import.
   const policies = { moderator: { version: 1, tier: "moderator", statements: [{ Effect: "Allow", Action: ["bases:read", "bases:mutate"] }] } };
   assert.equal(evaluate({ tier: "moderator" }, "bases:import-backup", policies), false);
