@@ -67,7 +67,7 @@ import { actionForRoute, ROUTE_ACTIONS, NAMESPACES } from "./actions.js";
 import { resolvePlayerScope } from "./playerScope.js";
 import { evaluate, loadPolicies, getAllPolicies, getPolicyNotices, policyRevision, setPolicies, resolveAllowedActions, allKnownActions, resolveSessionTier, normalizeTier } from "./policy.js";
 import { classifyPlayerTierRequest, PLAYER_TIER_ACTIONS } from "./playerTierGate.js";
-import { playerMayCall, playerOwnedAssetsBody, effectiveAccess, ownedViewForSession, statusBodyForSession } from "./playerOwnedScope.js";
+import { playerMayCall, playerOwnedAssetsBody, effectiveAccess, effectiveSortColumn, ownedViewForSession, statusBodyForSession } from "./playerOwnedScope.js";
 import { discordAdapterEnabled, discordWritesEnabled } from "./integrations/discord/adapter.js";
 // [Layer 3 integration audit fix, LOW, issue #1043] The 5 header constants
 // and getWriteBridgeToken previously imported here became dead once
@@ -581,6 +581,15 @@ async function filterForPlayerScope(session, db, data, getter) {
 async function resolvePlayerScopedIds(session, db) {
   return resolvePlayerScope(session, (userId) => duneDb.getAllLinkedPlayers(db, userId));
 }
+
+// Shown to a player whose Discord account has no linked character (same wording the
+// Discord adapter uses for the link flow).
+const PLAYER_LINK_INSTRUCTIONS = Object.freeze({
+  reason: "Your Discord account isn't linked to a player character yet.",
+  linkCommand: "/dune player link <character-name>",
+  verifyCommand: "/dune player verify <code>",
+  message: "In Discord, run /dune player link <your character name>. You'll receive a private in-game whisper with a verification code -- run /dune player verify <code> to finish linking. Once linked, your own player and guild will appear here."
+});
 
 // GET /api/bases | /api/vehicles | /api/storage for the `player` tier: only the
 // assets the caller owns (permission rank 1; not co-owned, not shared). The
@@ -2088,14 +2097,14 @@ async function handleApi(req, res, path) {
   if (path.match(/^\/api\/players\/[^/]+\/customizations$/) && req.method === "GET") return customizationGrantsRoute(res, path);
   if (path.match(/^\/api\/players\/[^/]+\/journey$/)) return dbPlayerRoute(res, path, (database, playerId) => duneDb.playerJourney(database, playerId, journeyTagsData));
   if (path.match(/^\/api\/players\/[^/]+\/inventory$/)) return dbPlayerRoute(res, path, duneDb.playerInventoryAll);
-  if (path.match(/^\/api\/players\/[^/]+\/vehicles$/) && req.method === "GET") return dbPlayerRoute(res, path, async (database, playerId) => ownedViewForSession(session, await duneDb.listVehicles(database, { playerId, pageSize: 200, access: effectiveAccess(session, playerAccessParam(url)) })));
+  if (path.match(/^\/api\/players\/[^/]+\/vehicles$/) && req.method === "GET") return dbPlayerRoute(res, path, async (database, playerId) => ownedViewForSession(session, await duneDb.listVehicles(database, { playerId, pageSize: 200, access: effectiveAccess(session, playerAccessParam(url)), rankOneOnly: resolveSessionTier(session) === "player" })));
   if (path.match(/^\/api\/players\/[^/]+\/bases$/) && req.method === "GET") return dbPlayerRoute(res, path, async (database, playerId) => ownedViewForSession(session, await duneDb.listBases(database, {
     playerId,
     q: url.searchParams.get("q") || "",
     page: 0,
     pageSize: 5000,
     access: effectiveAccess(session, playerAccessParam(url)),
-    sortColumn: url.searchParams.get("sortColumn") || "name",
+    sortColumn: effectiveSortColumn(session, url.searchParams.get("sortColumn") || "name"),
     sortDirection: url.searchParams.get("sortDirection") || "asc"
   })));
   if (path.match(/^\/api\/players\/[^/]+\/currency$/)) return dbPlayerRoute(res, path, duneDb.playerCurrency);

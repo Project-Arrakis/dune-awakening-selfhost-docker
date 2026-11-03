@@ -373,5 +373,17 @@ test("real PostgreSQL: the player tier lists only vehicles it owns and never ano
     for (const q of ["Gurney", String(THEIRS), String(CO), String(ASSOC)]) {
       assert.deepEqual(ids(await listVehicles(db, { ...options, q })).filter((id) => id >= 700), [], q);
     }
+    // A vehicle Duncan's account still owns but whose rank 1 was reassigned to Gurney: the operator
+    // "owner" filter lists it, the player tier (rank 1 only) must not, or it shows Gurney's position.
+    const REASSIGNED = 705;
+    await pool.query(`
+      ${vehicle(REASSIGNED, "Sandbike", "Default")}
+      update dune.actors set owner_account_id = ${DUNCAN.account} where id = ${REASSIGNED};
+      insert into dune.permission_actor (actor_id, actor_name) values (${REASSIGNED}, 'r');
+      insert into dune.permission_actor_rank (permission_actor_id, player_id, rank) values (${REASSIGNED}, ${GURNEY.controller}, 1), (${REASSIGNED}, ${DUNCAN.controller}, 3);
+    `);
+    const operatorView = await listVehicles(db, { playerId: String(DUNCAN_PAWN), access: "owner", pageSize: 200 });
+    assert.ok(ids(operatorView).includes(REASSIGNED), "the operator owner filter keeps its account-owner semantics");
+    assert.ok(!ids(await listVehicles(db, { ...options, sortColumn: "id" })).includes(REASSIGNED), "the player tier lists rank 1 only");
   });
 });

@@ -30,7 +30,7 @@ const LEAKS = [
   "/api/maps/user-settings/raw", "/api/maps/user-settings/values", "/api/maps/userengine", "/api/maps/usergame",
   "/api/maps/choam-terminals/capture", "/api/maps/memory", "/api/maps/autoscaler",
   "/api/server/doctor", "/api/server/ports", "/api/server/services", "/api/server/funcom-token/check",
-  "/api/server/readiness", "/api/map/status",
+  "/api/server/readiness", "/api/map/status", "/api/server/performance", "/api/server/restart-history",
   "/api/base-backups", "/api/base-backups/7/export",
   "/api/players/deleted-characters",
   "/api/players/abc123/teleport-destinations", "/api/players/abc123/ban", "/api/players/abc123/character-recovery",
@@ -43,7 +43,7 @@ for (const path of LEAKS) {
   });
 }
 
-const OWN_DATA = ["/api/server/status", "/api/server/performance", "/api/server/restart-history", "/api/bases", "/api/vehicles", "/api/storage"];
+const OWN_DATA = ["/api/server/status", "/api/bases", "/api/vehicles", "/api/storage"];
 
 for (const path of OWN_DATA) {
   test(`player may GET ${path} (handler scopes or reduces it)`, () => {
@@ -80,7 +80,7 @@ test("the set of routes a player reaches outside /api/players and /api/guilds is
     .map(([, path]) => path);
   // Pinned so that widening the allowlist is a visible, reviewed change.
   assert.deepEqual(reachable.sort(), [
-    "/api/bases", "/api/server/performance", "/api/server/restart-history", "/api/server/status", "/api/storage", "/api/vehicles",
+    "/api/bases", "/api/server/status", "/api/storage", "/api/vehicles",
   ]);
 });
 

@@ -6,6 +6,9 @@ import { setServerPorts, setAdminPort, type ServerPorts } from "./api/serverPort
 import { serverApi, type RestartQueueTarget } from "./api/server";
 import { updatesApi } from "./api/updates";
 import { addonsApi } from "./api/addons";
+import { PlayerHome } from "./features/home/PlayerHome";
+import { PlayerAssetsPage } from "./features/player/PlayerPages";
+import { isPlayerTier as isPlayerTierName, tabAllowedForTier } from "./lib/playerTabs";
 import { playersApi } from "./api/players";
 import { setupApi, type Task } from "./api/setup";
 import { SetupWizard } from "./components/SetupWizard";
@@ -160,9 +163,6 @@ type PublicDirectoryStatus = {
 };
 let openConfirmDialog: ((request: ConfirmDialogRequest) => void) | null = null;
 
-import { PlayerHome } from "./features/home/PlayerHome";
-import { PlayerAssetsPage } from "./features/player/PlayerPages";
-import { tabAllowedForTier } from "./lib/playerTabs";
 const AddonsPanel = lazy(() => import("./features/addons/AddonsPanel").then((module) => ({ default: module.AddonsPanel })));
 const LanguagePanel = lazy(() => import("./features/language/LanguagePanel").then((module) => ({ default: module.LanguagePanel })));
 const AdminToolsPanel = lazy(() => import("./features/adminTools/AdminToolsPanel").then((module) => ({ default: module.AdminToolsPanel })));
@@ -585,7 +585,7 @@ export function App() {
   // empty allowedActions means "unknown", not "this tier holds nothing" (#1276).
   const [meLoaded, setMeLoaded] = useState(false);
   const [meFetchFailed, setMeFetchFailed] = useState(false);
-  const isPlayerTier = me?.tier === "player" || me?.tier === "observer";
+  const isPlayerTier = isPlayerTierName(me?.tier);
   const setupComplete = Boolean(setupState?.files?.complete ?? (setupState?.files?.env && setupState?.files?.token && setupState?.files?.battlegroup));
   const firstRunSetup = auth && setupStateLoaded && !setupComplete;
 
@@ -673,7 +673,7 @@ export function App() {
     // which shows that user the setup wizard. Treat setup as done for them; the owner
     // holds setup:read and still sees the wizard on a fresh install. A failed
     // /api/auth/me is "unknown", not "no actions", so render the console then too.
-    if (meFetchFailed || (allowedActions.length > 0 && !allowedActions.includes("setup:read"))) {
+    if (meFetchFailed || isPlayerTier || (allowedActions.length > 0 && !allowedActions.includes("setup:read"))) {
       setSetupState({ files: { complete: true }, config: {} } as SetupState);
       setSetupStateLoaded(true);
       return;
@@ -690,7 +690,7 @@ export function App() {
       setSetupStateLoaded(true);
     });
     return () => { cancelled = true; };
-  }, [auth, meLoaded, meFetchFailed, allowedActions]);
+  }, [auth, meLoaded, meFetchFailed, isPlayerTier, allowedActions]);
 
   // Directory status and addon updates are operator concerns the API refuses to a player.
   useEffect(() => {

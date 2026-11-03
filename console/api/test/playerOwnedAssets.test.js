@@ -86,6 +86,19 @@ test("server wiring: the handlers call the tested helpers (behaviour is covered 
   assert.equal((src.match(/ownedViewForSession\(session, await duneDb\.list(Bases|Vehicles)\(/g) || []).length, 2);
 });
 
+test("server.js defines the link instructions its player asset route passes in", () => {
+  const src = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  assert.match(src, /^const PLAYER_LINK_INSTRUCTIONS = Object\.freeze\(\{/m);
+});
+
+test("a player cannot order bases by shared_with; other tiers can", async () => {
+  const { effectiveSortColumn } = await import("../src/playerOwnedScope.js");
+  assert.equal(effectiveSortColumn({ tier: "player" }, "shared_with"), "name");
+  assert.equal(effectiveSortColumn({ tier: "observer" }, "shared_with"), "name");
+  assert.equal(effectiveSortColumn({ tier: "player" }, "map"), "map");
+  assert.equal(effectiveSortColumn({ tier: "admin" }, "shared_with"), "shared_with");
+});
+
 test("effectiveAccess and ownedViewForSession only change what a player gets", () => {
   const player = { tier: "player" };
   for (const requested of ["all", "coowner", "owner", undefined]) {

@@ -9160,7 +9160,7 @@ const VEHICLE_STATUS_FILTERS = {
 // and the listBases shared-with lateral (resolved only on the paged rows).
 // `status` defaults to "all" so the player-scoped list and existing API
 // callers are unchanged.
-export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortColumn = "name", sortDirection = "asc", playerId = "", status = "all", access = "all" } = {}) {
+export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortColumn = "name", sortDirection = "asc", playerId = "", status = "all", access = "all", rankOneOnly = false } = {}) {
   const requiredTables = [
     "vehicles", "vehicle_modules", "actors", "permission_actor",
     "permission_actor_rank", "player_state", "actor_fgl_entities", "fgl_entities"
@@ -9225,13 +9225,18 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
           from dune.permission_actor_rank par
           where par.permission_actor_id=vc.id and par.player_id=$${controllerParam}
         ) viewer on true`;
+    // rankOneOnly (player tier, #1276): the contract is "vehicles I hold rank 1 on". The
+    // account that originally owned a vehicle whose rank 1 was reassigned is not that
+    // player any more and must not see the new holder's position.
+    // (The account parameter stays referenced so Postgres can type it.)
+    const ownerMatch = rankOneOnly ? `(viewer.rank=1 and $${accountParam}::bigint is not null)` : `(vc.owner_account_id=$${accountParam} or viewer.rank=1)`;
     filters.push(access === "owner"
-      ? `(vc.owner_account_id=$${accountParam} or viewer.rank=1)`
+      ? ownerMatch
       : access === "coowner"
         ? `(vc.owner_account_id is distinct from $${accountParam} and viewer.rank=2)`
         : `(vc.owner_account_id=$${accountParam} or viewer.rank is not null)`);
     relationshipSql = `case
-            when vc.owner_account_id=$${accountParam} or viewer.rank=1 then 'Owner'
+            when ${ownerMatch} then 'Owner'
             when viewer.rank=2 then 'Co-Owner'
             when viewer.rank=3 then 'Associate'
             when viewer.rank is not null then 'Rank ' || viewer.rank::text

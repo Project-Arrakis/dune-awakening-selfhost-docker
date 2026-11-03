@@ -15,9 +15,11 @@
 // Widening this list is a reviewed change: test/playerRouteAllowlist.test.js
 // pins the exact set reachable by default.
 
-import { normalizeTier } from "./policy.js";
+import { resolveSessionTier } from "./policy.js";
 
-// Routes outside /api/players and /api/guilds that a player may reach. Those two prefixes
+// Routes outside /api/players and /api/guilds that a player may reach. Deliberately no
+// /api/server/performance (host CPU, memory, disk) or /api/server/restart-history (raw
+// operator rows): the player Home needs neither. Those two prefixes
 // are gated by playerTierGate.js (ID-based ownership); everything else is "open" there and
 // is refused unless listed here.
 const PLAYER_EXACT_GET_ROUTES = new Set([
@@ -25,8 +27,6 @@ const PLAYER_EXACT_GET_ROUTES = new Set([
   // (playerServerStatusView). /api/server/readiness and /api/map/status are NOT
   // here: they return raw CLI output / per-partition server ids and ports.
   "/api/server/status",
-  "/api/server/performance",
-  "/api/server/restart-history",
   // No /api/map/* routes: the player tier has no Live Map (operator decision, #1276).
   // Owned assets: the handlers force the caller's own id and rank-1 access,
   // ignore any client-supplied filter and strip other players' names.
@@ -35,8 +35,8 @@ const PLAYER_EXACT_GET_ROUTES = new Set([
   "/api/storage",
 ]);
 
-// The legacy "observer" tier name is an alias for player, same as everywhere else.
-const isPlayerSession = (session) => normalizeTier(session?.tier) === "player";
+// resolveSessionTier maps the legacy "observer" alias to player, same as the request gate.
+const isPlayerSession = (session) => resolveSessionTier(session) === "player";
 
 export function playerMayCall(method, path) {
   if (typeof method !== "string" || typeof path !== "string") return false;
@@ -86,6 +86,7 @@ export function ownedListOptions(linked, query) {
   return {
     playerId,
     access: "owner",
+    rankOneOnly: true,
     q: typeof query?.q === "string" ? query.q : "",
     page: query?.page ?? 0,
     includeGenerators: false,
@@ -131,6 +132,12 @@ export async function playerOwnedAssetsBody({ duneDb, db, session, path, query, 
   if (path === "/api/storage") return redactSharedWith(await duneDb.listOwnedStorage(db, linked.player_controller_id));
   const result = path === "/api/bases" ? await duneDb.listBases(db, options) : await duneDb.listVehicles(db, options);
   return redactSharedWith(result);
+}
+
+// A player may not order bases by `shared_with`: the order alone would reveal how many
+// other players have access to each base.
+export function effectiveSortColumn(session, requested) {
+  return isPlayerSession(session) && requested === "shared_with" ? "name" : requested;
 }
 
 // The `access` filter for /api/players/<id>/bases|vehicles: a player always gets
