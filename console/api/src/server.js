@@ -1881,7 +1881,9 @@ async function handleApi(req, res, path) {
   if (path === "/api/players/list-settings" && req.method === "GET") {
     return json(res, 200, {
       ...playerListSettingsView(config.repoRoot),
-      ...await combatAvailability.read(),
+      // The PvP view is closed to the player tier (/api/players/combat answers 404), so a player
+      // is told it is hidden and no combat/map-runtime lookup runs for their polling.
+      ...(resolveSessionTier(session) === "player" ? { pvpVisible: false } : await combatAvailability.read()),
       canConfigure: evaluate(session, "players:configure-list")
     });
   }
