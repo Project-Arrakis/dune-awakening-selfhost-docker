@@ -6,6 +6,13 @@ import { itemRows, people, inventoryForPlayer } from '../../preview/data/shared'
 import catalog from '../../../../runtime/data/admin-items.json';
 import settingsMetadata from '../../preview/data/settingsSchema.json';
 describe('public Console preview isolation',()=>{
+ it('provides fictional combat history without a live backend',async()=>{
+  const profile=sampleResponse(new URL('https://try.example/api/players/101')) as {player:{player_controller_id:string}};
+  const combat=await previewApiResponse(new URL('https://try.example/api/players/combat?controllerId='+profile.player.player_controller_id)).json();
+  expect(combat.leaderboard).toHaveLength(1);
+  expect(combat.leaderboard[0].controllerId).toBe(profile.player.player_controller_id);
+  expect(combat.recentKills[0]).toMatchObject({killer:'Aster Vale',victim:'Mira Sandwalker'});
+ });
  it('shows v1.4.59 in the Console and sample update checks',()=>{
   expect(sampleResponse(new URL('https://try.example/api/auth/state'))).toMatchObject({config:{version:'1.4.59'}});
   const task=sampleResponse(new URL('https://try.example/api/setup/tasks/preview-check-stack')) as {task:{logLines:{line:string}[]}};
@@ -37,6 +44,12 @@ describe('public Console preview isolation',()=>{
  it('supports regional and Chinese packs without permitting arbitrary paths',()=>{
   for(const code of ['EN','DE','AR','PT-BR','PT-PT','ZH-HANS','ZH-HANT'])expect(previewLanguageFile(code)).toBe('/preview-data/'+code+'.json');
   expect(previewLanguageFile('../../api')).toBeNull();
+ });
+ it('serves a read-only Realtime Data agent status and blocks its controls',async()=>{
+  const url=new URL('https://try.example/api/settings/realtime-agent');
+  expect(sampleResponse(url)).toMatchObject({available:true,installed:false,running:false,busy:null});
+  for(const method of ['POST','DELETE'])expect(previewApiResponse(url,method).status).toBe(405);
+  for(const label of ['Set Up Agent','Rebuild Agent','Remove Agent'])expect(isManagementAction(label)).toBe(true);
  });
  it('rejects every mutation method without changing sample records',async()=>{
   const url=new URL('https://try.example/api/players');
