@@ -1,5 +1,7 @@
 # Discord Bot Output Architecture
 
+**Status:** Historical record — describes the output pipeline of the companion bot in a separate repository as of 2026-08-10; its command counts and groups are not verifiable from this repository. Not maintained.
+
 **Date:** 2026-08-10
 **Companion repository:** [Project-Arrakis/mentat](https://github.com/Project-Arrakis/mentat) *(the bot's product name is "Mentat" -- see `docs/bot/mentat-naming-disambiguation.md`; the repo itself was renamed from `sentinel` to `mentat` 2026-09-02, see `Project-Arrakis/meta#56`)*
 

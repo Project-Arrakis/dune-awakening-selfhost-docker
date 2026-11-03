@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { isDirectCustomizationUnlock } from "./adminCatalog.js";
 import { pipeline } from "node:stream/promises";
+import { createGzip } from "node:zlib";
 import { createServer as createNetServer } from "node:net";
 import { totalmem } from "node:os";
 import { spawn } from "node:child_process";
@@ -48,12 +49,15 @@ import { looksLikeTar, mintSystemBackupName, normalizeImportedSystemMetadata, re
 import { createTarHeader, tarArchiveLength, tarPadding, TAR_TRAILER_BYTES, createBackupDownloadArchive, enrichBackupRows, nextImportedBackupName, normalizeImportedBackupMetadata, readCurrentBattlegroupId, validBackupDownloadName } from "./services/backups.js";
 import { createMemoryBalancer } from "./services/memoryBalancer.js";
 import { collectContainerHealth } from "./services/containerHealth.js";
-import { createRealtime, RealtimeError } from "./services/realtime.js";
+import { createRealtime, parseObjectFilter, RealtimeError } from "./services/realtime.js";
 import { createEncryptedApi, EncryptedApiError } from "./services/encryptedApi.js";
+import { createRealtimeAgent, RealtimeAgentError } from "./services/realtimeAgent.js";
 import { tlsClientAddress } from "./services/tlsClientAddress.js";
 import { createConsoleAccess } from "./services/consoleAccess.js";
 import { parseMemorySwapStatus } from "./services/memorySwap.js";
 import { createDeathPoller } from "./deathPoller.js";
+import { createCombatHistory, combatScope } from "./services/combatHistory.js";
+import { createCombatAvailability } from "./services/combatAvailability.js";
 import { updateEnvFileValue as updateEnvValue } from "./services/envFile.js";
 import { funcomAuthMismatchDetected, matchingFuncomAuthLines, saveFuncomTokenValue as writeFuncomToken, validDockerSince } from "./services/funcomAuth.js";
 import { readCharacterTransferSettingsStatus, saveAndApplyCharacterTransferSettings } from "./services/characterTransferSettings.js";
@@ -391,6 +395,7 @@ function shouldNoteApiKeyAuthThrottle(failureKey, at = Date.now()) {
 }
 const apiKeys = createApiKeyStore({ file: config.apiKeysFile });
 const realtime = createRealtime();
+const realtimeAgent = createRealtimeAgent({ repoRoot: config.repoRoot, health: () => realtime.health() });
 const encryptedApi = createEncryptedApi({ repoRoot: config.repoRoot });
 // Proof that a restore was previewed, for the apply that follows it. In memory
 // beside the sessions it is keyed by -- see the module header for why it is not
@@ -525,6 +530,8 @@ let restartQueueAutoLastRun = 0;
 const journeyTagsData = loadJourneyTagsData();
 const memoryBalancer = createMemoryBalancer(config);
 const deathPoller = createDeathPoller(config);
+const combatHistory = createCombatHistory(db, { mockMode: config.mockMode });
+const combatAvailability = createCombatAvailability(config, db);
 const POSTGRES_UNAVAILABLE_MESSAGE = "Postgres is not running or is restarting. Wait for the database service to come back online, then refresh.";
 const DEFAULT_ALWAYS_ON_STARTUP_PARALLELISM = 1;
 const MAX_ALWAYS_ON_STARTUP_PARALLELISM = 16;
@@ -838,6 +845,9 @@ createServer((req, res) => {
   });
   runBackgroundTick("Player playtime tracker", () => duneDb.trackPlayerPlaytime(db));
 });
+
+runBackgroundTick("Combat history", () => combatHistory.tick());
+setInterval(() => { void combatHistory.tick(); }, 30_000).unref?.();
 
 // Reconcile periodically because a Funcom database migration can recreate the
 // fulfilled-orders table and thereby remove third-party triggers. The service
@@ -1811,6 +1821,8 @@ async function handleApi(req, res, path) {
   if (path === "/api/realtime/healthz" && req.method === "GET") return realtimeRoute(res, () => realtime.health());
   if (path === "/api/realtime/objects" && req.method === "GET") return realtimeRoute(res, () => realtime.objects({ allowPlayers: principalMay(req, "players:read") }));
   if (path === "/api/realtime/stream" && req.method === "GET") return realtimeStreamRoute(req, res);
+  if (path === "/api/settings/realtime-agent" && req.method === "GET") return realtimeAgentRoute(res, () => realtimeAgent.status());
+  if (path === "/api/settings/realtime-agent" && req.method === "POST") return realtimeAgentToggleRoute(req, res);
   if (path === "/api/settings/encrypted-api" && req.method === "GET") return encryptedApiRoute(res, () => encryptedApi.status());
   if (path === "/api/settings/console-access/confirm" && req.method === "POST") {
     const body = await readJson(req);
@@ -1842,9 +1854,15 @@ async function handleApi(req, res, path) {
     });
   }
 
+  if (path === "/api/players/combat" && req.method === "GET") {
+    const controllerId = combatScope(url.searchParams.get("controllerId"));
+    return dbJson(res, () => combatHistory.read({ controllerId,
+      leaderboardLimit: url.searchParams.get("leaderboardLimit"), killsLimit: url.searchParams.get("killsLimit") }));
+  }
   if (path === "/api/players/list-settings" && req.method === "GET") {
     return json(res, 200, {
       ...playerListSettingsView(config.repoRoot),
+      ...await combatAvailability.read(),
       canConfigure: evaluate(session, "players:configure-list")
     });
   }
@@ -3078,11 +3096,36 @@ async function handleApi(req, res, path) {
   if (path === "/api/settings" && req.method === "POST") return writeConfig(req, res);
   if (path === "/api/settings") return json(res, 200, await setupState(remoteIpOf(req)));
   if (path === "/api/i18n/translate" && req.method === "POST") return handleI18nRoute({ req, res, path, url, config, auth, apiKeys, readJson, json });
-  if (path === "/api/i18n/key" && req.method === "POST") return handleI18nRoute({ req, res, path, url, config, auth, apiKeys, readJson, json });
-  if (path === "/api/i18n/key" && req.method === "DELETE") return handleI18nRoute({ req, res, path, url, config, auth, apiKeys, readJson, json });
-  if (path === "/api/i18n/settings" && req.method === "POST") return handleI18nRoute({ req, res, path, url, config, auth, apiKeys, readJson, json });
-  if (path === "/api/i18n/sync-all" && req.method === "POST") return handleI18nRoute({ req, res, path, url, config, auth, apiKeys, readJson, json });
-  if (path === "/api/i18n/suggestions" && req.method === "POST") return handleI18nRoute({ req, res, path, url, config, auth, apiKeys, readJson, json });
+  if (path === "/api/i18n/key" && req.method === "POST") {
+    if (!applyMutationRateLimit(req, res, "i18n.key")) return;
+    await handleI18nRoute({ req, res, path, url, config, auth, apiKeys, readJson, json });
+    audit(config, req, "i18n.save-key", { ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode });
+    return;
+  }
+  if (path === "/api/i18n/key" && req.method === "DELETE") {
+    if (!applyMutationRateLimit(req, res, "i18n.key")) return;
+    await handleI18nRoute({ req, res, path, url, config, auth, apiKeys, readJson, json });
+    audit(config, req, "i18n.delete-key", { ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode });
+    return;
+  }
+  if (path === "/api/i18n/settings" && req.method === "POST") {
+    if (!applyMutationRateLimit(req, res, "i18n.settings")) return;
+    await handleI18nRoute({ req, res, path, url, config, auth, apiKeys, readJson, json });
+    audit(config, req, "i18n.settings", { ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode });
+    return;
+  }
+  if (path === "/api/i18n/sync-all" && req.method === "POST") {
+    if (!applyMutationRateLimit(req, res, "i18n.sync-all")) return;
+    await handleI18nRoute({ req, res, path, url, config, auth, apiKeys, readJson, json });
+    audit(config, req, "i18n.sync-all", { ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode });
+    return;
+  }
+  if (path === "/api/i18n/suggestions" && req.method === "POST") {
+    if (!applyMutationRateLimit(req, res, "i18n.suggestions")) return;
+    await handleI18nRoute({ req, res, path, url, config, auth, apiKeys, readJson, json });
+    audit(config, req, "i18n.suggestion", { ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode });
+    return;
+  }
 
   return json(res, 404, { error: "Not found" });
 }
@@ -3284,6 +3327,34 @@ async function dispatchAddonBridgeAction(req, res, id, body, action) {
     const result = await hardwareStatus();
     audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, sensorCount: result.temperatures.length, ok: true });
     return json(res, 200, { ok: true, result });
+  }
+  if (action === "realtime.health" || action === "realtime.objects") {
+    const addon = assertInstalledAddonPermission(config, id, "realtime:read");
+    try {
+      let result;
+      if (action === "realtime.health") {
+        result = await realtime.health();
+      } else {
+        // Player objects leave only for an addon that also holds players:read,
+        // the same rule as the API key scope.
+        let allowPlayers = false;
+        try {
+          assertInstalledAddonPermission(config, id, "players:read");
+          allowPlayers = true;
+        } catch {}
+        result = await realtime.objects({ allowPlayers, ...parseObjectFilter({ kinds: body.kinds, map: body.map }) });
+      }
+      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: true });
+      return json(res, 200, { ok: true, result });
+    } catch (error) {
+      if (!(error instanceof RealtimeError)) throw error;
+      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: false, error: redact(error.message) });
+      // An agent that is not running is a state the addon shows, not a fault of
+      // the call: answer 200 with available:false so a polling addon needs no
+      // error handling for it. Bad input stays an error.
+      if (error.status === 400) return json(res, 400, { ok: false, error: error.message });
+      return json(res, 200, { ok: true, result: { available: false, error: error.message } });
+    }
   }
   if (action === "admin.items.grant") {
     const addon = assertInstalledAddonPermission(config, id, "admin:grant-items");
@@ -3975,16 +4046,75 @@ async function backupDownloadRoute(req, res, backupName) {
   if (!existsSync(metadataPath)) return json(res, 404, { error: "Backup metadata .yaml file was not found." });
 
   const archiveName = `${backupName}.tar.gz`;
-  const archive = createBackupDownloadArchive([
-    { name: backupName, content: readFileSync(backupPath) },
-    { name: `${backupName}.yaml`, content: readFileSync(metadataPath) }
-  ]);
+  const members = [
+    { name: backupName, path: backupPath, size: statSync(backupPath).size },
+    { name: `${backupName}.yaml`, path: metadataPath, size: statSync(metadataPath).size }
+  ];
   res.writeHead(200, withSecurityHeaders({
     "content-type": "application/gzip",
-    "content-length": archive.length,
     "content-disposition": `attachment; filename="${archiveName.replace(/"/g, "")}"`
   }));
-  res.end(archive);
+  const gzip = createGzip({ level: 1 });
+  gzip.on("error", () => {});
+  let currentSource = null;
+  let outError = null;
+  const outPromise = pipeline(gzip, res).catch((error) => {
+    outError = error;
+    if (currentSource && !currentSource.destroyed) currentSource.destroy(error);
+  });
+  const writeGzipChunk = async (chunk) => {
+    if (outError) throw outError;
+    if (gzip.destroyed || res.destroyed || res.writableEnded) {
+      throw outError || new Error("Backup download stream closed prematurely.");
+    }
+    if (!gzip.write(chunk)) {
+      await new Promise((resolveWrite, rejectWrite) => {
+        const onDrain = () => { cleanup(); resolveWrite(); };
+        const onClose = () => { cleanup(); rejectWrite(outError || new Error("Backup download stream closed prematurely.")); };
+        const onError = (error) => { cleanup(); rejectWrite(error); };
+        const cleanup = () => {
+          gzip.off("drain", onDrain);
+          gzip.off("close", onClose);
+          gzip.off("error", onError);
+        };
+        gzip.on("drain", onDrain);
+        gzip.on("close", onClose);
+        gzip.on("error", onError);
+      });
+    }
+    if (outError) throw outError;
+  };
+  try {
+    for (const member of members) {
+      await writeGzipChunk(createTarHeader(member.name, member.size));
+      let written = 0;
+      const source = createReadStream(member.path);
+      currentSource = source;
+      source.on("error", () => {});
+      source.on("data", (chunk) => {
+        written += chunk.length;
+        if (written > member.size) {
+          source.destroy(new Error("Backup file size changed during download."));
+        }
+      });
+      await pipeline(source, gzip, { end: false });
+      currentSource = null;
+      if (outError) throw outError;
+      if (written !== member.size) {
+        throw new Error("Backup file size changed during download.");
+      }
+      const padding = tarPadding(member.size);
+      if (padding) await writeGzipChunk(Buffer.alloc(padding, 0));
+    }
+    gzip.end(Buffer.alloc(TAR_TRAILER_BYTES, 0));
+    await outPromise;
+    if (outError) throw outError;
+  } catch (error) {
+    if (currentSource && !currentSource.destroyed) currentSource.destroy(error);
+    if (!gzip.destroyed) gzip.destroy(error);
+    await outPromise;
+    if (!res.destroyed) res.destroy();
+  }
 }
 
 async function backupAutoStatusRoute(res) {
@@ -4686,6 +4816,24 @@ function realtimeStreamRoute(req, res) {
     principal,
     allowPlayers: () => may("players:read"),
     stillAllowed: () => may("realtime:read")
+  });
+}
+
+async function realtimeAgentRoute(res, action) {
+  try {
+    return json(res, 200, await action(), { "cache-control": "no-store" });
+  } catch (error) {
+    if (error instanceof RealtimeAgentError) return json(res, error.status, { error: error.message });
+    throw error;
+  }
+}
+
+async function realtimeAgentToggleRoute(req, res) {
+  const body = await readJson(req);
+  return realtimeAgentRoute(res, async () => {
+    const status = await realtimeAgent.setEnabled(body?.enabled, { confirmed: body?.confirmed });
+    audit(config, req, body.enabled ? "settings.realtime-agent-install" : "settings.realtime-agent-remove", { running: status.running });
+    return status;
   });
 }
 
@@ -8622,7 +8770,7 @@ async function messageOfTheDayAutoTick() {
   messageOfTheDayAutoRunning = true;
   messageOfTheDayAutoLastRun = now;
   try {
-    const players = await duneDb.listAllPlayers(db, { status: "online" });
+    const players = await shareInFlight("online-players-10s", () => duneDb.listAllPlayers(db, { status: "online" }));
     if (players.capabilities?.players === false) return;
     const result = await runMessageOfTheDayScan(config, players.rows || [], { db });
     if (result.sent || result.failed) {
@@ -8660,7 +8808,7 @@ async function playerAnnouncementsAutoTick() {
   playerAnnouncementsAutoRunning = true;
   playerAnnouncementsAutoLastRun = now;
   try {
-    const players = await duneDb.listAllPlayers(db, { status: "online" });
+    const players = await shareInFlight("online-players-10s", () => duneDb.listAllPlayers(db, { status: "online" }));
     if (players.capabilities?.players === false) return;
     const result = await runPlayerAnnouncementScan(config, players.rows || [], { db });
     if (result.joined || result.left || result.sent || result.failed) {
