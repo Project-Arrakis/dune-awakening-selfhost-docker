@@ -24,6 +24,11 @@ test("list routes are scoped lists, own sub-resources are id-checked", () => {
   assert.deepEqual(c("/api/guilds/7/members", "GET"), { kind: "own-guild", id: "7" });
 });
 
+test("list-settings tells a player the PvP view is hidden and skips the combat lookup", () => {
+  const src = readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  assert.match(src, /resolveSessionTier\(session\) === "player" \? \{ pvpVisible: false \} : await combatAvailability\.read\(\)/);
+});
+
 test("the list-settings read is global config, so players may load the Players tab", () => {
   assert.deepEqual(c("/api/players/list-settings", "GET"), { kind: "global-read" });
   assert.deepEqual(c("/api/players/list-settings", "POST"), { kind: "deny" });

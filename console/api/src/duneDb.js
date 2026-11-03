@@ -1979,7 +1979,8 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
 
   let totalsResult = null;
   if (includeTotals) {
-    if (where === baseWhere && result.rows[0] && result.rows[0].actor_id !== null && result.rows[0].actor_id !== undefined) {
+    // The window total_count is the server-wide figure: never reuse it for a scoped (player) query.
+    if (scopedIds === null && where === baseWhere && result.rows[0] && result.rows[0].actor_id !== null && result.rows[0].actor_id !== undefined) {
       totalsResult = { rows: [{ total_players: Number(result.rows[0].total_count || 0) }] };
     } else {
       totalsResult = await db.query(`

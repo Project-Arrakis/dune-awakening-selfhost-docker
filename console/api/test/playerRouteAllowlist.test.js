@@ -33,6 +33,7 @@ const LEAKS = [
   "/api/server/readiness", "/api/map/status", "/api/server/performance", "/api/server/restart-history",
   "/api/base-backups", "/api/base-backups/7/export",
   "/api/players/deleted-characters",
+  "/api/players/combat", "/api/settings/realtime-agent", "/api/realtime/objects", "/api/realtime/healthz", "/api/realtime/stream", "/api/maps/combat-state",
   "/api/players/abc123/teleport-destinations", "/api/players/abc123/ban", "/api/players/abc123/character-recovery",
 ];
 
