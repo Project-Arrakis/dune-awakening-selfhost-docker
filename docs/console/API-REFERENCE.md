@@ -61,14 +61,14 @@ Complete reference for all HTTP API endpoints in the Dune Docker Console. All en
 
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|
-| GET | `/api/server/status` | Structured server status and command diagnostics | `raw?` (`0` omits legacy command output) |
+| GET | `/api/server/status` | Structured server status and command diagnostics | `raw?` (`0` omits legacy command output), `fresh?` (`1` skips cached snapshots) |
 | GET | `/api/server/performance` | Performance snapshot (CPU, memory, disk) | None |
-| GET | `/api/server/readiness` | Service readiness check | None |
+| GET | `/api/server/readiness` | Service readiness check | `fresh?` (`1` skips cached snapshots) |
 | GET | `/api/server/ports` | List service ports | None |
 | GET | `/api/server/services` | List services and status | None |
 | GET | `/api/server/doctor` | Run diagnostic check | None |
 | POST | `/api/server/network-bind/fix` | Fix network binding issue | None |
-| POST | `/api/server/storage/cleanup-images` | Clean obsolete Docker images | `confirmation: "CLEAN OBSOLETE DUNE IMAGES"` |
+| POST | `/api/server/storage/cleanup-images` | Clean unused Docker images across the host | `confirmation: "CLEAN UNUSED DOCKER IMAGES"` |
 | POST | `/api/server/storage/cleanup-build-cache` | Clean Docker build cache | `confirmation: "CLEAN DOCKER BUILD CACHE"` |
 | POST | `/api/server/start` | Start server | None |
 | POST | `/api/server/stop` | Stop server | None |
@@ -128,7 +128,7 @@ When the Restart Queue is enabled, the restart routes above (`/api/server/restar
 }
 ```
 
-Unavailable numeric and boolean values are `null`, and unavailable collections are empty arrays. `ok` reports whether the underlying status command completed successfully; health is reported separately in `data.summary.overall`. The legacy `operation`, `stdout`, `stderr`, and `exitCode` fields remain available for command diagnostics and backward compatibility. Add `?raw=0` to omit those legacy fields and return only the compact structured response. Status snapshots are cached briefly and refreshed in the background so frequent integration polling does not repeatedly block on the same host checks.
+Unavailable numeric and boolean values are `null`, and unavailable collections are empty arrays. `ok` reports whether the underlying status command completed successfully; health is reported separately in `data.summary.overall`. The legacy `operation`, `stdout`, `stderr`, and `exitCode` fields remain available for command diagnostics and backward compatibility. Add `?raw=0` to omit those legacy fields and return only the compact structured response. Status snapshots are cached briefly and refreshed in the background so frequent integration polling does not repeatedly block on the same host checks. Add `?fresh=1` to wait for a current reading instead. Responses carry `sampledAt`, when the command actually ran (a cached answer keeps its original time), and `fromCache`; both are absent when the command failed. Starting, stopping or restarting the Battlegroup discards cached snapshots. `/api/server/readiness` takes the same `fresh` parameter and returns the same two fields.
 
 ---
 
@@ -267,6 +267,17 @@ Player rows include `total_playtime_seconds`. The console samples `player_state.
 | POST | `/api/players/{playerId}/set-skill-points` | Set skill points | `points` (number) |
 | POST | `/api/players/{playerId}/set-skill-module` | Set skill module | `module` (string), `level` (number) |
 | POST | `/api/players/{playerId}/refill-water` | Refill hydration | `amount?` (number) |
+| GET | `/api/players/{playerId}/customizations` | Cosmetic catalog and current status | `playerId` |
+| POST | `/api/players/{playerId}/customizations/grant` | Grant a cosmetic or set | `itemId` or `groupId`, `confirmation: "GRANT CUSTOMIZATIONS"` |
+
+The Halloween 2026 set contains the Derelict Recovery Suit, both plague doctor
+mask variants, and the Halloween swatch. These four entries unlock directly in
+the character's customization list and require the player to be fully offline.
+They report `Unlocked`; repeated requests preserve the existing list and skip
+duplicates. Other sets retain their inventory-token delivery and entitlement
+requirements. The response separates `unlocked` from `delivered` and
+`requested`; per-entry `ownershipVerified` applies only to direct event unlocks.
+These customization IDs are excluded from the general inventory catalog.
 
 ### Player Actions (Kick/Teleport/Vehicles)
 
@@ -996,6 +1007,21 @@ Successful and partially delivered grants are preserved as compact eligibility r
 | POST | `/api/care-package/retry/{grantId}` | Retry failed grant | `grantId`, `confirmation` |
 | POST | `/api/care-package/enable` | Enable care package | `confirmation: "ENABLE CARE PACKAGE"` |
 | POST | `/api/care-package/disable` | Disable care package | `confirmation: "DISABLE CARE PACKAGE"` |
+
+---
+
+## Language (i18n)
+
+Added with upstream v1.4.58 to v1.4.60. `settings:write` is owner-only by default; the suggestion route uses its own `community:suggest-translation` action, which this fork grants to owner, admin and moderator but not to the player tier.
+
+| Method | Route | Description | Parameters |
+|--------|-------|-------------|------------|
+| POST | `/api/i18n/translate` | Machine-translate up to 250 texts | `lang`, `texts[]` |
+| POST | `/api/i18n/key` | Save the translation provider API key | `apiKey` |
+| DELETE | `/api/i18n/key` | Remove the saved translation provider API key | None |
+| POST | `/api/i18n/sync-all` | Sync all (or the listed) languages | `languages[]` (optional) |
+| POST | `/api/i18n/settings` | Update peer sync settings | `peerSyncEnabled`, `peers[]`, `replacePeers` |
+| POST | `/api/i18n/suggestions` | Submit a community translation suggestion | `lang`, `source`, `translation`, `credit` |
 
 ---
 

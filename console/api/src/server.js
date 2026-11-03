@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { isDirectCustomizationUnlock } from "./adminCatalog.js";
 import { pipeline } from "node:stream/promises";
 import { createServer as createNetServer } from "node:net";
 import { totalmem } from "node:os";
@@ -26,6 +27,8 @@ import { buildDuneArgs, isDynamicServerService, parseVehicleList, runDockerLogs,
 // execution decision from diverging.
 import { createDb, hasExecutableStatement, isReadOnlySql, quoteIdentifier } from "./db.js";
 import * as duneDb from "./duneDb.js";
+import { duneDbDomains } from "./duneDb/domains.js";
+import { API_ROUTE_DOMAINS, createExactRouteIndex } from "./http/routeTable.js";
 import { audit, installAuditShutdownHooks, recordAdminHistory } from "./audit.js";
 import { redact } from "./redact.js";
 import { buildingUnlockStatus, customizationGrantGroups, customizationGrantStatus, isBuildingUnlockItem, isCustomizationGrantItem, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, listCatalogItems, listCustomizationGrantItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemVolume } from "./adminCatalog.js";
@@ -71,6 +74,7 @@ import { discordAdapterEnabled, discordWritesEnabled } from "./integrations/disc
 import { resolveWriteBridgePrincipal } from "./integrations/discord/writeBridgeCredential.js";
 import { startWriteBridgeSocketServer } from "./integrations/discord/writeBridgeSocketServer.js";
 import { selfCheckWriteActionRoutes, checkConfirmPhrasesAgainstRealHandlers } from "./integrations/discord/writeActionRoutes.js";
+import { handleI18nRoute, isPublicOrMeshI18nRoute } from "./services/i18nService.js";
 import { initializeDiscordAdapterSchema } from "./integrations/discord/schema.js";
 import { customizationGrantOutcome, liveItemGrantOk, liveItemGrantPublished, liveItemGrantWarning, summarizeCustomizationGrantResults } from "./grantResults.js";
 import { primeMessageOfTheDayOnlineState, readMessageOfTheDay, recordMessageOfTheDayScanFailure, restoreMessageOfTheDay, runMessageOfTheDayScan, saveMessageOfTheDay } from "./services/messageOfTheDay.js";
@@ -111,6 +115,7 @@ import { createSharedDeleteBackup, flushBaseRefillQueues } from "./services/base
 import { verifyBaseBackupState } from "./services/baseBackupSafety.js";
 import { createSingleFlight } from "./services/singleFlight.js";
 import { createReadCommandCache } from "./services/readCommandCache.js";
+import { createStatusReads } from "./services/statusReads.js";
 import { banPlayer, bannedFlsIds, createPlayerBanEnforcer, playerBanFor, unbanPlayer } from "./services/playerBans.js";
 import { findPlayerForLiveAction, playerIsOnlineForLiveAction } from "./playerLiveActions.js";
 import { retireLegacyEdaExchangeBot } from "./services/marketBotRetirement.js";
@@ -163,8 +168,14 @@ const readCommandCache = createReadCommandCache();
 // Status commands walk Docker, PostgreSQL, RabbitMQ, and logs. Keep a fresh
 // snapshot briefly, then serve that bounded snapshot while one shared refresh
 // runs in the background. This avoids repeating several seconds of identical
-// host work for every integration poll.
-const statusCommandCache = createReadCommandCache({ ttlMs: 5000, staleMs: 30000 });
+// host work for every integration poll. ADMIN_STATUS_CACHE_MS=0 turns it off.
+const statusCommandCache = createReadCommandCache({ ttlMs: config.statusCacheMs, staleMs: config.statusCacheMs > 0 ? 30000 : 0 });
+const statusReads = createStatusReads({
+  statusCache: statusCommandCache,
+  readinessCache: readCommandCache,
+  argsFor: (operation) => buildDuneArgs(operation, {}),
+  runArgs: (args) => runDune(config, args)
+});
 const CONSOLE_PROCESS_STARTED_AT = Date.now();
 let edaRetirement = { retired: false, addonRemoved: false, migrated: false, changed: false, backupDir: "", cleanupError: "" };
 try {
@@ -635,6 +646,7 @@ async function playerScopeIds(session, db) {
 // this exact bug, un-guarded, was CRITICAL #756 in this design's own
 // history. The TCP listener below must NEVER omit this argument regardless.
 async function requestHandler(req, res, opts = {}) {
+  res.req = req; // json() reads Accept-Encoding from it to pick a compression
   // [Layer 3 integration audit fix, HIGH, issue #1036] This parse used to
   // run with no try/catch of its own, above/outside the function's main
   // try/catch below. A request-target Node's raw HTTP parser accepts but
@@ -980,9 +992,17 @@ function scheduleBootAutoStart() {
   }, 5000).unref?.();
 }
 
+let journeyTagsDataCache = null;
 function loadJourneyTagsData() {
+  const file = join(config.repoRoot, "runtime", "data", "journey-tags.json");
   try {
-    return JSON.parse(readFileSync(join(config.repoRoot, "runtime", "data", "journey-tags.json"), "utf8"));
+    const mtimeMs = statSync(file).mtimeMs;
+    if (journeyTagsDataCache && journeyTagsDataCache.file === file && journeyTagsDataCache.mtimeMs === mtimeMs) {
+      return journeyTagsDataCache.data;
+    }
+    const data = JSON.parse(readFileSync(file, "utf8"));
+    journeyTagsDataCache = { file, mtimeMs, data };
+    return data;
   } catch {
     return { journey_node_tags: {} };
   }
@@ -1441,6 +1461,9 @@ async function handleApi(req, res, path) {
   if (isDiscordAdapterRoute(path)) {
     return handleDiscordAdapterRoute({ req, res, path, config, readJson, json, db });
   }
+  if (isPublicOrMeshI18nRoute(path, req.method)) {
+    return handleI18nRoute({ req, res, path, url, config, auth, apiKeys, readJson, json });
+  }
 
   // Runs BEFORE requireAuth: that couples session lookup with a CSRF check,
   // and CSRF does not apply to bearer auth. Returns null when there is no
@@ -1529,13 +1552,13 @@ async function handleApi(req, res, path) {
   if (path === "/api/server/status") return serverStatusRoute(res, url);
   if (path === "/api/server/performance") return json(res, 200, await collectPerformanceSnapshot(config.repoRoot));
   if (path === "/api/server/restart-history") return json(res, 200, readRestartHistory(config));
-  if (path === "/api/server/readiness") return safeCommandJson(res, "readiness");
+  if (path === "/api/server/readiness") return readinessRoute(res, url);
   if (path === "/api/server/ports") return commandJson(res, "ports");
   if (path === "/api/server/services") return commandJson(res, "services");
   if (path === "/api/server/doctor") return safeCommandJson(res, "doctor");
   if (path === "/api/server/network-bind/fix" && req.method === "POST") return task(req, res, "server", "networkBindFix", {});
   if (path === "/api/server/storage/cleanup-images" && req.method === "POST") {
-    return confirmedTask(req, res, "storage", "storageCleanupImages", {}, "CLEAN OBSOLETE DUNE IMAGES");
+    return confirmedTask(req, res, "storage", "storageCleanupImages", {}, "CLEAN UNUSED DOCKER IMAGES");
   }
   if (path === "/api/server/storage/cleanup-build-cache" && req.method === "POST") {
     return confirmedTask(req, res, "storage", "storageCleanupBuildCache", {}, "CLEAN DOCKER BUILD CACHE");
@@ -1706,7 +1729,7 @@ async function handleApi(req, res, path) {
   if (path === "/api/database/schemas") return dbJson(res, () => duneDb.listSchemas(db));
   if (path === "/api/database/routines") return dbJson(res, () => duneDb.listRoutines(db, url.searchParams.get("schema") || "dune", url.searchParams.get("q") || ""));
   if (path.match(/^\/api\/database\/routines\/[^/]+$/)) return dbJson(res, () => duneDb.routineDefinition(db, decodeURIComponent(path.split("/").pop())));
-  if (path === "/api/database/tables") return dbJson(res, () => duneDb.listTables(db, url.searchParams.get("schema") || "dune"));
+  if (path === "/api/database/tables") return dbJson(res, () => duneDb.listTables(db, url.searchParams.get("schema") || "dune", { approximate: url.searchParams.get("approximate") === "1" }));
   if (path.match(/^\/api\/database\/tables\/[^/]+\/[^/]+\/columns$/)) return databaseTableRoute(req, res, path, "columns", url);
   if (path.match(/^\/api\/database\/tables\/[^/]+\/[^/]+\/preview$/)) return databaseTableRoute(req, res, path, "preview", url);
   if (path.match(/^\/api\/database\/tables\/[^/]+\/[^/]+\/count$/)) return databaseTableRoute(req, res, path, "count", url);
@@ -3045,13 +3068,21 @@ async function handleApi(req, res, path) {
   if (path === "/api/settings/experimental-tanks" && req.method === "GET") {
     const result = await runDune(config, buildDuneArgs("experimentalTanksStatus"));
     if (result.code !== 0) return json(res, 503, { error: result.stderr || "Experimental Tank settings could not be read." });
-    return json(res, 200, JSON.parse(result.stdout));
+    const queued = restartQueue.readState(config).entries.find((entry) => entry.operation === "experimentalTanksApply");
+    return json(res, 200, { ...JSON.parse(result.stdout), queuedEntryId: queued?.id || null,
+      queuedEnabled: typeof queued?.payload?.enabled === "boolean" ? queued.payload.enabled : null });
   }
   if (path === "/api/settings/experimental-tanks" && req.method === "POST") {
     return task(req, res, "settings", "experimentalTanksApply", await readJson(req));
   }
   if (path === "/api/settings" && req.method === "POST") return writeConfig(req, res);
   if (path === "/api/settings") return json(res, 200, await setupState(remoteIpOf(req)));
+  if (path === "/api/i18n/translate" && req.method === "POST") return handleI18nRoute({ req, res, path, url, config, auth, apiKeys, readJson, json });
+  if (path === "/api/i18n/key" && req.method === "POST") return handleI18nRoute({ req, res, path, url, config, auth, apiKeys, readJson, json });
+  if (path === "/api/i18n/key" && req.method === "DELETE") return handleI18nRoute({ req, res, path, url, config, auth, apiKeys, readJson, json });
+  if (path === "/api/i18n/settings" && req.method === "POST") return handleI18nRoute({ req, res, path, url, config, auth, apiKeys, readJson, json });
+  if (path === "/api/i18n/sync-all" && req.method === "POST") return handleI18nRoute({ req, res, path, url, config, auth, apiKeys, readJson, json });
+  if (path === "/api/i18n/suggestions" && req.method === "POST") return handleI18nRoute({ req, res, path, url, config, auth, apiKeys, readJson, json });
 
   return json(res, 404, { error: "Not found" });
 }
@@ -3429,7 +3460,8 @@ function addonContentRoute(req, res, path) {
     "x-frame-options": "SAMEORIGIN",
     "cache-control": "no-cache, no-store, must-revalidate",
     "pragma": "no-cache",
-    "expires": "0"
+    "expires": "0",
+    "content-security-policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'none'; frame-ancestors 'self'; sandbox allow-scripts"
   }));
   createReadStream(target).pipe(res);
 }
@@ -3967,8 +3999,13 @@ function includeRawStatus(url) {
 }
 
 async function serverStatusRoute(res, url) {
-  const result = config.mockMode ? mockCommand("status") : await safeCommand("status", {}, statusCommandCache);
-  return json(res, 200, buildServerStatusResponse(result, { includeRaw: includeRawStatus(url) }));
+  if (config.mockMode) return json(res, 200, buildServerStatusResponse(mockCommand("status"), { includeRaw: includeRawStatus(url) }));
+  return json(res, 200, await statusReads.status(url, { includeRaw: includeRawStatus(url) }));
+}
+
+async function readinessRoute(res, url) {
+  if (config.mockMode) return json(res, 200, mockCommand("readiness"));
+  return json(res, 200, await statusReads.readiness(url));
 }
 
 async function structuredVehiclesRoute(res) {
@@ -4964,6 +5001,8 @@ async function task(req, res, type, operation, payload, options = {}) {
   // independent counters.
   if (!applyMutationRateLimit(req, res, `task:${type}:${operation}`)) return;
   if (await maybeQueueRestart(req, res, type, operation, payload)) return;
+  // A server task changes what status/readiness report; don't serve the old answer.
+  if (type === "server") statusReads.invalidate();
   // Only `payload` is audited. Secrets travel in options.env, which is never
   // written to the audit log nor stored on the task -- keep it that way.
   audit(config, req, `task.${operation}`, payload);
@@ -7963,6 +8002,18 @@ async function customizationGrantRoute(req, res, path) {
       : { capabilities: { customizationPending: false }, pending: [] };
     const results = [];
     for (const item of selected) {
+      if (isDirectCustomizationUnlock(item)) {
+        try {
+          const result = await duneDb.unlockPlayerCustomization(db, target.actorId, { itemId: item.itemId });
+          results.push({ itemId: item.itemId, name: item.name, groupId: item.groupId,
+            ok: true, status: "Unlocked", unlocked: !result.alreadyUnlocked,
+            skipped: result.alreadyUnlocked, ownershipVerified: true });
+        } catch (error) {
+          results.push({ itemId: item.itemId, name: item.name, groupId: item.groupId,
+            ok: false, status: customizationGrantStatus(item.itemId, state), error: redact(error?.message || "Unexpected error.") });
+        }
+        continue;
+      }
       if (customizationGrantStatus(item.itemId, state) === "Pending") {
         results.push({ itemId: item.itemId, name: item.name, groupId: item.groupId, ok: true, status: "Pending", skipped: true });
         continue;
@@ -7988,9 +8039,10 @@ async function customizationGrantRoute(req, res, path) {
       }
     }
     const { ok, granted, requested, skipped, failed } = summarizeCustomizationGrantResults(results);
-    const delivered = granted;
-    audit(config, req, "players.customizations.grant", { playerId, itemId: body.itemId || null, groupId: body.groupId || null, delivered, requested, skipped, failed, ok, results });
-    return json(res, ok ? 200 : 207, { ok, delivered, granted, requested, skipped, failed, ownershipVerified: false, results });
+    const unlocked = results.filter((result) => result.unlocked).length;
+    const delivered = granted - unlocked;
+    audit(config, req, "players.customizations.grant", { playerId, itemId: body.itemId || null, groupId: body.groupId || null, delivered, unlocked, requested, skipped, failed, ok, results });
+    return json(res, ok ? 200 : 207, { ok, delivered, unlocked, granted, requested, skipped, failed, ownershipVerified: false, results });
   } catch (error) {
     audit(config, req, "players.customizations.grant", { playerId, itemId: body.itemId || null, groupId: body.groupId || null, ok: false, error: redact(error?.message || "Unexpected error.") });
     return json(res, 400, { ok: false, error: redact(error?.message || "Unexpected error.") });
@@ -7999,6 +8051,7 @@ async function customizationGrantRoute(req, res, path) {
 
 async function grantPlayerItem(playerId, item, target) {
   const resolved = item.itemId ? resolveCatalogItem(config.repoRoot, { itemId: item.itemId }) : resolveCatalogItem(config.repoRoot, item);
+  if (isDirectCustomizationUnlock(resolved)) throw new Error("Event cosmetics must be unlocked from Customizations while the player is offline.");
   const operation = resolved.itemId ? "adminGiveItemId" : "adminGiveItem";
   const hasExplicitGrade = item.quality !== undefined || item.grade !== undefined;
   const selectedGrade = hasExplicitGrade ? validateGrantGrade(item.quality ?? item.grade) : undefined;
