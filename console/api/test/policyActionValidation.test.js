@@ -142,7 +142,8 @@ test("a valid policy still saves, and the structural checks still run first", ()
 test("a save reports player-tier grants the strict player gate caps away", () => {
   const player = (Action) => ({ owner: ownerAllowAll, player: { version: 1, tier: "player", statements: [{ Effect: "Allow", Action }] } });
   assert.deepEqual(setPolicies(player(["players:read", "guilds:read"])).playerCappedActions, []);
-  assert.deepEqual(setPolicies(player(["bases:read"])).playerCappedActions, ["bases:read"]);
+  assert.deepEqual(setPolicies(player(["bases:read", "server:read", "vehicles:read", "storage:read"])).playerCappedActions, []);
+  assert.deepEqual(setPolicies(player(["maps:read"])).playerCappedActions, ["maps:read"]);
   restoreDefaults();
 });
 

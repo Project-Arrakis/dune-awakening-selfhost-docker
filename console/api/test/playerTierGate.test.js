@@ -5,7 +5,7 @@ import { classifyPlayerTierRequest as c, PLAYER_TIER_ACTIONS } from "../src/play
 import { listGuilds, guildIdsForPlayerControllers } from "../src/duneDb.js";
 
 test("player tier may only ever hold players:read and guilds:read", () => {
-  assert.deepEqual([...PLAYER_TIER_ACTIONS].sort(), ["guilds:read", "players:read"]);
+  assert.deepEqual([...PLAYER_TIER_ACTIONS].sort(), ["bases:read", "guilds:read", "players:read", "server:read", "storage:read", "vehicles:read"]);
 });
 
 test("routes outside /api/players and /api/guilds are not this gate's business", () => {
@@ -31,7 +31,7 @@ test("the list-settings read is global config, so players may load the Players t
 
 test("server.js closes player-action routes outside players/guilds to the player tier", () => {
   const src = readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
-  assert.match(src, /route\.kind === "open"\) return action \? notFound\(\) : false/);
+  assert.match(src, /route\.kind === "open"\) return action && !playerMayCall\(method, path\) \? notFound\(\) : false/);
   const actions = readFileSync(new URL("../src/actions.js", import.meta.url), "utf8");
   assert.match(actions, /"GET \/api\/maps\/choam-terminals\/capture":\s+"players:read"/);
 });

@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { listVehicles, liveMapVehicles } from "../src/duneDb.js";
+import { ownedListOptions, redactSharedWith } from "../src/playerOwnedScope.js";
 import { pgTransactionalDb, withIsolatedDatabase } from "../test-support/pgIntegrationDb.js";
 
 // Runs the real listVehicles query; db.test.js only asserts its SQL text.
@@ -329,5 +330,60 @@ test("real PostgreSQL: the access filter partitions a player's vehicles by owner
     // Another player's rows never leak in, and the filter is per player.
     assert.deepEqual(await mine(GURNEY, "owner"), [602, 605], "Gurney's account owns 602; rank 1 on 605");
     assert.deepEqual(await mine(GURNEY, "coowner"), []);
+  });
+});
+
+test("real PostgreSQL: the player tier lists only vehicles it owns and never another player's name (#1276)", async (t) => {
+  await withDatabase(t, async (db, pool) => {
+    const MINE = 701, CO = 702, ASSOC = 703, THEIRS = 704;
+    const DUNCAN_PAWN = 21, GURNEY_PAWN = 22;
+    await pool.query(`
+      alter table dune.encrypted_player_state add column player_pawn_id bigint;
+      create or replace view dune.player_state as
+        select id, account_id, player_controller_id, character_name, online_status, player_pawn_id
+        from dune.encrypted_player_state where character_state = 'Active';
+      insert into dune.actors (id, class, owner_account_id) values
+        (${DUNCAN_PAWN}, '/Game/Characters/BP_PlayerCharacter.BP_PlayerCharacter_C', ${DUNCAN.account}),
+        (${GURNEY_PAWN}, '/Game/Characters/BP_PlayerCharacter.BP_PlayerCharacter_C', ${GURNEY.account});
+      update dune.encrypted_player_state set player_pawn_id = ${DUNCAN_PAWN} where id = ${DUNCAN.character};
+      update dune.encrypted_player_state set player_pawn_id = ${GURNEY_PAWN} where id = ${GURNEY.character};
+      ${vehicle(MINE, "Sandbike", "Default")}
+      ${vehicle(CO, "Buggy", "Default")}
+      ${vehicle(ASSOC, "Buggy", "Default")}
+      ${vehicle(THEIRS, "Sandbike", "Default")}
+      update dune.actors set owner_account_id = ${DUNCAN.account} where id = ${MINE};
+      update dune.actors set owner_account_id = ${GURNEY.account} where id in (${CO}, ${ASSOC}, ${THEIRS});
+      insert into dune.permission_actor (actor_id, actor_name) values (${MINE}, 'm'), (${CO}, 'c'), (${ASSOC}, 'a'), (${THEIRS}, 't');
+      insert into dune.permission_actor_rank (permission_actor_id, player_id, rank) values
+        (${MINE}, ${DUNCAN.controller}, 1), (${MINE}, ${GURNEY.controller}, 3),
+        (${CO}, ${GURNEY.controller}, 1), (${CO}, ${DUNCAN.controller}, 2),
+        (${ASSOC}, ${GURNEY.controller}, 1), (${ASSOC}, ${DUNCAN.controller}, 3),
+        (${THEIRS}, ${GURNEY.controller}, 1);
+    `);
+    const session = { player_controller_id: String(DUNCAN.controller), player_pawn_id: String(DUNCAN_PAWN) };
+    // Hostile query: asks for another player and every rank.
+    const options = ownedListOptions(session, { playerId: String(GURNEY_PAWN), access: "all", pageSize: "200" });
+    const raw = await listVehicles(db, { ...options, sortColumn: "id" });
+    assert.equal(raw.capabilities.vehicles, true, raw.reason);
+    assert.ok(JSON.stringify(raw).includes("Gurney"), "the unredacted row carries the other player, so redaction is load-bearing");
+    const mine = redactSharedWith(raw);
+    assert.deepEqual(ids(mine).filter((id) => id >= 700), [MINE]);
+    assert.ok(!JSON.stringify(mine).includes("Gurney"));
+    // Search stays inside the owned set.
+    for (const q of ["Gurney", String(THEIRS), String(CO), String(ASSOC)]) {
+      assert.deepEqual(ids(await listVehicles(db, { ...options, q })).filter((id) => id >= 700), [], q);
+    }
+    // A vehicle Duncan's account still owns but whose rank 1 was reassigned to Gurney: the operator
+    // "owner" filter lists it, the player tier (rank 1 only) must not, or it shows Gurney's position.
+    const REASSIGNED = 705;
+    await pool.query(`
+      ${vehicle(REASSIGNED, "Sandbike", "Default")}
+      update dune.actors set owner_account_id = ${DUNCAN.account} where id = ${REASSIGNED};
+      insert into dune.permission_actor (actor_id, actor_name) values (${REASSIGNED}, 'r');
+      insert into dune.permission_actor_rank (permission_actor_id, player_id, rank) values (${REASSIGNED}, ${GURNEY.controller}, 1), (${REASSIGNED}, ${DUNCAN.controller}, 3);
+    `);
+    const operatorView = await listVehicles(db, { playerId: String(DUNCAN_PAWN), access: "owner", pageSize: 200 });
+    assert.ok(ids(operatorView).includes(REASSIGNED), "the operator owner filter keeps its account-owner semantics");
+    assert.ok(!ids(await listVehicles(db, { ...options, sortColumn: "id" })).includes(REASSIGNED), "the player tier lists rank 1 only");
   });
 });

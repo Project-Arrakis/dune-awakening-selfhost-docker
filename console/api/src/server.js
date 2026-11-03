@@ -67,6 +67,7 @@ import { actionForRoute, ROUTE_ACTIONS, NAMESPACES } from "./actions.js";
 import { resolvePlayerScope } from "./playerScope.js";
 import { evaluate, loadPolicies, getAllPolicies, getPolicyNotices, policyRevision, setPolicies, resolveAllowedActions, allKnownActions, resolveSessionTier, normalizeTier } from "./policy.js";
 import { classifyPlayerTierRequest, PLAYER_TIER_ACTIONS } from "./playerTierGate.js";
+import { playerMayCall, playerOwnedAssetsBody, effectiveAccess, effectiveSortColumn, ownedViewForSession, statusBodyForSession } from "./playerOwnedScope.js";
 import { discordAdapterEnabled, discordWritesEnabled } from "./integrations/discord/adapter.js";
 // [Layer 3 integration audit fix, LOW, issue #1043] The 5 header constants
 // and getWriteBridgeToken previously imported here became dead once
@@ -581,6 +582,22 @@ async function resolvePlayerScopedIds(session, db) {
   return resolvePlayerScope(session, (userId) => duneDb.getAllLinkedPlayers(db, userId));
 }
 
+// Shown to a player whose Discord account has no linked character (same wording the
+// Discord adapter uses for the link flow).
+const PLAYER_LINK_INSTRUCTIONS = Object.freeze({
+  reason: "Your Discord account isn't linked to a player character yet.",
+  linkCommand: "/dune player link <character-name>",
+  verifyCommand: "/dune player verify <code>",
+  message: "In Discord, run /dune player link <your character name>. You'll receive a private in-game whisper with a verification code -- run /dune player verify <code> to finish linking. Once linked, your own player and guild will appear here."
+});
+
+// GET /api/bases | /api/vehicles | /api/storage for the `player` tier: only the
+// assets the caller owns (permission rank 1; not co-owned, not shared). The
+// scope comes from the linked character, never from the request.
+function playerOwnedAssetsRoute(res, session, path, url) {
+  return dbJson(res, () => playerOwnedAssetsBody({ duneDb, db, session, path, query: Object.fromEntries(url.searchParams), linkInstructions: PLAYER_LINK_INSTRUCTIONS }));
+}
+
 // Second gate for the strict player tier (see playerTierGate.js). Returns true
 // when it has already answered the request. Fails closed: any lookup error is a 404.
 async function enforcePlayerTier(res, path, method, action, session) {
@@ -594,8 +611,10 @@ async function enforcePlayerTier(res, path, method, action, session) {
   if (route.kind === "deny") return notFound();
   // A route outside /api/players and /api/guilds that still carries a player action (the
   // choam-terminals capture reads any character's position) has no ownership rule here,
-  // so it is closed to the player tier rather than left to take a raw playerId.
-  if (route.kind === "open") return action ? notFound() : false;
+  // so it is closed to the player tier rather than left to take a raw playerId. The one
+  // exception is the short list in playerOwnedScope.js (#1276): server health and the
+  // owned bases/vehicles/storage lists, each scoped or reduced in its own handler.
+  if (route.kind === "open") return action && !playerMayCall(method, path) ? notFound() : false;
   try {
     const scope = await resolvePlayerScopedIds(session, db);
     if (route.kind === "own-player") {
@@ -1409,7 +1428,7 @@ async function handleApi(req, res, path) {
       linkedCharacters,
       secondFactorEnrolled,
       secondFactorUnavailable: factorStoreUnavailable,
-      allowedActions: SETUP_SCOPES.has(session.scope) ? [] : resolveAllowedActions(session.tier || "owner")
+      allowedActions: SETUP_SCOPES.has(session.scope) ? [] : resolveAllowedActions(resolveSessionTier(session))
     });
   }
   if (path === "/api/auth/characters" && req.method === "GET") {
@@ -1549,7 +1568,7 @@ async function handleApi(req, res, path) {
   if (path === "/api/public-directory/status") return json(res, 200, publicDirectory.publicState());
   if (path.startsWith("/api/setup/tasks/")) return taskRoute(req, res, path);
 
-  if (path === "/api/server/status") return serverStatusRoute(res, url);
+  if (path === "/api/server/status") return serverStatusRoute(res, url, session);
   if (path === "/api/server/performance") return json(res, 200, await collectPerformanceSnapshot(config.repoRoot));
   if (path === "/api/server/restart-history") return json(res, 200, readRestartHistory(config));
   if (path === "/api/server/readiness") return readinessRoute(res, url);
@@ -1901,6 +1920,7 @@ async function handleApi(req, res, path) {
     if (resolveSessionTier(session) !== "player" || !Array.isArray(members.rows)) return members;
     return { ...members, rows: members.rows.map(({ character_name, role_id }) => ({ character_name, role_id })) };
   });
+  if (resolveSessionTier(session) === "player" && (path === "/api/bases" || path === "/api/vehicles" || path === "/api/storage")) return playerOwnedAssetsRoute(res, session, path, url);
   if (path === "/api/bases") return dbJson(res, () => duneDb.listBases(db, {
     q: url.searchParams.get("q") || "",
     page: url.searchParams.get("page") || 0,
@@ -2077,16 +2097,16 @@ async function handleApi(req, res, path) {
   if (path.match(/^\/api\/players\/[^/]+\/customizations$/) && req.method === "GET") return customizationGrantsRoute(res, path);
   if (path.match(/^\/api\/players\/[^/]+\/journey$/)) return dbPlayerRoute(res, path, (database, playerId) => duneDb.playerJourney(database, playerId, journeyTagsData));
   if (path.match(/^\/api\/players\/[^/]+\/inventory$/)) return dbPlayerRoute(res, path, duneDb.playerInventoryAll);
-  if (path.match(/^\/api\/players\/[^/]+\/vehicles$/) && req.method === "GET") return dbPlayerRoute(res, path, (database, playerId) => duneDb.listVehicles(database, { playerId, pageSize: 200, access: playerAccessParam(url) }));
-  if (path.match(/^\/api\/players\/[^/]+\/bases$/) && req.method === "GET") return dbPlayerRoute(res, path, (database, playerId) => duneDb.listBases(database, {
+  if (path.match(/^\/api\/players\/[^/]+\/vehicles$/) && req.method === "GET") return dbPlayerRoute(res, path, async (database, playerId) => ownedViewForSession(session, await duneDb.listVehicles(database, { playerId, pageSize: 200, access: effectiveAccess(session, playerAccessParam(url)), rankOneOnly: resolveSessionTier(session) === "player" })));
+  if (path.match(/^\/api\/players\/[^/]+\/bases$/) && req.method === "GET") return dbPlayerRoute(res, path, async (database, playerId) => ownedViewForSession(session, await duneDb.listBases(database, {
     playerId,
     q: url.searchParams.get("q") || "",
     page: 0,
     pageSize: 5000,
-    access: playerAccessParam(url),
-    sortColumn: url.searchParams.get("sortColumn") || "name",
+    access: effectiveAccess(session, playerAccessParam(url)),
+    sortColumn: effectiveSortColumn(session, url.searchParams.get("sortColumn") || "name"),
     sortDirection: url.searchParams.get("sortDirection") || "asc"
-  }));
+  })));
   if (path.match(/^\/api\/players\/[^/]+\/currency$/)) return dbPlayerRoute(res, path, duneDb.playerCurrency);
   if (path.match(/^\/api\/players\/[^/]+\/solaris-coin$/)) return dbPlayerRoute(res, path, duneDb.playerSolarisCoinTotal);
   if (path.match(/^\/api\/players\/[^/]+\/factions$/)) return dbPlayerRoute(res, path, (database, playerId) => duneDb.playerFactions(database, playerId, journeyTagsData));
@@ -3998,9 +4018,10 @@ function includeRawStatus(url) {
   return !["0", "false", "no"].includes(value);
 }
 
-async function serverStatusRoute(res, url) {
-  if (config.mockMode) return json(res, 200, buildServerStatusResponse(mockCommand("status"), { includeRaw: includeRawStatus(url) }));
-  return json(res, 200, await statusReads.status(url, { includeRaw: includeRawStatus(url) }));
+async function serverStatusRoute(res, url, session) {
+  const forSession = (body) => statusBodyForSession(session, body);
+  if (config.mockMode) return json(res, 200, forSession(buildServerStatusResponse(mockCommand("status"), { includeRaw: includeRawStatus(url) })));
+  return json(res, 200, forSession(await statusReads.status(url, { includeRaw: includeRawStatus(url) })));
 }
 
 async function readinessRoute(res, url) {
