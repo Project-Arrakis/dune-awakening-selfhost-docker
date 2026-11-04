@@ -1061,48 +1061,76 @@ cat > "$case16_root/altbin/docker" <<'STUB'
 #!/usr/bin/env bash
 case "${1:-} ${2:-}" in
   "ps --format") printf '%s\n' dune-postgres ;;
-  *) sleep 30 ;;
+  *) touch "$DUNE_TEST_RESTORE_BLOCKED_FILE"; sleep 30 ;;
 esac
 STUB
 chmod +x "$case16_root/altbin/docker"
 
+# Force a separate background process group so setsid has to fork. Its launcher
+# PID is then NOT the restore's process-group ID, as it can also be under CI.
+# Exercise that case on every run instead of depending on the caller's shell.
+set -m
 (
   cd "$case16_root/work"
   # runDune starts db.sh as its own process group and signals the whole group
   # on cancellation. Mirror that here: killing only the parent shell leaves a
   # stalled docker grandchild alive, so bash defers the cleanup trap until that
   # child returns and this test becomes timing-dependent.
+  # The nested shell must expand its own PID and environment after setsid.
+  # shellcheck disable=SC2016
   exec env PATH="$case16_root/altbin:$bin_dir:$PATH" TMPDIR="$case16_root/tmp" \
     DUNE_SYSTEM_BACKUP_PASSPHRASE="$TEST_PASSPHRASE" DUNE_DB_ASSUME_YES=1 \
-    setsid bash runtime/scripts/db.sh restore-system "$case16_archive"
+    DUNE_TEST_RESTORE_GROUP_FILE="$case16_root/restore-group" \
+    DUNE_TEST_RESTORE_BLOCKED_FILE="$case16_root/restore-blocked" \
+    setsid --wait bash -c '
+      printf "%s\n" "$$" > "$DUNE_TEST_RESTORE_GROUP_FILE"
+      exec bash runtime/scripts/db.sh restore-system "$1"
+    ' restore-test "$case16_archive"
 ) > "$case16_root/restore.log" 2>&1 &
 case16_pid=$!
+set +m
 
-# Wait for the extracted secret to actually appear before signalling, rather
-# than racing a fixed sleep against it.
+# Wait until the extracted secret exists AND database validation is stalled.
+# Seeing a secret alone could signal while extraction is still in progress.
 case16_ready=0
+case16_group=""
 for _ in $(seq 1 200); do
-  if grep -rqs "$SECRET_FUNCOM_TOKEN" "$case16_root/tmp" 2>/dev/null; then
+  if [ -f "$case16_root/restore-group" ]; then
+    case16_group="$(cat "$case16_root/restore-group")"
+    [[ "$case16_group" =~ ^[1-9][0-9]*$ ]] || exit 1
+  fi
+  if [ -n "$case16_group" ] && [ -f "$case16_root/restore-blocked" ] \
+      && grep -rqs "$SECRET_FUNCOM_TOKEN" "$case16_root/tmp" 2>/dev/null; then
     case16_ready=1
     break
   fi
   sleep 0.1
 done
 if [ "$case16_ready" -ne 1 ]; then
-  kill -TERM -- "-$case16_pid" 2>/dev/null || true
+  if [ -n "$case16_group" ]; then
+    kill -TERM -- "-$case16_group" 2>/dev/null || true
+  fi
   wait "$case16_pid" 2>/dev/null || true
   echo "FAIL restore-sigterm-leaves-no-plaintext: the staged plaintext never appeared, so a signal here would prove nothing"
   cat "$case16_root/restore.log"
   exit 1
 fi
 
-kill -TERM -- "-$case16_pid" 2>/dev/null || true
-wait "$case16_pid" 2>/dev/null || true
-# The trap runs once bash regains control from the stalled child.
-for _ in $(seq 1 100); do
-  grep -rqs "$SECRET_FUNCOM_TOKEN" "$case16_root/tmp" 2>/dev/null || break
-  sleep 0.1
-done
+# Verify the exact cancellation target and delivery, rather than hiding a kill
+# failure and claiming that an unsignalled restore leaked plaintext.
+case16_actual_group="$(ps -o pgid= -p "$case16_group" | tr -d ' ')"
+[ "$case16_actual_group" = "$case16_group" ] || exit 1
+[ "$case16_group" != "$case16_pid" ] || {
+  echo "FAIL restore-sigterm-leaves-no-plaintext: setsid fork regression was not exercised"
+  exit 1
+}
+kill -TERM -- "-$case16_group"
+case16_status=0
+wait "$case16_pid" 2>/dev/null || case16_status=$?
+[ "$case16_status" -eq 143 ] || {
+  echo "FAIL restore-sigterm-leaves-no-plaintext: expected cancellation exit 143, got $case16_status"
+  exit 1
+}
 
 assert_no_plaintext_leak restore-sigterm-leaves-no-plaintext "$case16_root/tmp"
 echo "PASS restore-sigterm-leaves-no-plaintext"

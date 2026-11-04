@@ -292,6 +292,7 @@ export const DEFAULT_POLICIES = {
     version: 1,
     tier: "admin",
     statements: [
+      { Effect: "Allow", Action: "community:suggest-translation" },
       { Effect: "Allow", Action: [
         "setup:*",
         "server:*",
@@ -315,6 +316,7 @@ export const DEFAULT_POLICIES = {
         "landsraad:*",
         "addons:*",
         "carepackage:*",
+        "realtime:*",
       ]},
       { Effect: "Deny", Action: [
         "settings:*",
@@ -355,6 +357,7 @@ export const DEFAULT_POLICIES = {
     version: 1,
     tier: "moderator",
     statements: [
+      { Effect: "Allow", Action: "community:suggest-translation" },
       { Effect: "Allow", Action: [
         "server:read",
         "maps:read",
@@ -379,6 +382,7 @@ export const DEFAULT_POLICIES = {
     version: 1,
     tier: "player",
     statements: [
+      { Effect: "Allow", Action: "community:suggest-translation" },
       { Effect: "Allow", Action: [
         "server:read",
         "maps:read",
@@ -399,6 +403,7 @@ export const DEFAULT_POLICIES = {
     version: 1,
     tier: "observer",
     statements: [
+      { Effect: "Allow", Action: "community:suggest-translation" },
       { Effect: "Allow", Action: [
         "server:read",
         "maps:read",

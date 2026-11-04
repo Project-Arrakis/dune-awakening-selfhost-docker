@@ -1,4 +1,5 @@
 import { api, post } from "./client";
+import { accessQuery, type PlayerAccessFilter } from "../lib/playerAccess";
 
 export type RefillDeviceResult = {
   placeableId: string;
@@ -54,6 +55,8 @@ export type AutoRefillBase = {
 export type AutoRefillState = {
   supported: boolean;
   thresholdPercent: number;
+  // Windtraps are scanned with the generators but against their own threshold.
+  windtrapThresholdPercent: number;
   intervalHours: number;
   nextRunAt: string;
   lastRunAt: string;
@@ -63,12 +66,13 @@ export type AutoRefillState = {
   bases: AutoRefillBase[];
 };
 
-// The four tunables shared by both auto-refill scanners. Layered console file
+// The five tunables shared by both auto-refill scanners. Layered console file
 // > env var > hardcoded default, which is why the payload carries more than
 // the values: `sources` says which layer won, and `defaults` is what Reset
 // restores (the env value where one is set, not the hardcoded fallback).
 export type AutoRefillSettingKey =
   | "thresholdPercent"
+  | "windtrapThresholdPercent"
   | "intervalHours"
   | "waterThresholdPercent"
   | "waterIntervalHours";
@@ -144,8 +148,8 @@ export type AutoRefillWaterState = {
 
 // Storage containers plus the refining, crafting, and other inventories
 // (recycler, repair station, the base's own Sub-Fief console) at a base.
-// Generator and windtrap fuel is deliberately absent -- the Power and Water
-// tabs own it.
+// Generator fuel and windtrap filters are deliberately absent -- the Power tab
+// owns them.
 export type BaseInventoryGroupKey = "storage" | "refining" | "crafting" | "other";
 
 export type BaseInventoryGroup = {
@@ -454,7 +458,7 @@ export type BasesListResponse = {
   reason?: string;
 };
 
-type BasesListParams = { q?: string; page?: number; pageSize?: number; sortColumn?: string; sortDirection?: "asc" | "desc" };
+type BasesListParams = { q?: string; page?: number; pageSize?: number; sortColumn?: string; sortDirection?: "asc" | "desc"; access?: PlayerAccessFilter };
 
 function basesListQuery(params: BasesListParams) {
   const search = new URLSearchParams();
@@ -463,7 +467,7 @@ function basesListQuery(params: BasesListParams) {
   if (params.pageSize) search.set("pageSize", String(params.pageSize));
   if (params.sortColumn) search.set("sortColumn", params.sortColumn);
   if (params.sortDirection) search.set("sortDirection", params.sortDirection);
-  const qs = search.toString();
+  const qs = [search.toString(), accessQuery(params.access)].filter(Boolean).join("&");
   return qs ? `?${qs}` : "";
 }
 

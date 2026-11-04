@@ -102,7 +102,7 @@ PY
 # state files are redirected to a scratch directory and the script's own
 # repo-root `cd` (meant for direct execution, not sourcing) is stripped.
 tail_line=""
-if ! tail_line="$(grep -n '^follow_director_hagga_handoffs &' "$script" | head -n1 | cut -d: -f1)"; then
+if ! tail_line="$(grep -n '^start_director_log_cache$' "$script" | head -n1 | cut -d: -f1)"; then
   echo "could not find main-loop tail marker in $script" >&2
   exit 1
 fi

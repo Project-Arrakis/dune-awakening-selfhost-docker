@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
-import { Circle, Info, X } from "lucide-react";
+import { Pencil, X } from "lucide-react";
 import { playersApi } from "../../api/players";
 import { adminApi } from "../../api/admin";
 import { DataTable, useSortableRows } from "../../components/common/DataTable";
-import { TechnicalDetails } from "../../components/common/DisplayPrimitives";
+import { InfoTooltip, TechnicalDetails } from "../../components/common/DisplayPrimitives";
 import { AugmentDropdown } from "../../components/common/AugmentDropdown";
 import { ItemGradeSelect } from "../../components/common/ItemCatalog";
 import { formatUiSentence, friendlyColumnName } from "../../lib/display";
@@ -357,7 +357,7 @@ export function PlayerDetailTab({
       if (column === "item_name") {
         const name = value == null || value === "" ? "—" : String(value);
         const templateId = String(row.template_id || "");
-        return <span className="inventory-item-name">{name}{templateId && <span className="inventory-name-info" title={`Template ID: ${templateId}`} aria-label={`Template ID: ${templateId}`}><Info size={13} /></span>}</span>;
+        return <span className="inventory-item-name">{name}{templateId && <InfoTooltip id={`inventory-template-${String(row.id)}`} label={`About ${value == null || value === "" ? templateId : name}`} portal>{`Template ID: ${templateId}`}</InfoTooltip>}</span>;
       }
       if (Array.isArray(value)) return value.join(", ");
       return value == null || value === "" ? "—" : String(value);
@@ -369,7 +369,7 @@ export function PlayerDetailTab({
 
   return <div className="player-inventory-detail">
     {data?.reason ? <p className="danger-note">{formatUiSentence(data.reason)}</p> : null}
-    {message && <div className={`result-panel transient-result ${messageTone === "success" ? "success-result" : ""}`}><strong>{messageTone === "success" ? "Applied Successfully" : "Mutation Result."}</strong><p>{formatUiSentence(message)}</p>{messageDetails && <TechnicalDetails text={messageDetails} />}</div>}
+    {message && <div className={`result-panel transient-result ${messageTone === "success" ? "success-result" : ""}`}><strong>{messageTone === "success" ? "Applied Successfully" : "Result"}</strong><p>{formatUiSentence(message)}</p>{messageDetails && <TechnicalDetails text={messageDetails} />}</div>}
     <DataTable
       rows={inventorySort.sortedRows}
       columns={inventoryColumns}
@@ -380,7 +380,7 @@ export function PlayerDetailTab({
       action={(row) => {
         const canUseAugments = !isSchematics && inventoryItemCanUseAugments(row);
         return <span className="icon-toggle-group">
-          <button className="icon-toggle-button success" title="Edit item" aria-label="Edit item" onClick={(event) => { event.stopPropagation(); startEditItem(row); }}><Circle size={16} /></button>
+          <button className="icon-toggle-button success" title="Edit item" aria-label="Edit item" onClick={(event) => { event.stopPropagation(); startEditItem(row); }}><Pencil size={16} /></button>
           {canUseAugments && <button className="icon-toggle-button accent" title={playerIsOnline ? "Player must be offline to apply augments" : "Apply Augments"} aria-label="Apply Augments" disabled={playerIsOnline} onClick={(event) => { event.stopPropagation(); startApplyAugments(row); }}>+A</button>}
           <button className="icon-toggle-button danger" title="Delete item" aria-label="Delete item" onClick={(event) => { event.stopPropagation(); void deleteItem(row); }}><X size={16} /></button>
         </span>;

@@ -1,6 +1,8 @@
 # Base Inventory
 
-The **Inventory** tab on an expanded base row (Bases panel → expand a base → Power / Water / Inventory / Sub-Fief Permissions) lists everything stored at that base. Reads are a snapshot; a container's contents can be opened per slot and individual items deleted.
+**Status:** Current | **Last Updated:** November 2026
+
+The **Inventory** tab on an expanded base row (Bases panel → expand a base → Power / Water / Inventory / Land Claim Editor / Sub-Fief Permissions / Base Permissions) lists everything stored at that base. Reads are a snapshot; a container's contents can be opened per slot and individual items deleted.
 
 Backed by `GET /api/bases/{baseId}/inventory` → `duneDb.baseInventory()`, plus
 `GET /api/bases/{baseId}/containers/{placeableId}` → `duneDb.baseContainerSlots()` for one container's
@@ -14,7 +16,7 @@ Classification is an explicit `building_type` allowlist in `BASE_INVENTORY_TYPES
 |---|---|
 | Storage | `storagecontainer` → Storage Container · `mediumstoragecontainer`† → Medium Storage Container (100 slots) · `developer_storagecontainer` → Developer Storage Container · `genericcontainer` → **Chest** · `spicesilo` and `smallstoragecontainer`† → **Small Storage Container** |
 | Refining | `smallorerefinery` · `mediumorerefinery` · `largeorerefinery`† · `smallchemicalrefinery` · `mediumchemicalrefinery` → matching names; `spicerefinery` → Spice Refinery · `mediumspicerefinery`† · `largespicerefinery`† |
-| Crafting | `fabricator` → Fabricator · `survivalfabricator` · `vehiclesfabricator` · `weaponsfabricator` · `wearablesfabricator` → Garment Fabricator · plus `advancedsurvivalfabricator`†, `advancedvehiclefabricator`† (singular), `advancedweaponsfabricator`†, `advancedwearablesfabricator`† → Advanced … |
+| Crafting | `fabricator` → Fabricator · `survivalfabricator` · `vehiclesfabricator` · `weaponsfabricator` · `wearablesfabricator` → Garment Fabricator · plus `advanced_survivalfabricator` and `advanced_vehiclesfabricator` (literal underscore after `Advanced`, vehicles plural; both confirmed on real placed buildings), and `advancedweaponsfabricator`†, `advancedwearablesfabricator`† (no underscore) → Advanced … |
 | Other | `recycler` → Recycler · `repairstation` → Repair Station · `totem_small` → **Sub-Fief Console** · `totem` → **Advanced Sub-Fief** |
 
 All suffixed `_placeable`. † marks a type not present in any database seen so far — it is in the allowlist because the game ships it, not because it has been observed in use.
@@ -27,13 +29,13 @@ Every string was verified against the shipped server paks, where each building c
 docker exec dune-server-survival-1 bash -c 'cat /home/dune/server/DuneSandbox/Content/Paks/*.pak | grep -aoE "DA_BLD_[A-Za-z0-9_]+_Placeable" | sed "s/^DA_BLD_//" | sort -u'
 ```
 
-That is what caught `AdvancedVehicleFabricator_Placeable` being **singular** while its own base building, `VehiclesFabricator_Placeable`, is plural. The reverse does not hold: the extraction is lossy — `SpiceSilo_Placeable`, `SmallOreRefinery_Placeable` and `Fabricator_Placeable` all fail to appear despite being live on the same server, and a handful of results come back truncated at compression boundaries (`MediumorageContainer_Placeable`, `RepairSta_Placeable`). Presence is proof; absence is not.
+That is what established the plural `VehiclesFabricator_Placeable`. The pak asset names for the Advanced Survival and Vehicles fabricators do not match the instantiated `building_type` (real placements carry `Advanced_SurvivalFabricator_Placeable` and `Advanced_VehiclesFabricator_Placeable`), so pak presence proves an asset exists, not the exact instantiated string. The reverse does not hold: the extraction is lossy — `SpiceSilo_Placeable`, `SmallOreRefinery_Placeable` and `Fabricator_Placeable` all fail to appear despite being live on the same server, and a handful of results come back truncated at compression boundaries (`MediumorageContainer_Placeable`, `RepairSta_Placeable`). Presence is proof; absence is not.
 
 `Developer_StorageContainer_Placeable` was verified from a live server database (9 placements). It is included explicitly in the Storage page, Live Map storage markers, and this base inventory allowlist; it is not inferred from `inventory_type`.
 
 `SpiceSilo_Placeable` and `SmallStorageContainer_Placeable` are both listed and both labelled "Small Storage Container": the former is the legacy name every live placement still carries (48 on production against 0 of the latter), the latter is the asset name shipped in the paks. Anything not listed is omitted rather than bucketed, matching the allowlist reasoning in `portalGeneratorFuel`'s `generator_spec` CTE — an unrecognised placeable must not acquire a group and report an invented fill level.
 
-Generator and windtrap fuel is deliberately absent; the Power and Water tabs own it.
+Generator fuel and windtrap filters are deliberately absent; the Power tab owns them. Stored water on windtraps is owned by the Water tab.
 
 ## Why not classify on `inventory_type`
 
@@ -88,7 +90,7 @@ agreed to. The overlay is a snapshot, so this case is reachable in normal use.
 **Ownership is re-resolved, never trusted.** The delete re-runs this page's claim CTEs from the base id
 rather than believing the `placeableId` it was handed, and keeps the `inventory_types` allowlist join plus
 `is_hologram = false` and `max_item_count >= 0`. That allowlist is what stops a delete reaching the
-generator and windtrap fuel inventories the Power and Water tabs own — a placeable outside
+generator fuel and windtrap filter inventories the Power tab owns — a placeable outside
 `BASE_INVENTORY_TYPES` answers "not found" even when it genuinely belongs to the base.
 
 The row lock is `for update of i, inv`, not a bare `for update`: Postgres cannot lock a CTE reference, and
@@ -181,7 +183,7 @@ that theory wrong:
   has **never** gated on map state at all, and has been tested for hours and shipped without incident. This
   is the established precedent this feature now matches.
 - The live game engine only reads/claims a container's item rows from Postgres **at server startup** — proven
-  directly by `docs/incidents/INC-2026-07-31-FILL-ITEMS-VISIBLE-ONLY-AFTER-RESTART.md`'s audit-trigger
+  directly by incident `INC-2026-07-31-001`'s audit-trigger
   evidence, never mid-session. A database-side delete while the map stays running is therefore exactly as
   safe as Give/Fill's own inserts already are (see "Why Give/Fill do not require a stopped map" below): the
   change is durably correct in the database immediately, it simply is not reflected in whatever the live map
@@ -730,8 +732,8 @@ about a row that did not exist a moment ago — this was true even back when Del
 map, which is why Give/Fill never gated on map state in the first place.
 
 The tradeoff this creates: a given/filled item is **not visible in-game until the Survival server
-restarts** — the game engine only claims newly-inserted `dune.items` rows at process startup (see
-`docs/incidents/INC-2026-07-31-FILL-ITEMS-VISIBLE-ONLY-AFTER-RESTART.md` for the full investigation). A
+restarts** — the game engine only claims newly-inserted `dune.items` rows at process startup (incident
+`INC-2026-07-31-001`). A
 deleted item shares a version of the same limitation in the other direction: the database row is gone
 immediately, but if the engine had already claimed and loaded that row into its own live state, the live
 map keeps showing it until the next restart. The console UI states the Give/Fill restart requirement

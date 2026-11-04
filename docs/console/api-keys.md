@@ -1,13 +1,13 @@
 # API Keys
 
-**Status:** Current | **Last Updated:** August 2026
+**Status:** Current | **Last Updated:** November 2026
 
 Named, revocable credentials for calling the Console HTTP API from outside the browser — a
 Grafana panel, a Discord bot, a community stats site, a monitoring script. Managed from the
 **API Keys** section at the bottom of the Settings page.
 
 Before this existed, the only credential was the admin login password, which mints an
-owner-tier browser session with full access to all 21 IAM namespaces. Handing that to an
+owner-tier browser session with full access to all 23 IAM namespaces. Handing that to an
 integration also hands it the ability to restart the server, mutate the database, and change
 the password. An API key is scoped to exactly what you grant it, and nothing else.
 
@@ -82,7 +82,7 @@ another namespace, or is a write action in a write-denied namespace, is removed.
 survives, the namespace becomes None — never a fallback to Read. A complete list is stored as a
 list and is *not* collapsed into `"write"`, because the two mean different things going forward.
 
-Denied namespaces (`settings`, `database`, `setup`) cannot be reached by naming their actions
+Denied namespaces (`settings`, `database`, `setup`, `community`) cannot be reached by naming their actions
 individually; the namespace denial is checked before the scope lookup.
 
 In the Settings UI, each namespace gains a fourth **Custom** segment that opens a checklist of
@@ -96,14 +96,15 @@ namespace" rule, so Create stays disabled until something is selected.
 
 | Namespace | Read grants | Read+write additionally grants |
 |---|---|---|
-| `players` | `players:read` | `delete-item`, `edit-item`, `give-item`, `grant`, `kick-all`, `moderate`, `recover`, `repair`, `reset`, `teleport`, `unclassified` |
-| `bases` | `bases:read` | `add-item`, `bulk-delete-items`, `delete`, `delete-item`, `fill-item`, `give-item`, `mutate`, `write-config` |
-| `vehicles` | `vehicles:read` | `bulk-delete-items`, `delete`, `delete-item`, `mutate` |
+| `players` | `players:read` | `configure-list`, `delete-item`, `edit-item`, `give-item`, `grant`, `kick-all`, `moderate`, `recover`, `repair`, `reset`, `teleport`, `unclassified` |
+| `bases` | `bases:read` | `add-item`, `bulk-delete-items`, `delete`, `delete-item`, `fill-item`, `give-item`, `delete-backup`, `edit-backup`, `export-backup`, `import-backup`, `mutate`, `write-config` — **the four base-backup actions require explicit grants; see below** |
+| `vehicles` | `vehicles:read` | `bulk-delete-items`, `delete`, `delete-item`, `mutate`, `stored-delete` — **the stored-vehicle delete requires an explicit grant; see below** |
 | `guilds` | `guilds:read` | `disband`, `membership`, `rank`, `unclassified` |
 | `storage` | `storage:read` | `mutate` |
 | `blueprints` | `blueprints:read` | `delete`, `export`, `import`, `unclassified` |
 | `exchange` | `exchange:market`, `exchange:read` | `market-write`, `write-config` |
 | `maps` | `maps:read` | `despawn`, `reconcile`, `restart`, `spawn`, `teleport`, `write-config` |
+| `realtime` | `realtime:read` | *nothing — Realtime Data is read-only* |
 | `sietches` | `sietches:read` | `write` |
 | `deepdesert` | `deepdesert:read` | `write` |
 | `landsraad` | `landsraad:read` | `write` |
@@ -115,9 +116,9 @@ namespace" rule, so Create stays disabled until something is selected.
 | `addons` | `addons:read` | *nothing — write actions are denied to keys* |
 | `admin` | `admin:announcements:read`, `admin:history:read`, `admin:items:read`, `admin:motd:read`, `admin:skills:read`, `admin:transfer-settings:read`, `admin:vehicles:read` | `announcements:write`, `broadcast`, `broadcast-shutdown`, `history:clear`, `map-chat`, `motd:write`, `transfer-settings:write` |
 
-`logs`, `updates` and `addons` render a two-segment control (None / Read), not three. `logs`
-has no write action at all; the other two have several, but they are denied to keys — see
-below. All three are read from the action catalog rather than hardcoded, so a future `logs`
+`logs`, `realtime`, `updates` and `addons` render a two-segment control (None / Read), not
+three. `logs` and `realtime` have no write action at all; the other two have several, but they
+are denied to keys — see below. The controls are read from the action catalog rather than hardcoded, so a future `logs`
 write action makes the third segment appear on its own.
 
 ### Two read exceptions
@@ -137,13 +138,11 @@ Two actions are POST-shaped but read-only in effect, and are reachable by a **Re
 `carepackage:scan` is deliberately *not* one of these: `POST /api/care-package/run` actually
 runs a grant cycle. The verb-shaped name is not the test; what the route does is.
 
-### The two system-backup scopes
+### Actions no level ever grants
 
-### Three actions no level ever grants
-
-`backups:download-system`, `backups:import-system` and `backups:restore-system` are
-reachable **only** by naming them in a key's explicit action list. A key stored as
-`{"backups": "write"}` does not get them.
+`backups:download-system`, `backups:import-system`, `backups:restore-system`,
+`bases:import-backup`, `bases:edit-backup`, `bases:export-backup`, `bases:delete-backup` and `vehicles:stored-delete` are reachable **only** by naming them in a
+key's explicit action list. A key stored as `{"backups": "write"}`, `{"bases": "write"}` or `{"vehicles": "write"}` does not get them.
 
 Levels otherwise auto-cover actions added later, so a key keeps working as routes are
 added. That is right for a namespace whose blast radius is stable, and wrong for this
@@ -157,7 +156,20 @@ nothing for the operator to review.
 `create-system` and `delete-system` are not excluded: neither reads an archive back nor
 writes one into the host.
 
-The `admin` tier is denied the same three for the same reason — see `policy.js`.
+`bases:import-backup`, `bases:edit-backup`, `bases:export-backup` and `bases:delete-backup` are excluded on the
+same grounds. Import creates a whole base, with every item stored in it, from an uploaded
+file. Edit can hand an existing picked-up base to another player or move it to another map.
+Export downloads a whole base, every stored item included, as a file that imports on any
+server. Delete permanently removes that backup and all of its stored contents. A `bases: write` key was minted for per-base
+knobs (refills, permissions), not for that.
+
+`vehicles:stored-delete` is excluded because it deletes a vehicle that is Stored for
+Recovery -- one a player can still get back. A `vehicles: write` key was minted before that
+was possible. The route also requires `vehicles:delete`, so a key needs both: `vehicles:delete`
+(from the write level or named) and `vehicles:stored-delete` named explicitly.
+
+The `admin` tier is denied the three `backups` actions above for the same reason — see
+`policy.js`. It keeps the four `bases` actions through `bases:*`.
 
 `backups:create-system` and `backups:download-system` are write-classified and
 deliberately separate from the rest of the namespace, because neither is really about
@@ -192,7 +204,7 @@ Listing system backups (`GET /api/backups/system`) is a genuine read and stays o
 
 ### What a key can never reach
 
-Three namespaces are **denied outright** at every level — `settings`, `database` and `setup`.
+Four namespaces are **denied outright** at every level — `settings`, `database`, `setup` and `community`.
 They are not offered in the UI, and the check runs before the scope lookup, so hand-editing
 `runtime/secrets/api-keys.json` to add them changes nothing.
 
@@ -202,6 +214,7 @@ They are not offered in the UI, and the check runs before the scope lookup, so h
 - `setup` — `setup:write` rewrites `.env` and can re-run initialization, and `setup:read`
   exposes the configuration that describes the deployment. Unlike `updates` below, there is no
   half of it worth granting.
+- `community` — translation submissions are interactive Console actions, not automation.
 
 Two more namespaces are **write-denied** rather than denied outright — their reads are
 grantable, their writes are unreachable at any level:
@@ -248,9 +261,9 @@ high-entropy bearer token.
 **The full key is displayed exactly once, at creation.** It cannot be recovered afterwards. A
 lost key must be revoked and replaced.
 
-Unlike browser sessions, which are held in memory and cleared by a console restart, keys are
-persisted and survive restarts — that is the point of them. Revocation therefore deletes from
-the file, not just from memory.
+Browser sessions are also persisted (to `runtime/generated/sessions.json`, signed, 12-hour
+lifetime), but they expire and are tied to the login password; keys have no such coupling and
+survive restarts until revoked. Revocation therefore deletes from the file, not just from memory.
 
 ## Lifecycle
 
@@ -280,7 +293,9 @@ global ceiling caps all key traffic together.
 Failed credentials are counted separately, bucketed by client address rather than by key
 (a refused request has no key to attribute), and every failure is written to the audit log as
 `auth.api-key-failed`. Brute-forcing a 256-bit secret is infeasible; the point is that an
-attempt leaves a trace to alert on.
+attempt leaves a trace to alert on. A client address that makes more than 30 failed attempts in a
+minute is answered `429` with a `retry-after` header until the window passes, and the audit log
+records one throttled row rather than one per attempt.
 
 A key holding `updates: read` is pinned to the cached update check — it cannot force the
 uncached path that spawns a subprocess per call. That stays with the browser session.

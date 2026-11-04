@@ -24,8 +24,10 @@ for script in update.sh runtime-env.sh steamcmd-signals.sh fls-signals.sh \
   [ ! -f "$repo_root/runtime/scripts/$script" ] \
     || cp "$repo_root/runtime/scripts/$script" "$project/runtime/scripts/$script"
 done
+cp "$repo_root/runtime/scripts/lib/ports.sh" "$project/runtime/scripts/lib/ports.sh"
 cp "$repo_root/runtime/scripts/lib/secrets.sh" "$project/runtime/scripts/lib/secrets.sh"
 cp "$repo_root/runtime/scripts/lib/secrets_aead.py" "$project/runtime/scripts/lib/secrets_aead.py"
+cp "$repo_root/runtime/scripts/restart-game-farm.sh" "$project/runtime/scripts/restart-game-farm.sh"
 
 printf 'SERVER_TITLE="Test Server"\nSERVER_REGION="Test Region"\n' > "$project/.env"
 printf 'DUNE_WORLD_IMAGE_TAG=test\nDUNE_POSTGRES_IMAGE_TAG=test\n' \
@@ -37,7 +39,8 @@ calls_log="$test_root/calls.log"
 : > "$calls_log"
 for script in detect-image-tags.sh start-postgres.sh update-db.sh spicefield-overrides.sh \
   generate-world-partitions-sql.sh recycle-world-game-servers.sh autoscaler-control.sh \
-  extract-partition-catalog.sh extract-server-catalog.sh storage.sh db.sh; do
+  extract-partition-catalog.sh extract-server-catalog.sh storage.sh db.sh \
+  reconcile-world-partitions.sh restart-history.sh; do
   cat > "$project/runtime/scripts/$script" <<STUB
 #!/usr/bin/env bash
 printf '%s\n' "$script \$*" >> "$calls_log"
@@ -73,6 +76,17 @@ case "${1:-} ${2:-}" in
     # installed-size measurement all arrive here. Succeeding is what lets the
     # asset phase run to completion.
     case "$*" in
+      *"app_info_print"*)
+        if [ "${MOCK_UPDATE_AVAILABLE:-0}" = "1" ]; then
+          printf 'Local build: 1\nRemote build: 2\nUpdate available.\n'
+          exit 100
+        fi
+        ;;
+      *"+app_update"*)
+        if [ -n "${MOCK_LIFECYCLE_PROBE:-}" ]; then
+          "${MOCK_LIFECYCLE_PROBE}"
+        fi
+        ;;
       *"du -sh"*) [ -n "${MOCK_ASSET_SIZE-unset}" ] && printf '%s\n' "${MOCK_ASSET_SIZE-4.9G}" ;;
     esac
     exit 0
@@ -138,6 +152,9 @@ grep -q "compose exec" "$docker_log" \
 grep -q "No database work was performed" "$test_root/assets.log" \
   || fail "install-assets: did not report that the database was left alone" "$test_root/assets.log"
 echo "PASS install-assets-still-installs-assets"
+grep -q '^detect-image-tags.sh --from-bundle$' "$calls_log" \
+  || fail "install-assets did not verify tags from its downloaded bundle" "$calls_log"
+echo "PASS install-assets-verifies-the-downloaded-image-set"
 
 # --- Case 3: it refuses while a world server is running --------------------
 
@@ -260,17 +277,19 @@ for expected in "DUNE_GAME_ASSETS_LOAD=1/3 alpha.tar" "DUNE_GAME_ASSETS_LOAD=2/3
 done
 echo "PASS install-assets-counts-the-images-it-loads"
 
-# --- Case 11: an empty image directory loads nothing and still succeeds ----
-# `mapfile` on no matches leaves an empty array, and `for x in "${a[@]}"` under
-# `set -u` is the classic place that turns into an unbound-variable crash.
+# --- Case 11: an empty bundle cannot silently reuse old local images --------
 
 empty_out="$test_root/load-empty.out"
-DUNE_ASSET_IMAGES_DIR="$test_root/no-images" MOCK_DOCKER_LOG="$test_root/load-docker.log" PATH="$bin_dir:$PATH" bash "$load_script" > "$empty_out" 2>&1 \
-  || fail "the image-load loop failed on an empty directory" "$empty_out"
+mkdir -p "$test_root/no-images"
+if DUNE_ASSET_IMAGES_DIR="$test_root/no-images" MOCK_DOCKER_LOG="$test_root/load-docker.log" PATH="$bin_dir:$PATH" bash "$load_script" > "$empty_out" 2>&1; then
+  fail "the image-load loop accepted an empty downloaded bundle" "$empty_out"
+fi
+grep -q 'No downloaded game image archives found' "$empty_out" \
+  || fail "missing actionable empty-bundle error" "$empty_out"
 if grep -q "DUNE_GAME_ASSETS_LOAD" "$empty_out"; then
   fail "image-load loop reported loading an image when there were none" "$empty_out"
 fi
-echo "PASS install-assets-load-loop-handles-no-images"
+echo "PASS install-assets-load-loop-rejects-no-images"
 # --- Case 12: a CLI install-assets drops the console's cached update check --
 # The Web Console keeps its last Steam check in runtime/generated for 30
 # minutes, across restarts. install-assets can change the installed build and
@@ -284,3 +303,61 @@ run_update cached install-assets || fail "install-assets: expected exit 0" "$tes
 [ ! -e "$cache_file" ] \
   || fail "install-assets: left the console's pre-install update check cached" "$test_root/cached.log"
 echo "PASS install-assets-clears-the-cached-update-check"
+
+# A recovery already in flight must reject updates BEFORE any mutating Docker
+# or database operation. Runtime environment resolution may inspect containers.
+# Exercise every mutating entry point with the real lock.
+exec 9> "$project/runtime/generated/battlegroup-lifecycle.lock"
+flock -n 9
+for command in run apply --yes install bootstrap install-assets; do
+  status=0
+  run_update "busy-$command" "$command" || status=$?
+  [ "$status" -eq 75 ] || fail "$command ignored a recovery-owned lock" "$test_root/busy-$command.log"
+  if grep -Eq '^(compose (exec|up|stop|down|restart)|exec|rm|load) ' "$docker_log"; then
+    fail "$command mutated Docker before acquiring the lock" "$docker_log"
+  fi
+  [ ! -s "$calls_log" ] || fail "$command mutated state before acquiring the lock" "$calls_log"
+done
+# Checks do not need a lifecycle lock: they must remain available during work.
+run_update check-during-recovery check || fail "read-only check was blocked by recovery" "$test_root/check-during-recovery.log"
+[ -s "$docker_log" ] || fail "read-only check did not run"
+flock -u 9
+exec 9>&-
+echo "PASS update-rejects-concurrent-recovery-before-any-mutation"
+echo "PASS read-only-update-check-remains-available"
+
+# In the opposite direction, run the real recovery script from the download
+# phase. Even a stale live process cannot recycle maps while an update owns the
+# lock. Also check that the final startup inherits ownership instead of trying
+# to take a second lock (the original failure's final stage).
+cat > "$project/runtime/scripts/probe-update-lock.sh" <<'PROBE'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "${DUNE_BATTLEGROUP_LIFECYCLE_LOCK_HELD:-0}" = "1" ]
+status=0
+env -u DUNE_BATTLEGROUP_LIFECYCLE_LOCK_HELD runtime/scripts/restart-game-farm.sh test > runtime/generated/recovery-probe.log 2>&1 || status=$?
+[ "$status" -eq 75 ]
+grep -q 'Another battlegroup lifecycle operation' runtime/generated/recovery-probe.log
+[ ! -f runtime/generated/battlegroup-maintenance.env ]
+PROBE
+cat > "$project/runtime/scripts/start-all.sh" <<'START'
+#!/usr/bin/env bash
+set -euo pipefail
+runtime/scripts/probe-update-lock.sh
+printf 'nested-startup-ok\n' > runtime/generated/nested-startup.log
+exit "${MOCK_START_EXIT_CODE:-0}"
+START
+chmod +x "$project/runtime/scripts/probe-update-lock.sh" "$project/runtime/scripts/start-all.sh"
+MOCK_LIFECYCLE_PROBE=runtime/scripts/probe-update-lock.sh MOCK_UPDATE_AVAILABLE=1 \
+  MOCK_RUNNING_CONTAINERS=dune-postgres run_update coordinated --yes \
+  || fail "coordinated update failed" "$test_root/coordinated.log"
+[ -s "$project/runtime/generated/nested-startup.log" ] || fail "update did not complete nested startup"
+flock -n "$project/runtime/generated/battlegroup-lifecycle.lock" true || fail "successful update leaked the lock"
+echo "PASS update-lock-protects-download-and-nested-final-startup"
+
+status=0
+MOCK_LIFECYCLE_PROBE=runtime/scripts/probe-update-lock.sh MOCK_UPDATE_AVAILABLE=1 \
+  MOCK_RUNNING_CONTAINERS=dune-postgres MOCK_START_EXIT_CODE=42 run_update failed-startup --yes || status=$?
+[ "$status" -eq 42 ] || fail "update did not propagate final startup failure" "$test_root/failed-startup.log"
+flock -n "$project/runtime/generated/battlegroup-lifecycle.lock" true || fail "failed update leaked the lock"
+echo "PASS failed-update-propagates-error-and-releases-lock"

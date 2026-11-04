@@ -25,6 +25,7 @@ import { writeJsonAtomic } from "./jsonStore.js";
 import { audit } from "./audit.js";
 import { redact } from "./redact.js";
 import { applyExchangeCategoryToSeedRow } from "./services/exchangeCategoryMask.js";
+import { marketBotSafetyBackupsEnabled, SAFETY_BACKUP_SKIPPED_NOTE } from "./services/marketBotSettings.js";
 import {
   readSeedSchedule,
   saveSeedSchedule,
@@ -976,6 +977,7 @@ export function createAddonJobScheduler(config, options = {}) {
       nextAllowedAttemptAt = 0;
       auditJob("buyback", trigger, {
         status: outcome.status,
+        ...(outcome.backupSkipped ? { backupSkipped: true } : {}),
         eligible: outcome.eligible,
         purchased: outcome.purchased,
         totalUnits: outcome.totalUnits,
@@ -1006,6 +1008,7 @@ export function createAddonJobScheduler(config, options = {}) {
       nextAllowedAttemptAt = 0;
       auditJob("seed", trigger, {
         status: outcome.status,
+        ...(outcome.backupSkipped ? { backupSkipped: true } : {}),
         listingCount: outcome.listingCount,
         exchangeId: schedule.exchangeId,
         ok: true
@@ -1040,6 +1043,7 @@ export function createAddonJobScheduler(config, options = {}) {
         const outcome = await executeUnseedRun(config, getDb(), targetExchangeId, { runDuneImpl, buildDuneArgs, runSql });
         auditJob("unseed", trigger, {
           status: outcome.status,
+          ...(outcome.backupSkipped ? { backupSkipped: true } : {}),
           removedListings: outcome.removedListings,
           exchangeId: targetExchangeId,
           ok: true
@@ -1063,6 +1067,7 @@ export function createAddonJobScheduler(config, options = {}) {
         persistSeedRunCompletion(config, now(), outcome.status, outcome.detail);
         auditJob("seed", trigger, {
           status: outcome.status,
+          ...(outcome.backupSkipped ? { backupSkipped: true } : {}),
           listingCount: outcome.listingCount,
           exchangeId: schedule.exchangeId,
           ok: true
@@ -1086,6 +1091,7 @@ export function createAddonJobScheduler(config, options = {}) {
       persistBuybackRunCompletion(now(), outcome.status, outcome.detail);
       auditJob("buyback", trigger, {
         status: outcome.status,
+        ...(outcome.backupSkipped ? { backupSkipped: true } : {}),
         eligible: outcome.eligible,
         purchased: outcome.purchased,
         totalUnits: outcome.totalUnits,
@@ -1129,7 +1135,8 @@ async function executeBuybackRun(config, db, schedule, { runDuneImpl, trigger = 
   if (typeof db?.transaction !== "function") {
     throw new Error("Exchange buyback requires database transaction support.");
   }
-  if (!config.mockMode) {
+  const backupSkipped = !marketBotSafetyBackupsEnabled(config);
+  if (!config.mockMode && !backupSkipped) {
     await runDuneImpl(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "market-bot-buyback" } });
   }
   // Keep the entire sweep on one checked-out client. createDb.transaction()
@@ -1143,14 +1150,15 @@ async function executeBuybackRun(config, db, schedule, { runDuneImpl, trigger = 
   const purchased = Number(row.purchased || 0);
   const totalUnits = decimalString(row.total_units);
   const totalSolari = decimalString(row.total_solari);
-  await persistSweepBuybackLog(config, db, plan, row, priced, names, source);
+  await persistSweepBuybackLog(config, db, plan, row, priced, names, source, { backupSkipped });
   return {
     status: "swept",
     eligible,
     purchased,
     totalUnits,
     totalSolari,
-    detail: `Bought ${purchased} listings (${totalUnits} units) for ${totalSolari} solari on exchange ${schedule.exchangeId} (${eligible} eligible).`
+    backupSkipped,
+    detail: `Bought ${purchased} listings (${totalUnits} units) for ${totalSolari} solari on exchange ${schedule.exchangeId} (${eligible} eligible).${backupSkipped ? SAFETY_BACKUP_SKIPPED_NOTE : ""}`
   };
 }
 
@@ -1187,7 +1195,7 @@ async function persistIdleBuybackLog(config, db, plan, schedule, names, source, 
   }
 }
 
-async function persistSweepBuybackLog(config, db, plan, row, schedule, names, source) {
+async function persistSweepBuybackLog(config, db, plan, row, schedule, names, source, { backupSkipped = false } = {}) {
   // The write transaction returns purchased rows and eligible rows that lost
   // the claim race/max-buys cutoff. It intentionally does not copy every
   // rejected listing into a transaction-local table. Classify the remaining
@@ -1213,7 +1221,10 @@ async function persistSweepBuybackLog(config, db, plan, row, schedule, names, so
       appendBuybackLogBatchUnlocked(config, entries, {
         source,
         exchangeId: schedule.exchangeId,
-        note: remainingRows.length ? "post-sweep read-only classification included" : "post-sweep classification unavailable or empty",
+        note: [
+          remainingRows.length ? "post-sweep read-only classification included" : "post-sweep classification unavailable or empty",
+          backupSkipped ? "safety backup skipped (disabled)" : ""
+        ].filter(Boolean).join(" — "),
         schedule
       });
     });

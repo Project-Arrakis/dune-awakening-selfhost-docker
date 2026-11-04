@@ -354,7 +354,8 @@ class RetiredModifierAndCoriolisMetadataTests(ProfilePathTestCase):
         usersettings.migrate_legacy_base_backup_cooldown(profile)
         values = usersettings.server_custom_values(profile, MAP_NAME, include_materialized=False)
         self.assertEqual(values["base_backup_tool_time_restriction"], "2")
-        self.assertNotIn("m_BaseBackupToolTimeRestrictionInSeconds", usersettings.compiled_usergame_ini(profile, MAP_NAME))
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=7200", usersettings.compiled_usergame_ini(profile, MAP_NAME))
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=7200", usersettings.client_game_ini(profile, MAP_NAME))
 
         usersettings.write_profile(profile)
         saved = usersettings.PROFILE_PATH.read_text(encoding="utf-8")
@@ -382,6 +383,28 @@ class RetiredModifierAndCoriolisMetadataTests(ProfilePathTestCase):
         usersettings.migrate_legacy_base_backup_cooldown(profile)
         values = usersettings.server_custom_values(profile, MAP_NAME, include_materialized=False)
         self.assertEqual(values["base_backup_tool_time_restriction"], "3")
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=10800", usersettings.compiled_usergame_ini(profile, MAP_NAME))
+
+    def test_native_base_backup_cooldown_mirrors_only_explicit_scoped_values(self):
+        profile = usersettings.empty_profile()
+        self.assertNotIn("m_BaseBackupToolTimeRestrictionInSeconds", usersettings.compiled_usergame_ini(profile, MAP_NAME))
+        self.assertNotIn("m_BaseBackupToolTimeRestrictionInSeconds", usersettings.client_game_ini(profile, MAP_NAME))
+
+        section = usersettings.SERVER_CUSTOM_SETTINGS_SECTION
+        usersettings.profile_set_key(profile, "server_custom_global", section, "BaseBackupToolTimeRestriction", "0.2")
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=720", usersettings.compiled_usergame_ini(profile, MAP_NAME))
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=720", usersettings.client_game_ini(profile, MAP_NAME))
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=720", usersettings.client_game_ini(profile, ""))
+
+        usersettings.profile_set_key(profile, "server_custom_map", section, "BaseBackupToolTimeRestriction", "2", MAP_NAME)
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=7200", usersettings.compiled_usergame_ini(profile, MAP_NAME))
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=7200", usersettings.client_game_ini(profile, MAP_NAME))
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=720", usersettings.client_game_ini(profile, ""))
+
+        usersettings.profile_set_key(profile, "server_custom_partition", section, "BaseBackupToolTimeRestriction", "0.5", MAP_NAME, "3")
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=1800", usersettings.compiled_usergame_ini(profile, MAP_NAME, "3"))
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=1800", usersettings.client_game_ini(profile, MAP_NAME, "3"))
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=7200", usersettings.client_game_ini(profile, MAP_NAME, "4"))
 
     def test_native_base_backup_cooldown_metadata_exposes_hours_and_minimum(self):
         output = io.StringIO()
@@ -394,6 +417,7 @@ class RetiredModifierAndCoriolisMetadataTests(ProfilePathTestCase):
         self.assertNotIn("base_backup_tool_time_restriction_seconds", game_ids)
         self.assertEqual(field["label"], "Base Reconstruction Cooldown (Hours)")
         self.assertEqual((field["minimum"], field["maximum"]), (0.2, None))
+        self.assertEqual(field["clientFile"], "Game.ini")
         self.assertIn("12 minutes", field["description"])
 
     def test_native_base_backup_cooldown_rejects_values_below_game_minimum(self):
@@ -526,7 +550,7 @@ class RetiredModifierAndCoriolisMetadataTests(ProfilePathTestCase):
             "122400",
         )
         rendered = usersettings.compiled_usergame_ini(profile, MAP_NAME)
-        data_lines = [line for line in rendered.splitlines() if line.startswith("Data=(")]
+        data_lines = [line for line in rendered.splitlines() if line.startswith("DedicatedServerData=(")]
         self.assertEqual(len(data_lines), 1)
         self.assertIn("m_VotingPeriodStartBeforeCoriolisCycleInSec=122400", data_lines[0])
 
@@ -753,9 +777,78 @@ class ClientGameIniAllowlistTests(ProfilePathTestCase):
                 continue
             if field_id == "building_restriction_limits_enabled":
                 key = "m_bBuildingRestrictionLimitsEnabled"
+            elif field_id == "base_backup_tool_time_restriction":
+                key = "m_BaseBackupToolTimeRestrictionInSeconds"
             else:
                 _section, key, _default = usersettings.MAP_FIELDS[field_id]
             self.assertNotIn(f"{key}=", rendered)
+
+
+class LandsraadDedicatedSettingsTests(ProfilePathTestCase):
+    def native_data(self):
+        fixture = Path(__file__).resolve().parents[1] / "tests/fixtures/landsraad-2156652.ini"
+        return next(line.split("=", 1)[1] for line in fixture.read_text().splitlines() if line.startswith("DedicatedServerData="))
+
+    def test_abandon_cooldown_bulk_save_targets_native_struct_and_survives_reload(self):
+        marker = usersettings.LANDSRAAD_RESTART_MARKER_PATH
+        usersettings.LANDSRAAD_RESTART_MARKER_PATH = Path(self._tmpdir.name) / "restart-required"
+        try:
+            usersettings.bulk_save("global", "", "", _encode_bulk_save_payload({"landsraad_contract_abandon_cooldown_seconds": "1"}))
+            profile = usersettings.read_profile()
+            self.assertEqual(usersettings.profile_global_values(profile)["landsraad_contract_abandon_cooldown_seconds"], "1")
+            self.assertTrue(usersettings.LANDSRAAD_RESTART_MARKER_PATH.exists())
+            for map_name in ("Survival_1", "DeepDesert_1", "Arrakeen"):
+                lines = usersettings.compiled_usergame_ini(profile, map_name).splitlines()
+                dedicated = [line for line in lines if line.startswith("DedicatedServerData=")]
+                self.assertEqual(len(dedicated), 1)
+                self.assertIn("m_LandsraadContractsAbandonCooldownSeconds=1,", dedicated[0])
+                self.assertFalse(any(line.startswith("Data=") for line in lines))
+        finally:
+            usersettings.LANDSRAAD_RESTART_MARKER_PATH = marker
+
+    def test_native_advanced_struct_is_edited_without_replacing_other_members(self):
+        native = self.native_data()
+        profile = usersettings.parse_profile_text(f"[Global:{usersettings.LANDSRAAD_SETTINGS_SECTION}]\nDedicatedServerData={native}\nData=(m_LandsraadContractsAbandonCooldownSeconds=99)\n")
+        self.assertEqual(usersettings.profile_global_values(profile)["landsraad_contract_abandon_cooldown_seconds"], "3600")
+        usersettings.set_profile_field(profile, "global", "", "", "landsraad_contract_abandon_cooldown_seconds", "1")
+        result = usersettings.landsraad_data_override(profile, "global")
+        expected = usersettings.unreal_struct_values(native)
+        expected["m_LandsraadContractsAbandonCooldownSeconds"] = "1"
+        self.assertEqual(usersettings.unreal_struct_values(result), expected)
+        self.assertIsNone(usersettings.profile_get_key(profile, "global", usersettings.LANDSRAAD_SETTINGS_SECTION, "Data"))
+
+    def test_legacy_console_struct_keeps_custom_members_and_compiles_under_native_key(self):
+        legacy = '(m_LandsraadContractsAbandonCooldownSeconds=7,FutureMember=(Path="custom,a",Values=(1,2)),m_TaskGoalAmount=12345)'
+        profile = usersettings.parse_profile_text(f"[Global:{usersettings.LANDSRAAD_SETTINGS_SECTION}]\nData={legacy}\n[Global:Other.Settings]\nData=keep\n")
+        self.assertEqual(usersettings.profile_global_values(profile)["landsraad_contract_abandon_cooldown_seconds"], "7")
+        rendered = usersettings.compiled_usergame_ini(profile, MAP_NAME)
+        self.assertIn(f"DedicatedServerData={legacy}", rendered)
+        self.assertIn("[Other.Settings]\nData=keep", rendered)
+        usersettings.set_profile_field(profile, "global", "", "", "landsraad_contract_abandon_cooldown_seconds", "1")
+        actual = usersettings.unreal_struct_values(usersettings.landsraad_data_override(profile, "global"))
+        expected = usersettings.unreal_struct_values(legacy)
+        expected["m_LandsraadContractsAbandonCooldownSeconds"] = "1"
+        self.assertEqual(actual, expected)
+
+    def test_new_override_and_display_defaults_match_packaged_dedicated_settings(self):
+        expected = usersettings.unreal_struct_values(self.native_data())
+        values = usersettings.profile_global_values(usersettings.empty_profile())
+        for field_id, (member, _default, *_rest) in usersettings.LANDSRAAD_DATA_FIELDS.items():
+            if member in expected:
+                self.assertEqual(values[field_id], expected[member], field_id)
+        profile = usersettings.empty_profile()
+        usersettings.set_profile_field(profile, "global", "", "", "landsraad_contract_abandon_cooldown_seconds", "1")
+        actual = usersettings.unreal_struct_values(usersettings.landsraad_data_override(profile, "global"))
+        expected["m_LandsraadContractsAbandonCooldownSeconds"] = "1"
+        for member, value in expected.items():
+            self.assertEqual(actual[member], value, member)
+        self.assertNotIn("DedicatedServerData=", usersettings.compiled_usergame_ini(usersettings.empty_profile(), MAP_NAME))
+
+    def test_more_specific_native_override_wins_over_legacy_global_struct(self):
+        profile = usersettings.parse_profile_text(f"[Global:{usersettings.LANDSRAAD_SETTINGS_SECTION}]\nData=(m_LandsraadContractsAbandonCooldownSeconds=7)\n[Map:{MAP_NAME}:{usersettings.LANDSRAAD_SETTINGS_SECTION}]\nDedicatedServerData=(m_LandsraadContractsAbandonCooldownSeconds=3)\n")
+        rendered = usersettings.compiled_usergame_ini(profile, MAP_NAME)
+        self.assertEqual(rendered.count("DedicatedServerData="), 1)
+        self.assertIn("DedicatedServerData=(m_LandsraadContractsAbandonCooldownSeconds=3)", rendered)
 
 
 class StakingExtensionArrayTests(ProfilePathTestCase):
@@ -802,6 +895,38 @@ class StakingExtensionArrayTests(ProfilePathTestCase):
         for value in ("0", "nan", "604801"):
             with self.subTest(value=value), self.assertRaises(SystemExit):
                 usersettings.normalize_staking_extension_seconds(value)
+
+    def test_reported_advanced_override_rebuilds_both_ten_level_arrays(self):
+        lines = [f"[Global:{usersettings.BUILDING_SETTINGS_SECTION}]"]
+        for key in usersettings.STAKING_EXTENSION_FIELDS.values():
+            lines.append(f"{key}=1")
+            lines.extend(f"-{key}={60 * 2 ** level:.6f}" for level in range(10))
+        profile = usersettings.parse_profile_text("\n".join(lines))
+        rendered = usersettings.compiled_usergame_ini(profile, MAP_NAME).splitlines()
+        for key in usersettings.STAKING_EXTENSION_FIELDS.values():
+            self.assertEqual(rendered.count(f"!{key}=ClearArray"), 1)
+            self.assertEqual(rendered.count(f".{key}=1.000000"), 10)
+            self.assertFalse(any(line.startswith((f"-{key}=", f"{key}=", f"+{key}=")) for line in rendered))
+
+    def test_clearing_override_restores_inherited_array_and_exposes_clear_controls(self):
+        profile = usersettings.empty_profile()
+        usersettings.set_profile_field(profile, "global", "", "", self.FIELD_ID, "1")
+        usersettings.set_profile_field(profile, "map", MAP_NAME, "", self.FIELD_ID, "3")
+        usersettings.set_profile_field(profile, "map", MAP_NAME, "", self.FIELD_ID, "")
+        self.assert_complete_array(usersettings.compiled_usergame_ini(profile, MAP_NAME), "1.000000")
+        usersettings.set_profile_field(profile, "global", "", "", self.FIELD_ID, "")
+        self.assertNotIn(self.KEY, usersettings.compiled_usergame_ini(profile, MAP_NAME))
+        output = io.StringIO()
+        with redirect_stdout(output):
+            usersettings.metadata()
+        schema = json.loads(output.getvalue())
+        for scope in ("game", "partition"):
+            fields = {row["id"]: row for row in schema[scope]}
+            for field_id in usersettings.STAKING_EXTENSION_FIELDS:
+                field = fields[field_id]
+                self.assertIn("Cooldown (Seconds)", field["label"])
+                self.assertTrue(field["allowEmpty"])
+                self.assertEqual((field["minimum"], field["maximum"]), (0.1, 604800))
 
 
 class EngineFieldOverridePrecedenceTests(ProfilePathTestCase):

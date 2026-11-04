@@ -1,9 +1,10 @@
-import { Fragment, useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { Fragment, useCallback, useEffect, useId, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { AlertTriangle, ChevronDown, ChevronUp, Download, Grid2X2, Info, List, Lock, MapPin, RotateCcw } from "lucide-react";
 import { mapsApi, type ChoamTransform, type ChoamCaptureBaseline, type ActiveSpicefieldRow, type ChoamCapturedPlacement, type ChoamTerminalOverview, type ChoamTradeCenter, type LiveMapMemoryRow, type MapCombatStateResult, type MapRuntimeSettings, type MemoryBalancerState, type MemorySwapState, type PartitionCombatStateRow, type UserSettingField, type UserSettingsSchema } from "../../api/maps";
+import { CombatSettingsNotice } from "./CombatSettingsNotice";
 import { playersApi } from "../../api/players";
 import { runGatedRestart, type RestartGate, type RestartGateChoice } from "../server/restartQueueGuard";
-import { serverApi, type RestartQueueTarget } from "../../api/server";
+import { serverApi, type RestartHistoryResponse, type RestartHistoryRow, type RestartQueueTarget } from "../../api/server";
 import { setupApi, type Task } from "../../api/setup";
 import { SecretInput } from "../../components/SecretInput";
 import { InfoTooltip, KeyValueGrid, StatusPill, TechnicalDetails } from "../../components/common/DisplayPrimitives";
@@ -52,7 +53,13 @@ function PendingRefillBadge({ counts }: { counts: QueueCounts }) {
 
 type HomeTaskResult = { status: "running" | "succeeded" | "failed" | "stopped"; title: string; message?: string; details?: string; warnings?: string[] };
 type MapsResultScope = "maps" | "modifiers";
-type MapsTaskQueueState = { phase: "queued" | "running"; title: string };
+// Which button started the queued task. Save and Restart share one per-target
+// queue slot (both stay disabled while either runs, so two writes cannot
+// overlap on the same partition), so the label has to be scoped to the button
+// that actually owns the task -- otherwise restarting a Sietch relabelled its
+// "Save Sietch Settings" button too.
+type MapsTaskKind = "save" | "restart" | "other";
+type MapsTaskQueueState = { phase: "queued" | "running"; title: string; kind: MapsTaskKind };
 type MapsTaskResponse = { task?: Task; queued?: boolean; invalidatesInstanceNamesOnSuccess?: boolean };
 type MapsTaskAction = { label: string; run: () => Promise<MapsTaskResponse> };
 type MapsTaskOptions = {
@@ -61,6 +68,7 @@ type MapsTaskOptions = {
   resultTarget?: string;
   restartAcceptedMessage?: string;
   onRestartAccepted?: () => void;
+  taskKind?: MapsTaskKind;
 };
 type MapsTaskSequenceOptions = {
   saveAcceptedMessage?: string;
@@ -72,6 +80,7 @@ type MapsTaskSequenceOptions = {
   // discarding pending edits on rows the save never touched. Omit it when the
   // sequence writes no sietch fields at all; then nothing is discarded.
   writtenPartitionIds?: string[];
+  taskKind?: MapsTaskKind;
 };
 type PersistedMapsTask = { taskId?: string; result: HomeTaskResult | null; runningTitle?: string; successTitle?: string; resultScope?: MapsResultScope };
 export type MapSortColumn = "map" | "status" | "mode" | "memory";
@@ -181,6 +190,14 @@ function mapResultTarget(map: string, partitionId = "") {
   return partitionId ? `map:${map}:${partitionId}` : `map:${map}`;
 }
 
+// A button only reports progress for the task it started. Buttons sharing the
+// target stay disabled (one write at a time per partition) but keep their idle
+// label, so a restart never reads as a save in progress and vice versa.
+function taskQueueButtonLabel(state: MapsTaskQueueState | undefined, kind: MapsTaskKind, runningLabel: string, idleLabel: string) {
+  if (!state || state.kind !== kind) return idleLabel;
+  return state.phase === "queued" ? "Queued" : runningLabel;
+}
+
 // Mirrors server.js's restartPayload: "engine"/"mapEngine"/"partitionEngine"
 // (UserEngine.ini is one shared file, not per-map -- "mapEngine"/
 // "partitionEngine" just scope the editor's view/edit to one map or
@@ -223,6 +240,26 @@ function formatBytes(value: number) {
 function formatGiB(value: number) {
   const amount = Number.isFinite(value) && value > 0 ? value / (1024 ** 3) : 0;
   return `${amount.toFixed(1)} GB`;
+}
+
+export function latestSuccessfulMapRestart(history: RestartHistoryResponse | null, map: string, partitionId = "", includeMapWide = false): RestartHistoryRow | null {
+  if (!history) return null;
+  const normalizedMap = String(map || "").trim().toLowerCase();
+  const normalizedPartition = String(partitionId || "").trim();
+  return history.rows.find((row) => row.scope === "map" && row.result === "Succeeded" && (
+    (normalizedPartition && row.partitionId === normalizedPartition)
+    || ((!normalizedPartition || includeMapWide) && !row.partitionId && String(row.map || "").trim().toLowerCase() === normalizedMap)
+  )) || null;
+}
+
+function mapRestartReading(history: RestartHistoryResponse | null, map: string, partitionId = "", includeMapWide = false) {
+  if (!history) return "Loading...";
+  const row = latestSuccessfulMapRestart(history, map, partitionId, includeMapWide);
+  if (!row) return "Not Recorded Yet";
+  const date = new Date(row.finishedAt);
+  return Number.isFinite(date.getTime())
+    ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date)
+    : "Unknown";
 }
 
 function escapeRegExp(value: string) {
@@ -469,6 +506,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   const [sietchPasswordTouched, setSietchPasswordTouched] = useState<Record<string, boolean>>({});
   const [selectedMapName, setSelectedMapName] = useState("");
   const [selectedPartitionId, setSelectedPartitionId] = useState("");
+  const [restartHistory, setRestartHistory] = useState<RestartHistoryResponse | null>(null);
   const [mapSort, setMapSort] = useState<MapSortState>({ column: null, direction: "asc" });
   const [engineMapName, setEngineMapName] = useState("__global__");
   const [enginePartitionId, setEnginePartitionId] = useState("");
@@ -536,19 +574,19 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     if (!updates.length) return;
     setMemoryText((current) => updateMemoryStatusText(current, updates));
   }
-  async function enqueueMapsTask(resultTarget: string, title: string, action: () => Promise<void>) {
+  async function enqueueMapsTask(resultTarget: string, title: string, kind: MapsTaskKind, action: () => Promise<void>) {
     const trackedTarget = resultTarget.trim();
     if (trackedTarget && mapsQueuedTargetsRef.current.has(trackedTarget)) return;
     const queueId = trackedTarget || `task:${++mapsAnonymousTaskIdRef.current}`;
     mapsQueuedTargetsRef.current.add(queueId);
     if (trackedTarget) {
-      setMapsTaskQueueStates((current) => ({ ...current, [trackedTarget]: { phase: "queued", title } }));
+      setMapsTaskQueueStates((current) => ({ ...current, [trackedTarget]: { phase: "queued", title, kind } }));
     }
     const queuedTask = mapsTaskQueueRef.current
       .catch(() => undefined)
       .then(async () => {
         if (trackedTarget) {
-          setMapsTaskQueueStates((current) => ({ ...current, [trackedTarget]: { phase: "running", title } }));
+          setMapsTaskQueueStates((current) => ({ ...current, [trackedTarget]: { phase: "running", title, kind } }));
         }
         try {
           await action();
@@ -567,7 +605,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     await queuedTask;
   }
   async function runTaskAndRefresh(action: () => Promise<{ task?: Task; queued?: boolean }>, runningTitle = "Applying Map Changes", successTitle = "Map Changes Applied", options: MapsTaskOptions = {}) {
-    await enqueueMapsTask(options.resultTarget || "", runningTitle, () => runTaskAndRefreshNow(action, runningTitle, successTitle, options));
+    await enqueueMapsTask(options.resultTarget || "", runningTitle, options.taskKind || "other", () => runTaskAndRefreshNow(action, runningTitle, successTitle, options));
   }
   async function runTaskAndRefreshNow(action: () => Promise<{ task?: Task; queued?: boolean }>, runningTitle: string, successTitle: string, options: MapsTaskOptions) {
     const resultScope = options.resultScope || "maps";
@@ -648,7 +686,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   }
   async function runTaskSequenceAndRefresh(actions: MapsTaskAction[], runningTitle = "Applying Map Changes", successTitle = "Map Changes Applied", options: MapsTaskSequenceOptions = {}) {
     if (!actions.length) return;
-    await enqueueMapsTask(options.resultTarget || "", runningTitle, () => runTaskSequenceAndRefreshNow(actions, runningTitle, successTitle, options));
+    await enqueueMapsTask(options.resultTarget || "", runningTitle, options.taskKind || "other", () => runTaskSequenceAndRefreshNow(actions, runningTitle, successTitle, options));
   }
   async function runTaskSequenceAndRefreshNow(actions: MapsTaskAction[], runningTitle: string, successTitle: string, options: MapsTaskSequenceOptions) {
     const resultScope = options.resultScope || "maps";
@@ -783,17 +821,17 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     if (mapsRuntimeRefreshRef.current) return mapsRuntimeRefreshRef.current;
     mapsRuntimeRefreshRef.current = (async () => {
       const [status, memoryStatus] = await Promise.allSettled([
-        withTimeout(mapsApi.status(), 60000, "Refreshing map status timed out."),
-        withTimeout(mapsApi.memory(), 60000, "Refreshing map memory timed out.")
+        withTimeout(mapsApi.status(), 60000, "Refreshing map status timed out.").then((status) => {
+          setMapsText(String(status.maps?.stdout || ""));
+          setServersText(String(status.services?.stdout || ""));
+          setReadinessText(String(status.readiness?.stdout || ""));
+          return status;
+        }),
+        withTimeout(mapsApi.memory(), 60000, "Refreshing map memory timed out.").then((memoryStatus) => {
+          setMemoryText(memoryStatus.stdout);
+          return memoryStatus;
+        })
       ]);
-      if (status.status === "fulfilled") {
-        setMapsText(String(status.value.maps?.stdout || ""));
-        setServersText(String(status.value.services?.stdout || ""));
-        setReadinessText(String(status.value.readiness?.stdout || ""));
-      }
-      if (memoryStatus.status === "fulfilled") {
-        setMemoryText(memoryStatus.value.stdout);
-      }
       if (status.status === "fulfilled" || memoryStatus.status === "fulfilled") {
         setLoadError("");
       }
@@ -1223,6 +1261,13 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     void refreshDeferredRestartPending();
   }, []);
   useEffect(() => {
+    let active = true;
+    serverApi.restartHistory().then((result) => {
+      if (active) setRestartHistory(result);
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [mapsResult?.status]);
+  useEffect(() => {
     const persisted = loadPersistedMapsTask();
     if (!persisted?.taskId || persisted.result?.status !== "running") return;
     let cancelled = false;
@@ -1443,6 +1488,9 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   // flicker the toggle, or worse, pin a draft from data that was never this
   // target's to begin with.
   const gameValuesReady = Boolean(userGameName) && gameValuesTargetKey === userGameTargetKey;
+  const selectedCombatSettings = !isUserGameGlobal && effectiveUserGamePartitionId
+    ? combatStateByMap[userGameName]?.partitions.find(row => row.partitionId === effectiveUserGamePartitionId)
+    : undefined;
   const coriolisHour = useCoriolisMatchRegion(CORIOLIS_CYCLE_START_HOUR_FIELD_ID, CORIOLIS_REGION_HOURS, schema, gameValues, gameDraft, setGameDraft, gameValuesReady, serverRegion, userGameTargetKey);
   const coriolisDay = useCoriolisMatchRegion(CORIOLIS_CYCLE_START_DAY_FIELD_ID, CORIOLIS_REGION_DAYS, schema, gameValues, gameDraft, setGameDraft, gameValuesReady, serverRegion, userGameTargetKey);
   const coriolisHourMatchRegionAvailable = coriolisHour.regionValue !== undefined && userGameFields.some((field) => field.id === CORIOLIS_CYCLE_START_HOUR_FIELD_ID);
@@ -1517,6 +1565,10 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   const filteredEngineFields = filterSettingsFields(activeEngineFields, modifierFilter);
   const engineDirty = changedKeys(engineValues, engineDraft, engineFields);
   const gameDirty = changedKeys(gameValues, gameDraft, userGameFields);
+  const invalidGameDirty = gameDirty.filter((fieldId) => {
+    const field = userGameFields.find((candidate) => candidate.id === fieldId);
+    return Boolean(field && !settingValueIsValid(field, gameDraft[fieldId] ?? field.default ?? ""));
+  });
   const serverCustomDirty = changedKeys(serverCustomValues, serverCustomDraft, serverCustomFields);
   const invalidServerCustomDirty = serverCustomDirty.filter((fieldId) => {
     const field = serverCustomFields.find((candidate) => candidate.id === fieldId);
@@ -1742,13 +1794,15 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     }
     if (activeChanged) actions.push(...survivalSietchActions({ includeActive: true, includePartitions: false }));
     if (rowName === "Survival_1" && primarySurvivalSietch) actions.push(...survivalSietchActions({ includeActive: false, includePartitions: true, partitionId: primarySurvivalSietch.partitionId }));
-    const confirmed = await confirmAction(`Save map settings for ${rowName}?`);
+    const confirmed = await confirmAction(activeSietchesDecreased
+      ? "Reduce the active Sietches? Extra Sietches will be stopped and removed. The Director and primary Sietch will restart to update the in-game server list, briefly disconnecting primary Sietch players."
+      : `Save map settings for ${rowName}?`);
     if (confirmed) {
       const successMessage = activeChanged
         ? activeSietchesDecreased
           ? primaryChanged
             ? "Sietch changes saved successfully. Extra sietches were despawned, and the main sietch settings were updated. Changes may take a short time to appear in-game."
-            : "Sietch changes saved successfully. Extra sietches were despawned and removed from the active list."
+            : "Sietch changes saved successfully. Extra Sietches were removed. The primary Sietch is restarting; the in-game list will update once it is Ready."
           : primaryChanged
             ? "Sietch changes saved successfully. The new sietch is starting, and the main sietch settings were updated. Changes may take a short time to appear in-game."
             : "Sietch changes saved successfully. The sietch is starting and may take a few minutes to appear in-game after it is running."
@@ -1765,6 +1819,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
         activeChanged ? "Sietch Changes Saved" : "Map Settings Saved",
         {
           saveAcceptedMessage: successMessage,
+          taskKind: "save",
           memoryUpdates: memoryChanged ? [{ map: rowName, memory: memoryCliValue(memory) }] : [],
           resultTarget: mapResultTarget(rowName),
           // This form only carries the primary sietch's fields, so that is the
@@ -1868,6 +1923,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
         : "Memory settings saved successfully.";
       await runTaskSequenceAndRefresh(actions, `Saving ${sietchTargetDisplayName(sietch, draft.displayName)} Settings`, "Sietch Saved", {
         saveAcceptedMessage: successMessage,
+        taskKind: "save",
         memoryUpdates: memoryChanged ? [{ map: "Survival_1", partitionId: sietch.partitionId, memory: memoryCliValue(memory) }] : [],
         resultTarget: mapResultTarget("Survival_1", sietch.partitionId),
         // Derived from sietchActions' own source, so a pending edit on any
@@ -1906,7 +1962,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
       () => Promise.resolve({ task }),
       `Restarting ${label}`,
       `${label} Restarted`,
-      { resultTarget }
+      { resultTarget, taskKind: "restart" }
     );
   }
   async function applyDeepDesertLayout() {
@@ -1958,7 +2014,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
       }),
       `Saving ${deepDesertPartitionName(row)} Settings`,
       "Deep Desert Saved",
-      { memoryUpdates: [{ map: "DeepDesert_1", partitionId, memory: memoryCliValue(memory) }], resultTarget: mapResultTarget("DeepDesert_1", partitionId) }
+      { memoryUpdates: [{ map: "DeepDesert_1", partitionId, memory: memoryCliValue(memory) }], resultTarget: mapResultTarget("DeepDesert_1", partitionId), taskKind: "save" }
     );
   }
   async function forceDespawnMap(row: Record<string, unknown>) {
@@ -2010,7 +2066,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     }
     if (!gated.task) return;
     const task = gated.task;
-    await runTaskAndRefresh(() => Promise.resolve({ task }), `Restarting ${rowName}`, `${rowName} Restarted`, { resultTarget: mapResultTarget(rowName) });
+    await runTaskAndRefresh(() => Promise.resolve({ task }), `Restarting ${rowName}`, `${rowName} Restarted`, { resultTarget: mapResultTarget(rowName), taskKind: "restart" });
   }
   async function forceDespawnDeepDesertPartition(row: Record<string, unknown>) {
     const partitionId = String(row.partitionId || "").trim();
@@ -2027,7 +2083,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     await runTaskAndRefresh(() => mapsApi.spawn(partitionId, "SPAWN MAP"), `Spawning ${label}`, `${label} Spawned`, { resultTarget: mapResultTarget("DeepDesert_1", partitionId) });
   }
   async function saveGame() {
-    if (!userGameName) return;
+    if (!userGameName || invalidGameDirty.length) return;
     const scope = isUserGameGlobal ? "global" : effectiveUserGamePartitionId ? "partition" : "map";
     const map = isUserGameGlobal ? "Survival_1" : userGameName;
     const partitionId = isUserGameGlobal ? undefined : effectiveUserGamePartitionId || undefined;
@@ -2325,6 +2381,11 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
         const primarySietchCombatRow = isSurvivalRow && primarySurvivalSietch
           ? combatStateByMap["Survival_1"]?.partitions.find((partition) => partition.partitionId === primarySurvivalSietch.partitionId) || null
           : null;
+        const primaryPartitionId = isSurvivalRow
+          ? String(primarySurvivalSietch?.partitionId || "")
+          : isDeepDesertRow
+            ? String(primaryDeepDesertPartition?.partitionId || "")
+            : String(row.partitionId || row.partition || "");
         const baseStatus = isDeepDesertRow && primaryDeepDesertPartition ? partitionStatusById.get(String(primaryDeepDesertPartition.partitionId || "")) || String(primaryDeepDesertPartition.status || row.status || "Not Available")
           : isSurvivalRow && primarySurvivalSietch ? readinessStatusByPartitionId.get(primarySurvivalSietch.partitionId) || partitionStatusById.get(primarySurvivalSietch.partitionId) || String(row.status || "Not Available") : String(row.status || "Not Available");
         const displayStatus = isSurvivalRow && /^Ready$/i.test(baseStatus) ? "Ready" : statusWithLiveMemory(baseStatus, memoryRow, row.mode);
@@ -2344,7 +2405,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
           {isSelected && <tr className="inline-edit-row" key={`${rowName}-edit`}><td colSpan={5}>
             <section className="inline-edit-panel">
               <div className="panel-title"><h4>Edit {isDeepDesertRow && primaryDeepDesertName ? primaryDeepDesertName : rowName}</h4></div>
-              <KeyValueGrid items={[["Status", displayStatus], ["Mode", row.mode], ["Memory", row.memory], ["Dimensions", row.dimensions], ...(isSurvivalRow && primarySurvivalSietch ? [["Password", primarySurvivalSietch.passwordSet ? "Set" : "Not Set"] as [string, unknown]] : [])]} />
+              <KeyValueGrid items={[["Status", displayStatus], ["Mode", row.mode], ["Memory", row.memory], ["Dimensions", row.dimensions], ["Last Restart", mapRestartReading(restartHistory, rowName, primaryPartitionId, true)], ...(isSurvivalRow && primarySurvivalSietch ? [["Password", primarySurvivalSietch.passwordSet ? "Set" : "Not Set"] as [string, unknown]] : [])]} />
               {requiresFreshProcess
                 ? <p className="muted">{rowName === "CB_Overland_S_06"
                   ? <>Smuggler&apos;s Run stays Dynamic so its instance is retired as soon as it becomes empty and the next visit starts with fresh vehicle permissions.</>
@@ -2357,18 +2418,18 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
                 {isSurvivalRow && <label className="memory-number-field">Active Sietches<input type="number" min="1" max="64" step="1" value={activeSietches} onChange={(event) => setActiveSietches(event.target.value)} /></label>}
                 {isSurvivalRow && primarySurvivalSietch && primarySietchDraft && <label>Name<input value={primarySietchDraft.displayName} placeholder="Default name" onChange={(event) => setSietchDrafts({ ...sietchDrafts, [primarySurvivalSietch.partitionId]: { ...primarySietchDraft, displayName: event.target.value } })} /></label>}
                 {isSurvivalRow && primarySurvivalSietch && primarySietchDraft && <label>Password<SecretInput value={sietchPasswordInputValue(primarySurvivalSietch, primarySietchDraft, Boolean(sietchPasswordTouched[primarySurvivalSietch.partitionId]))} placeholder={passwordPlaceholder(sietchHasPassword(primarySurvivalSietch, primarySietchDraft))} onFocus={(event) => { if (!sietchPasswordTouched[primarySurvivalSietch.partitionId] && primarySurvivalSietch.passwordSet) event.currentTarget.select(); }} onChange={(event) => { setSietchPasswordTouched({ ...sietchPasswordTouched, [primarySurvivalSietch.partitionId]: true }); setSietchDrafts({ ...sietchDrafts, [primarySurvivalSietch.partitionId]: { ...primarySietchDraft, password: event.target.value } }); }} /></label>}
-                <button disabled={!mapSettingsDirty || Boolean(rowTaskQueueState)} onClick={() => run(() => saveSelectedMapSettings(row))}>{rowTaskQueueState?.phase === "queued" ? "Queued" : rowTaskQueueState?.phase === "running" ? "Saving..." : "Save Map Settings"}</button>
+                <button disabled={!mapSettingsDirty || Boolean(rowTaskQueueState)} onClick={() => run(() => saveSelectedMapSettings(row))}>{taskQueueButtonLabel(rowTaskQueueState, "save", "Saving...", "Save Map Settings")}</button>
                 {/* Survival_1 restarts per Sietch, so scope the badge to the
                     primary partition; every other map only respawns whole, so
                     show everything queued anywhere on it. */}
                 {isSurvivalRow && primarySurvivalSietch?.active
                   ? <PendingRefillBadge counts={queueCountsForPartition(Number(primarySurvivalSietch.partitionId))} />
                   : <PendingRefillBadge counts={queueCountsForMap(rowName)} />}
-                {isSurvivalRow && primarySurvivalSietch?.active && <button disabled={Boolean(rowTaskQueueState)} title="Restart only this Sietch" onClick={() => run(() => restartSietch(primarySurvivalSietch, rowTarget))}>{rowTaskQueueState?.phase === "queued" ? "Queued" : rowTaskQueueState?.phase === "running" ? "Restarting..." : "Restart"}</button>}
+                {isSurvivalRow && primarySurvivalSietch?.active && <button disabled={Boolean(rowTaskQueueState)} title="Restart only this Sietch" onClick={() => run(() => restartSietch(primarySurvivalSietch, rowTarget))}>{taskQueueButtonLabel(rowTaskQueueState, "restart", "Restarting...", "Restart")}</button>}
                 {/* Only offered while the map is up -- a stopped map wants Force
                     Spawn, not a despawn+spawn cycle. */}
                 {rowName !== "Survival_1" && rowName !== "Overmap" && canForceDespawn && String(row.partitionId || row.partition || "").trim()
-                  && <button disabled={Boolean(rowTaskQueueState)} title="Restart this map by despawning and respawning its partition" onClick={() => run(() => respawnMap(row))}>{rowTaskQueueState?.phase === "queued" ? "Queued" : rowTaskQueueState?.phase === "running" ? "Restarting..." : "Restart"}</button>}
+                  && <button disabled={Boolean(rowTaskQueueState)} title="Restart this map by despawning and respawning its partition" onClick={() => run(() => respawnMap(row))}>{taskQueueButtonLabel(rowTaskQueueState, "restart", "Restarting...", "Restart")}</button>}
                 {rowName !== "Survival_1" && rowName !== "Overmap" && canForceSpawn && <button title="Force spawn this stopped map" onClick={() => run(() => forceSpawnMap(row))}>Force Spawn</button>}
                 {rowName !== "Survival_1" && rowName !== "Overmap" && canForceDespawn && <button className="danger" title="Force despawn this running map" onClick={() => run(() => forceDespawnMap(row))}>Force Despawn</button>}
                 {rowMapSettingsResultActive && mapsResult ? <span className={`inline-task-result map-action-result result-${inlineTaskResultClass(mapsResult)}`}>
@@ -2429,11 +2490,11 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
             return <Fragment key={`deepdesert-${String(deepRow.partitionId || deepRow.dimension || "")}`}><tr className="sietch-child-row"><td><MapDisplayName mapId="DeepDesert_1" instanceName={childName} combatState={childCombatRow?.configuredState || "UNKNOWN"} combatRestartRequired={Boolean(childCombatRow?.configurationDrift)} /><span className="sietch-child-meta">Partition {String(deepRow.partitionId || "Unknown")} / Dimension {String(deepRow.dimension || "Unknown")}{childCombatRow?.configurationDrift ? " / Restart required to apply saved PvP-PvE settings" : ""}</span></td><td><MapRuntimeStatus value={childStatus} /></td><td>{String(row.mode || "Dynamic")}</td><td><MemoryUsageBar row={childMemoryRow} fallback={liveMemoryFallback({ ...row, status: childStatus })} configuredLimit={deepMemory} swapEnabled={Boolean(memorySwap?.enabled)} /></td><td className="actions-column"><button className="stable-action-button" onClick={() => selectDeepDesertPartition(deepRow)}>{childSelected ? "Close" : "Edit"}</button></td></tr>
               {childSelected && <tr className="inline-edit-row"><td colSpan={5}><section className="inline-edit-panel">
                 <div className="panel-title"><h4>Edit {childName}</h4></div>
-                <KeyValueGrid items={[["Name", childName], ["Role", childCombatRow?.configuredState === "PVP" ? "PvP" : childCombatRow?.configuredState === "PVE" ? "PvE" : "Not Available"], ["Partition", deepRow.partitionId], ["Dimension", deepRow.dimension], ["Status", childStatus], ["Memory", deepMemory]]} />
+                <KeyValueGrid items={[["Name", childName], ["Role", childCombatRow?.configuredState === "PVP" ? "PvP" : childCombatRow?.configuredState === "PVE" ? "PvE" : "Not Available"], ["Partition", deepRow.partitionId], ["Dimension", deepRow.dimension], ["Status", childStatus], ["Memory", deepMemory], ["Last Restart", mapRestartReading(restartHistory, "DeepDesert_1", String(deepRow.partitionId || ""))]]} />
                 <div className="action-line">
                   <label className="memory-number-field">Memory<input type="number" min="0.01" step="0.01" inputMode="decimal" value={memory} onChange={(event) => setMemory(event.target.value)} placeholder="8" /></label>
                   <span className="unit-label">GB</span>
-                  <button disabled={!childMemoryDirty || Boolean(childTaskQueueState)} onClick={() => run(() => saveDeepDesertPartitionSettings(deepRow))}>{childTaskQueueState?.phase === "queued" ? "Queued" : childTaskQueueState?.phase === "running" ? "Saving..." : "Save"}</button>
+                  <button disabled={!childMemoryDirty || Boolean(childTaskQueueState)} onClick={() => run(() => saveDeepDesertPartitionSettings(deepRow))}>{taskQueueButtonLabel(childTaskQueueState, "save", "Saving...", "Save")}</button>
                   {childCanForceSpawn && <button title="Force spawn this stopped Deep Desert instance" onClick={() => run(() => forceSpawnDeepDesertPartition(deepRow))}>Force Spawn</button>}
                   {childCanForceDespawn && <button className="danger" title="Force despawn this running Deep Desert instance" onClick={() => run(() => forceDespawnDeepDesertPartition(deepRow))}>Force Despawn</button>}
                   {childMapSettingsResultActive && mapsResult ? <span className={`inline-task-result map-action-result result-${inlineTaskResultClass(mapsResult)}`}>
@@ -2470,15 +2531,15 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
             return <Fragment key={`sietch-${sietch.partitionId}`}><tr className="sietch-child-row"><td><MapDisplayName mapId="Survival_1" sietch={sietch} draft={draft} combatState={childCombatRow?.configuredState || "UNKNOWN"} combatRestartRequired={Boolean(childCombatRow?.configurationDrift)} /><span className="sietch-child-meta">Partition {sietch.partitionId} / Dimension {sietch.dimension}{childCombatRow?.configurationDrift ? " / Restart required to apply saved PvP-PvE settings" : ""}</span></td><td><MapRuntimeStatus value={childStatus} /></td><td>Sietch</td><td>{sietch.active ? <MemoryUsageBar row={childMemoryRow} fallback={liveMemoryFallback(row)} configuredLimit={sietchMemory} swapEnabled={Boolean(memorySwap?.enabled)} /> : <span className="muted">Unallocated</span>}</td><td className="actions-column"><button className="stable-action-button" onClick={() => selectSietch(sietch)}>{childSelected ? "Close" : "Edit"}</button></td></tr>
               {childSelected && <tr className="inline-edit-row"><td colSpan={5}><section className="inline-edit-panel">
                 <div className="panel-title"><h4>Edit {sietch.displayName}</h4></div>
-                <KeyValueGrid items={[["Partition", sietch.partitionId], ["Dimension", sietch.dimension], ["Status", childStatus], ["Memory", sietchMemory], ["Password", sietch.passwordSet ? "Set" : "Not Set"]]} />
+                <KeyValueGrid items={[["Partition", sietch.partitionId], ["Dimension", sietch.dimension], ["Status", childStatus], ["Memory", sietchMemory], ["Last Restart", mapRestartReading(restartHistory, "Survival_1", sietch.partitionId)], ["Password", sietch.passwordSet ? "Set" : "Not Set"]]} />
                 <div className="action-line">
                   <label className="memory-number-field">Memory<input type="number" min="0.01" step="0.01" inputMode="decimal" value={memory} onChange={(event) => setMemory(event.target.value)} placeholder="8" /></label>
                   <span className="unit-label">GB</span>
                   <label>Name<input value={draft.displayName} placeholder="Default name" onChange={(event) => setSietchDrafts({ ...sietchDrafts, [sietch.partitionId]: { ...draft, displayName: event.target.value } })} /></label>
                   <label>Password<SecretInput value={sietchPasswordInputValue(sietch, draft, Boolean(sietchPasswordTouched[sietch.partitionId]))} placeholder={passwordPlaceholder(sietchHasPassword(sietch, draft))} onFocus={(event) => { if (!sietchPasswordTouched[sietch.partitionId] && sietch.passwordSet) event.currentTarget.select(); }} onChange={(event) => { setSietchPasswordTouched({ ...sietchPasswordTouched, [sietch.partitionId]: true }); setSietchDrafts({ ...sietchDrafts, [sietch.partitionId]: { ...draft, password: event.target.value } }); }} /></label>
-                  <button disabled={!childDirty || Boolean(childTaskQueueState)} onClick={() => run(() => saveSietchSettings(sietch))}>{childTaskQueueState?.phase === "queued" ? "Queued" : childTaskQueueState?.phase === "running" ? "Saving..." : "Save Sietch Settings"}</button>
+                  <button disabled={!childDirty || Boolean(childTaskQueueState)} onClick={() => run(() => saveSietchSettings(sietch))}>{taskQueueButtonLabel(childTaskQueueState, "save", "Saving...", "Save Sietch Settings")}</button>
                   {sietch.active && <PendingRefillBadge counts={queueCountsForPartition(Number(sietch.partitionId))} />}
-                  {sietch.active && <button disabled={Boolean(childTaskQueueState)} title="Restart only this Sietch" onClick={() => run(() => restartSietch(sietch, childTarget))}>{childTaskQueueState?.phase === "queued" ? "Queued" : childTaskQueueState?.phase === "running" ? "Restarting..." : "Restart"}</button>}
+                  {sietch.active && <button disabled={Boolean(childTaskQueueState)} title="Restart only this Sietch" onClick={() => run(() => restartSietch(sietch, childTarget))}>{taskQueueButtonLabel(childTaskQueueState, "restart", "Restarting...", "Restart")}</button>}
                   {childMapSettingsResultActive && mapsResult ? <span className={`inline-task-result map-action-result result-${inlineTaskResultClass(mapsResult)}`}>
                     <strong className={mapsResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(mapsResult.title, mapsResult.status === "running")}</strong>
                     {mapsResult.message && <span className="inline-task-message">{formatResultMessage(mapsResult.message)}</span>}
@@ -2548,11 +2609,13 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
             </div>
           </div>
         </div>
+        {userGameName && filteredGameFields.some(field => ["partition_pvp_enabled", "partition_pve_enabled", "force_pvp_all_partitions", "legacy_pvp_enabled", "server_pve", "security_zones_enabled"].includes(field.id)) && <CombatSettingsNotice row={selectedCombatSettings} hasUnsavedChanges={gameDirty.length > 0} />}
         {userGameName && <SettingsCardGrid fields={filteredGameFields} values={gameDraft} onChange={(id, value) => setGameDraft({ ...gameDraft, [id]: value })} viewMode={modifierViewMode} emptyMessage={modifierEmptyMessage(!!schema, userGameFields.length, modifierFilter, activeGameCategory)} matchRegionControls={[
           { fieldId: CORIOLIS_CYCLE_START_HOUR_FIELD_ID, enabled: coriolisHour.matchesRegion, available: coriolisHourMatchRegionAvailable, regionLabel: serverRegion, regionValueLabel: coriolisHourRegionValueLabel(coriolisHour.regionValue), onToggle: coriolisHour.setManualOverride },
           { fieldId: CORIOLIS_CYCLE_START_DAY_FIELD_ID, enabled: coriolisDay.matchesRegion, available: coriolisDayMatchRegionAvailable, regionLabel: serverRegion, regionValueLabel: coriolisDayRegionValueLabel(coriolisDay.regionValue), onToggle: coriolisDay.setManualOverride }
         ]} />}
-        <div className="action-row"><button disabled={!gameDirty.length || !userGameName} onClick={() => run(saveGame)}>Save</button><button disabled={!gameDirty.length} onClick={() => setGameDraft(gameValues)}>Discard Changes</button><button className="settings-reset-all-button" disabled={!userGameName || !userGameFields.length} title="Set every UserGame setting on this tab back to its default value" onClick={() => run(() => resetAllToDefaults("game"))}>Restore Defaults</button></div>
+        {invalidGameDirty.length > 0 && <p className="error">Enter a supported value within the displayed range before saving.</p>}
+        <div className="action-row"><button disabled={!gameDirty.length || !userGameName || invalidGameDirty.length > 0} onClick={() => run(saveGame)}>Save</button><button disabled={!gameDirty.length} onClick={() => setGameDraft(gameValues)}>Discard Changes</button><button className="settings-reset-all-button" disabled={!userGameName || !userGameFields.length} title="Set every UserGame setting on this tab back to its default value" onClick={() => run(() => resetAllToDefaults("game"))}>Restore Defaults</button></div>
       </> : settingsTab === "serverCustom" ? <>
         <div className="settings-selector-row">
           <label className="compact-select">Target<select value={userGameTargetKey} onChange={(event) => selectUserGameTarget(event.target.value)}><option value="">Select Map Or Partition</option>{userGameTargets.map((target) => <option key={target.key} value={target.key}>{target.label}</option>)}</select></label>
@@ -2565,6 +2628,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
             </div>
           </div>
         </div>
+        {userGameName && filteredServerCustomFields.some(field => field.id === "pvp_mode") && <CombatSettingsNotice row={selectedCombatSettings} hasUnsavedChanges={serverCustomDirty.length > 0} />}
         {userGameName && <><p className="muted">Official Patch 1.5 settings stored in <code>Saved/Config/LinuxServer/ServerCustomSettings.ini</code>. Dune Docker keeps <code>DifficultyLevel=Custom</code> and preserves unmanaged file values.</p><SettingsCardGrid fields={filteredServerCustomFields} values={serverCustomDraft} onChange={(id, value) => setServerCustomDraft({ ...serverCustomDraft, [id]: value })} viewMode={modifierViewMode} emptyMessage={modifierEmptyMessage(!!schema, serverCustomFields.length, modifierFilter, activeServerCustomCategory)} /></>}
         {invalidServerCustomDirty.length > 0 && <p className="error">Enter a supported value within the displayed range before saving.</p>}
         <div className="action-row"><button disabled={!serverCustomDirty.length || !userGameName || invalidServerCustomDirty.length > 0} onClick={() => run(saveServerCustom)}>Save Custom Settings</button><button disabled={!serverCustomDirty.length} onClick={() => setServerCustomDraft(serverCustomValues)}>Discard Custom Settings Changes</button><button className="settings-reset-all-button" disabled={!userGameName || !serverCustomFields.length} title="Set every Server Setting on this tab back to its default value" onClick={() => setServerCustomDraft(Object.fromEntries(serverCustomFields.map((field) => [field.id, field.default ?? ""]))) }>Restore Custom Settings Defaults</button></div>
@@ -3115,7 +3179,7 @@ function SettingInput({ field, value, inputId, onChange, disabled }: { field: Us
     : field.type === "boolean"
     ? <select id={inputId} value={normalizeBooleanText(value)} disabled={disabled} onChange={(event) => onChange(event.target.value)}><option value="True">True</option><option value="False">False</option></select>
     : field.type === "integer" || field.type === "number"
-      ? <input id={inputId} type="number" step={field.type === "integer" ? "1" : "any"} min={field.minimum ?? undefined} max={field.maximum ?? undefined} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)} />
+      ? <input id={inputId} type="number" step={field.type === "integer" ? "1" : "any"} min={field.minimum ?? undefined} max={field.maximum ?? undefined} placeholder={field.allowEmpty ? "Use inherited or game defaults" : undefined} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)} />
       : String(value).length > 72 || value.includes("(")
         ? <textarea id={inputId} rows={3} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)} />
         : <input id={inputId} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)} />;
@@ -3138,7 +3202,7 @@ function SettingInput({ field, value, inputId, onChange, disabled }: { field: Us
   const aboveRecommendation = recommended && hasNumericValue && field.recommendedMaximum != null && numericValue > field.recommendedMaximum;
   return <>
     {input}
-    {bounded && <small className="muted settings-value-constraint">Allowed: {range}{field.type === "integer" ? " (whole numbers)" : ""}</small>}
+    {bounded && <small className="muted settings-value-constraint">Allowed: {range}{field.type === "integer" ? " (whole numbers)" : ""}{field.allowEmpty ? ". Leave empty to use inherited or game defaults." : ""}</small>}
     {recommended && <small className="muted settings-value-constraint">Recommended: {recommendedRange}</small>}
     {aboveRecommendation && <small className="settings-value-recommendation-warning">Above Funcom&apos;s recommended range. Higher values may increase server and client load.</small>}
     {belowRecommendation && <small className="settings-value-recommendation-warning">Below Funcom&apos;s recommended range. Lower values may produce unsupported gameplay behavior.</small>}
@@ -3210,15 +3274,16 @@ export function MapDisplayName({ mapId, instanceName, sietch, draft, combatState
 }
 
 export function CombatStatusBadge({ state, restartRequired = false }: { state: PartitionCombatStateRow["configuredState"]; restartRequired?: boolean }) {
+  const helpId = useId();
   const normalized = state === "PVP" || state === "PVE" || state === "CONFLICT" ? state : "UNKNOWN";
   const label = normalized === "PVP" ? "PvP" : normalized === "PVE" ? "PvE" : normalized === "CONFLICT" ? "Conflict" : "Unknown";
   const detail = normalized === "UNKNOWN"
-    ? "The effective combat setting could not be determined."
+    ? "The saved UserGame combat selection could not be determined."
     : normalized === "CONFLICT"
-      ? "The effective PvP/PvE settings conflict."
-      : `Effective combat setting: ${label}.`;
+      ? "UserGame has overlapping PvP/PvE selections. This is a Console configuration warning, not a verified game error."
+      : `Saved UserGame selection: ${label}. Custom Settings' PVPMode is separate; this badge does not verify combat rules in game.`;
   const title = restartRequired ? `${detail} Restart required to apply the saved setting.` : detail;
-  return <span className={`combat-status-badge combat-status-${normalized.toLowerCase()}`} title={title} aria-label={`${label} combat status`}>{label}</span>;
+  return <span className={`combat-status-badge combat-status-${normalized.toLowerCase()}`}>{label}<InfoTooltip id={helpId} label={`About ${label} combat settings`} portal>{title}</InfoTooltip></span>;
 }
 
 export function MapRuntimeStatus({ value, detail }: { value: unknown; detail?: unknown }) {
@@ -3306,6 +3371,7 @@ function normalizeBooleanText(value: string) {
 
 export function settingValueIsValid(field: UserSettingField, value: string) {
   const candidate = String(value ?? "").trim();
+  if (!candidate && field.allowEmpty) return true;
   if (field.options?.length) return field.options.includes(candidate);
   if (field.type === "boolean") return /^(true|false)$/i.test(candidate);
   if (field.type !== "integer" && field.type !== "number") return true;
