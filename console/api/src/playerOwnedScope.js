@@ -38,9 +38,15 @@ const PLAYER_EXACT_GET_ROUTES = new Set([
 // resolveSessionTier maps the legacy "observer" alias to player, same as the request gate.
 const isPlayerSession = (session) => resolveSessionTier(session) === "player";
 
+// The one write a player may make: suggesting a translation correction (parity with
+// upstream). The i18n handler still requires the session's CSRF token.
+const PLAYER_TRANSLATION_SUGGESTION_PATH = "/api/i18n/suggestions";
+
 export function playerMayCall(method, path) {
   if (typeof method !== "string" || typeof path !== "string") return false;
-  return method.toUpperCase() === "GET" && PLAYER_EXACT_GET_ROUTES.has(path);
+  const verb = method.toUpperCase();
+  if (verb === "POST" && path === PLAYER_TRANSLATION_SUGGESTION_PATH) return true;
+  return verb === "GET" && PLAYER_EXACT_GET_ROUTES.has(path);
 }
 
 // Bases and vehicles list rows carry `shared_with`: the names and ranks of every

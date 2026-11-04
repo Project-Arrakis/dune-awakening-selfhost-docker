@@ -4,8 +4,8 @@ import { readFileSync } from "node:fs";
 import { classifyPlayerTierRequest as c, PLAYER_TIER_ACTIONS } from "../src/playerTierGate.js";
 import { listGuilds, guildIdsForPlayerControllers } from "../src/duneDb.js";
 
-test("player tier may only ever hold players:read and guilds:read", () => {
-  assert.deepEqual([...PLAYER_TIER_ACTIONS].sort(), ["bases:read", "guilds:read", "players:read", "server:read", "storage:read", "vehicles:read"]);
+test("player tier may only ever hold the scoped reads and the translation suggestion", () => {
+  assert.deepEqual([...PLAYER_TIER_ACTIONS].sort(), ["bases:read", "community:suggest-translation", "guilds:read", "players:read", "server:read", "storage:read", "vehicles:read"]);
 });
 
 test("routes outside /api/players and /api/guilds are not this gate's business", () => {

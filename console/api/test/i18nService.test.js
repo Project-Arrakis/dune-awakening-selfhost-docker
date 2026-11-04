@@ -741,8 +741,7 @@ test("Cycling all 53 languages via public GET /api/i18n/translations does not pi
         headers: { "x-csrf-token": "csrf-tok" },
         body: { lang: code, source: "Home", translation: "Start", credit: "Tester" }
       });
-      // Fork: "observer" is an alias of the strict player tier, which holds no community:suggest-translation;
-      // a moderator session exercises the same suggestion path.
+      // A moderator session exercises the same suggestion path the player tier now holds.
       suggestCall.req.authSession = { id: "s1", csrf: "csrf-tok", tier: "moderator" };
       await handleI18nRoute({
         ...suggestCall,

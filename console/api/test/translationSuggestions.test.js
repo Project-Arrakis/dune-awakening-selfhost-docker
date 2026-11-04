@@ -56,8 +56,7 @@ test('suggestion route rejects anonymous and invalid CSRF requests before any ou
   await handleI18nRoute({req:{method:'POST',headers:{},authSession:{tier:'moderator',csrf:'valid'}},res:{},path:'/api/i18n/suggestions',url:new URL('http://local/api/i18n/suggestions'),config:{},auth:{requireAuth(){throw new Error('Use the already resolved session');}},json(_res,code){status=code;},fetchImpl(){calls++;throw new Error('No external requests allowed');}});
   assert.equal(status,403);assert.equal(calls,0);
   for(const tier of ['owner','admin','moderator'])assert.equal(evaluate({tier},'community:suggest-translation'),true);
-  // Fork difference: no observer tier, and the strict player tier stays read-only (this route sends text to an external service).
-  assert.equal(evaluate({tier:'player'},'community:suggest-translation'),false);
+  assert.equal(evaluate({tier:'player'},'community:suggest-translation'),true);
   assert.equal(evaluate({tier:'moderator'},'settings:write'),false);
 });
 test('authenticated submission takes its current translation from the catalog, not browser data',async t=>{

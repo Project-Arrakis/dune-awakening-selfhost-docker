@@ -498,7 +498,7 @@ test("DEFAULT_POLICIES has no observer tier and the player tier holds only the s
   const actions = DEFAULT_POLICIES.player.statements.flatMap((s) => s.Action);
   // bases/vehicles/storage:read are tier-wide grants narrowed to the caller's own rank-1 assets
   // by playerTierGate.js + playerOwnedScope.js (#1276); server:read is health only.
-  assert.deepEqual([...actions].sort(), ["bases:read", "guilds:read", "players:read", "server:read", "storage:read", "vehicles:read"]);
+  assert.deepEqual([...actions].sort(), ["bases:read", "community:suggest-translation", "guilds:read", "players:read", "server:read", "storage:read", "vehicles:read"]);
   for (const action of ["maps:read", "blueprints:read", "exchange:read", "landsraad:read", "sietches:read", "deepdesert:read", "backups:read", "database:read"]) {
     assert.equal(evaluate({ tier: "player" }, action, DEFAULT_POLICIES), false, `player must not hold ${action}`);
   }
