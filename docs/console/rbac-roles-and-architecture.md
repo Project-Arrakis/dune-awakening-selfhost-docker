@@ -1,6 +1,6 @@
 # RBAC: roles, permissions and architecture
 
-**Status:** Current | **Last Updated:** October 2026
+**Status:** Current | **Last Updated:** November 2026
 
 Verified 2026-10-25 against this repo at `82548d72` (v1.4.52) and the `mentat` bot repo at `f8709f0`. The permission matrix in section 4 is **generated from the real policy engine**, not typed by hand; section 7 shows how to regenerate it.
 **Scope:** who can do what in the Web Console and in the Discord bot, how a person ends up in a role, and where the two halves disagree. It is a map, not a replacement: the linked documents hold the detail and the history.
@@ -38,7 +38,7 @@ Verified 2026-10-25 against this repo at `82548d72` (v1.4.52) and the `mentat` b
 - **Two checks, two places.** The bot refuses a command its caller's tier is too low for (`canWrite()` / `tierAtLeast`) before it calls the console. The console then applies its own policy to the tier it holds for that actor. Both must allow it.
 - **Console evaluation** (`console/api/src/policy.js`): every authenticated route maps to exactly one action (`actions.js`); an unmapped authenticated route is denied; for each statement in the tier's policy, a matching `Deny` wins immediately, otherwise a matching `Allow` allows, otherwise the answer is **default deny**. Handlers whose privilege depends on the request body run a second `requireAction` check. Detail: [`console-iam.md`](../console-iam.md).
 - **Policies.** Shipped defaults are `DEFAULT_POLICIES` in `policy.js`. An operator can save `runtime/generated/iam-policies.json`, which **replaces the defaults wholesale** per tier; on load, security denials for actions added after the file was saved are re-applied so an upgrade cannot silently widen `admin` (issue #1117). Saving a policy that would lock `owner` out of `settings:write` is refused. Patterns are literal text plus `*` only (no regex).
-- **`player` is capped twice**: the default policy grants only `players:read` and `guilds:read`, and `playerTierGate` narrows even those to the signed-in player's own characters, items and guild.
+- **`player` is capped twice**: the default policy grants only the six scoped reads and `community:suggest-translation`, and `playerTierGate` plus the route allowlist narrow the reads to the signed-in player's own characters, owned assets and guild.
 
 ## 3. How a person gets a role
 
@@ -52,14 +52,14 @@ Verified 2026-10-25 against this repo at `82548d72` (v1.4.52) and the `mentat` b
 
 ## 4. What each role can do today (console default policies)
 
-Counts out of **137** console actions: **owner 137**, **admin 116**, **moderator 16**, **player 2**.
+Counts out of **138** console actions: **owner 138**, **admin 117**, **moderator 17**, **player 7**.
 
 | Role | In one line |
 |---|---|
 | **Owner** | Everything, including secrets, settings, authentication, the Discord bot configuration, server restart and system-backup download/import/restore. |
 | **Admin** | Day-to-day operations: players, bases, storage, vehicles, maps, backups (create/delete/restore, not the system-wide ones), logs, updates, care packages, addons. Cannot touch settings, the Discord bot setup, passwords/ports, database write/execute, or restart the server. |
 | **Moderator** | Read-only view of players, guilds, bases, storage, blueprints, vehicles, exchange, maps, sietches, deep desert, landsraad and server status; read logs; kick-all; broadcast and map chat. No edits. |
-| **Player** | `players:read` and `guilds:read`, narrowed to their own data. |
+| **Player** | `players:read`, `guilds:read`, `server:read`, `bases:read`, `vehicles:read` and `storage:read`, each narrowed to their own characters, owned (rank 1) assets and guild (server status is reduced to health), plus `community:suggest-translation`. |
 
 **Denied to `admin` by default (21 actions):** `admin:history:clear`, `backups:download-system`, `backups:import-system`, `backups:restore-system`, `carepackage:clear-history`, `carepackage:grant-all`, `database:execute`, `database:mutate`, `database:write-config`, `server:restart`, and every `settings:*` action (`settings:read`, `settings:write`, `change-password`, `change-port`, `regenerate-recovery-codes`, `discord-bot-disable`, `discord-bot-hosted-oauth`, `discord-bot-hosted-register`, `discord-bot-oauth-config`, `discord-bot-oauth-secret`, `discord-bot-regenerate-token`). A system backup contains the console's own secrets and `iam-policies.json`, which is why its download, import and restore are owner-only.
 
@@ -127,7 +127,7 @@ Full matrix (generated):
 | `bases:give-item` | ✅ | ✅ | — | — |
 | `bases:import-backup` | ✅ | ✅ | — | — |
 | `bases:mutate` | ✅ | ✅ | — | — |
-| `bases:read` | ✅ | ✅ | ✅ | — |
+| `bases:read` | ✅ | ✅ | ✅ | ✅ |
 | `bases:write-config` | ✅ | ✅ | — | — |
 
 **blueprints**
@@ -150,6 +150,11 @@ Full matrix (generated):
 | `carepackage:read` | ✅ | ✅ | — | — |
 | `carepackage:scan` | ✅ | ✅ | — | — |
 | `carepackage:write-config` | ✅ | ✅ | — | — |
+
+**community**
+| Action | Owner | Admin | Moderator | Player |
+|---|:-:|:-:|:-:|:-:|
+| `community:suggest-translation` | ✅ | ✅ | ✅ | ✅ |
 
 **database**
 
@@ -243,7 +248,7 @@ Full matrix (generated):
 |---|:-:|:-:|:-:|:-:|
 | `server:console-reload` | ✅ | ✅ | — | — |
 | `server:network-fix` | ✅ | ✅ | — | — |
-| `server:read` | ✅ | ✅ | ✅ | — |
+| `server:read` | ✅ | ✅ | ✅ | ✅ |
 | `server:restart` | ✅ | — | — | — |
 | `server:restart-service` | ✅ | ✅ | — | — |
 | `server:start` | ✅ | ✅ | — | — |
@@ -286,7 +291,7 @@ Full matrix (generated):
 | Action | Owner | Admin | Moderator | Player |
 |---|:-:|:-:|:-:|:-:|
 | `storage:mutate` | ✅ | ✅ | — | — |
-| `storage:read` | ✅ | ✅ | ✅ | — |
+| `storage:read` | ✅ | ✅ | ✅ | ✅ |
 
 **updates**
 
@@ -309,7 +314,7 @@ Full matrix (generated):
 | `vehicles:delete` | ✅ | ✅ | — | — |
 | `vehicles:delete-item` | ✅ | ✅ | — | — |
 | `vehicles:mutate` | ✅ | ✅ | — | — |
-| `vehicles:read` | ✅ | ✅ | ✅ | — |
+| `vehicles:read` | ✅ | ✅ | ✅ | ✅ |
 | `vehicles:stored-delete` | ✅ | ✅ | — | — |
 
 ## 5. The bot's own tiers

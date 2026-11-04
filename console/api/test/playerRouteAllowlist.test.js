@@ -53,9 +53,17 @@ for (const path of OWN_DATA) {
   });
 }
 
-test("player may never use a non-GET method on any route", () => {
+test("the only write a player may make is suggesting a translation", () => {
+  assert.equal(playerMayCall("POST", "/api/i18n/suggestions"), true);
+  assert.equal(playerReachable("POST", "/api/i18n/suggestions"), true);
+  for (const method of ["PUT", "PATCH", "DELETE", "GET"]) assert.equal(playerMayCall(method, "/api/i18n/suggestions"), false, method);
+  for (const path of ["/api/i18n/suggestions/1", "/api/i18n/suggestion", "/api/i18n/review"]) assert.equal(playerMayCall("POST", path), false, path);
+});
+
+test("player may never use a non-GET method on any other route", () => {
   for (const key of Object.keys(ROUTE_ACTIONS)) {
     const [, path] = key.split(" ", 2);
+    if (path === "/api/i18n/suggestions") continue;
     for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
       assert.equal(playerMayCall(method, path), false, `${method} ${path}`);
       assert.equal(playerReachable(method, path), false, `${method} ${path}`);
@@ -86,7 +94,7 @@ test("the set of routes a player reaches outside /api/players and /api/guilds is
 });
 
 test("every action the player tier can ever hold is pinned", () => {
-  assert.deepEqual([...PLAYER_TIER_ACTIONS].sort(), ["bases:read", "guilds:read", "players:read", "server:read", "storage:read", "vehicles:read"]);
+  assert.deepEqual([...PLAYER_TIER_ACTIONS].sort(), ["bases:read", "community:suggest-translation", "guilds:read", "players:read", "server:read", "storage:read", "vehicles:read"]);
   assert.deepEqual([...resolveAllowedActions("player")].sort(), [...PLAYER_TIER_ACTIONS].sort());
 });
 

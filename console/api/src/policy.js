@@ -597,6 +597,9 @@ export const DEFAULT_POLICIES = {
         "vehicles:read", // owned only
         "storage:read",  // owned only
       ]},
+      // Same grant every other tier holds. The only write a player has: the one
+      // route playerOwnedScope.js admits for it, which sends text to the review service.
+      { Effect: "Allow", Action: "community:suggest-translation" },
     ]
   },
 };
