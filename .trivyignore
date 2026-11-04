@@ -111,6 +111,9 @@ CVE-2026-76957 exp:2027-01-07  # libexpat1 -- memory corruption allows RCE or Do
 # console/web have no XML parser dependency or source use (git grep for expat/xml2js/fast-xml/sax/DOMParser/xmldom is empty).
 CVE-2026-117610 exp:2027-01-07  # libexpat1 -- NULL pointer dereference; no fix in Debian
 CVE-2026-118370 exp:2027-01-07  # libexpat1 -- signed integer overflow; no fix in Debian
+# Added 2026-11-04 (issue #1297). Another libexpat1 HIGH advisory on libexpat1 2.9.0-1~deb13u1, "affected" with an empty fix column, first seen on
+# PR #1296 whose diff is not the cause. Same exposure argument as above (transitive via python3.13-stdlib pyexpat; the git grep above is empty).
+CVE-2026-113351 exp:2027-01-07  # libexpat1 -- memory-tracking denial of service; no fix in Debian
 
 # Added 2026-10-09 (issue #1152). One more libexpat1 HIGH advisory, published
 # after main's last passing run of this gate (2026-10-07T16:41Z), first seen on
