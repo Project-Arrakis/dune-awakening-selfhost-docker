@@ -163,7 +163,7 @@ export function CustomizationsTab({ dbPlayerId, playerName, confirmAction, onAct
           <h4>Customizations</h4>
           <p>Grant complete cosmetic sets or choose individual variants and swatches.</p>
         </div>
-        <button disabled={!dbPlayerId || loading || Boolean(busyKey)} onClick={() => void grant({ groupId: "all", label: "all customization sets", count: rows.length })}>Grant All Sets</button>
+        <button disabled={!dbPlayerId || loading || Boolean(busyKey)} onClick={() => void grant({ groupId: "all", label: "all customization sets", count: rows.length })}>Grant All Customizations</button>
       </div>
       <p className="playerAdmin_note">Halloween 2026 cosmetics unlock directly while the player is offline. Other cosmetics use tokens; token delivery does not grant or verify DLC or account entitlements. Available means no matching token is currently pending.</p>
       <div className="playerAdmin_customizationCards">

@@ -3480,7 +3480,13 @@
     "× Uptime Event",
     "— restore it afterwards, with its passphrase.",
     "— sent",
-    "— the Funcom token, admin console password, RMQ credentials, sietch join password and IAM policies. It is encrypted with the passphrase you set here, and"
+    "— the Funcom token, admin console password, RMQ credentials, sietch join password and IAM policies. It is encrypted with the passphrase you set here, and",
+    "Dune processes them on the next login.",
+    "Grant All Building Sets",
+    "Grant All Skills",
+    "Skills to raise",
+    "Unlock All",
+    "Grant All Customizations"
   ],
   "translations": {
     "FR": {

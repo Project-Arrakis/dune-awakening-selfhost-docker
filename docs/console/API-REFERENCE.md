@@ -319,12 +319,15 @@ These customization IDs are excluded from the general inventory catalog.
 | POST | `/api/players/{playerId}/specializations/keystones/grant-all` | Grant all keystones | `confirmation: "GRANT ALL KEYSTONES"` |
 | POST | `/api/players/{playerId}/specializations/keystones/reset-all` | Reset all keystones | `confirmation: "RESET ALL KEYSTONES"` |
 | POST | `/api/players/{playerId}/crafting-recipes/unlock` | Unlock recipe | `recipeId`, `confirmation: "UNLOCK CRAFTING RECIPE"` |
+| POST | `/api/players/{playerId}/crafting-recipes/unlock-all` | Unlock every catalogued recipe (offline player only; takes a backup first) | `confirmation` (`UNLOCK ALL CRAFTING RECIPES`) |
 | POST | `/api/players/{playerId}/research-items/unlock` | Unlock research | `itemKey`, `confirmation: "UNLOCK RESEARCH ITEM"` |
+| POST | `/api/players/{playerId}/research-items/unlock-all` | Unlock all research and its linked recipes/building sets; group markers and building keys without progression are skipped and named in the result (offline player only; takes a backup first) | `confirmation` (`UNLOCK ALL RESEARCH`) |
 | POST | `/api/players/{playerId}/journey/complete` | Complete journey node | `nodeId` (max 500 characters), `confirmation: "COMPLETE JOURNEY NODE"` |
 | POST | `/api/players/{playerId}/journey/reset` | Reset journey node | `nodeId`, `confirmation: "RESET JOURNEY NODE"` |
 | POST | `/api/players/{playerId}/tutorials/complete` | Complete tutorial | `tutorialId` (integer 1-32767), `confirmation: "COMPLETE TUTORIAL"` |
 | POST | `/api/players/{playerId}/tutorials/reset` | Reset tutorial | `tutorialId` (integer 1-32767), `confirmation: "RESET TUTORIAL"` |
 | POST | `/api/players/{playerId}/building-unlocks/grant` | Grant one Building Set. No-op if already owned or pending; `status` is `Delivered` (online) or `Pending` | `itemId`, `confirmation: "GRANT BUILDING UNLOCK"` |
+| POST | `/api/players/{playerId}/building-unlocks/grant-all` | Deliver every non-experimental building set the player does not own or have pending (offline player only); per-item failures are reported, not fatal | `confirmation` (`GRANT ALL BUILDING UNLOCKS`) |
 | POST | `/api/players/{playerId}/repair-faction-reputation` | Resynchronise faction reputation and vendor access. The player must be offline | `confirmation: "REPAIR FACTION REPUTATION"` |
 | POST | `/api/players/{playerId}/repair-landsraad-quests` | Repair stuck Landsraad quests. Diagnoses first and takes a full-database backup only when a repair is needed. The player must be offline | `confirmation: "REPAIR LANDSRAAD QUESTS"` |
 | POST | `/api/players/{playerId}/character-recovery` | Recover a replaced (deleted) character: takes a safety backup, stops the Survival partition, restores, then restarts it (`mapRestarted`, `restartError`). The player must be offline | `candidateId`, `confirmation: "RECOVER DELETED CHARACTER"` |
