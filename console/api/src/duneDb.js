@@ -4318,8 +4318,8 @@ export async function liveMapBases(db, map = "") {
         from dune.permission_actor_rank par
         join dune.actors player_a on player_a.id = par.player_id
         join dune.player_state ps on ps.account_id = player_a.owner_account_id
-        where par.permission_actor_id = a.id
-        order by par.rank asc, ps.character_name asc
+        where par.permission_actor_id = a.id and par.rank = ${PERMISSION_OWNER_RANK}
+        order by ps.character_name asc
         limit 1
       ) owner on true
       where a.transform is not null ${partitionWhere} ${where} ${storedBaseExclusion}
@@ -6619,8 +6619,8 @@ export async function exportBaseAsBlueprint(db, id) {
       from dune.permission_actor_rank par
       join dune.actors player_a on player_a.id = par.player_id
       join dune.player_state ps on ps.account_id = player_a.owner_account_id
-      where par.permission_actor_id = a.id
-      order by par.rank asc, ps.character_name asc
+      where par.permission_actor_id = a.id and par.rank = ${PERMISSION_OWNER_RANK}
+      order by ps.character_name asc
       limit 1
     ) owner on true
     group by pa.actor_name, owner.character_name, a.id, a.class, a.map, a.transform`, [baseId]);
@@ -6765,8 +6765,8 @@ export async function listStorage(db) {
         from dune.permission_actor_rank par2
         join dune.actors player_a2 on player_a2.id = par2.player_id
         join dune.player_state ps2 on ps2.account_id = player_a2.owner_account_id
-        where par2.permission_actor_id = afe.actor_id
-        order by par2.rank asc, ps2.character_name asc
+        where par2.permission_actor_id = afe.actor_id and par2.rank = ${PERMISSION_OWNER_RANK}
+        order by ps2.character_name asc
         limit 1
       ) owner_lat on true
       where p.building_type in ('SpiceSilo_Placeable','GenericContainer_Placeable','StorageContainer_Placeable','MediumStorageContainer_Placeable','Developer_StorageContainer_Placeable')
@@ -6819,8 +6819,8 @@ export async function listStorage(db) {
         from dune.permission_actor_rank par2
         join dune.actors player_a2 on player_a2.id = par2.player_id
         join dune.player_state ps2 on ps2.account_id = player_a2.owner_account_id
-        where par2.permission_actor_id = a.id
-        order by par2.rank asc, ps2.character_name asc
+        where par2.permission_actor_id = a.id and par2.rank = ${PERMISSION_OWNER_RANK}
+        order by ps2.character_name asc
         limit 1
       ) owner_lat on true
       where a.id is not null
