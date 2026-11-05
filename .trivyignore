@@ -114,6 +114,12 @@ CVE-2026-118370 exp:2027-01-07  # libexpat1 -- signed integer overflow; no fix i
 # Added 2026-11-04 (issue #1297). Another libexpat1 HIGH advisory on libexpat1 2.9.0-1~deb13u1, "affected" with an empty fix column, first seen on
 # PR #1296 whose diff is not the cause. Same exposure argument as above (transitive via python3.13-stdlib pyexpat; the git grep above is empty).
 CVE-2026-113351 exp:2027-01-07  # libexpat1 -- memory-tracking denial of service; no fix in Debian
+# Added 2026-11-05 (found on the rebased Dependabot PRs #1264-#1267, whose diffs are not the cause). zlib1g 1:1.3.dfsg+really1.3.1-1+b1:
+# CVE-2026-76844, heap overflow in gz_write() after a failed write() (trivy's title text for it is wrong, a webpack-dev-middleware string;
+# the Debian tracker confirms it is the zlib bug). Tracker: trixie and forky vulnerable, only sid fixed, so no base-image tag resolves it.
+# Exposure: the console does not call the gz* file API (it uses Node's bundled zlib); the grep for gzopen/gzwrite/gzdopen over console/api/src
+# and runtime/scripts is empty.
+CVE-2026-76844 exp:2027-01-07  # zlib1g -- gz_write() heap overflow after a failed write; fixed only in Debian sid
 
 # Added 2026-10-09 (issue #1152). One more libexpat1 HIGH advisory, published
 # after main's last passing run of this gate (2026-10-07T16:41Z), first seen on
