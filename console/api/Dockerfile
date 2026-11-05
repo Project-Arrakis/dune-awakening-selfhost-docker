@@ -5,8 +5,10 @@ COPY console/web/package-lock.json ./
 RUN npm ci
 COPY runtime/data/augment-compatibility.json /runtime/data/augment-compatibility.json
 COPY runtime/data/admin-skill-modules.json /runtime/data/admin-skill-modules.json
+COPY runtime/data/admin-items.json /runtime/data/admin-items.json
 COPY console/web ./
-RUN npm run build
+RUN npm run build \
+    && node -e 'const fs=require("fs"),path=require("path"),zlib=require("zlib");const dir="/app/web/dist/assets";if(fs.existsSync(dir)){for(const f of fs.readdirSync(dir)){if(/\.(js|css|svg|json)$/i.test(f)){const p=path.join(dir,f),b=fs.readFileSync(p);if(b.length>=1024){fs.writeFileSync(p+".br",zlib.brotliCompressSync(b,{params:{[zlib.constants.BROTLI_PARAM_QUALITY]:11}}));fs.writeFileSync(p+".gz",zlib.gzipSync(b,{level:9}));}}}}'
 
 FROM node:24-trixie-slim
 LABEL io.github.red-blink.dune-selfhost.component="console"
@@ -86,14 +88,14 @@ RUN apt-get update \
     && arch="$(dpkg --print-architecture)" \
     && case "$arch" in \
         amd64) docker_arch="x86_64"; compose_arch="x86_64"; \
-               docker_sha="33e1ab8b63d14bca449f7a3d30d7f6aa669daa544e60a86b17fec87f61afe2b4"; \
-               compose_sha="db1889184726840f75c4f9c001048430d4f25b3be3cb084d3ddd762bc0aed576" ;; \
+               docker_sha="3fb5d1f13014c18cc54945bc177c58a9056a482dada031e17d12cf2e6922c973"; \
+               compose_sha="7758048ad38e580f22559603312874fec8bb638d021a9e64182385fc17cc12a2" ;; \
         arm64) docker_arch="aarch64"; compose_arch="aarch64"; \
-               docker_sha="811f6eee271678fc98dbe5c4d896c00fc5fe2daa4f7a37069c17abc036eab85b"; \
-               compose_sha="732e3a84c1a0f67256ce80bc2598a24546b10ca05f9faa97efceb1171ece2ef7" ;; \
+               docker_sha="1b27fd739378ef938401e81ce5afb73b7ad7432d4f598814a9ff5f826bb464d2"; \
+               compose_sha="15861535d14e26555736b49376c95e14bfd94285366c8446bfac7156a972e76f" ;; \
         *) echo "Unsupported architecture for Docker CLI: $arch" >&2; exit 1 ;; \
        esac \
-    && curl -fsSL --proto '=https' --proto-redir '=https' "https://download.docker.com/linux/static/stable/${docker_arch}/docker-29.9.0.tgz" -o /tmp/docker.tgz \
+    && curl -fsSL --proto '=https' --proto-redir '=https' "https://download.docker.com/linux/static/stable/${docker_arch}/docker-29.9.3.tgz" -o /tmp/docker.tgz \
     && printf '%s  %s\n' "${docker_sha}" /tmp/docker.tgz >/tmp/docker.sha256 \
     && sha256sum -c /tmp/docker.sha256 \
     && tar -xzf /tmp/docker.tgz -C /tmp \
@@ -101,7 +103,7 @@ RUN apt-get update \
     && chmod +x /usr/local/bin/docker \
     && rm -rf /tmp/docker /tmp/docker.tgz /tmp/docker.sha256 \
     && mkdir -p /usr/local/lib/docker/cli-plugins \
-    && curl -fsSL --proto '=https' --proto-redir '=https' "https://github.com/docker/compose/releases/download/v5.5.1/docker-compose-linux-${compose_arch}" \
+    && curl -fsSL --proto '=https' --proto-redir '=https' "https://github.com/docker/compose/releases/download/v5.7.0/docker-compose-linux-${compose_arch}" \
         -o /usr/local/lib/docker/cli-plugins/docker-compose \
     && printf '%s  %s\n' "${compose_sha}" /usr/local/lib/docker/cli-plugins/docker-compose >/tmp/compose.sha256 \
     && sha256sum -c /tmp/compose.sha256 \
@@ -114,6 +116,8 @@ COPY console/api/package.json ./
 COPY console/api/package-lock.json ./
 RUN npm ci --omit=dev
 COPY console/api/src ./src
+COPY console/api/data/i18n-translations-db.json ./data/i18n-translations-db.json
+COPY console/api/data/i18n-reviewed ./data/i18n-reviewed
 COPY --from=web-build /app/web/dist /app/web-dist
 COPY console/api/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh \

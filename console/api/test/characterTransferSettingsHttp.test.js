@@ -8,6 +8,16 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { characterTransferDefaults, readCharacterTransferSettings } from "../src/services/characterTransferSettings.js";
 
+import { createServer as createTcpServer } from "node:net";
+
+function getFreePort() {
+  return new Promise((resolve, reject) => {
+    const s = createTcpServer();
+    s.listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => resolve(p)); });
+    s.on("error", reject);
+  });
+}
+
 test("Console HTTP saves and restores through the native Director API without restart tasks", { timeout: 30000 }, async (t) => {
   const repoRoot = mkdtempSync(join(tmpdir(), "dune-transfer-http-"));
   t.after(() => rmSync(repoRoot, { recursive: true, force: true }));
@@ -30,7 +40,7 @@ test("Console HTTP saves and restores through the native Director API without re
   director.listen(0, "127.0.0.1");
   await once(director, "listening");
   t.after(() => { director.closeAllConnections(); director.close(); });
-  const port = 40000 + process.pid % 10000;
+  const port = await getFreePort();
   const base = `http://127.0.0.1:${port}`;
   const child = spawn(process.execPath, ["src/server.js"], {
     cwd: resolve(import.meta.dirname, ".."), stdio: ["ignore", "pipe", "pipe"],

@@ -180,11 +180,48 @@ export function seedRowListingCount(row, schedule) {
   return Number.isInteger(override) ? override : row.listings;
 }
 
+export function describeDurability(schedule = {}) {
+  return Number.isInteger(schedule.durabilityPercent) ? `, durability ${schedule.durabilityPercent}` : "";
+}
+
 export function describeCommodityStacks(schedule = {}) {
   const overridden = Object.entries(schedule.commodityStacks || {})
     .filter(([, listings]) => listings !== COMMODITY_STACK_DEFAULT);
   if (!overridden.length) return "";
   return `, ${overridden.length} commodity stack override${overridden.length === 1 ? "" : "s"}`;
+}
+
+// Optional schedule-wide durability for every seeded listing. Null (unset)
+// keeps each plan row's own durability_cur/durability_max.
+const DURABILITY_PERCENT_MIN = 100;
+const DURABILITY_PERCENT_MAX = 200;
+
+export function normalizeDurabilityPercent(payload = {}, previous = {}) {
+  const fromPayload = payload?.durabilityPercent !== undefined;
+  const raw = fromPayload ? payload.durabilityPercent : previous?.durabilityPercent;
+  if (raw === null || raw === undefined || raw === "") return null;
+  try {
+    return integerField(raw, "durabilityPercent", DURABILITY_PERCENT_MIN, DURABILITY_PERCENT_MAX);
+  } catch (error) {
+    // A bad value in the stored schedule degrades to "unset" so it cannot
+    // reset the operator's other settings; a bad value in a save still errors.
+    if (fromPayload) throw error;
+    return null;
+  }
+}
+
+// Rewrites the durability fields of a row's pre-serialized item stats JSON
+// when the schedule sets a durability; every other stat (augment rolls) stays.
+export function seedRowItemStats(row, schedule) {
+  const percent = schedule?.durabilityPercent;
+  if (!Number.isInteger(percent)) return row.itemStats;
+  const stats = JSON.parse(row.itemStats);
+  const durability = stats?.FItemStackAndDurabilityStats?.[1];
+  if (!durability) return row.itemStats;
+  durability.CurrentDurability = percent;
+  durability.MaxDurability = percent;
+  durability.DecayedMaxDurability = percent;
+  return JSON.stringify(stats);
 }
 
 export function normalizeSeedSchedule(payload = {}, previous = {}) {
@@ -212,6 +249,7 @@ export function normalizeSeedSchedule(payload = {}, previous = {}) {
     ...normalizeCategoryMultipliers(payload, previous, "Seed schedule"),
     augmentPricing: normalizeAugmentPricing(payload.augmentPricing ?? previous.augmentPricing),
     commodityStacks: normalizeCommodityStacks(payload, previous),
+    durabilityPercent: normalizeDurabilityPercent(payload, previous),
     // Who owns this schedule: "addon" (bridge-managed; scheduled runs re-verify)
     // the addon's approved permissions) or "console" (first-class Market Bot;
     // authorized by RBAC at save time). Deliberately NOT read from the payload —
@@ -442,7 +480,7 @@ export function buildMarketSeedSql(plan, schedule) {
     // multiplier and the row's category multiplier, rounded to clean steps.
     const price = listedUnitPrice(row);
     const listings = seedRowListingCount(row, schedule);
-    return `(${sqlLiteral(row.templateId)},${row.stackSize},${price},${row.categoryMask},${row.categoryDepth},${row.qualityLevel},${sqlLiteral(row.kind)},${listings},${sqlLiteral(row.itemStats)})`;
+    return `(${sqlLiteral(row.templateId)},${row.stackSize},${price},${row.categoryMask},${row.categoryDepth},${row.qualityLevel},${sqlLiteral(row.kind)},${listings},${sqlLiteral(seedRowItemStats(row, schedule))})`;
   }).join(",\n") || "(NULL,1,0,0,0,0,'equippable',0,'{}')";
 
   // Always clear the bot's own listings for this exchange before seeding.
@@ -521,7 +559,7 @@ export async function executeSeedRun(config, db, schedule, { runDuneImpl, buildD
     priceMultiplier: schedule.priceMultiplier,
     exchangeId: schedule.exchangeId,
     backupSkipped,
-    detail: `Seeded ${listingCount} listings on exchange ${schedule.exchangeId} at ${schedule.priceMultiplier}x${describeCategoryMultipliers(schedule)}${describeCommodityStacks(schedule)} (bot listings cleared first).${backupSkipped ? SAFETY_BACKUP_SKIPPED_NOTE : ""}`
+    detail: `Seeded ${listingCount} listings on exchange ${schedule.exchangeId} at ${schedule.priceMultiplier}x${describeCategoryMultipliers(schedule)}${describeCommodityStacks(schedule)}${describeDurability(schedule)} (bot listings cleared first).${backupSkipped ? SAFETY_BACKUP_SKIPPED_NOTE : ""}`
   };
 }
 

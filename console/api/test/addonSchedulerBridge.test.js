@@ -5,11 +5,21 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
+import { createServer as createTcpServer } from "node:net";
+
+function getFreePort() {
+  return new Promise((resolve, reject) => {
+    const s = createTcpServer();
+    s.listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => resolve(p)); });
+    s.on("error", reject);
+  });
+}
+
 // Route-level coverage for EDA retirement in server.js: boot the real API in
 // mock mode against a temp repo that still has the old addon installed.
 
 const API_ROOT = resolve(import.meta.dirname, "..");
-const PORT = 20000 + (process.pid % 20000);
+const PORT = await getFreePort();
 const BASE = `http://127.0.0.1:${PORT}`;
 
 function makeRepoRoot() {

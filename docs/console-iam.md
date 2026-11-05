@@ -1,6 +1,8 @@
 # Console IAM Architecture
 
-The Web Console applies an IAM action to every authenticated API route. Public authentication and health routes remain outside this gate, and Discord adapter routes continue to use their existing bearer-token and Discord capability checks.
+**Status:** Current | **Last Updated:** November 2026
+
+The Web Console applies an IAM action to every authenticated API route. Public authentication and health routes remain outside this gate, as do the public i18n read routes (`GET /api/i18n/languages` and `/translations`) and the signed peer-mesh i18n routes. Discord adapter routes continue to use their existing bearer-token and Discord capability checks.
 
 ## Authorization flow
 
@@ -35,12 +37,12 @@ reject it. Its scope is a per-namespace Read/Read+write map of its own, evaluate
 
 Keys carry no configurable tier. The `owner` tier in the synthesized principal exists only so
 `resolveSessionTier` recognises it — `owner` is `Allow *`, so the policy check is a no-op and
-the key's scope map is the single thing deciding access. `settings:*`, `database:*` and `setup:*` are
+the key's scope map is the single thing deciding access. `settings:*`, `database:*`, `setup:*` and `community:*` are
 denied to every key regardless of what its stored record says, which is what keeps key
 management a browser-session operation. `updates:*` and `addons:*` are write-denied rather than
 denied outright, so a key can poll for updates and list addons but never install either. See [console/api-keys.md](console/api-keys.md).
 
-Session tier and identity stay in the in-memory session store; they are not placed in the browser cookie. A Console process restart invalidates existing sessions, matching the previous session lifecycle and preventing stale role claims from surviving a restart.
+Session tier and identity are held in the server-side session store, not in the browser cookie. The store is persisted to `runtime/generated/sessions.json` with a MAC derived from the login password and session secret, so sessions survive a Console restart until they expire (12 hours) and are discarded if the password or secret changes or an entry fails verification.
 
 ## Policies
 
@@ -50,11 +52,11 @@ The default policies preserve full owner access and provide conservative default
 
 ### The `player` tier is strict, and `observer` no longer exists
 
-`player` is own-record-scoped and read-only: a player sees their own characters and items, and the guild they belong to, and nothing else. The default `player` policy therefore grants only `players:read` and `guilds:read`; `server`, `maps`, `bases`, `storage`, `vehicles`, `blueprints`, `exchange` and `landsraad` reads are not granted, because none of them is scoped to the caller yet.
+`player` is own-record-scoped and read-only: a player sees their own characters, the bases, vehicles and storage they **own** (permission rank 1; not ones they co-own or only have associate access to), the guild they belong to including its roster, and server health, and nothing else. The default `player` policy grants `players:read`, `guilds:read`, `server:read`, `bases:read`, `vehicles:read` and `storage:read`. The last four are tier-wide grants, not the scoping: only the exact routes in `console/api/src/playerOwnedScope.js` are reachable, and each is scoped to the caller in its own handler. `maps`, `blueprints`, `exchange` and `landsraad` reads are not granted, because none of them is scoped to the caller (there is no Live Map for players).
 
-On top of the policy, a second gate (`console/api/src/playerTierGate.js`) applies to every player-tier session **whatever iam-policies.json says**: the session may only ever hold `players:read` and `guilds:read`; `GET /api/players`, `/online` and `/search` return only the caller's linked characters; `GET /api/players/{id}` and its `inventory`, `vehicles`, `bases`, `currency` and `solaris-coin` sub-resources work only when `{id}` is one of the caller's own characters; `GET /api/guilds` lists only the caller's own guild and `GET /api/guilds/{id}/members` works only for it (names and ranks only). Every other path under `/api/players/` and `/api/guilds/`, and every non-GET method, answers 404. A caller with no linked character sees nothing, and so does a failed lookup.
+On top of the policy, a second gate (`console/api/src/playerTierGate.js`) applies to every player-tier session **whatever iam-policies.json says**: the session may only ever hold `players:read`, `guilds:read`, `server:read`, `bases:read`, `vehicles:read` and `storage:read`; `GET /api/players`, `/online` and `/search` return only the caller's linked characters; `GET /api/players/{id}` and its `inventory`, `vehicles`, `bases`, `currency` and `solaris-coin` sub-resources work only when `{id}` is one of the caller's own characters; `GET /api/guilds` lists only the caller's own guild and `GET /api/guilds/{id}/members` works only for it (names and ranks only). Every other path under `/api/players/` and `/api/guilds/`, and every non-GET method, answers 404. Outside those two prefixes a player reaches only `GET /api/server/status` (reduced to overall state, title, region, mode, population and per-map status: no addresses, ports, containers or raw output), and `GET /api/bases`, `/api/vehicles` and `/api/storage`. Those three lists are forced to the caller's own linked character at rank 1, ignore any client-supplied `playerId`/`access`, drop the names and ranks of other players on an asset, and replace an owner name with "You". Every other route that carries one of those actions (Live Map, base backups, readiness, host performance, restart history, ports, services, a chest's contents) answers 404. A vehicle counts as the player's only while they hold permission rank 1 on it; a vehicle their account originally owned whose rank 1 moved to someone else is not listed. A caller with no linked character sees nothing, and so does a failed lookup.
 
-`observer` was the earlier name of this tier, with the same broad read grants. It is removed. For compatibility it is aliased, never honoured as its own tier: an old session or a signed Discord handoff that says `observer` becomes `player`, and a saved iam-policies.json that still contains an `observer` document loads with that key dropped (your other tiers are kept; a missing `player` is filled from the strict defaults). **Upgrade note:** people who signed in as `observer`/`player` and used to browse server-wide Bases, Storage, Vehicles or Maps now see only their own data; to give a tier more, grant it to `moderator`, not `player`.
+`observer` was the earlier name of this tier, with the same broad read grants. It is removed. For compatibility it is aliased, never honoured as its own tier: an old session or a signed Discord handoff that says `observer` becomes `player`, and a saved iam-policies.json that still contains an `observer` document loads with that key dropped (your other tiers are kept; a missing `player` is filled from the strict defaults). **Upgrade note:** people who signed in as `observer`/`player` and used to browse server-wide Bases, Storage, Vehicles or Maps now see only their own data (their own bases, vehicles and storage, and no Live Map); to give a tier more, grant it to `moderator`, not `player`. A saved `iam-policies.json` replaces the defaults wholesale, so an install whose saved `player` document predates this change has to add `server:read`, `bases:read`, `vehicles:read` and `storage:read` to it (or delete the `player` document to take the defaults) before players see Home and the owned-asset pages.
 
 Policy documents use this shape:
 

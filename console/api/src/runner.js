@@ -30,7 +30,7 @@ const simpleOperations = {
   ports: ["ports"],
   doctor: ["doctor"],
   networkBindFix: ["network", "fix"],
-  storageCleanupImages: ["storage", "cleanup"],
+  storageCleanupImages: ["storage", "cleanup", "--unused-images"],
   storageCleanupBuildCache: ["storage", "cleanup", "--build-cache"],
   start: ["start"],
   stop: ["stop"],
@@ -156,8 +156,9 @@ export function buildDuneArgs(operation, payload = {}) {
         const args = ["db", "auto", "enable", validateUpdateTime(payload.time || "05:00")];
         const retentionDays = validateInteger(payload.retentionDays ?? 0, 0, 3650);
         const intervalHours = validateInteger(payload.intervalHours ?? 24, 1, 168);
-        if (retentionDays > 0 || intervalHours !== 24) args.push(String(retentionDays));
-        if (intervalHours !== 24) args.push(String(intervalHours));
+        // Omitted CLI arguments preserve the saved policy, so even the default
+        // values must be explicit when the Console replaces that policy.
+        args.push(String(retentionDays), String(intervalHours));
         return args;
       }
     case "backupAutoRetention":
@@ -172,7 +173,9 @@ export function buildDuneArgs(operation, payload = {}) {
         payload.notifyEnabled === false ? "0" : "1",
         validateMinuteCheckpoints(payload.notifyMinutes ?? "15,10,5,1"),
         payload.waitUntilEmpty ? "1" : "0",
-        String(validateInteger(payload.maxWaitMinutes ?? 360, 0, 10080))
+        String(validateInteger(payload.maxWaitMinutes ?? 360, 0, 10080)),
+        validateOptionalFlag(payload.updateConsole, "updateConsole"),
+        validateOptionalFlag(payload.manageTanks, "manageTanks")
       ];
     case "databaseTables":
       return ["database", "tables", payload.schema || "dune"];
@@ -639,6 +642,12 @@ function validatePlayerId(value) {
   const raw = String(value || "");
   if (raw === "*" || /^[A-Za-z0-9_:#.-]{1,128}$/.test(raw)) return raw;
   throw new Error("Invalid player id");
+}
+
+function validateOptionalFlag(value, label) {
+  if (value === undefined || value === false) return "0";
+  if (value === true) return "1";
+  throw new Error(`${label} must be true or false`);
 }
 
 function validateInteger(value, min, max) {

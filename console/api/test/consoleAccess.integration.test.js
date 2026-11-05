@@ -7,9 +7,19 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
+import { createServer as createTcpServer } from "node:net";
+
+function getFreePort() {
+  return new Promise((resolve, reject) => {
+    const s = createTcpServer();
+    s.listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => resolve(p)); });
+    s.on("error", reject);
+  });
+}
+
 test("real Console upgrade preserves login and activates restrictions only after a safe authenticated review", { timeout: 30000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), "dune-console-access-"));
-  const port = 32000 + process.pid % 10000;
+  const port = await getFreePort();
   const base = `http://127.0.0.1:${port}`;
   const child = spawn(process.execPath, ["src/server.js"], {
     cwd: resolve(import.meta.dirname, ".."), stdio: ["ignore", "pipe", "pipe"],

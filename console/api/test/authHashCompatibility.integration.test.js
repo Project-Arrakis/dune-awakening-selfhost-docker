@@ -7,6 +7,16 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
+import { createServer as createTcpServer } from "node:net";
+
+function getFreePort() {
+  return new Promise((resolve, reject) => {
+    const s = createTcpServer();
+    s.listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => resolve(p)); });
+    s.on("error", reject);
+  });
+}
+
 test("HTTP login accepts an existing scrypt password file", { timeout: 30000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), "dune-auth-hash-"));
   const secretDir = join(root, "runtime/secrets");
@@ -16,7 +26,7 @@ test("HTTP login accepts an existing scrypt password file", { timeout: 30000 }, 
   const key = scryptSync(password, salt, 64, { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 });
   await writeFile(join(secretDir, "admin-web-password.txt"), `scrypt$${salt}$${key.toString("hex")}\n`, { mode: 0o600 });
 
-  const port = 30000 + process.pid % 15000;
+  const port = await getFreePort();
   const base = `http://127.0.0.1:${port}`;
   const child = spawn(process.execPath, ["src/server.js"], {
     cwd: resolve(import.meta.dirname, ".."),

@@ -27,6 +27,16 @@ import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { createTarArchive } from "../src/services/backups.js";
 
+import { createServer as createTcpServer } from "node:net";
+
+function getFreePort() {
+  return new Promise((resolve, reject) => {
+    const s = createTcpServer();
+    s.listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => resolve(p)); });
+    s.on("error", reject);
+  });
+}
+
 // Mirrors system_backup_encryption_available()'s own preflight in db.sh: an
 // AEAD archive needs gpg 2.3+, and test-api.sh deliberately mirrors CI's
 // runner (Ubuntu 22.04), whose stock gpg predates that -- a graceful skip
@@ -42,7 +52,7 @@ function aeadCapableGpgAvailable() {
 const SKIP_REASON = aeadCapableGpgAvailable() ? false : "this environment's gpg cannot do authenticated (AEAD/OCB) encryption -- needs GnuPG 2.3+";
 
 const API_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const PORT = 21000 + ((process.pid + 3) % 20000);
+const PORT = await getFreePort();
 const BASE = `http://127.0.0.1:${PORT}`;
 
 function makeRepoRoot() {

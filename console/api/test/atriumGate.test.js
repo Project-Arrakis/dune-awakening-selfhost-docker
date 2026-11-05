@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes, createHmac } from "node:crypto";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createAuth } from "../src/auth.js";
 
 // The atrium gate at server.js:151-167 checks ATRIUM_ALLOWED_USER_ID
@@ -57,11 +60,12 @@ test("atrium gate: session without userId defaults to empty string", () => {
 
 test("atrium gate: legacy cookie synthesis preserves tier and userId from cookie payload", () => {
   const secret = randomBytes(32).toString("base64url");
-  const authA = createAuth({ sessionSecret: secret, adminPassword: "a", authDisabled: false });
+  const sessionStoreFile = join(mkdtempSync(join(tmpdir(), "atrium-gate-")), "sessions.json");
+  const authA = createAuth({ sessionSecret: secret, adminPassword: "a", authDisabled: false, sessionStoreFile });
   const session = authA.makeSession({ tier: "moderator", userId: ALLOWED_USER });
 
   // Simulate restart: new auth instance, same secret
-  const authB = createAuth({ sessionSecret: secret, adminPassword: "a", authDisabled: false });
+  const authB = createAuth({ sessionSecret: secret, adminPassword: "a", authDisabled: false, sessionStoreFile });
   const req = { headers: { cookie: cookieHeader(session) } };
   const read = authB.readSession(req);
 
@@ -73,7 +77,8 @@ test("atrium gate: legacy cookie synthesis preserves tier and userId from cookie
 test("atrium gate: legacy plain-id cookie still synthesizes as owner (backward compat)", () => {
   const secret = randomBytes(32).toString("base64url");
   // Create a legacy-format cookie: plain id with sign(id)
-  const authA = createAuth({ sessionSecret: secret, adminPassword: "a", authDisabled: false });
+  const sessionStoreFile = join(mkdtempSync(join(tmpdir(), "atrium-gate-")), "sessions.json");
+  const authA = createAuth({ sessionSecret: secret, adminPassword: "a", authDisabled: false, sessionStoreFile });
   const session = authA.makeSession();
   // Replace the cookie with a legacy-format one: just id.sign(id)
   const rawCookie = session.cookie;
@@ -82,7 +87,7 @@ test("atrium gate: legacy plain-id cookie still synthesizes as owner (backward c
   const hmac = createHmac("sha256", secret).update(id).digest("base64url");
   const legacyCookie = `${id}.${hmac}`;
 
-  const authB = createAuth({ sessionSecret: secret, adminPassword: "a", authDisabled: false });
+  const authB = createAuth({ sessionSecret: secret, adminPassword: "a", authDisabled: false, sessionStoreFile });
   const req = { headers: { cookie: `asc_session=${encodeURIComponent(legacyCookie)}` } };
   const read = authB.readSession(req);
 
