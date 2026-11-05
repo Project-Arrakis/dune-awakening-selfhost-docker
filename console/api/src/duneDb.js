@@ -6,7 +6,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { redact } from "./redact.js";
-import { itemImagePath } from "./adminCatalog.js";
+import { itemImagePath, isDirectCustomizationUnlock } from "./adminCatalog.js";
 import { clampInt, writeJsonAtomic } from "./jsonStore.js";
 import { isFiefClaimPlaceable } from "./blueprintSafety.js";
 import { withLiveMapSector } from "./liveMapSector.js";
@@ -74,6 +74,27 @@ let mapRegionNamesCache = null;
 let augmentCompatibilityCache = null;
 const PLAYER_TARGET_CACHE_TTL_MS = 3000;
 const playerTargetCache = new Map(); // id -> { promise, expiresAt }
+const queueFileCache = new Map(); // path -> { stats, parsed }
+
+function readCachedQueueJson(file) {
+  let stats;
+  try {
+    stats = statSync(file, { bigint: true });
+  } catch (error) {
+    if (error && error.code === "ENOENT") {
+      queueFileCache.delete(file);
+      return null;
+    }
+    throw error;
+  }
+  const cached = queueFileCache.get(file);
+  if (cached && ["dev", "ino", "mtimeNs", "ctimeNs", "size"].every(key => cached.stats[key] === stats[key])) {
+    return cached.parsed;
+  }
+  const parsed = JSON.parse(readFileSync(file, "utf8"));
+  queueFileCache.set(file, { stats, parsed });
+  return parsed;
+}
 
 export class UnsupportedCapabilityError extends Error {
   constructor(message, details = {}) {
@@ -158,14 +179,50 @@ export async function routineDefinition(db, oid) {
   return result.rows[0];
 }
 
-export async function listTables(db, schema = "dune") {
+export async function listTables(db, schema = "dune", options = {}) {
   assertIdentifier(schema, "schema");
+  if (options?.approximate === true) {
+    const approx = await db.query(`
+      select t.table_schema as schema,
+             t.table_name as name,
+             greatest(coalesce(s.n_live_tup, c.reltuples::bigint, 0), 0)::bigint::text as row_count
+      from information_schema.tables t
+      left join pg_namespace n on n.nspname = t.table_schema
+      left join pg_class c on c.relnamespace = n.oid and c.relname = t.table_name and c.relkind in ('r', 'p')
+      left join pg_stat_user_tables s on s.relid = c.oid
+      where t.table_type = 'BASE TABLE' and t.table_schema = $1
+      order by t.table_name`, [schema]);
+    return approx.rows.map((row) => ({
+      schema: row.schema,
+      name: row.name,
+      row_count: String(row.row_count ?? "0")
+    }));
+  }
   const result = await db.query(`
     select t.table_schema as schema,
            t.table_name as name
     from information_schema.tables t
     where t.table_type = 'BASE TABLE' and t.table_schema = $1
     order by t.table_name`, [schema]);
+  if (result.rows.length === 0) return [];
+  if (result.rows.length === 1) {
+    const row = result.rows[0];
+    const safe = quoteQualified(row.schema, row.name);
+    const count = await db.query(`select count(*)::bigint as row_count from ${safe}`);
+    return [{ ...row, row_count: count.rows[0]?.row_count ?? "0" }];
+  }
+  const unionParts = result.rows.map((row, index) => {
+    const safe = quoteQualified(row.schema, row.name);
+    return `select ${index}::int as table_idx, (select count(*)::bigint from ${safe}) as row_count`;
+  });
+  const batched = await db.query(unionParts.join(" union all "));
+  if (Array.isArray(batched?.rows) && batched.rows.some((r) => r && Object.prototype.hasOwnProperty.call(r, "table_idx"))) {
+    const countsByIdx = new Map(batched.rows.map((r) => [Number(r.table_idx), r.row_count ?? "0"]));
+    return result.rows.map((row, index) => ({
+      ...row,
+      row_count: String(countsByIdx.get(index) ?? "0")
+    }));
+  }
   const rows = [];
   for (const row of result.rows) {
     const safe = quoteQualified(row.schema, row.name);
@@ -1475,16 +1532,25 @@ async function syncChangedMnemonicLessons(db, before, after) {
 }
 
 export async function tableExists(db, name, schema = "dune") {
-  const result = await db.query("select to_regclass($1) is not null as exists", [`${schema}.${name}`]);
-  return Boolean(result.rows[0]?.exists);
+  const load = async () => {
+    const result = await db.query("select to_regclass($1) is not null as exists", [`${schema}.${name}`]);
+    return Boolean(result.rows[0]?.exists);
+  };
+  if (!db?.schemaCache) return load();
+  return db.schemaCache.get(`t:${schema}.${name}`, load, (exists) => !exists);
 }
 
 export async function columnsFor(db, table, schema = "dune") {
-  const result = await db.query(`
-    select column_name
-    from information_schema.columns
-    where table_schema = $1 and table_name = $2`, [schema, table]);
-  return new Set(result.rows.map((row) => row.column_name));
+  const load = async () => {
+    const result = await db.query(`
+      select column_name
+      from information_schema.columns
+      where table_schema = $1 and table_name = $2`, [schema, table]);
+    return new Set(result.rows.map((row) => row.column_name));
+  };
+  if (!db?.schemaCache) return load();
+  const columns = await db.schemaCache.get(`c:${schema}.${table}`, load, (set) => set.size === 0);
+  return new Set(columns);
 }
 
 const PLAYER_SORT_COLUMNS = {
@@ -1713,7 +1779,7 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
     ? `left join dune.encrypted_accounts ea on ea.id = a.owner_account_id
        left join lateral (
          select case
-           when ea.encrypted_funcom_id is null then ''
+           when ea.encrypted_funcom_id is null or nullif(trim(coalesce(ac.funcom_id, '')), '') is not null then ''
            else coalesce(dune.decrypt_user_data(ea.encrypted_funcom_id), '')
          end as funcom_id
        ) decrypted_account on true`
@@ -1911,17 +1977,25 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
     ) paged on true
     order by ${pagedOrder}`, values);
 
-  const totalsResult = includeTotals ? await db.query(`
-    with player_rows as (
-      select coalesce(nullif(ps.player_controller_id, 0), nullif(a.owner_account_id, 0), a.id) as dedupe_key
-      from dune.actors a
-      left join dune.player_state ps on ps.account_id = a.owner_account_id
-      left join dune.accounts ac on ac.id = a.owner_account_id
-      ${encryptedAccountsJoin}
-      where ${baseWhere}${scopeClause(1)}
-    )
-    select count(distinct dedupe_key)::int as total_players
-    from player_rows`, scopedIds !== null && scopedIds.length > 0 ? [scopedIds] : []) : null;
+  let totalsResult = null;
+  if (includeTotals) {
+    // The window total_count is the server-wide figure: never reuse it for a scoped (player) query.
+    if (scopedIds === null && where === baseWhere && result.rows[0] && result.rows[0].actor_id !== null && result.rows[0].actor_id !== undefined) {
+      totalsResult = { rows: [{ total_players: Number(result.rows[0].total_count || 0) }] };
+    } else {
+      totalsResult = await db.query(`
+        with player_rows as (
+          select coalesce(nullif(ps.player_controller_id, 0), nullif(a.owner_account_id, 0), a.id) as dedupe_key
+          from dune.actors a
+          left join dune.player_state ps on ps.account_id = a.owner_account_id
+          left join dune.accounts ac on ac.id = a.owner_account_id
+          ${encryptedAccountsJoin}
+          where ${baseWhere}${scopeClause(1)}
+        )
+        select count(distinct dedupe_key)::int as total_players
+        from player_rows`, scopedIds !== null && scopedIds.length > 0 ? [scopedIds] : []);
+    }
+  }
 
   return {
     capabilities: {
@@ -4244,8 +4318,8 @@ export async function liveMapBases(db, map = "") {
         from dune.permission_actor_rank par
         join dune.actors player_a on player_a.id = par.player_id
         join dune.player_state ps on ps.account_id = player_a.owner_account_id
-        where par.permission_actor_id = a.id
-        order by par.rank asc, ps.character_name asc
+        where par.permission_actor_id = a.id and par.rank = ${PERMISSION_OWNER_RANK}
+        order by ps.character_name asc
         limit 1
       ) owner on true
       where a.transform is not null ${partitionWhere} ${where} ${storedBaseExclusion}
@@ -4457,6 +4531,60 @@ export async function liveMapPoiMarkers(db, map, category) {
     capabilities: { [category]: true },
     rows: result.rows.map((row) => ({ ...row, x: Number(row.x), y: Number(row.y), z: Number(row.z) }))
   };
+}
+
+const ALL_POI_PATTERNS = Object.freeze(Object.values(POI_CATEGORY_PATTERNS).flat());
+
+export async function liveMapPoiAllMarkers(db, map = "") {
+  const categories = Object.keys(POI_CATEGORY_PATTERNS);
+  if (!(await tableExists(db, "markers")) || !(await tableExists(db, "map_names"))) {
+    const capabilities = Object.fromEntries(categories.map((key) => [key, false]));
+    return { capabilities, byCategory: Object.fromEntries(categories.map((key) => [key, []])) };
+  }
+  const values = [];
+  const categoryValues = categories.map((category) => {
+    values.push(POI_CATEGORY_PATTERNS[category]);
+    return `('${category}', $${values.length}::text[])`;
+  }).join(", ");
+  values.push(ALL_POI_PATTERNS);
+  const allPatternsParam = values.length;
+  let where = "";
+  if (map) {
+    const safe = validateMapName(map);
+    if (safe) {
+      values.push(safe);
+      where = ` and mn.map_name = $${values.length}`;
+    }
+  }
+  const result = await db.query(`
+    select m.marker_hash_id::text as id,
+           m.marker_type as marker_type,
+           c.category,
+           (m.position).x as x,
+           (m.position).y as y,
+           (m.position).z as z,
+           coalesce(mn.map_name, '') as map
+    from dune.markers m
+    join dune.map_names mn on mn.map_name_id = m.map_name_id
+    join (values ${categoryValues}) as c(category, patterns)
+      on m.marker_type ilike any(c.patterns)
+    where m.marker_type ilike any($${allPatternsParam}) and m.marker_type not ilike 'NoIcon' ${where}
+    order by m.marker_hash_id`, values);
+  const capabilities = Object.fromEntries(categories.map((key) => [key, true]));
+  const byCategory = Object.fromEntries(categories.map((key) => [key, []]));
+  for (const row of result.rows || []) {
+    const category = String(row.category || "");
+    if (!byCategory[category]) continue;
+    byCategory[category].push({
+      id: row.id,
+      marker_type: row.marker_type,
+      map: row.map,
+      x: Number(row.x),
+      y: Number(row.y),
+      z: Number(row.z)
+    });
+  }
+  return { capabilities, byCategory };
 }
 
 export async function liveMapMarkers(db, map = "") {
@@ -4674,12 +4802,11 @@ export async function baseIsBackedUp(db, baseId) {
 // player_controller_id appeared immediately.
 //
 // The fallback lookup exists so such a phantom row is still shown to the
-// operator rather than silently vanishing from the roster: resolving the name
-// through owner_account_id is how listBases does it, and every actors row of an
-// account maps to the same character name.
-// Shared by bases and vehicles -- the roster query only depends on the
-// permission actor id, not on what kind of actor it is.
-async function listPermissionRoster(db, actorId) {
+// operator rather than silently vanishing from the roster. Account-based actor
+// lookup is only a fallback: it cannot override the canonical controller name.
+// The Bases table and permission editor share this identity resolution so a
+// missing/stale actors row cannot rename the owner or promote a co-owner.
+async function permissionRosterIdentitySql(db) {
   const encryptedPlayerStateColumns = await tableExists(db, "encrypted_player_state")
     ? await columnsFor(db, "encrypted_player_state")
     : new Set();
@@ -4699,19 +4826,16 @@ async function listPermissionRoster(db, actorId) {
       limit 1
     ) eps on true`
     : "";
-  const encryptedName = hasEncryptedController ? "eps.character_name" : "''";
+  const encryptedName = hasEncryptedController ? "eps.character_name" : "null::text";
   const encryptedCanonical = hasEncryptedController ? "or eps.player_controller_id is not null" : "";
-  const result = await db.query(`
-    select par.player_id::text as player_id,
-           case
+  return {
+    name: `case
              when par.player_id = ${CARE_PACKAGE_SERVER_PERSONA.playerControllerId}::bigint then '${CARE_PACKAGE_SERVER_PERSONA.displayName}'
              when par.player_id = ${FUNCOM_GM_PERSONA.playerControllerId}::bigint then '${FUNCOM_GM_PERSONA.displayName}'
              else coalesce(ps.character_name, ${encryptedName}, fallback.character_name, '')
-           end as character_name,
-           par.rank::int as rank,
-           (ps.player_controller_id is not null ${encryptedCanonical}) as canonical
-    from dune.permission_actor_rank par
-    left join dune.player_state ps on ps.player_controller_id = par.player_id
+           end`,
+    canonical: `(ps.player_controller_id is not null ${encryptedCanonical})`,
+    joins: `left join dune.player_state ps on ps.player_controller_id = par.player_id
     ${encryptedJoin}
     left join lateral (
       select fps.character_name
@@ -4719,9 +4843,23 @@ async function listPermissionRoster(db, actorId) {
       join dune.player_state fps on fps.account_id = fa.owner_account_id
       where fa.id = par.player_id
       limit 1
-    ) fallback on true
+    ) fallback on true`
+  };
+}
+
+// Shared by bases and vehicles -- the roster query only depends on the
+// permission actor id, not on what kind of actor it is.
+async function listPermissionRoster(db, actorId) {
+  const identity = await permissionRosterIdentitySql(db);
+  const result = await db.query(`
+    select par.player_id::text as player_id,
+           ${identity.name} as character_name,
+           par.rank::int as rank,
+           ${identity.canonical} as canonical
+    from dune.permission_actor_rank par
+    ${identity.joins}
     where par.permission_actor_id = $1::bigint
-    order by par.rank asc, coalesce(ps.character_name, fallback.character_name, '') asc`, [actorId]);
+    order by par.rank asc, character_name asc, par.player_id asc`, [actorId]);
   return result.rows.map((row) => ({
     playerId: String(row.player_id),
     name: String(row.character_name || ""),
@@ -5010,9 +5148,8 @@ export function hasQueuedBaseChildAccess(repoRoot) {
 
 export function listQueuedBaseChildAccess(repoRoot) {
   const file = pendingBaseChildAccessFile(repoRoot);
-  if (!existsSync(file)) return [];
   try {
-    const parsed = JSON.parse(readFileSync(file, "utf8"));
+    const parsed = readCachedQueueJson(file);
     if (!Array.isArray(parsed)) return [];
     const seen = new Set();
     return parsed.map(normalizePendingChildAccess).filter((entry) => {
@@ -6116,7 +6253,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
   const safeSortDirection = String(sortDirection).toLowerCase() === "desc" ? "desc" : "asc";
   const sortSpec = BASE_SORT_COLUMNS[safeSortColumn];
 
-  // Owner resolution (lowest-rank permission holder) is a per-base correlated LATERAL —
+  // Owner resolution (rank 1 only) is a per-base correlated LATERAL —
   // expensive at scale. When searching, the `having` clause needs it to filter on, so it
   // must run inside `matched` (before pagination) for every candidate base. When not
   // searching, defer it to the final SELECT so it only runs for the page being displayed.
@@ -6141,33 +6278,25 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
   const offsetParamIndex = values.length;
 
   const matchedOwnerSelect = resolveOwnerBeforePaging ? "coalesce(owner.character_name, '') as owner_name,\n               " : "";
-  const matchedOwnerJoin = resolveOwnerBeforePaging ? `
+  const permissionIdentity = await permissionRosterIdentitySql(db);
+  const ownerJoin = (actor) => `
         left join lateral (
-          select ps.character_name
+          select ${permissionIdentity.name} as character_name
           from dune.permission_actor_rank par
-          join dune.actors player_a on player_a.id = par.player_id
-          join dune.player_state ps on ps.account_id = player_a.owner_account_id
-          where par.permission_actor_id = a.id
-          order by par.rank asc, ps.character_name asc
+          ${permissionIdentity.joins}
+          where par.permission_actor_id = ${actor}
+            and par.rank = ${PERMISSION_OWNER_RANK}
+          order by par.rank asc, character_name asc, par.player_id asc
           limit 1
-        ) owner on true` : "";
+        ) owner on true`;
+  const matchedOwnerJoin = resolveOwnerBeforePaging ? ownerJoin("a.id") : "";
   const matchedGroupByOwner = resolveOwnerBeforePaging ? "owner.character_name, " : "";
 
   const finalOwnerSelect = resolveOwnerBeforePaging ? "p.owner_name," : "coalesce(owner.character_name, '') as owner_name,";
   const viewerRankSelect = player
     ? `(select min(viewer_par.rank)::int from dune.permission_actor_rank viewer_par where viewer_par.permission_actor_id = p.actor_id and viewer_par.player_id = $1) as viewer_rank,`
     : "null::int as viewer_rank,";
-  const finalOwnerJoin = resolveOwnerBeforePaging ? "" : `
-      left join lateral (
-        select ps.character_name
-        from dune.permission_actor_rank par
-        join dune.actors player_a on player_a.id = par.player_id
-        join dune.player_state ps on ps.account_id = player_a.owner_account_id
-        where par.permission_actor_id = p.actor_id
-        order by par.rank asc, ps.character_name asc
-        limit 1
-      ) owner on true`;
-  const sharedOwnerRef = resolveOwnerBeforePaging ? "p.owner_name" : "coalesce(owner.character_name, '')";
+  const finalOwnerJoin = resolveOwnerBeforePaging ? "" : ownerJoin("p.actor_id");
   const matchedSortSelect = [
     "((a.transform).location).x as x",
     "((a.transform).location).y as y",
@@ -6225,13 +6354,11 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
       ${partitionJoin}
       ${finalOwnerJoin}
       left join lateral (
-        select jsonb_agg(jsonb_build_object('name', ps.character_name, 'rank', par.rank) order by par.rank asc, ps.character_name asc) as entries
+        select jsonb_agg(jsonb_build_object('name', coalesce(nullif(${permissionIdentity.name}, ''), 'Unknown player ' || par.player_id::text), 'rank', par.rank) order by par.rank asc, ${permissionIdentity.name} asc, par.player_id asc) as entries
         from dune.permission_actor_rank par
-        join dune.actors player_a on player_a.id = par.player_id
-        join dune.player_state ps on ps.account_id = player_a.owner_account_id
+        ${permissionIdentity.joins}
         where par.permission_actor_id = p.actor_id
           and par.rank <> 1
-          and ps.character_name is distinct from ${sharedOwnerRef}
       ) shared on true
       order by p.sort_position`, values);
 
@@ -6492,8 +6619,8 @@ export async function exportBaseAsBlueprint(db, id) {
       from dune.permission_actor_rank par
       join dune.actors player_a on player_a.id = par.player_id
       join dune.player_state ps on ps.account_id = player_a.owner_account_id
-      where par.permission_actor_id = a.id
-      order by par.rank asc, ps.character_name asc
+      where par.permission_actor_id = a.id and par.rank = ${PERMISSION_OWNER_RANK}
+      order by ps.character_name asc
       limit 1
     ) owner on true
     group by pa.actor_name, owner.character_name, a.id, a.class, a.map, a.transform`, [baseId]);
@@ -6638,8 +6765,8 @@ export async function listStorage(db) {
         from dune.permission_actor_rank par2
         join dune.actors player_a2 on player_a2.id = par2.player_id
         join dune.player_state ps2 on ps2.account_id = player_a2.owner_account_id
-        where par2.permission_actor_id = afe.actor_id
-        order by par2.rank asc, ps2.character_name asc
+        where par2.permission_actor_id = afe.actor_id and par2.rank = ${PERMISSION_OWNER_RANK}
+        order by ps2.character_name asc
         limit 1
       ) owner_lat on true
       where p.building_type in ('SpiceSilo_Placeable','GenericContainer_Placeable','StorageContainer_Placeable','MediumStorageContainer_Placeable','Developer_StorageContainer_Placeable')
@@ -6692,8 +6819,8 @@ export async function listStorage(db) {
         from dune.permission_actor_rank par2
         join dune.actors player_a2 on player_a2.id = par2.player_id
         join dune.player_state ps2 on ps2.account_id = player_a2.owner_account_id
-        where par2.permission_actor_id = a.id
-        order by par2.rank asc, ps2.character_name asc
+        where par2.permission_actor_id = a.id and par2.rank = ${PERMISSION_OWNER_RANK}
+        order by ps2.character_name asc
         limit 1
       ) owner_lat on true
       where a.id is not null
@@ -6724,6 +6851,41 @@ export async function listStorage(db) {
     return { ...vehicleRow, class_name: moduleName || portalVehicleDisplayName(row.class) };
   });
   return { capabilities, rows };
+}
+
+// Storage containers the given player OWNS (permission rank 1), for the
+// console's `player` tier (#1276). Not a filter over listStorage: that query
+// joins every permission rank, so a shared container would carry another
+// player's name. Here the only rank row joined is the caller's own rank-1 row,
+// which is also the ownership test, and owner_name is therefore always the
+// caller. `controllerId` is the linked character's player controller id.
+export async function listOwnedStorage(db, controllerId) {
+  const requiredTables = ["placeables", "actors", "permission_actor", "permission_actor_rank", "inventories", "items", "actor_fgl_entities", "player_state"];
+  const present = await Promise.all(requiredTables.map((table) => tableExists(db, table)));
+  if (present.some((exists) => !exists)) return unsupported("storage", requiredTables.map((t) => `dune.${t}`));
+  const owner = intParam(controllerId, "player controller id", 1);
+  const result = await db.query(`
+    select p.id,
+           coalesce(max(case when pa.actor_name not like '##%' and pa.actor_name <> 'None' then pa.actor_name end), '') as name,
+           p.building_type as class,
+           coalesce(a.map, '') as map,
+           count(distinct i.id)::int as item_count,
+           coalesce(max(ps.character_name), '') as owner_name
+    from dune.placeables p
+    left join dune.actors a on a.id = p.id
+    left join dune.permission_actor pa on pa.actor_id = p.id
+    left join dune.inventories inv on inv.actor_id = p.id
+    left join dune.items i on i.inventory_id = inv.id
+    join dune.actor_fgl_entities afe on afe.entity_id = p.owner_entity_id
+    join dune.permission_actor_rank par on par.permission_actor_id = afe.actor_id
+      and par.player_id = $1 and par.rank = ${PERMISSION_OWNER_RANK}
+    left join dune.actors player_a on player_a.id = par.player_id
+    left join dune.player_state ps on ps.account_id = player_a.owner_account_id
+    where p.building_type in ('SpiceSilo_Placeable','GenericContainer_Placeable','StorageContainer_Placeable','MediumStorageContainer_Placeable','Developer_StorageContainer_Placeable')
+      and p.is_hologram = false and p.owner_entity_id is not null and p.owner_entity_id != 0
+    group by p.id, p.building_type, a.map
+    order by p.id`, [owner]);
+  return { capabilities: { storage: true, storageGiveItem: false }, rows: result.rows };
 }
 
 export async function storageItems(db, id) {
@@ -8326,11 +8488,40 @@ export async function playerCustomizationGrantState(db, id) {
         and i.template_id is not null`, [player.actorId]);
     pending = result.rows.map((item) => String(item.template_id || "")).filter(Boolean);
   }
+  const ownership = await db.query(`
+    select properties->'CustomizationLibraryActorComponent'->'m_UnlockedCustomizationSerializableList'->'m_UnlockedCustomizationIds' as customizations
+    from dune.actors where id = $1`, [player.actorId]);
+  const customizations = ownership.rows[0]?.customizations;
+  const owned = Array.isArray(customizations)
+    ? customizations.map((entry) => entry?.m_CustomizationId).filter((itemId) => isDirectCustomizationUnlock({ itemId })) : [];
   return {
     capabilities: { customizationOwnership: false, customizationPending: pendingSupported },
     player,
+    owned,
     pending
   };
+}
+
+export async function unlockPlayerCustomization(db, id, { itemId }) {
+  if (!isDirectCustomizationUnlock({ itemId })) throw new Error("Select a verified event customization.");
+  return db.transaction(async (tx) => {
+    // Lock the actor before resolving live status and reading the current list.
+    const current = await tx.query(`
+      select properties->'CustomizationLibraryActorComponent'->'m_UnlockedCustomizationSerializableList'->'m_UnlockedCustomizationIds' as customizations
+      from dune.actors where id = $1 for update`, [intParam(id, "player id", 1)]);
+    const player = await resolvePlayerMutationTarget(tx, id);
+    requireOfflinePlayer(player, "Event customization unlocks");
+    const customizations = current.rows[0]?.customizations;
+    if (!Array.isArray(customizations)) throw new UnsupportedCapabilityError("This character has no supported customization unlock list.");
+    if (customizations.some((entry) => entry?.m_CustomizationId === itemId)) {
+      return { ok: true, alreadyUnlocked: true, itemId };
+    }
+    await tx.query(`
+      update dune.actors set properties = jsonb_set(properties,
+        '{CustomizationLibraryActorComponent,m_UnlockedCustomizationSerializableList,m_UnlockedCustomizationIds}', $2::jsonb, false)
+      where id = $1`, [player.actorId, JSON.stringify([...customizations, { m_CustomizationId: itemId }])]);
+    return { ok: true, alreadyUnlocked: false, itemId };
+  });
 }
 
 export async function unlockResearchItem(db, id, { itemKey }) {
@@ -9148,7 +9339,7 @@ const VEHICLE_STATUS_FILTERS = {
 // and the listBases shared-with lateral (resolved only on the paged rows).
 // `status` defaults to "all" so the player-scoped list and existing API
 // callers are unchanged.
-export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortColumn = "name", sortDirection = "asc", playerId = "", status = "all", access = "all" } = {}) {
+export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortColumn = "name", sortDirection = "asc", playerId = "", status = "all", access = "all", rankOneOnly = false } = {}) {
   const requiredTables = [
     "vehicles", "vehicle_modules", "actors", "permission_actor",
     "permission_actor_rank", "player_state", "actor_fgl_entities", "fgl_entities"
@@ -9213,13 +9404,18 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
           from dune.permission_actor_rank par
           where par.permission_actor_id=vc.id and par.player_id=$${controllerParam}
         ) viewer on true`;
+    // rankOneOnly (player tier, #1276): the contract is "vehicles I hold rank 1 on". The
+    // account that originally owned a vehicle whose rank 1 was reassigned is not that
+    // player any more and must not see the new holder's position.
+    // (The account parameter stays referenced so Postgres can type it.)
+    const ownerMatch = rankOneOnly ? `(viewer.rank=1 and $${accountParam}::bigint is not null)` : `(vc.owner_account_id=$${accountParam} or viewer.rank=1)`;
     filters.push(access === "owner"
-      ? `(vc.owner_account_id=$${accountParam} or viewer.rank=1)`
+      ? ownerMatch
       : access === "coowner"
         ? `(vc.owner_account_id is distinct from $${accountParam} and viewer.rank=2)`
         : `(vc.owner_account_id=$${accountParam} or viewer.rank is not null)`);
     relationshipSql = `case
-            when vc.owner_account_id=$${accountParam} or viewer.rank=1 then 'Owner'
+            when ${ownerMatch} then 'Owner'
             when viewer.rank=2 then 'Co-Owner'
             when viewer.rank=3 then 'Associate'
             when viewer.rank is not null then 'Rank ' || viewer.rank::text
@@ -12366,9 +12562,8 @@ function normalizePendingRefill(entry) {
 
 export function listQueuedGeneratorRefills(repoRoot) {
   const file = pendingRefillFile(repoRoot);
-  if (!existsSync(file)) return [];
   try {
-    const parsed = JSON.parse(readFileSync(file, "utf8"));
+    const parsed = readCachedQueueJson(file);
     if (!Array.isArray(parsed)) return [];
     // One entry per base, so a double-clicked button cannot queue a base twice.
     const seen = new Set();
@@ -12820,9 +13015,8 @@ function normalizePendingBaseDelete(entry) {
 
 export function listQueuedBaseDeletes(repoRoot) {
   const file = pendingBaseDeleteFile(repoRoot);
-  if (!existsSync(file)) return [];
   try {
-    const parsed = JSON.parse(readFileSync(file, "utf8"));
+    const parsed = readCachedQueueJson(file);
     if (!Array.isArray(parsed)) return [];
     // One entry per base, so a double-clicked button cannot queue it twice.
     const seen = new Set();
@@ -13036,9 +13230,8 @@ function normalizePendingVehicleDelete(entry) {
 
 export function listQueuedVehicleDeletes(repoRoot) {
   const file = pendingVehicleDeleteFile(repoRoot);
-  if (!existsSync(file)) return [];
   try {
-    const parsed = JSON.parse(readFileSync(file, "utf8"));
+    const parsed = readCachedQueueJson(file);
     if (!Array.isArray(parsed)) return [];
     // One entry per vehicle, so a double-clicked button cannot queue it twice.
     const seen = new Set();
@@ -14779,9 +14972,8 @@ function pendingWaterRefillFile(repoRoot) {
 
 export function listQueuedWaterRefills(repoRoot) {
   const file = pendingWaterRefillFile(repoRoot);
-  if (!existsSync(file)) return [];
   try {
-    const parsed = JSON.parse(readFileSync(file, "utf8"));
+    const parsed = readCachedQueueJson(file);
     if (!Array.isArray(parsed)) return [];
     const seen = new Set();
     return parsed.map(normalizePendingRefill).filter((entry) => {
@@ -14893,6 +15085,7 @@ export async function flushWaterRefills(db, repoRoot, { now = Date.now, ignoreRe
 }
 
 export async function giveItemToPlayer(db, playerId, { itemName = "", itemId = "", templateId = "", quantity = 1, quality = 1, augments = [], augmentQuality = 1, allowOnlinePreAugmented = false }) {
+  if (isDirectCustomizationUnlock({ itemId: templateId || itemId || itemName })) throw new Error("Event cosmetics must be unlocked from Customizations.");
   await requireCapability(await supportsPlayerGiveItem(db), "Player give-item requires compatible dune.inventories and dune.items insert columns.");
   const target = intParam(playerId, "player id", 1);
   const resolvedTemplate = validateTemplateId(templateId || itemId || itemName);

@@ -4,8 +4,8 @@ import { readFileSync } from "node:fs";
 import { classifyPlayerTierRequest as c, PLAYER_TIER_ACTIONS } from "../src/playerTierGate.js";
 import { listGuilds, guildIdsForPlayerControllers } from "../src/duneDb.js";
 
-test("player tier may only ever hold players:read and guilds:read", () => {
-  assert.deepEqual([...PLAYER_TIER_ACTIONS].sort(), ["guilds:read", "players:read"]);
+test("player tier may only ever hold the scoped reads and the translation suggestion", () => {
+  assert.deepEqual([...PLAYER_TIER_ACTIONS].sort(), ["bases:read", "community:suggest-translation", "guilds:read", "players:read", "server:read", "storage:read", "vehicles:read"]);
 });
 
 test("routes outside /api/players and /api/guilds are not this gate's business", () => {
@@ -24,6 +24,11 @@ test("list routes are scoped lists, own sub-resources are id-checked", () => {
   assert.deepEqual(c("/api/guilds/7/members", "GET"), { kind: "own-guild", id: "7" });
 });
 
+test("list-settings tells a player the PvP view is hidden and skips the combat lookup", () => {
+  const src = readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  assert.match(src, /resolveSessionTier\(session\) === "player" \? \{ pvpVisible: false \} : await combatAvailability\.read\(\)/);
+});
+
 test("the list-settings read is global config, so players may load the Players tab", () => {
   assert.deepEqual(c("/api/players/list-settings", "GET"), { kind: "global-read" });
   assert.deepEqual(c("/api/players/list-settings", "POST"), { kind: "deny" });
@@ -31,7 +36,7 @@ test("the list-settings read is global config, so players may load the Players t
 
 test("server.js closes player-action routes outside players/guilds to the player tier", () => {
   const src = readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
-  assert.match(src, /route\.kind === "open"\) return action \? notFound\(\) : false/);
+  assert.match(src, /route\.kind === "open"\) return action && !playerMayCall\(method, path\) \? notFound\(\) : false/);
   const actions = readFileSync(new URL("../src/actions.js", import.meta.url), "utf8");
   assert.match(actions, /"GET \/api\/maps\/choam-terminals\/capture":\s+"players:read"/);
 });

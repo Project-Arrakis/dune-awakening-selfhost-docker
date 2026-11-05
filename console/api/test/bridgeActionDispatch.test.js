@@ -5,6 +5,16 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
+import { createServer as createTcpServer } from "node:net";
+
+function getFreePort() {
+  return new Promise((resolve, reject) => {
+    const s = createTcpServer();
+    s.listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => resolve(p)); });
+    s.on("error", reject);
+  });
+}
+
 // dune-awakening-selfhost-docker#308: complements bridgeActionContract.test.js
 // (which verifies distinct ops.* actions return non-overlapping payload
 // shapes, calling duneDb.js's handler functions directly). THIS test
@@ -23,7 +33,7 @@ import { join, resolve } from "node:path";
 // "did not become healthy in time" timeout on an unrelated test.
 
 const API_ROOT = resolve(import.meta.dirname, "..");
-const PORT = 20000 + ((process.pid + 1) % 20000);
+const PORT = await getFreePort();
 const BASE = `http://127.0.0.1:${PORT}`;
 
 // Every ops.* action currently wired into server.js's addon-bridge

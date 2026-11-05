@@ -54,6 +54,7 @@ export type MarketSeedSchedule = MarketCategoryMultipliers & {
   priceMultiplier: number;
   augmentPricing: MarketAugmentPricing;
   commodityStacks: Record<string, number>;
+  durabilityPercent?: number | null;
   source: "addon" | "console";
   lastRunAt: string;
   lastRunStatus: string;

@@ -171,5 +171,35 @@ class Build2160922ScopedModuleTests(UpdatedBuildScopedModuleTests):
         spec.loader.exec_module(scoped)
 
 
+class Build2162777ScopedModuleTests(UpdatedBuildScopedModuleTests):
+    def setUp(self):
+        global scoped
+        self.previous = scoped
+        spec = importlib.util.spec_from_file_location('scoped_2162777',
+            ROOT / 'patches/experimental-tanks/2162777/source/scoped_module_ids.py')
+        scoped = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(scoped)
+
+
+class Build2168446ScopedModuleTests(UpdatedBuildScopedModuleTests):
+    def setUp(self):
+        global scoped
+        self.previous = scoped
+        spec = importlib.util.spec_from_file_location('scoped_2168446',
+            ROOT / 'patches/experimental-tanks/2168446/source/scoped_module_ids.py')
+        scoped = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(scoped)
+
+
+class Build2173753ScopedModuleTests(UpdatedBuildScopedModuleTests):
+    def setUp(self):
+        global scoped
+        self.previous = scoped
+        spec = importlib.util.spec_from_file_location('scoped_2173753',
+            ROOT / 'patches/experimental-tanks/2173753/source/scoped_module_ids.py')
+        scoped = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(scoped)
+
+
 if __name__ == '__main__':
     unittest.main()

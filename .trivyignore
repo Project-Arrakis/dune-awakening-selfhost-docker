@@ -43,6 +43,10 @@ CVE-2026-14456 exp:2027-01-07  # libssl3t64/openssl
 # base-image bump.
 CVE-2026-11822 exp:2027-01-07  # libsqlite3-0 -- FTS5 arbitrary code execution; no fix in Debian
 CVE-2026-11824 exp:2027-01-07  # libsqlite3-0 -- arbitrary code execution/crash; no fix in Debian
+# Added 2026-11-02 (sync PR #1286): two more libsqlite3-0 advisories, same base-image package and the same nil exposure
+# reasoning as above; trivy shows "affected" with an empty fix column, so no version bump is available.
+CVE-2026-119373 exp:2027-01-07  # libsqlite3-0 -- FTS5 heap overflow (DoS); no fix in Debian
+CVE-2026-119586 exp:2027-01-07  # libsqlite3-0 -- .recover command execution; no fix in Debian
 # Added 2026-10-06. python3.13 (explicit python3 install, issue #489): Debian
 # trixie tracker marks CVE-2026-19445 "<no-dsa> (Minor issue)", no fixed version
 # (trivy shows "affected", empty fix column) as of triage, so a version bump is
@@ -102,6 +106,20 @@ CVE-2026-66046 exp:2027-01-07  # libexpat1 -- expat storeAtts() quadratic DoS; n
 # fixed libexpat1.
 CVE-2026-76956 exp:2027-01-07  # libexpat1 -- hash-flooding denial of service; no fix in Debian
 CVE-2026-76957 exp:2027-01-07  # libexpat1 -- memory corruption allows RCE or DoS; no fix in Debian
+# Added 2026-11-02 (main CI after #1286): two more libexpat1 HIGH advisories on libexpat1 2.9.0-1~deb13u1, trivy "affected" with an
+# empty fix column, so no version bump is available. Same reasoning as above: transitive via python3.13-stdlib pyexpat; console/api and
+# console/web have no XML parser dependency or source use (git grep for expat/xml2js/fast-xml/sax/DOMParser/xmldom is empty).
+CVE-2026-117610 exp:2027-01-07  # libexpat1 -- NULL pointer dereference; no fix in Debian
+CVE-2026-118370 exp:2027-01-07  # libexpat1 -- signed integer overflow; no fix in Debian
+# Added 2026-11-04 (issue #1297). Another libexpat1 HIGH advisory on libexpat1 2.9.0-1~deb13u1, "affected" with an empty fix column, first seen on
+# PR #1296 whose diff is not the cause. Same exposure argument as above (transitive via python3.13-stdlib pyexpat; the git grep above is empty).
+CVE-2026-113351 exp:2027-01-07  # libexpat1 -- memory-tracking denial of service; no fix in Debian
+# Added 2026-11-05 (found on the rebased Dependabot PRs #1264-#1267, whose diffs are not the cause). zlib1g 1:1.3.dfsg+really1.3.1-1+b1:
+# CVE-2026-76844, heap overflow in gz_write() after a failed write() (trivy's title text for it is wrong, a webpack-dev-middleware string;
+# the Debian tracker confirms it is the zlib bug). Tracker: trixie and forky vulnerable, only sid fixed, so no base-image tag resolves it.
+# Exposure: the console does not call the gz* file API (it uses Node's bundled zlib); the grep for gzopen/gzwrite/gzdopen over console/api/src
+# and runtime/scripts is empty.
+CVE-2026-76844 exp:2027-01-07  # zlib1g -- gz_write() heap overflow after a failed write; fixed only in Debian sid
 
 # Added 2026-10-09 (issue #1152). One more libexpat1 HIGH advisory, published
 # after main's last passing run of this gate (2026-10-07T16:41Z), first seen on
