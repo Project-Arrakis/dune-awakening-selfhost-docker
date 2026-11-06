@@ -24,8 +24,9 @@ type ConfirmAction = (message: string, options?: {
   details?: { label: string; value: string; tone?: "accent" | "success" | "danger" }[];
 }) => Promise<boolean>;
 
-export function BuildingUnlocksTab({ dbPlayerId, playerName, confirmAction, onActionLog }: {
+export function BuildingUnlocksTab({ dbPlayerId, playerName, playerOnline = false, confirmAction, onActionLog }: {
   dbPlayerId: string;
+  playerOnline?: boolean;
   playerName: string;
   confirmAction: ConfirmAction;
   onActionLog?: (actionType: string, target: string, amount: string, notes: string) => void;
@@ -189,7 +190,7 @@ export function BuildingUnlocksTab({ dbPlayerId, playerName, confirmAction, onAc
           </select>
           <label className="playerAdmin_buildingExperimentalToggle"><input type="checkbox" checked={showExperimental} onChange={(event) => { setShowExperimental(event.target.checked); setGroup(""); }} /> Show Experimental</label>
           <button disabled={!dbPlayerId || loading} onClick={() => void load()}>{loading ? "Loading..." : "Reload"}</button>
-          <button disabled={!dbPlayerId || loading || !ownershipSupported || Boolean(busyItemId)} onClick={() => void grantAll()}>{busyItemId === "*all*" ? "Granting..." : "Grant All"}</button>
+          <button disabled={!dbPlayerId || loading || !ownershipSupported || playerOnline || Boolean(busyItemId)} title={playerOnline ? "The player must be offline to Grant All." : undefined} onClick={() => void grantAll()}>{busyItemId === "*all*" ? "Granting..." : "Grant All"}</button>
           <InlineActionResult result={result} resultKey="building:all" />
         </div>
       </div>

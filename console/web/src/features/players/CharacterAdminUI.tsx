@@ -1357,7 +1357,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
           </section>
         </div>
       )}
-      {playerAdmin_activeTab === "Building Sets" && <BuildingUnlocksTab dbPlayerId={dbPlayerId} playerName={playerName} confirmAction={confirmAction} onActionLog={playerAdmin_addLog} />}
+      {playerAdmin_activeTab === "Building Sets" && <BuildingUnlocksTab dbPlayerId={dbPlayerId} playerName={playerName} playerOnline={playerAdmin_isOnline} confirmAction={confirmAction} onActionLog={playerAdmin_addLog} />}
       {playerAdmin_activeTab === "Customizations" && <CustomizationsTab dbPlayerId={dbPlayerId} playerName={playerName} confirmAction={confirmAction} onActionLog={playerAdmin_addLog} />}
       {playerAdmin_activeTab === "Skills" && (
         <div className="playerAdmin_content">

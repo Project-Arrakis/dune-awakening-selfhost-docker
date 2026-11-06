@@ -133,4 +133,10 @@ describe("BuildingUnlocksTab Grant All", () => {
     await screen.findByText("Basic Lighting");
     expect(screen.getByRole("button", { name: "Grant All" })).toBeDisabled();
   });
+
+  it("is disabled while the player is online", async () => {
+    render(<BuildingUnlocksTab dbPlayerId="123" playerName="Chani" playerOnline confirmAction={vi.fn().mockResolvedValue(true)} />);
+    await screen.findByText("Basic Lighting");
+    expect(screen.getByRole("button", { name: "Grant All" })).toBeDisabled();
+  });
 });
