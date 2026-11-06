@@ -553,13 +553,15 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
       const unlocked = Number(response.result?.unlocked ?? 0);
       const repaired = Number(response.result?.repaired ?? 0);
       const skipped = response.result?.skippedGroups?.length ?? 0;
+      const unsupported = response.result?.skippedUnsupported?.length ?? 0;
       playerAdmin_addLog("Unlock All Research", playerName, String(unlocked + repaired), unlocked || repaired ? "Succeeded" : "Already Unlocked");
       await playerAdmin_loadResearchItems();
       await playerAdmin_loadCraftingRecipes();
       const parts = [`${unlocked} unlocked`];
       if (repaired) parts.push(`${repaired} repaired`);
       if (skipped) parts.push(`${skipped} group marker${skipped === 1 ? "" : "s"} skipped`);
-      playerAdmin_showResult(key, unlocked || repaired ? `${parts.join(", ")}. Player will see them on next login.` : `Nothing to unlock${skipped ? ` (${skipped} group marker${skipped === 1 ? "" : "s"} cannot be unlocked directly)` : ""}.`, "success");
+      if (unsupported) parts.push(`${unsupported} building unlock${unsupported === 1 ? "" : "s"} skipped (no building progression data)`);
+      playerAdmin_showResult(key, unlocked || repaired || unsupported ? `${parts.join(", ")}.${unlocked || repaired ? " Player will see them on next login." : ""}` : `Nothing to unlock${skipped ? ` (${skipped} group marker${skipped === 1 ? "" : "s"} cannot be unlocked directly)` : ""}.`, "success");
     } catch (error) {
       const message = friendlyInlineError(error);
       playerAdmin_showResult(key, message, "danger");

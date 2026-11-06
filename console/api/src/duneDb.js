@@ -8008,6 +8008,8 @@ async function unlockResearchItemWithin(tx, player, safeItemKey, { verifyKnown =
 export async function preflightBulkUnlock(db, id, kind, actionName) {
   if (kind === "research") {
     await requireCapability(await supportsResearchItems(db), "Research unlocks require dune.actors.properties with TechKnowledgePlayerComponent.");
+    // Recipe-linked research keys also write the known-recipes component.
+    await requireCapability(await supportsCraftingRecipes(db), "Crafting recipes require dune.actors.properties with CraftingRecipesLibraryActorComponent.");
   } else {
     await requireCapability(await supportsCraftingRecipes(db), "Crafting recipes require dune.actors.properties with CraftingRecipesLibraryActorComponent.");
     if (!craftingRecipeCatalog().length) throw new UnsupportedCapabilityError("The crafting recipe catalog could not be loaded, so nothing was unlocked.");
@@ -8021,6 +8023,7 @@ export async function preflightBulkUnlock(db, id, kind, actionName) {
 // so they are skipped and named in the result instead of failing the batch.
 export async function unlockAllResearchItems(db, id) {
   await requireCapability(await supportsResearchItems(db), "Research unlocks require dune.actors.properties with TechKnowledgePlayerComponent.");
+  await requireCapability(await supportsCraftingRecipes(db), "Crafting recipes require dune.actors.properties with CraftingRecipesLibraryActorComponent.");
   return db.transaction(async (tx) => {
     const player = await resolvePlayerMutationTarget(tx, id);
     requireOfflinePlayer(player, "Research unlocks");
