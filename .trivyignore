@@ -321,3 +321,29 @@ CVE-2026-93990 exp:2027-01-07  # libexpat1 -- XML injection via malformed UTF-16
 # runtime/public-probe (our own Go code) is bumped to 1.26.10 instead.
 # Tracked in #1180 (standing re-triage of accepted CI risks).
 CVE-2026-111943 exp:2026-11-04  # prebuilt docker CLI + compose plugin built with Go < 1.26.10; awaiting upstream release
+
+# --- Advisories published 2026-11-11, after upstream's last green run ---------
+# Found by the trivy-image-scan run on the upstream-sync PR (#1312). The six
+# Debian packages below are base-image dependencies we never install ourselves
+# and the Debian tracker lists no fixed version yet. Reachability has NOT been
+# analysed here: this is a 2026-11-25 short-expiry acceptance, to be re-checked when
+# trixie-security ships fixes or the base image is bumped, not a reachability
+# claim. Tracked in #1180 (standing re-triage of accepted CI risks).
+CVE-2026-107364 exp:2026-11-25  # MIT krb5 (libkrb5-3, libgssapi-krb5-2, libk5crypto3, libkrb5support0); no Debian fix yet
+CVE-2026-112315 exp:2026-11-25  # MIT krb5 (libkrb5-3, libgssapi-krb5-2, libk5crypto3, libkrb5support0); no Debian fix yet
+CVE-2026-112316 exp:2026-11-25  # MIT krb5 (libkrb5-3, libgssapi-krb5-2, libk5crypto3, libkrb5support0); no Debian fix yet
+CVE-2026-112317 exp:2026-11-25  # MIT krb5 (libkrb5-3, libgssapi-krb5-2, libk5crypto3, libkrb5support0); no Debian fix yet
+CVE-2026-112318 exp:2026-11-25  # MIT krb5 (libkrb5-3, libgssapi-krb5-2, libk5crypto3, libkrb5support0); no Debian fix yet
+CVE-2026-112319 exp:2026-11-25  # MIT krb5 (libkrb5-3, libgssapi-krb5-2, libk5crypto3, libkrb5support0); no Debian fix yet
+CVE-2026-112320 exp:2026-11-25  # MIT krb5 (libkrb5-3, libgssapi-krb5-2, libk5crypto3, libkrb5support0); no Debian fix yet
+CVE-2026-112321 exp:2026-11-25  # MIT krb5 (libkrb5-3, libgssapi-krb5-2, libk5crypto3, libkrb5support0); no Debian fix yet
+CVE-2026-112322 exp:2026-11-25  # MIT krb5 (libkrb5-3, libgssapi-krb5-2, libk5crypto3, libkrb5support0); no Debian fix yet
+CVE-2026-112323 exp:2026-11-25  # MIT krb5 (libkrb5-3, libgssapi-krb5-2, libk5crypto3, libkrb5support0); no Debian fix yet
+CVE-2026-118380 exp:2026-11-25  # MIT krb5 (libkrb5-3, libgssapi-krb5-2, libk5crypto3, libkrb5support0); no Debian fix yet
+CVE-2026-119079 exp:2026-11-25  # MIT krb5 (libkrb5-3, libgssapi-krb5-2, libk5crypto3, libkrb5support0); no Debian fix yet
+CVE-2026-71199 exp:2026-11-25  # MIT krb5 (libkrb5-3, libgssapi-krb5-2, libk5crypto3, libkrb5support0); no Debian fix yet
+CVE-2026-71200 exp:2026-11-25  # MIT krb5 (libkrb5-3, libgssapi-krb5-2, libk5crypto3, libkrb5support0); no Debian fix yet
+CVE-2026-119374 exp:2026-11-25  # libsqlite3-0; no Debian fix yet
+CVE-2026-119379 exp:2026-11-25  # libsqlite3-0; no Debian fix yet
+CVE-2026-115506 exp:2026-11-25  # libexpat1 (see the libexpat1 note above: nothing in this image parses XML); no Debian fix yet
+CVE-2026-78661 exp:2026-11-25  # golang.org/x/net v0.60.0 in a prebuilt upstream binary (docker CLI / compose plugin); fixed in 0.62.0, needs an upstream Docker/Compose release
