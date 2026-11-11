@@ -548,7 +548,7 @@ test("a saved player policy that predates the strict tier reports the grants the
 // its own policy.
 test("the admin tier cannot read back or write in a system backup archive", () => {
   const admin = { tier: "admin" };
-  for (const action of ["backups:download-system", "backups:import-system", "backups:restore-system"]) {
+  for (const action of ["backups:download-system", "backups:import-system", "backups:restore-system", "backups:set-system-passphrase"]) {
     assert.equal(evaluate(admin, action, DEFAULT_POLICIES), false, `admin must not hold ${action}`);
   }
   // The denial is specific, not a retreat from backups generally: taking and
@@ -561,7 +561,7 @@ test("the admin tier cannot read back or write in a system backup archive", () =
 
 test("the owner tier still holds every system backup action", () => {
   const owner = { tier: "owner" };
-  for (const action of ["backups:create-system", "backups:download-system", "backups:import-system", "backups:restore-system", "backups:delete-system"]) {
+  for (const action of ["backups:create-system", "backups:download-system", "backups:import-system", "backups:restore-system", "backups:delete-system", "backups:set-system-passphrase"]) {
     assert.equal(evaluate(owner, action, DEFAULT_POLICIES), true, `owner must hold ${action}`);
   }
 });

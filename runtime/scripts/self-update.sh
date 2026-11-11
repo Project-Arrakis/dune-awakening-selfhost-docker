@@ -1324,6 +1324,8 @@ restore_local_state_ownership() {
     runtime/generated \
     runtime/generated/battlegroup.env \
     runtime/generated/db-backup.env \
+    runtime/generated/system-backup-auto.env \
+    runtime/generated/system-backup-auto-last.env \
     runtime/generated/director-character-transfer.ini \
     runtime/generated/director-capacity.ini \
     runtime/generated/director-deepdesert-dual.ini \
@@ -1360,6 +1362,9 @@ restore_local_state_ownership() {
     runtime/secrets/public-directory.json \
     runtime/secrets/funcom-token.txt \
     runtime/secrets/discord-adapter-token.txt \
+    runtime/system-backup \
+    runtime/system-backup/passphrase \
+    runtime/system-backup/passphrase.json \
     2>/dev/null || true
 }
 
@@ -1622,6 +1627,11 @@ rebuild_web_console_after_update() {
   fi
 }
 
+refresh_shutdown_protection_after_update() {
+  [ -x runtime/scripts/shutdown-protection.sh ] || return 0
+  runtime/scripts/shutdown-protection.sh refresh || true
+}
+
 install_cli_command_after_update() {
   if [ ! -x runtime/scripts/install-command.sh ]; then
     return 0
@@ -1858,6 +1868,7 @@ case "$cmd" in
     # migrated into DISCORD_PLAYER_ROLE_IDS in .env by the time the new
     # container reads it.
     migrate_discord_role_ids_env
+    refresh_shutdown_protection_after_update
     rebuild_web_console_after_update
     self_update_finish_success
     ;;
@@ -1872,6 +1883,7 @@ case "$cmd" in
     ensure_self_update_preflight
     install_qa_commit "$tag"
     install_cli_command_after_update
+    refresh_shutdown_protection_after_update
     rebuild_web_console_after_update
     self_update_finish_success
     ;;
