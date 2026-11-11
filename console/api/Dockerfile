@@ -66,13 +66,16 @@ ENV NODE_ENV=production
 # refreshes the index but does not pull the newer, already-fixed
 # 10.46-1~deb13u2 that a fresh index makes available -- a real version bump
 # per .trivyignore's own policy, not a suppression, so it's applied here
-# rather than added to that file. Deliberately NOT a blanket `apt-get
+# rather than added to that file. zlib1g is targeted the same way (2026-11-11,
+# trivy-image-scan on #1312: a fixed trixie-security version exists, CVE-2026-85091).
+# Deliberately NOT a blanket `apt-get
 # upgrade` (hadolint DL3005, and see .hadolint.yaml's own note on why
 # OS-package freshness is handled via targeted fixes/base-image bumps, not
 # a full-system upgrade every build).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends --only-upgrade \
         libpcre2-8-0 \
+        zlib1g \
     && apt-get install -y --no-install-recommends \
         iproute2 \
         ca-certificates \
