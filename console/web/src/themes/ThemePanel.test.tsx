@@ -23,4 +23,14 @@ describe("ThemePanel", () => {
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
     expect(onClose).toHaveBeenCalled();
   });
+
+  it("moves the selection with the arrow keys and keeps one tab stop", () => {
+    render(<ThemePanel />);
+    const radios = screen.getAllByRole("radio");
+    expect(radios.filter((r) => r.getAttribute("tabindex") === "0")).toHaveLength(1);
+    fireEvent.keyDown(radios[0], { key: "ArrowRight" });
+    expect(screen.getAllByRole("radio")[1]).toHaveAttribute("aria-checked", "true");
+    fireEvent.keyDown(screen.getAllByRole("radio")[1], { key: "ArrowLeft" });
+    expect(screen.getAllByRole("radio")[0]).toHaveAttribute("aria-checked", "true");
+  });
 });

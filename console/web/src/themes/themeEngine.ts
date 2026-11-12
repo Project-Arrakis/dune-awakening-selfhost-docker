@@ -113,7 +113,7 @@ function deriveTokens(c: ThemeColors): ThemeTokens {
     "--text-faint": readable(c.faint),
     "--title": readable(c.title),
     "--accent": toHex(accent),
-    "--accent-strong": toHex(c.accentStrong),
+    "--accent-strong": toHex(ensureContrast(c.accentStrong, surfaces, 3)),
     "--success": toHex(mix(c.success, bg, 0.45)),
     "--success-text": readable(c.success),
     "--danger": toHex(mix(c.danger, bg, 0.4)),
@@ -121,7 +121,7 @@ function deriveTokens(c: ThemeColors): ThemeTokens {
     "--danger-text": readable(c.danger),
     "--danger-signal": readable(c.danger),
     "--state-motion": readable(c.info),
-    "--warning": toHex(c.warning),
+    "--warning": toHex(ensureContrast(c.warning, surfaces, 3)),
     "--bg-glow": `rgba(${accent.map(Math.round).join(", ")}, .18)`,
   };
 }
@@ -200,19 +200,26 @@ function loadThemes(): ThemeInfo[] {
   return themes.filter((t) => t.appearance === OFFERED_APPEARANCE).sort((a, b) => a.name.localeCompare(b.name));
 }
 
-export const THEMES: ThemeInfo[] = loadThemes();
+let catalogue: ThemeInfo[] | null = null;
+/** Built on first use, so an operator who never leaves the default pays nothing at startup. */
+export function getThemes(): ThemeInfo[] {
+  catalogue ??= loadThemes();
+  return catalogue;
+}
 
 export function loadSelectedTheme(): string {
   try {
     const id = window.localStorage.getItem(THEME_STORAGE_KEY);
-    return id && THEMES.some((t) => t.id === id) ? id : DEFAULT_THEME_ID;
+    if (!id) return DEFAULT_THEME_ID;
+    return getThemes().some((t) => t.id === id) ? id : DEFAULT_THEME_ID;
   } catch { return DEFAULT_THEME_ID; }
 }
 
 export function applyTheme(id: string, root: HTMLElement = document.documentElement): void {
-  const known = new Set(THEMES.flatMap((t) => Object.keys(t.tokens)));
-  known.forEach((name) => root.style.removeProperty(name));
-  const theme = THEMES.find((t) => t.id === id);
+  if (id === DEFAULT_THEME_ID && !root.dataset.theme) return;
+  const themes = getThemes();
+  Object.keys(themes[0].tokens).forEach((name) => root.style.removeProperty(name));
+  const theme = themes.find((t) => t.id === id);
   if (!theme) {
     root.style.removeProperty("color-scheme");
     delete root.dataset.theme;
@@ -231,6 +238,14 @@ export function saveSelectedTheme(id: string): void {
   applyTheme(id);
 }
 
+let storageListening = false;
+
 export function initTheme(): void {
   applyTheme(loadSelectedTheme());
+  if (storageListening) return;
+  storageListening = true;
+  // Another console tab picked a theme: follow it.
+  window.addEventListener("storage", (event) => {
+    if (event.key === THEME_STORAGE_KEY || event.key === null) applyTheme(loadSelectedTheme());
+  });
 }

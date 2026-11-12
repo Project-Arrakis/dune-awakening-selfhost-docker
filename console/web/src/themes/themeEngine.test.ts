@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { DEFAULT_THEME_ID, THEMES, THEME_STORAGE_KEY, applyTheme, buildThemeTokens, contrast, ensureContrast, initTheme, loadSelectedTheme, parseHex, parseJsonc, saveSelectedTheme } from "./themeEngine";
+import { DEFAULT_THEME_ID, getThemes, THEME_STORAGE_KEY, applyTheme, buildThemeTokens, contrast, ensureContrast, initTheme, loadSelectedTheme, parseHex, parseJsonc, saveSelectedTheme } from "./themeEngine";
+
+const THEMES = getThemes();
 
 describe("parseJsonc", () => {
   it("strips line comments but keeps // inside strings", () => {
@@ -84,6 +86,16 @@ describe("apply and persistence", () => {
     expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBeNull();
     expect(document.documentElement.style.getPropertyValue("--bg")).toBe("");
     expect(document.documentElement.style.getPropertyValue("color-scheme")).toBe("");
+  });
+
+  it("follows a theme chosen in another tab", () => {
+    initTheme();
+    window.localStorage.setItem(THEME_STORAGE_KEY, "tabr-sietch");
+    window.dispatchEvent(new StorageEvent("storage", { key: THEME_STORAGE_KEY }));
+    expect(document.documentElement.dataset.theme).toBe("tabr-sietch");
+    window.localStorage.removeItem(THEME_STORAGE_KEY);
+    window.dispatchEvent(new StorageEvent("storage", { key: THEME_STORAGE_KEY }));
+    expect(document.documentElement.dataset.theme).toBeUndefined();
   });
 
   it("ignores a stored id that no longer exists", () => {

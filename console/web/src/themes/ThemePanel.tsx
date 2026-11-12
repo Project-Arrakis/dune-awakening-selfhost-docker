@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Check, Palette, X } from "lucide-react";
-import { DEFAULT_THEME_ID, THEMES, loadSelectedTheme, saveSelectedTheme } from "./themeEngine";
+import { DEFAULT_THEME_ID, getThemes, loadSelectedTheme, saveSelectedTheme } from "./themeEngine";
 
 const SWATCH_TOKENS = ["--bg", "--panel", "--text", "--accent", "--success-text", "--danger-text"] as const;
 const DEFAULT_SWATCHES = ["#0d0f12", "#171a1d", "#f3efe7", "#c68b4a", "#9be6bd", "#ffb4a8"];
@@ -14,7 +14,9 @@ export function ThemePanel({ onClose = () => {} }: { onClose?: () => void }) {
     const overflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     modal.current?.querySelector<HTMLElement>('[aria-checked="true"]')?.focus();
-    return () => { document.body.style.overflow = overflow; previous?.focus(); };
+    const onEscape = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    document.addEventListener("keydown", onEscape);
+    return () => { document.removeEventListener("keydown", onEscape); document.body.style.overflow = overflow; previous?.focus(); };
   }, []);
   function choose(id: string) {
     saveSelectedTheme(id);
@@ -22,7 +24,7 @@ export function ThemePanel({ onClose = () => {} }: { onClose?: () => void }) {
   }
   const options = [
     { id: DEFAULT_THEME_ID, name: "Default", description: "The standard console look.", appearance: "dark", swatches: DEFAULT_SWATCHES },
-    ...THEMES.map((theme) => ({ id: theme.id, name: theme.name, description: theme.description, appearance: theme.appearance, swatches: SWATCH_TOKENS.map((token) => theme.tokens[token]) })),
+    ...getThemes().map((theme) => ({ id: theme.id, name: theme.name, description: theme.description, appearance: theme.appearance, swatches: SWATCH_TOKENS.map((token) => theme.tokens[token]) })),
   ];
   return createPortal(
     <div className="modal-overlay theme-picker-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
@@ -33,7 +35,6 @@ export function ThemePanel({ onClose = () => {} }: { onClose?: () => void }) {
         aria-modal="true"
         aria-labelledby="theme-picker-title"
         onKeyDown={(event) => {
-          if (event.key === "Escape") { event.stopPropagation(); onClose(); }
           if (event.key === "Tab") {
             const controls = [...event.currentTarget.querySelectorAll<HTMLElement>("button:not(:disabled)")];
             const first = controls[0];
@@ -49,12 +50,21 @@ export function ThemePanel({ onClose = () => {} }: { onClose?: () => void }) {
         </header>
         <p className="theme-picker-note">Applies to this browser only.</p>
         <div className="theme-grid" role="radiogroup" aria-label="Console theme">
-          {options.map((option) => (
+          {options.map((option, index) => (
             <button
               key={option.id}
               type="button"
               role="radio"
               aria-checked={selected === option.id}
+              tabIndex={selected === option.id ? 0 : -1}
+              onKeyDown={(event) => {
+                const keys: Record<string, number> = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 };
+                if (!(event.key in keys)) return;
+                event.preventDefault();
+                const next = options[(index + keys[event.key] + options.length) % options.length];
+                choose(next.id);
+                requestAnimationFrame(() => modal.current?.querySelector<HTMLElement>('[aria-checked="true"]')?.focus());
+              }}
               className={`theme-card${selected === option.id ? " selected" : ""}`}
               title={option.description}
               onClick={() => choose(option.id)}

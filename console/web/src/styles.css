@@ -8428,13 +8428,13 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
 
 /* Console theme picker (src/themes). Swatch fills are the theme's own colours, set inline. */
 .theme-picker-overlay { z-index: 1000; padding: 16px; }
-.theme-picker { width: min(680px, 100%); max-height: min(85dvh, 850px); overflow-y: auto; box-sizing: border-box; }
+.theme-picker { background: var(--panel); width: min(680px, 100%); max-height: min(85dvh, 850px); overflow-y: auto; box-sizing: border-box; }
 .theme-picker-heading, .theme-picker-heading > div { display: flex; align-items: center; gap: 10px; }
 .theme-picker-heading { justify-content: space-between; margin-bottom: 8px; position: sticky; top: 0; z-index: 1; background: inherit; padding-bottom: 6px; }
 .theme-picker-heading h2 { font-size: 20px; margin: 0; }
 .theme-picker-heading > button { width: 40px; min-height: 40px; padding: 6px; flex: 0 0 auto; }
-.theme-picker-note, .theme-picker-credit { margin: 0 0 12px; color: var(--muted); font-size: 13px; }
-.theme-picker-credit { margin: 14px 0 0; color: var(--text-faint); font-size: 12px; }
+.theme-picker .theme-picker-note { margin: 0 0 12px; color: var(--muted); font-size: 13px; }
+.theme-picker .theme-picker-credit { margin: 14px 0 0; color: var(--text-faint); font-size: 12px; }
 .theme-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; }
 .theme-card { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 10px; text-align: left; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-soft); color: var(--text); cursor: pointer; }
 .theme-card:hover { border-color: var(--border-strong); }
