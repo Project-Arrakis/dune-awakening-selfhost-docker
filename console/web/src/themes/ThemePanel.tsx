@@ -9,6 +9,7 @@ const DEFAULT_SWATCHES = ["#0d0f12", "#171a1d", "#f3efe7", "#c68b4a", "#9be6bd",
 export function ThemePanel({ onClose = () => {} }: { onClose?: () => void }) {
   const [selected, setSelected] = useState(loadSelectedTheme);
   const modal = useRef<HTMLDivElement>(null);
+  const radios = useRef<(HTMLButtonElement | null)[]>([]);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
   useEffect(() => {
@@ -25,10 +26,10 @@ export function ThemePanel({ onClose = () => {} }: { onClose?: () => void }) {
     const onStorage = (event: StorageEvent) => {
       if (event.key === THEME_STORAGE_KEY || event.key === null) setSelected(loadSelectedTheme());
     };
-    document.addEventListener("keydown", onEscape);
+    document.addEventListener("keydown", onEscape, true);
     window.addEventListener("storage", onStorage);
     return () => {
-      document.removeEventListener("keydown", onEscape);
+      document.removeEventListener("keydown", onEscape, true);
       window.removeEventListener("storage", onStorage);
       document.body.style.overflow = overflow;
       previous?.focus();
@@ -55,8 +56,10 @@ export function ThemePanel({ onClose = () => {} }: { onClose?: () => void }) {
             const controls = [...event.currentTarget.querySelectorAll<HTMLElement>("button:not(:disabled)")].filter((control) => control.tabIndex >= 0);
             const first = controls[0];
             const last = controls.at(-1);
-            if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
-            else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+            const active = document.activeElement as HTMLElement | null;
+            // Focus can sit on a non-tabbable radio after arrow navigation; Tab must still stay in the dialog.
+            if (event.shiftKey && (active === first || !controls.includes(active as HTMLElement))) { event.preventDefault(); last?.focus(); }
+            else if (!event.shiftKey && (active === last || !controls.includes(active as HTMLElement))) { event.preventDefault(); first?.focus(); }
           }
         }}
       >
@@ -69,6 +72,7 @@ export function ThemePanel({ onClose = () => {} }: { onClose?: () => void }) {
           {options.map((option, index) => (
             <button
               key={option.id}
+              ref={(el) => { radios.current[index] = el; }}
               type="button"
               role="radio"
               aria-checked={selected === option.id}
@@ -79,7 +83,7 @@ export function ThemePanel({ onClose = () => {} }: { onClose?: () => void }) {
                 const target = event.key === "Home" ? 0 : event.key === "End" ? options.length - 1 : event.key in keys ? (index + keys[event.key] + options.length) % options.length : -1;
                 if (target < 0) return;
                 event.preventDefault();
-                modal.current?.querySelectorAll<HTMLElement>('[role="radio"]')[target]?.focus();
+                radios.current[target]?.focus();
               }}
               className={`theme-card${selected === option.id ? " selected" : ""}`}
               title={option.description}
@@ -90,10 +94,10 @@ export function ThemePanel({ onClose = () => {} }: { onClose?: () => void }) {
                 {option.swatches.map((color, index) => <i key={index} style={{ background: color }} />)}
               </span>
               <span className="theme-card-name">{option.name}{selected === option.id && <Check size={15} aria-hidden="true" />}</span>
-              <span id={`theme-desc-${option.id}`} className="sr-only">{option.description}</span>
             </button>
           ))}
         </div>
+        <div hidden>{options.map((option) => <span key={option.id} id={`theme-desc-${option.id}`}>{option.description}</span>)}</div>
         <p className="theme-picker-credit">Palettes: Fedaykin Dune Themes and Tabr (MIT).</p>
       </div>
     </div>,

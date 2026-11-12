@@ -7472,7 +7472,7 @@
     "Applies to this browser only. Choose Default to restore the standard look.": [
       {
         "file": "console/web/src/themes/ThemePanel.tsx",
-        "line": 67,
+        "line": 70,
         "nearby": [
           "Console Theme",
           "Close",
@@ -13165,7 +13165,7 @@
       },
       {
         "file": "console/web/src/themes/ThemePanel.tsx",
-        "line": 65,
+        "line": 68,
         "nearby": [
           "The standard console look.",
           "Console Theme",
@@ -14549,7 +14549,7 @@
     "Console theme": [
       {
         "file": "console/web/src/themes/ThemePanel.tsx",
-        "line": 68,
+        "line": 71,
         "nearby": [
           "Close",
           "Applies to this browser only. Choose Default to restore the standard look.",
@@ -14576,7 +14576,7 @@
       },
       {
         "file": "console/web/src/themes/ThemePanel.tsx",
-        "line": 64,
+        "line": 67,
         "nearby": [
           "The standard console look.",
           "Close",
@@ -35357,7 +35357,7 @@
     "Palettes: Fedaykin Dune Themes and Tabr (MIT).": [
       {
         "file": "console/web/src/themes/ThemePanel.tsx",
-        "line": 97,
+        "line": 101,
         "nearby": [
           "Applies to this browser only. Choose Default to restore the standard look.",
           "Console theme"
@@ -52115,7 +52115,7 @@
     "The standard console look.": [
       {
         "file": "console/web/src/themes/ThemePanel.tsx",
-        "line": 42,
+        "line": 43,
         "nearby": [
           "Console Theme",
           "Close"

@@ -61,6 +61,31 @@ describe("ThemePanel", () => {
     expect(document.activeElement).toBe(dialog.querySelector('button[aria-label="Close"]'));
   });
 
+  it("keeps Tab inside the dialog when focus was moved onto a non-selected radio with the arrow keys", () => {
+    render(<ThemePanel />);
+    const radios = screen.getAllByRole("radio");
+    fireEvent.keyDown(radios[0], { key: "ArrowRight" });
+    expect(document.activeElement).toBe(radios[1]);
+    const forward = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+    radios[1].dispatchEvent(forward);
+    expect(forward.defaultPrevented).toBe(true);
+    radios[1].focus();
+    const back = new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true, cancelable: true });
+    radios[1].dispatchEvent(back);
+    expect(back.defaultPrevented).toBe(true);
+  });
+
+  it("Escape closes only the picker, even if another document listener exists", () => {
+    const other = vi.fn();
+    document.addEventListener("keydown", other);
+    const onClose = vi.fn();
+    render(<ThemePanel onClose={onClose} />);
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    document.removeEventListener("keydown", other);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(other).not.toHaveBeenCalled();
+  });
+
   it("restores focus and scrolling on close, and the close button and overlay close it", () => {
     const opener = document.createElement("button");
     document.body.appendChild(opener);
