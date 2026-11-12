@@ -28,7 +28,7 @@ for the console is corrected rather than shipped unreadable. Colours that are ha
 
 ## Adding a palette
 
-Drop a Fedaykin-format `dune-<name>.json` into `console/web/src/themes/palettes/` (slots `color_01`..`color_46`,
+Drop a Fedaykin-format `dune-<name>.jsonc` into `console/web/src/themes/palettes/` (slots `color_01`..`color_46`,
 see the template in the Fedaykin repo) and it appears in the picker. `npm test` in `console/web` checks that every
 palette yields a complete token set and meets the contrast floor. Keep each source's licence next to its files
 (`palettes/LICENSE`, `tabr/LICENSE`).

@@ -4,10 +4,11 @@
 // the stylesheet's own :root values.
 import tabrLooks from "./tabr/looks.json";
 
-const paletteSources = import.meta.glob("./palettes/dune-*.json", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
+const paletteSources = import.meta.glob("./palettes/dune-*.jsonc", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
 
 export const DEFAULT_THEME_ID = "default";
 export const THEME_STORAGE_KEY = "dune-console-theme";
+// Palettes keep their upstream // comments, hence .jsonc (the release gate parses every *.json strictly).
 // Light palettes are vendored and the engine supports them (color-scheme and all),
 // but the stylesheet still has many hardcoded dark surfaces, so a light theme
 // renders pale text on dark cards. Hidden until the stylesheet is tokenised.
@@ -176,7 +177,7 @@ function loadThemes(): ThemeInfo[] {
       const palette = parseJsonc(source) as { name?: string; description?: string; appearance?: string; colors?: Record<string, string> };
       if (!palette.colors) continue;
       themes.push({
-        id: path.replace(/^.*\/dune-/, "").replace(/\.json$/, ""),
+        id: path.replace(/^.*\/dune-/, "").replace(/\.jsonc$/, ""),
         name: (palette.name ?? path).replace(/^Dune\s+/, ""),
         description: palette.description ?? "",
         appearance: palette.appearance === "light" ? "light" : "dark",
