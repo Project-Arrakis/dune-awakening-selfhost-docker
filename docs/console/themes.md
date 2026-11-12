@@ -1,6 +1,6 @@
 # Console themes
 
-Status: Current (verified against the console build in this repository).
+Status: Current (verified 2026-11-12 against the console build at `main` 42dfb9fc plus the #1321 audit fixes).
 
 The palette button in the console header (next to the language button) opens **Console Theme**.
 The choice applies to the browser you made it in and is stored in that browser's local storage
@@ -10,7 +10,7 @@ choice, or choosing Default, restores it exactly.
 
 ## What is offered
 
-- 16 dark palettes from [Fedaykin Dune Themes](https://github.com/btriapitsyn/zed-fedaykin-themes) (MIT).
+- 16 dark palettes from [Fedaykin Dune Themes](https://github.com/btriapitsyn/zed-fedaykin-themes) (MIT). The 18 vendored palette files and `palettes/LICENSE` were checked byte-identical to upstream commit `f0be575142b784d4b8728ab036ae1cfdf9279cab` on 2026-11-12 (only the file extension differs: `.json` became `.jsonc` so the release gate's strict JSON check ignores them).
 - Three looks from [Tabr](https://github.com/Project-Arrakis/tabr-tau) (MIT): Tabr Fremen, Tabr Awakening, Tabr Sietch.
 
 Light palettes (Fedaykin Mentat and Fremen Sietch, the Tabr "Dayside" variants) are vendored and the
@@ -24,7 +24,11 @@ properties (`--bg`, `--panel`, `--text`, `--accent`, ...) by setting them on `<h
 first render so there is no flash. Text colours are pulled toward white or black until they reach WCAG AA
 (4.5:1, 7:1 for body text) on the page and panel surfaces, so a palette whose own text colours are too dim
 for the console is corrected rather than shipped unreadable. Colours that are hardcoded in the stylesheet
-(for example the Discord and Support buttons, map and status colours) are not themed.
+(for example the Discord and Support buttons, map and status colours, and some dialog surfaces) are not themed, so even a dark theme shows a few stock-coloured surfaces. Tracked in #1322.
+
+## Keyboard
+
+Arrow keys, Home and End move focus between the cards without changing anything; Space or Enter chooses the focused card. Escape closes the picker.
 
 ## Adding a palette
 

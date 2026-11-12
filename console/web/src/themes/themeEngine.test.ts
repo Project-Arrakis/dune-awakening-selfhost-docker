@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_THEME_ID, getThemes, THEME_STORAGE_KEY, applyTheme, buildThemeTokens, contrast, ensureContrast, initTheme, loadSelectedTheme, parseHex, parseJsonc, saveSelectedTheme } from "./themeEngine";
 
 const THEMES = getThemes();
@@ -8,6 +8,16 @@ describe("parseJsonc", () => {
     expect(parseJsonc('{ "a": "http://x", // note\n "b": 1 }')).toEqual({ a: "http://x", b: 1 });
   });
 });
+
+// Independent WCAG 2.x implementation so the check does not grade ensureContrast with its own yardstick.
+function wcag(a: string, b: string): number {
+  const lum = (hex: string) => {
+    const [r, g, bl] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+    return 0.2126 * r + 0.7152 * g + 0.0722 * bl;
+  };
+  const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
 
 describe("palette catalogue", () => {
   it("offers the 16 dark Fedaykin palettes and 3 dark Tabr looks with unique ids", () => {
@@ -27,13 +37,14 @@ describe("palette catalogue", () => {
     }
   });
 
-  it("keeps readable text at AA or better on the panel and canvas for every palette", () => {
+  it("keeps readable text at AA or better on the panel and canvas for every palette (independent calculation)", () => {
     for (const theme of THEMES) {
-      const bg = parseHex(theme.tokens["--bg"])!;
-      const panel = parseHex(theme.tokens["--panel"])!;
-      for (const token of ["--text", "--muted", "--text-faint", "--text-subtle", "--title", "--success-text", "--danger-text", "--state-motion"]) {
-        const fg = parseHex(theme.tokens[token])!;
-        expect(Math.min(contrast(fg, bg), contrast(fg, panel)), `${theme.id} ${token}`).toBeGreaterThanOrEqual(4.49);
+      for (const token of ["--text", "--text-strong", "--muted", "--text-faint", "--text-subtle", "--title", "--success-text", "--danger-text", "--state-motion"]) {
+        const fg = theme.tokens[token];
+        expect(Math.min(wcag(fg, theme.tokens["--bg"]), wcag(fg, theme.tokens["--panel"])), `${theme.id} ${token}`).toBeGreaterThanOrEqual(4.49);
+      }
+      for (const token of ["--accent", "--warning"]) {
+        expect(wcag(theme.tokens[token], theme.tokens["--panel"]), `${theme.id} ${token}`).toBeGreaterThanOrEqual(2.99);
       }
     }
   });
@@ -86,6 +97,39 @@ describe("apply and persistence", () => {
     expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBeNull();
     expect(document.documentElement.style.getPropertyValue("--bg")).toBe("");
     expect(document.documentElement.style.getPropertyValue("color-scheme")).toBe("");
+    expect(document.documentElement.getAttribute("style") ?? "").toBe("");
+    expect(document.documentElement.dataset.theme).toBeUndefined();
+  });
+
+  it("switching from one theme to another leaves nothing of the first behind", () => {
+    saveSelectedTheme("tabr-fremen");
+    saveSelectedTheme("tabr-sietch");
+    const sietch = THEMES.find((t) => t.id === "tabr-sietch")!;
+    for (const [name, value] of Object.entries(sietch.tokens)) expect(document.documentElement.style.getPropertyValue(name), name).toBe(value);
+    expect(document.documentElement.dataset.theme).toBe("tabr-sietch");
+  });
+
+  it("restores the saved theme at boot", () => {
+    window.localStorage.setItem(THEME_STORAGE_KEY, "tabr-awakening");
+    initTheme();
+    expect(document.documentElement.dataset.theme).toBe("tabr-awakening");
+  });
+
+  it("applyTheme with an unknown id clears any theme", () => {
+    saveSelectedTheme("tabr-fremen");
+    applyTheme("nope");
+    expect(document.documentElement.dataset.theme).toBeUndefined();
+    expect(document.documentElement.getAttribute("style") ?? "").toBe("");
+  });
+
+  it("survives storage that throws", () => {
+    const get = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new Error("blocked"); });
+    const set = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("blocked"); });
+    try {
+      expect(loadSelectedTheme()).toBe(DEFAULT_THEME_ID);
+      expect(() => saveSelectedTheme("tabr-fremen")).not.toThrow();
+      expect(document.documentElement.dataset.theme).toBe("tabr-fremen");
+    } finally { get.mockRestore(); set.mockRestore(); }
   });
 
   it("follows a theme chosen in another tab", () => {
@@ -95,6 +139,14 @@ describe("apply and persistence", () => {
     expect(document.documentElement.dataset.theme).toBe("tabr-sietch");
     window.localStorage.removeItem(THEME_STORAGE_KEY);
     window.dispatchEvent(new StorageEvent("storage", { key: THEME_STORAGE_KEY }));
+    expect(document.documentElement.dataset.theme).toBeUndefined();
+  });
+
+  it("follows another tab clearing storage entirely", () => {
+    initTheme();
+    saveSelectedTheme("tabr-fremen");
+    window.localStorage.clear();
+    window.dispatchEvent(new StorageEvent("storage", { key: null }));
     expect(document.documentElement.dataset.theme).toBeUndefined();
   });
 
