@@ -218,7 +218,7 @@ export function loadSelectedTheme(): string {
 export function applyTheme(id: string, root: HTMLElement = document.documentElement): void {
   if (id === DEFAULT_THEME_ID && !root.dataset.theme) return;
   const themes = getThemes();
-  Object.keys(themes[0].tokens).forEach((name) => root.style.removeProperty(name));
+  Object.keys(themes[0]?.tokens ?? {}).forEach((name) => root.style.removeProperty(name));
   const theme = themes.find((t) => t.id === id);
   if (!theme) {
     root.style.removeProperty("color-scheme");

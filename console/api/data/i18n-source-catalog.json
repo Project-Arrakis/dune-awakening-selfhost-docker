@@ -7469,10 +7469,10 @@
         ]
       }
     ],
-    "Applies to this browser only.": [
+    "Applies to this browser only. Choose Default to restore the standard look.": [
       {
         "file": "console/web/src/themes/ThemePanel.tsx",
-        "line": 51,
+        "line": 70,
         "nearby": [
           "Console Theme",
           "Close",
@@ -13165,11 +13165,11 @@
       },
       {
         "file": "console/web/src/themes/ThemePanel.tsx",
-        "line": 49,
+        "line": 68,
         "nearby": [
           "The standard console look.",
           "Console Theme",
-          "Applies to this browser only.",
+          "Applies to this browser only. Choose Default to restore the standard look.",
           "Console theme"
         ]
       },
@@ -14549,10 +14549,10 @@
     "Console theme": [
       {
         "file": "console/web/src/themes/ThemePanel.tsx",
-        "line": 52,
+        "line": 71,
         "nearby": [
           "Close",
-          "Applies to this browser only.",
+          "Applies to this browser only. Choose Default to restore the standard look.",
           "Palettes: Fedaykin Dune Themes and Tabr (MIT)."
         ]
       }
@@ -14576,11 +14576,11 @@
       },
       {
         "file": "console/web/src/themes/ThemePanel.tsx",
-        "line": 48,
+        "line": 67,
         "nearby": [
           "The standard console look.",
           "Close",
-          "Applies to this browser only."
+          "Applies to this browser only. Choose Default to restore the standard look."
         ]
       }
     ],
@@ -35357,9 +35357,9 @@
     "Palettes: Fedaykin Dune Themes and Tabr (MIT).": [
       {
         "file": "console/web/src/themes/ThemePanel.tsx",
-        "line": 79,
+        "line": 101,
         "nearby": [
-          "Applies to this browser only.",
+          "Applies to this browser only. Choose Default to restore the standard look.",
           "Console theme"
         ]
       }
@@ -52115,7 +52115,7 @@
     "The standard console look.": [
       {
         "file": "console/web/src/themes/ThemePanel.tsx",
-        "line": 26,
+        "line": 43,
         "nearby": [
           "Console Theme",
           "Close"
