@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { Check, Palette, X } from "lucide-react";
 import { DEFAULT_THEME_ID, THEME_STORAGE_KEY, getThemes, loadSelectedTheme, saveSelectedTheme } from "./themeEngine";
 
-// The four colours that actually differ between palettes (text and status colours are near-identical everywhere).
+// One line per palette: its name and four colour boxes. Swatch palettes show their source dyes; the others show page, panel, accent and secondary.
 const SWATCH_TOKENS = ["--bg", "--panel", "--accent", "--accent-strong"] as const;
 const DEFAULT_SWATCHES = ["#0d0f12", "#171a1d", "#c68b4a", "#d8a05c"];
 const GROUP_ORDER = ["Console palettes", "Dune factions", "Houses", "Outfits and dyes"];
@@ -44,7 +44,7 @@ export function ThemePanel({ onClose = () => {} }: { onClose?: () => void }) {
   }
   const all = [
     { id: DEFAULT_THEME_ID, name: "Default", description: "The standard console look.", group: GROUP_ORDER[0], swatches: DEFAULT_SWATCHES as readonly string[] },
-    ...getThemes().map((theme) => ({ id: theme.id, name: theme.name, description: theme.description, group: theme.group ?? GROUP_ORDER[0], swatches: SWATCH_TOKENS.map((token) => theme.tokens[token]) as readonly string[] })),
+    ...getThemes().map((theme) => ({ id: theme.id, name: theme.name, description: theme.description, group: theme.group ?? GROUP_ORDER[0], swatches: theme.dyes ?? (SWATCH_TOKENS.map((token) => theme.tokens[token]) as readonly string[]) })),
   ];
   const query = filter.trim().toLowerCase();
   // The applied choice stays listed while filtering, so the radio group always has a checked card.

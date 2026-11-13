@@ -19,6 +19,8 @@ export interface ThemeInfo {
   tokens: ThemeTokens;
   /** Picker section heading; not persisted. */
   group?: string;
+  /** The source dye colours, shown in the picker for swatch palettes; not persisted. */
+  dyes?: readonly string[];
 }
 
 export function parseHex(value: string): Rgb | null {
@@ -161,6 +163,7 @@ function loadThemes(): ThemeInfo[] {
     appearance: "dark",
     tokens: buildThemeTokens(paletteFromSwatch(swatch)),
     group: swatch.id.startsWith("house-") ? "Houses" : "Outfits and dyes",
+    dyes: swatch.colors,
   }));
   return [...palettes, ...houses].sort((a, b) => a.name.localeCompare(b.name));
 }
