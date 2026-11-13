@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { HOUSE_SWATCHES } from "./houseSwatches";
 import { contrast, getThemes, parseHex, paletteFromSwatch, type Rgb } from "./themeEngine";
 
-describe("House swatch themes", () => {
-  it("offers every House as a theme with a unique id", () => {
+describe("House swatch palettes", () => {
+  it("offers every House as a palette with a unique id", () => {
     const ids = getThemes().map((t) => t.id);
     expect(new Set(ids).size).toBe(ids.length);
     for (const house of HOUSE_SWATCHES) expect(ids).toContain(house.id);

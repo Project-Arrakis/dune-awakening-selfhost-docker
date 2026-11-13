@@ -15,7 +15,7 @@ Jade, Moonstone, Nightfall, Oasis, Rosewood, Saffron, Sandstone, Slate,
 Spice, Steel, Harkonnen, Atreides, Sardaukar Imperial and Fremen. Their colour combinations are maintained in
 `console/web/src/themes/consolePalettes.ts`.
 
-### House swatch themes
+### House swatch palettes
 
 One theme per in-game House (27, from House Alexin to House Wydras) uses that
 House's four armour-dye colours. The dyes are in
