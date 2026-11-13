@@ -113,10 +113,10 @@ export function ThemePanel({ onClose = () => {} }: { onClose?: () => void }) {
                       aria-describedby={`theme-desc-${option.id}`}
                       onClick={() => choose(option.id)}
                     >
+                      <span className="theme-card-name">{option.name}{selected === option.id && <Check size={15} aria-hidden="true" />}</span>
                       <span className="theme-swatches" aria-hidden="true">
                         {option.swatches.map((color, swatchIndex) => <i key={swatchIndex} style={{ background: color }} />)}
                       </span>
-                      <span className="theme-card-name">{option.name}{selected === option.id && <Check size={15} aria-hidden="true" />}</span>
                     </button>
                   );
                 })}
