@@ -49,7 +49,7 @@ import { ConsoleLanguageObserver } from "./features/language/ConsoleLanguageObse
 // current list at runtime instead of a hand-duplicated copy that could drift.
 // "Access Control" is a fork-only addition (the IAM policy editor tab) with
 // no upstream equivalent.
-export const ALL_TABS = ["Home", "Server Control", "Services", "Players", "Guilds", "Bases", "Vehicles", "Exchange", "Landsraad", "Admin Tools", "Live Map", "Maps", "Care Package", "Addons", "Language", "Database", "Storage", "Backups", "Logs", "Updates", "Settings", "Access Control"] as const;
+export const ALL_TABS = ["Home", "Server Control", "Services", "Players", "Guilds", "Bases", "Vehicles", "Exchange", "Landsraad", "Admin Tools", "Live Map", "Maps", "Care Package", "Addons", "Language", "Database", "Storage", "Backups", "Logs", "Chat", "Updates", "Settings", "Access Control"] as const;
 // Exported so a panel routing to another tab types its destination against the
 // real list rather than `string`. Type-only, so a panel importing it back does
 // not create a runtime cycle.
@@ -108,6 +108,7 @@ const Action = {
   SERVER_RESTART_SERVICE: "server:restart-service",
   SERVER_CONTROL: "server:*",
   LOGS_READ: "logs:read",
+  CHAT_READ: "chat:read",
   BACKUPS_READ: "backups:read",
   BACKUPS_CREATE: "backups:create",
   BACKUPS_RESTORE: "backups:restore",
@@ -173,6 +174,7 @@ const CarePackagePanel = lazy(() => import("./features/carePackage/CarePackagePa
 const DatabasePanel = lazy(() => import("./features/database/DatabasePanel").then((module) => ({ default: module.DatabasePanel })));
 const GuildsPanel = lazy(() => import("./features/guilds/GuildsPanel").then((module) => ({ default: module.GuildsPanel })));
 const LogsPanel = lazy(() => import("./features/logs/LogsPanel").then((module) => ({ default: module.LogsPanel })));
+const ChatPanel = lazy(() => import("./features/chat/ChatPanel").then((module) => ({ default: module.ChatPanel })));
 const LiveMapPanel = lazy(() => import("./features/liveMap/LiveMapPanel").then((module) => ({ default: module.LiveMapPanel })));
 const LandsraadPanel = lazy(() => import("./features/landsraad/LandsraadPanel").then((module) => ({ default: module.LandsraadPanel })));
 const MapsPanel = lazy(() => import("./features/maps/MapsPanel").then((module) => ({ default: module.MapsPanel })));
@@ -405,6 +407,7 @@ const navGroups: { title: string; items: { tab: Tab; icon: React.ReactNode; requ
       { tab: "Database", icon: <Database size={18} />, requiredAction: Action.DATABASE_READ },
       { tab: "Updates", icon: <RefreshCw size={18} />, requiredAction: Action.UPDATES_READ },
       { tab: "Logs", icon: <FileText size={18} />, requiredAction: Action.LOGS_READ },
+      { tab: "Chat", icon: <MessageCircle size={18} />, requiredAction: Action.CHAT_READ },
       { tab: "Settings", icon: <Settings size={18} />, requiredAction: Action.SETTINGS_WRITE }
     ]
   },
@@ -1232,6 +1235,7 @@ export function App() {
             isTerminalTask={isTerminalTask}
           /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Logs" && <LazyTabBoundary label="Loading Logs"><LogsPanel selectedService={selectedLogService} setSelectedService={setSelectedLogService} text={logs} setText={setLogs} onError={setError} /></LazyTabBoundary>}
+        {!redeploySetupOpen && tab === "Chat" && <LazyTabBoundary label="Loading Chat"><ChatPanel onError={setError} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Updates" && <LazyTabBoundary label="Loading Updates"><UpdatesPanel
             installGameFilesRequest={installGameFilesRequest}
             onInstallGameFilesHandled={() => setInstallGameFilesRequest(0)}

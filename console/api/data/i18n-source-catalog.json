@@ -171,6 +171,7 @@
     "All",
     "All Categories",
     "All Categories ({count0})",
+    "All Channels",
     "All Groups",
     "All Languages",
     "All Listings",
@@ -204,6 +205,7 @@
     "An export includes the base's pieces, placeables, land claim and everything stored in it. Importing creates a new backup for the receiving player, who redeploys it with the in-game base backup tool. The original backup is not changed.",
     "Anonymous Count:",
     "Another Player",
+    "Any map or guild",
     "Appends to the next free slot. Existing stacks are never topped up — this always creates a new slot.",
     "Applied Successfully",
     "Applied To Term",
@@ -398,6 +400,7 @@
     "Broadcast checkpoints must not exceed the default countdown",
     "Browse Blueprints",
     "Browse public designs from DuneDocker Base Builder and install one directly for",
+    "Brutalist industrial: cold blues and purples on near-black.",
     "Buggy",
     "Build Cache Cleaned",
     "Build Cache Cleanup Failed",
@@ -444,6 +447,7 @@
     "CSV contains binary data and cannot be imported.",
     "CSV must include a template_id column.",
     "Cached in Database",
+    "Caladan: deep ocean blues, sea green and silver.",
     "Cancel",
     "Cancel Delete",
     "Cancel Import",
@@ -458,6 +462,7 @@
     "Cannot promote the leader further",
     "Cannot remove the leader",
     "Cap",
+    "Captured",
     "Care Package",
     "Care Package Configuration",
     "Care Package Result",
@@ -486,6 +491,8 @@
     "Changing Docker to use the backup battlegroup ID.",
     "Changing Login Password...",
     "Changing Password...",
+    "Channel",
+    "Channel / Location",
     "Character",
     "Character Name",
     "Character State",
@@ -496,6 +503,12 @@
     "Character Transfer Settings Applied",
     "Character.WeaponSpecificQuickMelee.Enabled",
     "Characters deleted from this server that still hold bases or vehicles. Deleting a character removes its ownership rows, so assets are matched back through the respawn points the character had set.",
+    "Chat",
+    "Chat Collection",
+    "Chat channel",
+    "Chat collection cannot connect to RabbitMQ. It will retry automatically.",
+    "Chat rows",
+    "Chat storage needs attention. Existing data has been preserved.",
     "Cheaper Than Patterns",
     "Check Director logs if readiness is unhealthy.",
     "Check Every (Min)",
@@ -554,6 +567,7 @@
     "Cleaning...",
     "Clear",
     "Clear All",
+    "Clear History",
     "Clear Log",
     "Clear Search",
     "Clear Selection",
@@ -591,6 +605,12 @@
     "Collapse Select Items",
     "Collapse Server Startup",
     "Collapse Web Console Port",
+    "Collect new chat messages",
+    "Collecting",
+    "Collection",
+    "Collection Off",
+    "Collection includes map, guild and proximity messages. Private whispers never reach the recorder.",
+    "Collection is off. An owner can enable it under Collection. Previously stored history remains available until it expires or is cleared.",
     "Column",
     "Columns",
     "Combat",
@@ -635,7 +655,9 @@
     "Connect DBeaver to PostgreSQL",
     "Connected",
     "Connected Players",
+    "Connecting",
     "Connecting To Steam",
+    "Connection Unavailable",
     "Console",
     "Console Access Review",
     "Console Language",
@@ -786,6 +808,7 @@
     "Deep Desert (Default, 0 Online)",
     "Deep Desert Layout",
     "Deep Desert instances",
+    "Deep evergreen with silver sage and sunlit brass.",
     "Deep forest with fresh mint and soft brass.",
     "Deep petrol with aqua and sunlit gold.",
     "DeepDesert_1",
@@ -805,6 +828,7 @@
     "Delete",
     "Delete All",
     "Delete All Backups",
+    "Delete All History",
     "Delete All Items",
     "Delete All System Backups",
     "Delete Auto Grant rule",
@@ -824,6 +848,7 @@
     "Delete System Backups",
     "Delete Timed Out",
     "Delete Vehicle",
+    "Delete all stored chat history? This cannot be undone.",
     "Delete backup",
     "Delete base backup",
     "Delete blueprint",
@@ -861,6 +886,7 @@
     "Deployment stopped.",
     "Deployment was successful.",
     "Description",
+    "Desert slate with spice blue and woven sand.",
     "Destination",
     "Destination base",
     "Destination player",
@@ -1157,6 +1183,7 @@
     "Filter items…",
     "Filter modifiers",
     "Filter names, arguments, return types, or languages",
+    "Filter palettes",
     "Filter settings",
     "Filter table or loaded column names",
     "Filters Queued",
@@ -1313,6 +1340,7 @@
     "Hide Inactive Players After",
     "Highlights",
     "Hindi",
+    "History is limited to 5,000 messages and 10 MiB. The oldest messages are removed first. Collection starts with new messages; earlier chat cannot be recovered.",
     "Home",
     "Horizontal Claim",
     "Horizontal Segments",
@@ -1349,6 +1377,7 @@
     "IgwTravel.AllowPassengerToUseTaxi",
     "Image Cleanup Failed",
     "Impact",
+    "Imperial plum with pale orchid and antique gold.",
     "Import",
     "Import Anyway",
     "Import Backup",
@@ -1407,6 +1436,7 @@
     "Inventory Check Failed",
     "Inventory type",
     "Inventory view",
+    "Iron charcoal with pale crimson and cold steel.",
     "Italian",
     "Item",
     "Item ID",
@@ -1436,6 +1466,7 @@
     "Keep Newest",
     "Keep all placeholders exactly as shown in the original phrase.",
     "Keep current owner",
+    "Keep history for",
     "Keep must be a whole number from 1 to 365.",
     "Keep one fewer",
     "Keep one more",
@@ -1525,6 +1556,7 @@
     "Loading Bases",
     "Loading Bot Items",
     "Loading Care Package",
+    "Loading Chat",
     "Loading Combat History",
     "Loading Community Blueprints",
     "Loading Console",
@@ -1560,6 +1592,7 @@
     "Loading base permissions…",
     "Loading blueprints...",
     "Loading building sets...",
+    "Loading chat...",
     "Loading columns...",
     "Loading community addons...",
     "Loading customizations...",
@@ -1611,6 +1644,7 @@
     "Manual Template",
     "Manual Vehicle ID",
     "Map",
+    "Map / Guild",
     "Map Change Failed",
     "Map Changes Applied",
     "Map Command Result",
@@ -1622,6 +1656,7 @@
     "Map list could not be loaded.",
     "Map mode guide",
     "Map mode saved successfully.",
+    "Map or guild",
     "Map, autoscaler, memory, Sietch, or Deep Desert state is loading or unavailable.",
     "MapViewer3D",
     "Maps",
@@ -1674,6 +1709,7 @@
     "Message of the Day saved. Players already online will become eligible again after 24 hours.",
     "Message of the Day saved. Players already online will receive it after their next login.",
     "Message of the Day saved. Players already online will receive it after their next map transfer or login.",
+    "Message or sender",
     "Message shown in this map chat",
     "Message shown to online players",
     "Message shown to players",
@@ -1738,6 +1774,7 @@
     "New Schedule",
     "New UI text is auto-translated & stored across all DB languages",
     "New UI text is automatically detected, translated via DeepL, and cached in the local translation database to save API traffic.",
+    "New messages will appear here after collection is enabled.",
     "New package",
     "New password",
     "New password and confirmation do not match.",
@@ -1760,6 +1797,7 @@
     "No Matching Languages",
     "No Matching Phrases",
     "No Matching Restarts",
+    "No Messages Found",
     "No NPC listings to remove; no backup was taken.",
     "No Owner set",
     "No Partitions Available",
@@ -1829,6 +1867,7 @@
     "No modifiers available for this target.",
     "No modifiers match your filter.",
     "No offline players were found.",
+    "No other palettes match.",
     "No output.",
     "No partitions available",
     "No permissions match your search.",
@@ -2116,6 +2155,7 @@
     "Promote to Officer",
     "Protection",
     "Protocol",
+    "Proximity",
     "Public",
     "Public IP Check Complete",
     "Public IP Check Failed",
@@ -2248,6 +2288,7 @@
     "Refresh Status",
     "Refresh Storage",
     "Refresh Tables",
+    "Refresh chat",
     "Refreshing",
     "Refreshing generated map catalogs.",
     "Refreshing...",
@@ -2407,6 +2448,7 @@
     "Result",
     "Results were capped. Some deleted characters or orphaned assets are not shown.",
     "Resume",
+    "Retention days",
     "Retry",
     "Retry Console Update",
     "Retry Game Update",
@@ -2495,6 +2537,7 @@
     "Save Auto Updates",
     "Save Buyback Schedule",
     "Save Changes",
+    "Save Collection Settings",
     "Save Custom Settings",
     "Save Encrypted Key",
     "Save Enrollment Secret",
@@ -2586,6 +2629,7 @@
     "Search a player to add",
     "Search by current translation or English phrase",
     "Search character name",
+    "Search chat",
     "Search columns, or column='value' and/or ...",
     "Search for a character to add.",
     "Search for the new owner",
@@ -2596,6 +2640,7 @@
     "Search name, type, owner, or map",
     "Search permissions",
     "Search permissions...",
+    "Search published in-game messages. Captured messages may be filtered before players receive them.",
     "Search table names",
     "Search tables or columns",
     "Searches player names and marker names, plus base and vehicle owners.",
@@ -2645,6 +2690,7 @@
     "Send On",
     "Send Server Broadcast",
     "Send recurring announcements using each schedule’s timezone.",
+    "Sender",
     "Sending...",
     "Serbian",
     "Server",
@@ -2834,6 +2880,7 @@
     "Stopping game servers before replacing server files.",
     "Stopping services, then starting them again.",
     "Storage",
+    "Storage Needs Attention",
     "Stored",
     "Stored Items",
     "Stored as",
@@ -2933,6 +2980,7 @@
     "The Console update was cancelled. Review the update log before retrying.",
     "The Console will start after the Linux host boots, but the Battlegroup will remain stopped until you start it.",
     "The Custom PvP Mode written to disk is",
+    "The Emperor's elite: imperial purple and gold on command black.",
     "The Funcom token was changed successfully and the server is up and running.",
     "The Market Board is unsupported by the detected database schema.",
     "The Market Bot is unsupported by the detected database schema.",
@@ -2975,6 +3023,7 @@
     "The map stays offline and will not auto-start, even if travel demand appears in-world.",
     "The maximum request rate for this key.",
     "The metadata file must end with .yaml or .yml.",
+    "The newest page refreshes every five seconds. Whispers are never collected. Faction and party are not supported yet.",
     "The passphrase must be at least 12 characters.",
     "The passphrase must use at least 5 different characters.",
     "The passphrase opened the archive. Review what it would replace below, then apply.",
@@ -3116,6 +3165,7 @@
     "Trooper starter skills",
     "True",
     "Try again",
+    "Try another search or channel.",
     "Turkish",
     "Turn On",
     "Turn off automatic system backups first",
@@ -3278,6 +3328,7 @@
     "Waiting for the game to save the character position",
     "Waiting for the update helper to start.",
     "Warm charcoal with amber and muted turquoise.",
+    "Warm dark stone with sky blue and sand, from the Tabr save editor.",
     "Warming",
     "Warn",
     "Warn players before restart",
@@ -3464,6 +3515,7 @@
     "{count0} distinct",
     "{count0} fields",
     "{count0} of {count1}",
+    "{count0} palettes",
     "{count0} rows",
     "{count0} warnings",
     "{count0}d {count1}h",
@@ -4461,6 +4513,17 @@
         ]
       }
     ],
+    "{count0} palettes": [
+      {
+        "file": "console/web/src/themes/ThemePanel.tsx",
+        "line": 101,
+        "nearby": [
+          "Filter palettes",
+          "No other palettes match.",
+          "Applies to this browser only. Choose Default to restore the standard look."
+        ]
+      }
+    ],
     "{count0} rows": [
       {
         "file": "console/web/src/features/maps/MapsPanel.tsx",
@@ -5079,7 +5142,7 @@
     "A system backup with that name is already stored on this host. Keep both by storing the upload under a new name, or replace the stored one.": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 277,
+        "line": 279,
         "nearby": [
           "Backup",
           "Backup Already Exists",
@@ -5350,7 +5413,7 @@
     "Access Control": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 403,
+        "line": 405,
         "nearby": [
           "Home",
           "Server Control",
@@ -5428,7 +5491,7 @@
     "Action completed after creating a database backup.": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1373,
+        "line": 1377,
         "nearby": [
           "Unset",
           "Action completed.",
@@ -5439,7 +5502,7 @@
     "Action completed.": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1365,
+        "line": 1369,
         "nearby": [
           "Loading Settings",
           "Unset",
@@ -5448,7 +5511,7 @@
       },
       {
         "file": "console/web/src/App.tsx",
-        "line": 1374,
+        "line": 1378,
         "nearby": [
           "Action completed after creating a database backup.",
           "Not Installed"
@@ -6335,7 +6398,7 @@
     "Addon Update Available": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 486,
+        "line": 489,
         "nearby": [
           "Community",
           "Addons",
@@ -6358,7 +6421,7 @@
     "Addons": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 430,
+        "line": 433,
         "nearby": [
           "Care Package",
           "Community",
@@ -6499,7 +6562,7 @@
     "Admin Password": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1002,
+        "line": 1005,
         "nearby": [
           "Use your authenticator instead",
           "Lost access to your authenticator?",
@@ -6551,7 +6614,7 @@
     "Admin Tools": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 423,
+        "line": 426,
         "nearby": [
           "Live Map",
           "Landsraad",
@@ -6573,7 +6636,7 @@
     "Adopt Backup History": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 251,
+        "line": 253,
         "nearby": [
           "Choose Admin Audit History",
           "This archive and this host each have their own admin audit history. Adopt the backup's history when moving the same server to new hardware. Keep this host's own history when restoring into a different server or rolling back a mistake.",
@@ -6585,7 +6648,7 @@
     "Adopt Backup ID": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 219,
+        "line": 221,
         "nearby": [
           "Choose Battlegroup Identity",
           "This backup belongs to a different Battlegroup. Adopt the backup identity when moving the same server to new hardware. Keep the current identity only when intentionally importing data into this different server.",
@@ -6859,6 +6922,18 @@
           "Choose Category",
           "Filter Items",
           "Item catalog view"
+        ]
+      }
+    ],
+    "All Channels": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 83,
+        "nearby": [
+          "Channel",
+          "Chat channel",
+          "Map",
+          "Guild"
         ]
       }
     ],
@@ -7178,7 +7253,7 @@
     "Already stored": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 283,
+        "line": 285,
         "nearby": [
           "Overwrite",
           "Overwriting destroys the only copy of the credentials inside the stored archive. There is no undo and no other copy on this host.",
@@ -7421,6 +7496,18 @@
         ]
       }
     ],
+    "Any map or guild": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 85,
+        "nearby": [
+          "Map / Guild",
+          "Map or guild",
+          "Search",
+          "Collection is off. An owner can enable it under Collection. Previously stored history remains available until it expires or is cleared."
+        ]
+      }
+    ],
     "API Keys": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
@@ -7496,11 +7583,10 @@
     "Applies to this browser only. Choose Default to restore the standard look.": [
       {
         "file": "console/web/src/themes/ThemePanel.tsx",
-        "line": 70,
+        "line": 103,
         "nearby": [
-          "Console Theme",
-          "Close",
-          "Console theme"
+          "No other palettes match.",
+          "{count0} palettes"
         ]
       }
     ],
@@ -7874,9 +7960,9 @@
     "Arrakis Management": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 412,
+        "line": 415,
         "nearby": [
-          "Logs",
+          "Chat",
           "Settings",
           "Maps",
           "Players"
@@ -8280,7 +8366,7 @@
     "Authenticator code": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 985,
+        "line": 988,
         "nearby": [
           "Battlegroup Started Successfully",
           "Recovery code",
@@ -8981,7 +9067,7 @@
     "Backup": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 225,
+        "line": 227,
         "nearby": [
           "Keep Current ID",
           "Choosing the wrong identity can make restored characters unavailable in game. Adoption will be blocked unless the current Funcom token matches the backup Battlegroup.",
@@ -8991,7 +9077,7 @@
       },
       {
         "file": "console/web/src/App.tsx",
-        "line": 257,
+        "line": 259,
         "nearby": [
           "Keep Current History",
           "Whichever history is not kept is still saved to the pre-restore safety copy, not deleted -- but it stops being the live record.",
@@ -9023,7 +9109,7 @@
     "Backup Already Exists": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 276,
+        "line": 278,
         "nearby": [
           "Whichever history is not kept is still saved to the pre-restore safety copy, not deleted -- but it stops being the live record.",
           "Backup",
@@ -9069,7 +9155,7 @@
     "Backup ID": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 227,
+        "line": 229,
         "nearby": [
           "Backup",
           "Current ID",
@@ -9253,7 +9339,7 @@
     "Backups": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 404,
+        "line": 406,
         "nearby": [
           "Server Control",
           "Access Control",
@@ -9613,7 +9699,7 @@
     "Base Builder": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 516,
+        "line": 519,
         "nearby": [
           "Community Contributors",
           "Public Server Directory",
@@ -9704,7 +9790,7 @@
     "Bases": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 417,
+        "line": 420,
         "nearby": [
           "Players",
           "Guilds",
@@ -9954,7 +10040,7 @@
     "Battlegroup Restarted Successfully": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 910,
+        "line": 913,
         "nearby": [
           "Documentation",
           "Battlegroup Stopped",
@@ -10000,7 +10086,7 @@
     "Battlegroup Started Successfully": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 916,
+        "line": 919,
         "nearby": [
           "Battlegroup Stopped",
           "Battlegroup Restarted Successfully",
@@ -10046,7 +10132,7 @@
     "Battlegroup Stopped": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 904,
+        "line": 907,
         "nearby": [
           "Base Builder",
           "Documentation",
@@ -10106,7 +10192,7 @@
     "Beyond the Dunes, Every Choice Shapes the Future": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1012,
+        "line": 1015,
         "nearby": [
           "Dune Docker Console",
           "Dune Docker Console logo",
@@ -11014,6 +11100,16 @@
         ]
       },
       {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 78,
+        "nearby": [
+          "Delete all stored chat history? This cannot be undone.",
+          "Delete All History",
+          "Search",
+          "Search chat"
+        ]
+      },
+      {
         "file": "console/web/src/features/guilds/GuildsPanel.tsx",
         "line": 498,
         "nearby": [
@@ -11061,15 +11157,6 @@
           "Save Schedule",
           "Loading scheduled messages...",
           "No scheduled messages yet"
-        ]
-      },
-      {
-        "file": "console/web/src/features/settings/ApiKeysSection.tsx",
-        "line": 434,
-        "nearby": [
-          "Creating...",
-          "Create Key",
-          "Choose at least one permission to continue."
         ]
       }
     ],
@@ -11309,10 +11396,31 @@
         ]
       }
     ],
+    "Captured": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 91,
+        "nearby": [
+          "Chat storage needs attention. Existing data has been preserved.",
+          "Chat collection cannot connect to RabbitMQ. It will retry automatically.",
+          "Channel / Location",
+          "Sender"
+        ]
+      },
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 93,
+        "nearby": [
+          "Sender",
+          "Message",
+          "Channel / Location"
+        ]
+      }
+    ],
     "Care Package": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 424,
+        "line": 427,
         "nearby": [
           "Landsraad",
           "Admin Tools",
@@ -11771,6 +11879,39 @@
         ]
       }
     ],
+    "Channel": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 82,
+        "nearby": [
+          "Search chat",
+          "Message or sender",
+          "Chat channel",
+          "All Channels"
+        ]
+      }
+    ],
+    "Channel / Location": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 91,
+        "nearby": [
+          "Chat collection cannot connect to RabbitMQ. It will retry automatically.",
+          "Captured",
+          "Sender",
+          "Message"
+        ]
+      },
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 93,
+        "nearby": [
+          "Message",
+          "Captured",
+          "Sender"
+        ]
+      }
+    ],
     "Character": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
@@ -11918,6 +12059,98 @@
           "character holds",
           "base",
           "bases"
+        ]
+      }
+    ],
+    "Chat": [
+      {
+        "file": "console/web/src/App.tsx",
+        "line": 410,
+        "nearby": [
+          "Updates",
+          "Logs",
+          "Settings",
+          "Arrakis Management"
+        ]
+      },
+      {
+        "file": "console/web/src/api/apiKeys.ts",
+        "line": 154,
+        "nearby": [
+          "Maps",
+          "Realtime Data",
+          "Players",
+          "Server"
+        ]
+      },
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 63,
+        "nearby": [
+          "Connection Unavailable",
+          "Storage Needs Attention",
+          "Search published in-game messages. Captured messages may be filtered before players receive them.",
+          "Unavailable"
+        ]
+      }
+    ],
+    "Chat channel": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 82,
+        "nearby": [
+          "Message or sender",
+          "Channel",
+          "All Channels",
+          "Map"
+        ]
+      }
+    ],
+    "Chat Collection": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 71,
+        "nearby": [
+          "Refresh",
+          "Collection",
+          "Collect new chat messages",
+          "Collection includes map, guild and proximity messages. Private whispers never reach the recorder."
+        ]
+      }
+    ],
+    "Chat collection cannot connect to RabbitMQ. It will retry automatically.": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 89,
+        "nearby": [
+          "Collection is off. An owner can enable it under Collection. Previously stored history remains available until it expires or is cleared.",
+          "Chat storage needs attention. Existing data has been preserved.",
+          "Captured",
+          "Channel / Location"
+        ]
+      }
+    ],
+    "Chat rows": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 101,
+        "nearby": [
+          "of",
+          "Rows",
+          "First",
+          "Previous"
+        ]
+      }
+    ],
+    "Chat storage needs attention. Existing data has been preserved.": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 89,
+        "nearby": [
+          "Search",
+          "Collection is off. An owner can enable it under Collection. Previously stored history remains available until it expires or is cleared.",
+          "Chat collection cannot connect to RabbitMQ. It will retry automatically.",
+          "Captured"
         ]
       }
     ],
@@ -12506,7 +12739,7 @@
     "Choose Admin Audit History": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 249,
+        "line": 251,
         "nearby": [
           "Current ID",
           "Backup ID",
@@ -12528,7 +12761,7 @@
     "Choose Battlegroup Identity": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 217,
+        "line": 219,
         "nearby": [
           "Continue?",
           "Yes",
@@ -12643,7 +12876,7 @@
     "Choosing the wrong identity can make restored characters unavailable in game. Adoption will be blocked unless the current Funcom token matches the backup Battlegroup.": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 223,
+        "line": 225,
         "nearby": [
           "Adopt Backup ID",
           "Keep Current ID",
@@ -12655,7 +12888,7 @@
     "Claimed Listing": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1169,
+        "line": 1172,
         "nearby": [
           "Community links",
           "Open Public Server Listing",
@@ -12983,6 +13216,18 @@
         "line": 108,
         "nearby": [
           "selected"
+        ]
+      }
+    ],
+    "Clear History": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 77,
+        "nearby": [
+          "History is limited to 5,000 messages and 10 MiB. The oldest messages are removed first. Collection starts with new messages; earlier chat cannot be recovered.",
+          "Save Collection Settings",
+          "Delete all stored chat history? This cannot be undone.",
+          "Delete All History"
         ]
       }
     ],
@@ -13344,7 +13589,7 @@
     "Close navigation": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1096,
+        "line": 1099,
         "nearby": [
           "Open Home",
           "Dune Docker Console",
@@ -13432,10 +13677,10 @@
     "Cold blue-gray with glacial blue and pale mint.": [
       {
         "file": "console/web/src/themes/consolePalettes.ts",
-        "line": 21,
+        "line": 29,
         "nearby": [
-          "Deep forest with fresh mint and soft brass.",
           "Dark aubergine with honey gold and rose.",
+          "Iron charcoal with pale crimson and cold steel.",
           "Ink blue with periwinkle and peach.",
           "Dark teal with jade and misty blue."
         ]
@@ -13732,6 +13977,76 @@
         ]
       }
     ],
+    "Collect new chat messages": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 72,
+        "nearby": [
+          "Collection",
+          "Chat Collection",
+          "Collection includes map, guild and proximity messages. Private whispers never reach the recorder.",
+          "Keep history for"
+        ]
+      }
+    ],
+    "Collecting": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 6,
+        "nearby": [
+          "Collection Off",
+          "Connecting",
+          "Connection Unavailable",
+          "Storage Needs Attention"
+        ]
+      }
+    ],
+    "Collection": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 67,
+        "nearby": [
+          "Refresh chat",
+          "Refresh",
+          "Chat Collection",
+          "Collect new chat messages"
+        ]
+      }
+    ],
+    "Collection includes map, guild and proximity messages. Private whispers never reach the recorder.": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 73,
+        "nearby": [
+          "Chat Collection",
+          "Collect new chat messages",
+          "Keep history for",
+          "Retention days"
+        ]
+      }
+    ],
+    "Collection is off. An owner can enable it under Collection. Previously stored history remains available until it expires or is cleared.": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 88,
+        "nearby": [
+          "Any map or guild",
+          "Search",
+          "Chat storage needs attention. Existing data has been preserved.",
+          "Chat collection cannot connect to RabbitMQ. It will retry automatically."
+        ]
+      }
+    ],
+    "Collection Off": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 6,
+        "nearby": [
+          "Connecting",
+          "Collecting"
+        ]
+      }
+    ],
     "Column": [
       {
         "file": "console/web/src/features/database/DatabaseSchemaBrowser.tsx",
@@ -13960,7 +14275,7 @@
     "Community": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 428,
+        "line": 431,
         "nearby": [
           "Admin Tools",
           "Care Package",
@@ -14028,7 +14343,7 @@
     "Community Contributors": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 510,
+        "line": 513,
         "nearby": [
           "Addon Update Available",
           "Created with love by RedBlink ·",
@@ -14040,7 +14355,7 @@
     "Community links": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1161,
+        "line": 1164,
         "nearby": [
           "Report Issues",
           "Get Help",
@@ -14277,7 +14592,7 @@
     "Confirm Action": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 196,
+        "line": 198,
         "nearby": [
           "Home",
           "Continue?",
@@ -14370,7 +14685,7 @@
     "Confirm restart": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 319,
+        "line": 321,
         "nearby": [
           "Overwriting destroys the only copy of the credentials inside the stored archive. There is no undo and no other copy on this host.",
           "Already stored",
@@ -14485,6 +14800,17 @@
         ]
       }
     ],
+    "Connecting": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 6,
+        "nearby": [
+          "Collection Off",
+          "Collecting",
+          "Connection Unavailable"
+        ]
+      }
+    ],
     "Connecting To Steam": [
       {
         "file": "console/web/src/features/updates/UpdatesPanel.tsx",
@@ -14494,6 +14820,18 @@
           "Downloading Server Files",
           "Loading Steam Metadata",
           "Logging In To Steam"
+        ]
+      }
+    ],
+    "Connection Unavailable": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 6,
+        "nearby": [
+          "Connecting",
+          "Collecting",
+          "Storage Needs Attention",
+          "Chat"
         ]
       }
     ],
@@ -14544,7 +14882,7 @@
     "Console Language": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1173,
+        "line": 1176,
         "nearby": [
           "Claimed Listing",
           "Unclaimed Listing",
@@ -14553,7 +14891,7 @@
       },
       {
         "file": "console/web/src/App.tsx",
-        "line": 1174,
+        "line": 1177,
         "nearby": [
           "Unclaimed Listing",
           "Join Discord"
@@ -14581,24 +14919,14 @@
         ]
       }
     ],
-    "Console theme": [
-      {
-        "file": "console/web/src/themes/ThemePanel.tsx",
-        "line": 71,
-        "nearby": [
-          "Close",
-          "Applies to this browser only. Choose Default to restore the standard look."
-        ]
-      }
-    ],
     "Console Theme": [
       {
         "file": "console/web/src/themes/ThemePanel.tsx",
-        "line": 67,
+        "line": 90,
         "nearby": [
           "The standard console look.",
           "Close",
-          "Applies to this browser only. Choose Default to restore the standard look."
+          "Filter palettes"
         ]
       },
       {
@@ -15008,7 +15336,7 @@
     "Continue?": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 196,
+        "line": 198,
         "nearby": [
           "Home",
           "Confirm Action",
@@ -15721,7 +16049,7 @@
     "Created with love by RedBlink ·": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 509,
+        "line": 512,
         "nearby": [
           "Addon Update Available",
           "Community Contributors",
@@ -15931,7 +16259,7 @@
     "Current ID": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 226,
+        "line": 228,
         "nearby": [
           "Choosing the wrong identity can make restored characters unavailable in game. Adoption will be blocked unless the current Funcom token matches the backup Battlegroup.",
           "Backup",
@@ -16093,7 +16421,7 @@
     "Custom settings": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 376,
+        "line": 378,
         "nearby": [
           "Players online",
           "UserEngine settings",
@@ -16314,19 +16642,19 @@
     "Dark aubergine with honey gold and rose.": [
       {
         "file": "console/web/src/themes/consolePalettes.ts",
-        "line": 20,
+        "line": 27,
         "nearby": [
-          "Smoky slate with pale apricot and lavender.",
           "Deep forest with fresh mint and soft brass.",
-          "Cold blue-gray with glacial blue and pale mint.",
-          "Ink blue with periwinkle and peach."
+          "Desert slate with spice blue and woven sand.",
+          "Iron charcoal with pale crimson and cold steel.",
+          "Cold blue-gray with glacial blue and pale mint."
         ]
       }
     ],
     "Dark teal with jade and misty blue.": [
       {
         "file": "console/web/src/themes/consolePalettes.ts",
-        "line": 23,
+        "line": 31,
         "nearby": [
           "Cold blue-gray with glacial blue and pale mint.",
           "Ink blue with periwinkle and peach.",
@@ -16338,9 +16666,9 @@
     "Dark umber with burnished copper and sage.": [
       {
         "file": "console/web/src/themes/consolePalettes.ts",
-        "line": 16,
+        "line": 22,
         "nearby": [
-          "Warm charcoal with amber and muted turquoise.",
+          "Deep evergreen with silver sage and sunlit brass.",
           "Volcanic gray with soft silver and warm copper.",
           "Quiet brown-black with sand gold and clear sky blue.",
           "Smoky slate with pale apricot and lavender."
@@ -16350,7 +16678,7 @@
     "Dark wine with dusty rose and pearl blue.": [
       {
         "file": "console/web/src/themes/consolePalettes.ts",
-        "line": 27,
+        "line": 35,
         "nearby": [
           "Near-black navy with electric blue and lilac.",
           "Deep petrol with aqua and sunlit gold.",
@@ -16362,7 +16690,7 @@
     "Database": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 405,
+        "line": 407,
         "nearby": [
           "Access Control",
           "Backups",
@@ -16559,6 +16887,18 @@
         ]
       }
     ],
+    "days": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 74,
+        "nearby": [
+          "Keep history for",
+          "Retention days",
+          "History is limited to 5,000 messages and 10 MiB. The oldest messages are removed first. Collection starts with new messages; earlier chat cannot be recovered.",
+          "Save Collection Settings"
+        ]
+      }
+    ],
     "Days": [
       {
         "file": "console/web/src/features/backups/BackupsPanel.tsx",
@@ -16726,22 +17066,33 @@
         ]
       }
     ],
+    "Deep evergreen with silver sage and sunlit brass.": [
+      {
+        "file": "console/web/src/themes/consolePalettes.ts",
+        "line": 20,
+        "nearby": [
+          "Warm charcoal with amber and muted turquoise.",
+          "Volcanic gray with soft silver and warm copper.",
+          "Dark umber with burnished copper and sage."
+        ]
+      }
+    ],
     "Deep forest with fresh mint and soft brass.": [
       {
         "file": "console/web/src/themes/consolePalettes.ts",
-        "line": 19,
+        "line": 25,
         "nearby": [
           "Quiet brown-black with sand gold and clear sky blue.",
           "Smoky slate with pale apricot and lavender.",
-          "Dark aubergine with honey gold and rose.",
-          "Cold blue-gray with glacial blue and pale mint."
+          "Desert slate with spice blue and woven sand.",
+          "Dark aubergine with honey gold and rose."
         ]
       }
     ],
     "Deep petrol with aqua and sunlit gold.": [
       {
         "file": "console/web/src/themes/consolePalettes.ts",
-        "line": 26,
+        "line": 34,
         "nearby": [
           "Smoky violet with pearl lavender and sand.",
           "Near-black navy with electric blue and lilac.",
@@ -17066,6 +17417,18 @@
         ]
       }
     ],
+    "Delete All History": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 78,
+        "nearby": [
+          "Clear History",
+          "Delete all stored chat history? This cannot be undone.",
+          "Cancel",
+          "Search"
+        ]
+      }
+    ],
     "Delete All Items": [
       {
         "file": "console/web/src/features/vehicles/VehicleStorageOverlay.tsx",
@@ -17084,6 +17447,18 @@
           "Items",
           "Delete All",
           "Base"
+        ]
+      }
+    ],
+    "Delete all stored chat history? This cannot be undone.": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 78,
+        "nearby": [
+          "Save Collection Settings",
+          "Clear History",
+          "Delete All History",
+          "Cancel"
         ]
       }
     ],
@@ -17906,6 +18281,18 @@
           "Deployment complete.",
           "Starting game services.",
           "Refreshing generated map catalogs."
+        ]
+      }
+    ],
+    "Desert slate with spice blue and woven sand.": [
+      {
+        "file": "console/web/src/themes/consolePalettes.ts",
+        "line": 26,
+        "nearby": [
+          "Smoky slate with pale apricot and lavender.",
+          "Deep forest with fresh mint and soft brass.",
+          "Dark aubergine with honey gold and rose.",
+          "Iron charcoal with pale crimson and cold steel."
         ]
       }
     ],
@@ -19185,7 +19572,7 @@
     "Documentation": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 518,
+        "line": 521,
         "nearby": [
           "Public Server Directory",
           "Base Builder",
@@ -19662,7 +20049,7 @@
     "Dune Docker Console": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1010,
+        "line": 1013,
         "nearby": [
           "Admin Password",
           "Sign In",
@@ -19672,7 +20059,7 @@
       },
       {
         "file": "console/web/src/App.tsx",
-        "line": 1036,
+        "line": 1039,
         "nearby": [
           "Your browser login session expired.",
           "Sign in again to continue.",
@@ -19682,7 +20069,7 @@
       },
       {
         "file": "console/web/src/App.tsx",
-        "line": 1088,
+        "line": 1091,
         "nearby": [
           "Run and manage your self-hosted Dune server from the browser.",
           "Open Home",
@@ -19716,7 +20103,7 @@
     "Dune Docker Console logo": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1011,
+        "line": 1014,
         "nearby": [
           "Sign In",
           "Dune Docker Console",
@@ -19892,12 +20279,12 @@
     "Earthy charcoal with saffron and olive silver.": [
       {
         "file": "console/web/src/themes/consolePalettes.ts",
-        "line": 28,
+        "line": 36,
         "nearby": [
           "Deep petrol with aqua and sunlit gold.",
           "Dark wine with dusty rose and pearl blue.",
           "Soft dark taupe with limestone and sage blue.",
-          "Graphite blue with steel silver and sea green."
+          "Imperial plum with pale orchid and antique gold."
         ]
       }
     ],
@@ -21107,7 +21494,7 @@
     "Exchange": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 420,
+        "line": 423,
         "nearby": [
           "Vehicles",
           "Storage",
@@ -22479,6 +22866,26 @@
         ]
       }
     ],
+    "Filter palettes": [
+      {
+        "file": "console/web/src/themes/ThemePanel.tsx",
+        "line": 97,
+        "nearby": [
+          "Console Theme",
+          "Close",
+          "No other palettes match."
+        ]
+      },
+      {
+        "file": "console/web/src/themes/ThemePanel.tsx",
+        "line": 98,
+        "nearby": [
+          "Close",
+          "No other palettes match.",
+          "{count0} palettes"
+        ]
+      }
+    ],
     "Filter Research Schematics": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
@@ -22644,7 +23051,7 @@
     "Finish the first-time setup to unlock the console.": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1055,
+        "line": 1058,
         "nearby": [
           "Loading Console",
           "Setup",
@@ -22684,6 +23091,16 @@
         "nearby": [
           "rows.",
           "Rows",
+          "Previous",
+          "Page"
+        ]
+      },
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 102,
+        "nearby": [
+          "Rows",
+          "Chat rows",
           "Previous",
           "Page"
         ]
@@ -23964,7 +24381,7 @@
     "Get Help": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1142,
+        "line": 1145,
         "nearby": [
           "Requests",
           "Report Issues",
@@ -24842,10 +25259,10 @@
     "Graphite blue with steel silver and sea green.": [
       {
         "file": "console/web/src/themes/consolePalettes.ts",
-        "line": 30,
+        "line": 39,
         "nearby": [
-          "Earthy charcoal with saffron and olive silver.",
           "Soft dark taupe with limestone and sage blue.",
+          "Imperial plum with pale orchid and antique gold.",
           "Roasted brown with spice orange and cool turquoise.",
           "Neutral charcoal with pale blue and warm ivory."
         ]
@@ -24946,6 +25363,16 @@
     ],
     "Guild": [
       {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 83,
+        "nearby": [
+          "All Channels",
+          "Map",
+          "Proximity",
+          "Map / Guild"
+        ]
+      },
+      {
         "file": "console/web/src/features/bases/BaseChildPermissionsTab.tsx",
         "line": 33,
         "nearby": [
@@ -24979,7 +25406,7 @@
     "Guilds": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 416,
+        "line": 419,
         "nearby": [
           "Maps",
           "Players",
@@ -25152,7 +25579,7 @@
     "Hide password sign-in": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1019,
+        "line": 1022,
         "nearby": [
           "Beyond the Dunes, Every Choice Shapes the Future",
           "Sign in with Discord",
@@ -25169,6 +25596,18 @@
           "Regis Tanks in Hagga Basin",
           "Experimental",
           "Regis Tanks"
+        ]
+      }
+    ],
+    "History is limited to 5,000 messages and 10 MiB. The oldest messages are removed first. Collection starts with new messages; earlier chat cannot be recovered.": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 75,
+        "nearby": [
+          "Retention days",
+          "days",
+          "Save Collection Settings",
+          "Clear History"
         ]
       }
     ],
@@ -25195,7 +25634,7 @@
       },
       {
         "file": "console/web/src/App.tsx",
-        "line": 401,
+        "line": 403,
         "nearby": [
           "Restart later leaves the servers running as-is; the change applies at the next battlegroup restart, manual or automatic.",
           "Server Operations",
@@ -25755,6 +26194,18 @@
         ]
       }
     ],
+    "Imperial plum with pale orchid and antique gold.": [
+      {
+        "file": "console/web/src/themes/consolePalettes.ts",
+        "line": 38,
+        "nearby": [
+          "Earthy charcoal with saffron and olive silver.",
+          "Soft dark taupe with limestone and sage blue.",
+          "Graphite blue with steel silver and sea green.",
+          "Roasted brown with spice orange and cool turquoise."
+        ]
+      }
+    ],
     "Import": [
       {
         "file": "console/web/src/features/backups/BackupsPanel.tsx",
@@ -26248,9 +26699,9 @@
     "Ink blue with periwinkle and peach.": [
       {
         "file": "console/web/src/themes/consolePalettes.ts",
-        "line": 22,
+        "line": 30,
         "nearby": [
-          "Dark aubergine with honey gold and rose.",
+          "Iron charcoal with pale crimson and cold steel.",
           "Cold blue-gray with glacial blue and pale mint.",
           "Dark teal with jade and misty blue.",
           "Smoky violet with pearl lavender and sand."
@@ -26775,6 +27226,18 @@
         ]
       }
     ],
+    "Iron charcoal with pale crimson and cold steel.": [
+      {
+        "file": "console/web/src/themes/consolePalettes.ts",
+        "line": 28,
+        "nearby": [
+          "Desert slate with spice blue and woven sand.",
+          "Dark aubergine with honey gold and rose.",
+          "Cold blue-gray with glacial blue and pale mint.",
+          "Ink blue with periwinkle and peach."
+        ]
+      }
+    ],
     "is unavailable right now.": [
       {
         "file": "console/web/src/features/player/PlayerPages.tsx",
@@ -27272,7 +27735,7 @@
     "Join Discord": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1183,
+        "line": 1186,
         "nearby": [
           "Console Language",
           "Support Project"
@@ -27388,7 +27851,7 @@
     "Keep Both": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 278,
+        "line": 280,
         "nearby": [
           "Backup Already Exists",
           "A system backup with that name is already stored on this host. Keep both by storing the upload under a new name, or replace the stored one.",
@@ -27400,7 +27863,7 @@
     "Keep Current History": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 252,
+        "line": 254,
         "nearby": [
           "This archive and this host each have their own admin audit history. Adopt the backup's history when moving the same server to new hardware. Keep this host's own history when restoring into a different server or rolling back a mistake.",
           "Adopt Backup History",
@@ -27412,7 +27875,7 @@
     "Keep Current ID": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 220,
+        "line": 222,
         "nearby": [
           "This backup belongs to a different Battlegroup. Adopt the backup identity when moving the same server to new hardware. Keep the current identity only when intentionally importing data into this different server.",
           "Adopt Backup ID",
@@ -27430,6 +27893,18 @@
           "Unknown",
           "Search for the new owner",
           "Map"
+        ]
+      }
+    ],
+    "Keep history for": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 74,
+        "nearby": [
+          "Collect new chat messages",
+          "Collection includes map, guild and proximity messages. Private whispers never reach the recorder.",
+          "Retention days",
+          "days"
         ]
       }
     ],
@@ -27701,7 +28176,7 @@
     "Landsraad": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 422,
+        "line": 425,
         "nearby": [
           "Exchange",
           "Live Map",
@@ -27782,6 +28257,15 @@
         "nearby": [
           "of",
           "Next"
+        ]
+      },
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 106,
+        "nearby": [
+          "of",
+          "Next",
+          "The newest page refreshes every five seconds. Whispers are never collected. Faction and party are not supported yet."
         ]
       },
       {
@@ -28395,7 +28879,7 @@
     "Live Map": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 421,
+        "line": 424,
         "nearby": [
           "Storage",
           "Exchange",
@@ -28549,7 +29033,7 @@
     "Loading Addons": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1210,
+        "line": 1213,
         "nearby": [
           "Loading Maps",
           "Loading Care Package",
@@ -28561,7 +29045,7 @@
     "Loading Admin Tools": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1206,
+        "line": 1209,
         "nearby": [
           "Loading Market Board",
           "Loading Landsraad",
@@ -28585,12 +29069,12 @@
     "Loading Backups": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1215,
+        "line": 1218,
         "nearby": [
           "Loading Database",
           "Loading Storage",
           "Loading Logs",
-          "Loading Updates"
+          "Loading Chat"
         ]
       }
     ],
@@ -28645,7 +29129,7 @@
     "Loading Bases": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1201,
+        "line": 1204,
         "nearby": [
           "Loading Player Details",
           "Loading Guilds",
@@ -28711,12 +29195,36 @@
     "Loading Care Package": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1209,
+        "line": 1212,
         "nearby": [
           "Loading Live Map",
           "Loading Maps",
           "Loading Addons",
           "Loading Language"
+        ]
+      }
+    ],
+    "Loading Chat": [
+      {
+        "file": "console/web/src/App.tsx",
+        "line": 1238,
+        "nearby": [
+          "Loading Backups",
+          "Loading Logs",
+          "Loading Updates",
+          "Loading Settings"
+        ]
+      }
+    ],
+    "Loading chat...": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 98,
+        "nearby": [
+          "Sender",
+          "Message",
+          "No Messages Found",
+          "Try another search or channel."
         ]
       }
     ],
@@ -28769,7 +29277,7 @@
     "Loading Console": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1037,
+        "line": 1040,
         "nearby": [
           "Sign in again to continue.",
           "Dune Docker Console",
@@ -28805,7 +29313,7 @@
     "Loading Database": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1212,
+        "line": 1215,
         "nearby": [
           "Loading Addons",
           "Loading Language",
@@ -28863,7 +29371,7 @@
     "Loading Guilds": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1199,
+        "line": 1202,
         "nearby": [
           "Loading Players",
           "Loading Player Details",
@@ -28910,7 +29418,7 @@
     "Loading Landsraad": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1205,
+        "line": 1208,
         "nearby": [
           "Loading Vehicles",
           "Loading Market Board",
@@ -28934,7 +29442,7 @@
     "Loading Language": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1211,
+        "line": 1214,
         "nearby": [
           "Loading Care Package",
           "Loading Addons",
@@ -28968,7 +29476,7 @@
     "Loading Live Map": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1207,
+        "line": 1210,
         "nearby": [
           "Loading Landsraad",
           "Loading Admin Tools",
@@ -28980,12 +29488,12 @@
     "Loading Logs": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1234,
+        "line": 1237,
         "nearby": [
           "Loading Storage",
           "Loading Backups",
-          "Loading Updates",
-          "Loading Settings"
+          "Loading Chat",
+          "Loading Updates"
         ]
       }
     ],
@@ -29016,7 +29524,7 @@
     "Loading Maps": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1208,
+        "line": 1211,
         "nearby": [
           "Loading Admin Tools",
           "Loading Live Map",
@@ -29038,7 +29546,7 @@
     "Loading Market Board": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1204,
+        "line": 1207,
         "nearby": [
           "Loading Bases",
           "Loading Vehicles",
@@ -29105,7 +29613,7 @@
     "Loading Player Details": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1198,
+        "line": 1201,
         "nearby": [
           "Loading Services",
           "Loading Players",
@@ -29117,7 +29625,7 @@
     "Loading Players": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1198,
+        "line": 1201,
         "nearby": [
           "Support Project",
           "Loading Services",
@@ -29189,7 +29697,7 @@
     "Loading Services": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1197,
+        "line": 1200,
         "nearby": [
           "Support Project",
           "Loading Players",
@@ -29200,9 +29708,9 @@
     "Loading Settings": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1249,
+        "line": 1253,
         "nearby": [
-          "Loading Logs",
+          "Loading Chat",
           "Loading Updates",
           "Unset",
           "Action completed."
@@ -29258,7 +29766,7 @@
     "Loading Storage": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1214,
+        "line": 1217,
         "nearby": [
           "Loading Language",
           "Loading Database",
@@ -29339,10 +29847,10 @@
     "Loading Updates": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1235,
+        "line": 1239,
         "nearby": [
-          "Loading Backups",
           "Loading Logs",
+          "Loading Chat",
           "Loading Settings",
           "Unset"
         ]
@@ -29351,7 +29859,7 @@
     "Loading Vehicles": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1203,
+        "line": 1206,
         "nearby": [
           "Loading Guilds",
           "Loading Bases",
@@ -29442,6 +29950,15 @@
         ]
       },
       {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 65,
+        "nearby": [
+          "Search published in-game messages. Captured messages may be filtered before players receive them.",
+          "Unavailable",
+          "Refresh chat"
+        ]
+      },
+      {
         "file": "console/web/src/features/landsraad/LandsraadPanel.tsx",
         "line": 331,
         "nearby": [
@@ -29499,16 +30016,6 @@
           "All Sets",
           "Reload",
           "Loading customizations..."
-        ]
-      },
-      {
-        "file": "console/web/src/features/database/DatabaseSchemaBrowser.tsx",
-        "line": 204,
-        "nearby": [
-          "Functions",
-          "Procedures",
-          "Refresh",
-          "shown"
         ]
       }
     ],
@@ -29746,12 +30253,12 @@
     "Logs": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 407,
+        "line": 409,
         "nearby": [
           "Database",
           "Updates",
-          "Settings",
-          "Arrakis Management"
+          "Chat",
+          "Settings"
         ]
       },
       {
@@ -29784,7 +30291,7 @@
     "Lost access to your authenticator?": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 996,
+        "line": 999,
         "nearby": [
           "Sign In",
           "Use your authenticator instead",
@@ -29994,6 +30501,16 @@
         ]
       },
       {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 83,
+        "nearby": [
+          "Chat channel",
+          "All Channels",
+          "Guild",
+          "Proximity"
+        ]
+      },
+      {
         "file": "console/web/src/features/liveMap/LiveMapPanel.tsx",
         "line": 1079,
         "nearby": [
@@ -30031,6 +30548,18 @@
           "Solari Coin",
           "Guild",
           "Level"
+        ]
+      }
+    ],
+    "Map / Guild": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 85,
+        "nearby": [
+          "Guild",
+          "Proximity",
+          "Map or guild",
+          "Any map or guild"
         ]
       }
     ],
@@ -30157,6 +30686,18 @@
         ]
       }
     ],
+    "Map or guild": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 85,
+        "nearby": [
+          "Proximity",
+          "Map / Guild",
+          "Any map or guild",
+          "Search"
+        ]
+      }
+    ],
     "Map Restart": [
       {
         "file": "console/web/src/features/adminTools/RestartMessagesModal.tsx",
@@ -30229,7 +30770,7 @@
     "Maps": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 414,
+        "line": 417,
         "nearby": [
           "Settings",
           "Arrakis Management",
@@ -30263,7 +30804,7 @@
           "Landsraad",
           "Logs",
           "Realtime Data",
-          "Players"
+          "Chat"
         ]
       }
     ],
@@ -30826,6 +31367,25 @@
         ]
       },
       {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 91,
+        "nearby": [
+          "Channel / Location",
+          "Sender",
+          "Captured"
+        ]
+      },
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 95,
+        "nearby": [
+          "Channel / Location",
+          "Sender",
+          "Loading chat...",
+          "No Messages Found"
+        ]
+      },
+      {
         "file": "console/web/src/features/adminTools/ScheduledMapMessages.tsx",
         "line": 167,
         "nearby": [
@@ -30881,6 +31441,18 @@
           "Message of the Day saved. Players already online will become eligible again after 24 hours.",
           "Message of the Day saved. Players already online will receive it after their next login.",
           "at most once per player every 24 hours"
+        ]
+      }
+    ],
+    "Message or sender": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 81,
+        "nearby": [
+          "Search",
+          "Search chat",
+          "Channel",
+          "Chat channel"
         ]
       }
     ],
@@ -31476,7 +32048,7 @@
     "Near-black navy with electric blue and lilac.": [
       {
         "file": "console/web/src/themes/consolePalettes.ts",
-        "line": 25,
+        "line": 33,
         "nearby": [
           "Dark teal with jade and misty blue.",
           "Smoky violet with pearl lavender and sand.",
@@ -31644,7 +32216,7 @@
     "Neutral charcoal with pale blue and warm ivory.": [
       {
         "file": "console/web/src/themes/consolePalettes.ts",
-        "line": 32,
+        "line": 41,
         "nearby": [
           "Graphite blue with steel silver and sea green.",
           "Roasted brown with spice orange and cool turquoise."
@@ -31716,6 +32288,18 @@
           "No guild membership required.",
           "New player faction",
           "Select faction"
+        ]
+      }
+    ],
+    "New messages will appear here after collection is enabled.": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 98,
+        "nearby": [
+          "No Messages Found",
+          "Try another search or channel.",
+          "Showing",
+          "of"
         ]
       }
     ],
@@ -31868,6 +32452,16 @@
         ]
       },
       {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 105,
+        "nearby": [
+          "Page",
+          "of",
+          "Last",
+          "The newest page refreshes every five seconds. Whispers are never collected. Faction and party are not supported yet."
+        ]
+      },
+      {
         "file": "console/web/src/features/blueprints/CommunityBlueprintBrowser.tsx",
         "line": 206,
         "nearby": [
@@ -31987,7 +32581,7 @@
     "No access": [
       {
         "file": "console/web/src/api/apiKeys.ts",
-        "line": 168,
+        "line": 169,
         "nearby": [
           "Updates",
           "Vehicles"
@@ -32747,6 +33341,18 @@
         ]
       }
     ],
+    "No Messages Found": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 98,
+        "nearby": [
+          "Message",
+          "Loading chat...",
+          "Try another search or channel.",
+          "New messages will appear here after collection is enabled."
+        ]
+      }
+    ],
     "No modifiers available for this target.": [
       {
         "file": "console/web/src/features/maps/MapsPanel.tsx",
@@ -32792,6 +33398,17 @@
           "No players are currently online.",
           "No banned players were found.",
           "No players have been found yet."
+        ]
+      }
+    ],
+    "No other palettes match.": [
+      {
+        "file": "console/web/src/themes/ThemePanel.tsx",
+        "line": 101,
+        "nearby": [
+          "Filter palettes",
+          "{count0} palettes",
+          "Applies to this browser only. Choose Default to restore the standard look."
         ]
       }
     ],
@@ -33553,7 +34170,7 @@
     "Not Installed": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1380,
+        "line": 1384,
         "nearby": [
           "Action completed after creating a database backup.",
           "Action completed."
@@ -33895,6 +34512,26 @@
         ]
       },
       {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 100,
+        "nearby": [
+          "New messages will appear here after collection is enabled.",
+          "Showing",
+          "Rows",
+          "Chat rows"
+        ]
+      },
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 104,
+        "nearby": [
+          "Previous",
+          "Page",
+          "Next",
+          "Last"
+        ]
+      },
+      {
         "file": "console/web/src/features/blueprints/CommunityBlueprintBrowser.tsx",
         "line": 200,
         "nearby": [
@@ -33951,26 +34588,6 @@
           "Disband guild",
           "Showing",
           "rows.",
-          "Rows"
-        ]
-      },
-      {
-        "file": "console/web/src/features/guilds/GuildsPanel.tsx",
-        "line": 386,
-        "nearby": [
-          "Previous",
-          "Page",
-          "Next",
-          "Last"
-        ]
-      },
-      {
-        "file": "console/web/src/features/vehicles/VehiclesPanel.tsx",
-        "line": 460,
-        "nearby": [
-          "No vehicles match this filter.",
-          "Showing",
-          "vehicles.",
           "Rows"
         ]
       }
@@ -34569,7 +35186,7 @@
     "Open Home": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1087,
+        "line": 1090,
         "nearby": [
           "Update setup values and redeploy your Dune server.",
           "Run and manage your self-hosted Dune server from the browser.",
@@ -34617,7 +35234,7 @@
     "Open navigation": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1096,
+        "line": 1099,
         "nearby": [
           "Dune Docker Console",
           "Close navigation",
@@ -34629,7 +35246,7 @@
     "Open Public Server Listing": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1168,
+        "line": 1171,
         "nearby": [
           "Get Help",
           "Community links",
@@ -35028,7 +35645,7 @@
     "Overwrite": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 279,
+        "line": 281,
         "nearby": [
           "A system backup with that name is already stored on this host. Keep both by storing the upload under a new name, or replace the stored one.",
           "Keep Both",
@@ -35040,7 +35657,7 @@
     "Overwriting destroys the only copy of the credentials inside the stored archive. There is no undo and no other copy on this host.": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 282,
+        "line": 284,
         "nearby": [
           "Keep Both",
           "Overwrite",
@@ -35425,6 +36042,16 @@
       {
         "file": "console/web/src/features/bases/BasesPanel.tsx",
         "line": 1945,
+        "nearby": [
+          "First",
+          "Previous",
+          "of",
+          "Next"
+        ]
+      },
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 104,
         "nearby": [
           "First",
           "Previous",
@@ -36950,7 +37577,7 @@
     "Players": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 415,
+        "line": 418,
         "nearby": [
           "Arrakis Management",
           "Maps",
@@ -36960,10 +37587,10 @@
       },
       {
         "file": "console/web/src/api/apiKeys.ts",
-        "line": 154,
+        "line": 155,
         "nearby": [
-          "Maps",
           "Realtime Data",
+          "Chat",
           "Server",
           "Sietches"
         ]
@@ -37009,7 +37636,7 @@
     "Players are online": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 336,
+        "line": 338,
         "nearby": [
           "Confirm restart",
           "Restart Now",
@@ -37033,7 +37660,7 @@
     "Players online": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 346,
+        "line": 348,
         "nearby": [
           "Queue Restart ({count0} min)",
           "Restart Immediately",
@@ -37630,6 +38257,16 @@
         ]
       },
       {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 103,
+        "nearby": [
+          "Chat rows",
+          "First",
+          "Page",
+          "of"
+        ]
+      },
+      {
         "file": "console/web/src/features/blueprints/CommunityBlueprintBrowser.tsx",
         "line": 204,
         "nearby": [
@@ -37951,6 +38588,18 @@
         ]
       }
     ],
+    "Proximity": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 83,
+        "nearby": [
+          "Map",
+          "Guild",
+          "Map / Guild",
+          "Map or guild"
+        ]
+      }
+    ],
     "Public": [
       {
         "file": "console/web/src/features/server/ServerPanels.tsx",
@@ -38088,7 +38737,7 @@
     "Public Server Directory": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 514,
+        "line": 517,
         "nearby": [
           "Created with love by RedBlink ·",
           "Community Contributors",
@@ -38436,7 +39085,7 @@
     "Queue Restart ({count0} min)": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 340,
+        "line": 342,
         "nearby": [
           "Restart Now",
           "Players are online",
@@ -38580,7 +39229,7 @@
     "Quiet brown-black with sand gold and clear sky blue.": [
       {
         "file": "console/web/src/themes/consolePalettes.ts",
-        "line": 17,
+        "line": 23,
         "nearby": [
           "Volcanic gray with soft silver and warm copper.",
           "Dark umber with burnished copper and sage.",
@@ -38992,8 +39641,8 @@
         "nearby": [
           "Logs",
           "Maps",
-          "Players",
-          "Server"
+          "Chat",
+          "Players"
         ]
       }
     ],
@@ -39344,7 +39993,7 @@
     "Recovery code": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 976,
+        "line": 979,
         "nearby": [
           "Battlegroup Restarted Successfully",
           "Battlegroup Started Successfully",
@@ -39400,7 +40049,7 @@
     "Redeploy": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1075,
+        "line": 1078,
         "nearby": [
           "Setup",
           "Finish the first-time setup to unlock the console.",
@@ -39824,6 +40473,16 @@
         ]
       },
       {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 66,
+        "nearby": [
+          "Unavailable",
+          "Refresh chat",
+          "Collection",
+          "Chat Collection"
+        ]
+      },
+      {
         "file": "console/web/src/features/exchange/ExchangePanel.tsx",
         "line": 295,
         "nearby": [
@@ -39892,16 +40551,6 @@
           "Search Character, FLS ID, Account ID, or Actor ID",
           "Search"
         ]
-      },
-      {
-        "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 420,
-        "nearby": [
-          "Enabled",
-          "Disabled",
-          "Server listing issue:",
-          "Collapse Public Listing Profile"
-        ]
       }
     ],
     "Refresh Addons": [
@@ -39935,6 +40584,18 @@
           ". Store the passphrase somewhere durable and separate from the archive.",
           "Create System Backup",
           "Delete System Backups"
+        ]
+      }
+    ],
+    "Refresh chat": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 66,
+        "nearby": [
+          "Loading...",
+          "Unavailable",
+          "Refresh",
+          "Collection"
         ]
       }
     ],
@@ -41227,7 +41888,7 @@
     "Report Issues": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1141,
+        "line": 1144,
         "nearby": [
           "Open navigation",
           "Requests",
@@ -41257,7 +41918,7 @@
     "Requests": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1140,
+        "line": 1143,
         "nearby": [
           "Close navigation",
           "Open navigation",
@@ -41835,7 +42496,7 @@
     "Restart Immediately": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 342,
+        "line": 344,
         "nearby": [
           "Players are online",
           "Queue Restart ({count0} min)",
@@ -41847,7 +42508,7 @@
     "Restart later": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 384,
+        "line": 386,
         "nearby": [
           "Custom settings",
           "UserGame settings",
@@ -41859,7 +42520,7 @@
     "Restart later leaves the servers running as-is; the change applies at the next battlegroup restart, manual or automatic.": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 385,
+        "line": 387,
         "nearby": [
           "UserGame settings",
           "Restart later",
@@ -41882,7 +42543,7 @@
     "Restart Now": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 325,
+        "line": 327,
         "nearby": [
           "Already stored",
           "Confirm restart",
@@ -43083,6 +43744,18 @@
         ]
       }
     ],
+    "Retention days": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 74,
+        "nearby": [
+          "Collection includes map, guild and proximity messages. Private whispers never reach the recorder.",
+          "Keep history for",
+          "days",
+          "History is limited to 5,000 messages and 10 MiB. The oldest messages are removed first. Collection starts with new messages; earlier chat cannot be recovered."
+        ]
+      }
+    ],
     "Retry": [
       {
         "file": "console/web/src/features/bases/BasesPanel.tsx",
@@ -43486,9 +44159,9 @@
     "Roasted brown with spice orange and cool turquoise.": [
       {
         "file": "console/web/src/themes/consolePalettes.ts",
-        "line": 31,
+        "line": 40,
         "nearby": [
-          "Soft dark taupe with limestone and sage blue.",
+          "Imperial plum with pale orchid and antique gold.",
           "Graphite blue with steel silver and sea green.",
           "Neutral charcoal with pale blue and warm ivory."
         ]
@@ -43591,6 +44264,16 @@
           "rows.",
           "First",
           "Previous"
+        ]
+      },
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 101,
+        "nearby": [
+          "Showing",
+          "of",
+          "Chat rows",
+          "First"
         ]
       },
       {
@@ -43767,7 +44450,7 @@
     "Run and manage your self-hosted Dune server from the browser.": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1078,
+        "line": 1081,
         "nearby": [
           "Redeploy",
           "Update setup values and redeploy your Dune server.",
@@ -44564,6 +45247,18 @@
         "nearby": [
           "Discard Changes",
           "Saving…"
+        ]
+      }
+    ],
+    "Save Collection Settings": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 76,
+        "nearby": [
+          "days",
+          "History is limited to 5,000 messages and 10 MiB. The oldest messages are removed first. Collection starts with new messages; earlier chat cannot be recovered.",
+          "Clear History",
+          "Delete all stored chat history? This cannot be undone."
         ]
       }
     ],
@@ -45877,6 +46572,26 @@
         ]
       },
       {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 81,
+        "nearby": [
+          "Delete All History",
+          "Cancel",
+          "Search chat",
+          "Message or sender"
+        ]
+      },
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 86,
+        "nearby": [
+          "Map or guild",
+          "Any map or guild",
+          "Collection is off. An owner can enable it under Collection. Previously stored history remains available until it expires or is cleared.",
+          "Chat storage needs attention. Existing data has been preserved."
+        ]
+      },
+      {
         "file": "console/web/src/features/blueprints/CommunityBlueprintBrowser.tsx",
         "line": 169,
         "nearby": [
@@ -45955,26 +46670,6 @@
           "Clear",
           "Showing"
         ]
-      },
-      {
-        "file": "console/web/src/features/database/DatabasePanel.tsx",
-        "line": 586,
-        "nearby": [
-          "Search Tables and Columns",
-          "Search tables or columns",
-          "No matching tables or columns found.",
-          "Collapse Database Objects"
-        ]
-      },
-      {
-        "file": "console/web/src/features/bases/BaseInventoryTab.tsx",
-        "line": 1079,
-        "nearby": [
-          "Filter items…",
-          "Filter containers…",
-          "Clear",
-          "No items match this filter."
-        ]
       }
     ],
     "Search a player to add": [
@@ -46052,6 +46747,18 @@
           "Refresh",
           "Search",
           "Clear"
+        ]
+      }
+    ],
+    "Search chat": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 81,
+        "nearby": [
+          "Cancel",
+          "Search",
+          "Message or sender",
+          "Channel"
         ]
       }
     ],
@@ -46238,6 +46945,18 @@
           "Test",
           "No permissions match your search.",
           "allowed"
+        ]
+      }
+    ],
+    "Search published in-game messages. Captured messages may be filtered before players receive them.": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 63,
+        "nearby": [
+          "Storage Needs Attention",
+          "Chat",
+          "Unavailable",
+          "Loading..."
         ]
       }
     ],
@@ -46986,6 +47705,27 @@
         ]
       }
     ],
+    "Sender": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 91,
+        "nearby": [
+          "Captured",
+          "Channel / Location",
+          "Message"
+        ]
+      },
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 94,
+        "nearby": [
+          "Captured",
+          "Channel / Location",
+          "Message",
+          "Loading chat..."
+        ]
+      }
+    ],
     "Sending...": [
       {
         "file": "console/web/src/features/adminTools/ScheduledMapMessages.tsx",
@@ -47000,9 +47740,9 @@
     "Server": [
       {
         "file": "console/web/src/api/apiKeys.ts",
-        "line": 155,
+        "line": 156,
         "nearby": [
-          "Realtime Data",
+          "Chat",
           "Players",
           "Sietches",
           "Storage"
@@ -47024,7 +47764,7 @@
     "Server Control": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 402,
+        "line": 404,
         "nearby": [
           "Server Operations",
           "Home",
@@ -47202,7 +47942,7 @@
     "Server Operations": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 399,
+        "line": 401,
         "nearby": [
           "Restart later",
           "Restart later leaves the servers running as-is; the change applies at the next battlegroup restart, manual or automatic.",
@@ -47753,10 +48493,10 @@
     "Settings": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 408,
+        "line": 411,
         "nearby": [
-          "Updates",
           "Logs",
+          "Chat",
           "Arrakis Management",
           "Maps"
         ]
@@ -47889,7 +48629,7 @@
     "Setup": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1054,
+        "line": 1057,
         "nearby": [
           "Dune Docker Console",
           "Loading Console",
@@ -48093,6 +48833,16 @@
           "of",
           "No bases have been found yet.",
           "rows."
+        ]
+      },
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 100,
+        "nearby": [
+          "Try another search or channel.",
+          "New messages will appear here after collection is enabled.",
+          "of",
+          "Rows"
         ]
       },
       {
@@ -48461,7 +49211,7 @@
     "Sietches": [
       {
         "file": "console/web/src/api/apiKeys.ts",
-        "line": 156,
+        "line": 157,
         "nearby": [
           "Players",
           "Server",
@@ -48483,7 +49233,7 @@
     "Sign In": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 989,
+        "line": 992,
         "nearby": [
           "Recovery code",
           "Authenticator code",
@@ -48493,7 +49243,7 @@
       },
       {
         "file": "console/web/src/App.tsx",
-        "line": 1003,
+        "line": 1006,
         "nearby": [
           "Lost access to your authenticator?",
           "Admin Password",
@@ -48505,7 +49255,7 @@
     "Sign in again to continue.": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1025,
+        "line": 1028,
         "nearby": [
           "Sign in with password instead",
           "Your browser login session expired.",
@@ -48517,7 +49267,7 @@
     "Sign in with Discord": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1016,
+        "line": 1019,
         "nearby": [
           "Dune Docker Console logo",
           "Beyond the Dunes, Every Choice Shapes the Future",
@@ -48529,7 +49279,7 @@
     "Sign in with password instead": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1019,
+        "line": 1022,
         "nearby": [
           "Sign in with Discord",
           "Hide password sign-in",
@@ -48802,19 +49552,19 @@
     "Smoky slate with pale apricot and lavender.": [
       {
         "file": "console/web/src/themes/consolePalettes.ts",
-        "line": 18,
+        "line": 24,
         "nearby": [
           "Dark umber with burnished copper and sage.",
           "Quiet brown-black with sand gold and clear sky blue.",
           "Deep forest with fresh mint and soft brass.",
-          "Dark aubergine with honey gold and rose."
+          "Desert slate with spice blue and woven sand."
         ]
       }
     ],
     "Smoky violet with pearl lavender and sand.": [
       {
         "file": "console/web/src/themes/consolePalettes.ts",
-        "line": 24,
+        "line": 32,
         "nearby": [
           "Ink blue with periwinkle and peach.",
           "Dark teal with jade and misty blue.",
@@ -48837,12 +49587,12 @@
     "Soft dark taupe with limestone and sage blue.": [
       {
         "file": "console/web/src/themes/consolePalettes.ts",
-        "line": 29,
+        "line": 37,
         "nearby": [
           "Dark wine with dusty rose and pearl blue.",
           "Earthy charcoal with saffron and olive silver.",
-          "Graphite blue with steel silver and sea green.",
-          "Roasted brown with spice orange and cool turquoise."
+          "Imperial plum with pale orchid and antique gold.",
+          "Graphite blue with steel silver and sea green."
         ]
       }
     ],
@@ -49949,7 +50699,7 @@
     "Storage": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 419,
+        "line": 422,
         "nearby": [
           "Bases",
           "Vehicles",
@@ -49959,7 +50709,7 @@
       },
       {
         "file": "console/web/src/api/apiKeys.ts",
-        "line": 157,
+        "line": 158,
         "nearby": [
           "Server",
           "Sietches",
@@ -50009,6 +50759,18 @@
           "Qty",
           "Give Item",
           "Storage fill-item schema not detected"
+        ]
+      }
+    ],
+    "Storage Needs Attention": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 6,
+        "nearby": [
+          "Collecting",
+          "Connection Unavailable",
+          "Chat",
+          "Search published in-game messages. Captured messages may be filtered before players receive them."
         ]
       }
     ],
@@ -50275,7 +51037,7 @@
     "Support Project": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1184,
+        "line": 1187,
         "nearby": [
           "Join Discord",
           "Loading Services"
@@ -52071,6 +52833,16 @@
         ]
       }
     ],
+    "The newest page refreshes every five seconds. Whispers are never collected. Faction and party are not supported yet.": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 108,
+        "nearby": [
+          "Next",
+          "Last"
+        ]
+      }
+    ],
     "The passphrase must be at least 12 characters.": [
       {
         "file": "console/web/src/features/backups/BackupsPanel.tsx",
@@ -52324,7 +53096,7 @@
     "The standard console look.": [
       {
         "file": "console/web/src/themes/ThemePanel.tsx",
-        "line": 43,
+        "line": 51,
         "nearby": [
           "Console Theme",
           "Close"
@@ -52645,7 +53417,7 @@
     "This archive and this host each have their own admin audit history. Adopt the backup's history when moving the same server to new hardware. Keep this host's own history when restoring into a different server or rolling back a mistake.": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 250,
+        "line": 252,
         "nearby": [
           "Backup ID",
           "Choose Admin Audit History",
@@ -52669,7 +53441,7 @@
     "This backup belongs to a different Battlegroup. Adopt the backup identity when moving the same server to new hardware. Keep the current identity only when intentionally importing data into this different server.": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 218,
+        "line": 220,
         "nearby": [
           "Yes",
           "Choose Battlegroup Identity",
@@ -54097,6 +54869,18 @@
         ]
       }
     ],
+    "Try another search or channel.": [
+      {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 98,
+        "nearby": [
+          "Loading chat...",
+          "No Messages Found",
+          "New messages will appear here after collection is enabled.",
+          "Showing"
+        ]
+      }
+    ],
     "Turn off automatic system backups first": [
       {
         "file": "console/web/src/features/backups/SystemBackupScheduleCard.tsx",
@@ -54385,6 +55169,15 @@
         ]
       },
       {
+        "file": "console/web/src/features/chat/ChatPanel.tsx",
+        "line": 65,
+        "nearby": [
+          "Chat",
+          "Search published in-game messages. Captured messages may be filtered before players receive them.",
+          "Loading..."
+        ]
+      },
+      {
         "file": "console/web/src/features/players/PlayersPanel.tsx",
         "line": 502,
         "nearby": [
@@ -54458,7 +55251,7 @@
     "Unclaimed Listing": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1169,
+        "line": 1172,
         "nearby": [
           "Open Public Server Listing",
           "Claimed Listing",
@@ -55060,7 +55853,7 @@
     "Unset": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1329,
+        "line": 1333,
         "nearby": [
           "Loading Updates",
           "Loading Settings",
@@ -55348,7 +56141,7 @@
     "Update setup values and redeploy your Dune server.": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1077,
+        "line": 1080,
         "nearby": [
           "Finish the first-time setup to unlock the console.",
           "Redeploy",
@@ -55429,17 +56222,17 @@
     "Updates": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 406,
+        "line": 408,
         "nearby": [
           "Backups",
           "Database",
           "Logs",
-          "Settings"
+          "Chat"
         ]
       },
       {
         "file": "console/web/src/api/apiKeys.ts",
-        "line": 158,
+        "line": 159,
         "nearby": [
           "Sietches",
           "Storage",
@@ -55811,7 +56604,7 @@
     "Use your authenticator instead": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 996,
+        "line": 999,
         "nearby": [
           "Authenticator code",
           "Sign In",
@@ -55857,7 +56650,7 @@
     "UserEngine settings": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 376,
+        "line": 378,
         "nearby": [
           "Restart Immediately",
           "Players online",
@@ -55914,7 +56707,7 @@
     "UserGame settings": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 376,
+        "line": 378,
         "nearby": [
           "UserEngine settings",
           "Custom settings",
@@ -56140,7 +56933,7 @@
     "Vehicles": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 418,
+        "line": 421,
         "nearby": [
           "Guilds",
           "Bases",
@@ -56150,7 +56943,7 @@
       },
       {
         "file": "console/web/src/api/apiKeys.ts",
-        "line": 159,
+        "line": 160,
         "nearby": [
           "Storage",
           "Updates",
@@ -56526,9 +57319,10 @@
     "Volcanic gray with soft silver and warm copper.": [
       {
         "file": "console/web/src/themes/consolePalettes.ts",
-        "line": 15,
+        "line": 21,
         "nearby": [
           "Warm charcoal with amber and muted turquoise.",
+          "Deep evergreen with silver sage and sunlit brass.",
           "Dark umber with burnished copper and sage.",
           "Quiet brown-black with sand gold and clear sky blue."
         ]
@@ -56762,10 +57556,10 @@
     "Warm charcoal with amber and muted turquoise.": [
       {
         "file": "console/web/src/themes/consolePalettes.ts",
-        "line": 14,
+        "line": 19,
         "nearby": [
-          "Volcanic gray with soft silver and warm copper.",
-          "Dark umber with burnished copper and sage."
+          "Deep evergreen with silver sage and sunlit brass.",
+          "Volcanic gray with soft silver and warm copper."
         ]
       }
     ],
@@ -57200,7 +57994,7 @@
     "Whichever history is not kept is still saved to the pre-restore safety copy, not deleted -- but it stops being the live record.": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 255,
+        "line": 257,
         "nearby": [
           "Adopt Backup History",
           "Keep Current History",
@@ -57444,7 +58238,7 @@
     "Yes": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 198,
+        "line": 200,
         "nearby": [
           "Confirm Action",
           "Continue?",
@@ -57532,7 +58326,7 @@
     "Your browser login session expired.": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1025,
+        "line": 1028,
         "nearby": [
           "Hide password sign-in",
           "Sign in with password instead",
