@@ -903,6 +903,16 @@ terminal. Without it the save only changes what the next install writes, and the
 ---
 
 
+### Chat History
+
+Opt-in, privacy-filtered history of in-game text chat (off by default). Reads need `chat:read`; changing the settings or clearing the history needs `chat:configure`.
+
+| Method | Route | Description | Parameters |
+|--------|-------|-------------|------------|
+| GET | `/api/chat/history` | Stored messages with the current collection settings and `canConfigure` (whether the caller may change them). Query parameters are the filters the history view sends. | Query string filters |
+| POST | `/api/chat/settings` | Turn collection on or off and set retention. Audited as `chat.settings`. | `enabled` (boolean), `retentionDays` (integer 1-30) |
+| DELETE | `/api/chat/history` | Delete every stored message. Audited as `chat.history-cleared`. | None |
+
 ### Realtime Data
 
 Live sandworms, vehicles, NPCs, civilians, storms and Coriolis read from the optional MapViewer3D position agent (`mvagent`, loopback only; `DUNE_REALTIME_AGENT_URL`). The Console is the only door to it: every request is authenticated and authorized (API key scope `realtime:read`). Player objects are included only when the caller may also read players (`players:read`).

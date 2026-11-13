@@ -1,18 +1,13 @@
-// Console themes: maps the Fedaykin Dune palettes (MIT, see palettes/LICENSE)
-// onto the console's existing CSS custom properties at runtime. The default
+// Console themes: maps the project's original palettes onto the existing
+// CSS custom properties at runtime. The default
 // theme sets nothing, so an operator who never opens the picker sees exactly
 // the stylesheet's own :root values.
-import tabrLooks from "./tabr/looks.json";
+import { CONSOLE_PALETTES, type ConsolePalette } from "./consolePalettes";
+import { HOUSE_SWATCHES, type HouseSwatch } from "./houseSwatches";
+import { DEFAULT_THEME_ID, THEME_CACHE_KEY, THEME_STORAGE_KEY, THEME_TOKEN_NAMES, type ThemeCache } from "./themeBoot";
 
-const paletteSources = import.meta.glob("./palettes/dune-*.jsonc", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
-
-export const DEFAULT_THEME_ID = "default";
-export const THEME_STORAGE_KEY = "dune-console-theme";
-// Palettes keep their upstream // comments, hence .jsonc (the release gate parses every *.json strictly).
-// Light palettes are vendored and the engine supports them (color-scheme and all),
-// but the stylesheet still has many hardcoded dark surfaces, so a light theme
-// renders pale text on dark cards. Hidden until the stylesheet is tokenised.
-const OFFERED_APPEARANCE: ThemeInfo["appearance"] = "dark";
+// The boot module (the only theme code in the entry chunk) owns the storage keys.
+export { DEFAULT_THEME_ID, THEME_STORAGE_KEY };
 
 export type Rgb = [number, number, number];
 export type ThemeTokens = Record<string, string>;
@@ -22,22 +17,10 @@ export interface ThemeInfo {
   description: string;
   appearance: "dark" | "light";
   tokens: ThemeTokens;
-}
-
-/** Palette files are JSON with // comments; strip them without touching strings. */
-export function parseJsonc(source: string): unknown {
-  let out = "";
-  let inString = false;
-  for (let i = 0; i < source.length; i += 1) {
-    const ch = source[i];
-    if (inString) {
-      out += ch;
-      if (ch === "\\") { out += source[i + 1] ?? ""; i += 1; } else if (ch === '"') inString = false;
-    } else if (ch === '"') { inString = true; out += ch; }
-    else if (ch === "/" && source[i + 1] === "/") { while (i < source.length && source[i] !== "\n") i += 1; out += "\n"; }
-    else out += ch;
-  }
-  return JSON.parse(out);
+  /** Picker section heading; not persisted. */
+  group?: string;
+  /** The source dye colours, shown in the picker for swatch palettes; not persisted. */
+  dyes?: readonly string[];
 }
 
 export function parseHex(value: string): Rgb | null {
@@ -82,8 +65,6 @@ export function ensureContrast(fg: Rgb, surfaces: Rgb[], ratio: number): Rgb {
   return target;
 }
 
-const slot = (colors: Record<string, string>, n: number, fallback: Rgb): Rgb => parseHex(colors[`color_${String(n).padStart(2, "0")}`] ?? "") ?? fallback;
-
 /** The few colours every source theme has to supply; everything else is derived from them. */
 interface ThemeColors {
   bg: Rgb; panel: Rgb; border: Rgb; text: Rgb; strong: Rgb; muted: Rgb; faint: Rgb;
@@ -126,82 +107,70 @@ function deriveTokens(c: ThemeColors): ThemeTokens {
   };
 }
 
-/** Tokens for a Fedaykin editor palette (color_NN slots). */
-export function buildThemeTokens(colors: Record<string, string>): ThemeTokens {
-  const bg = slot(colors, 1, [13, 15, 18]);
-  const panel = slot(colors, 2, bg);
-  const text = slot(colors, 9, [243, 239, 231]);
-  const muted = slot(colors, 10, text);
-  const accent = slot(colors, 25, [198, 139, 74]);
+/** Four project-authored colours define a palette; the shared roles stay consistent. */
+export function buildThemeTokens(colors: Partial<Pick<ConsolePalette, "background" | "panel" | "accent" | "secondary">>): ThemeTokens {
+  const bg: Rgb = parseHex(colors.background ?? "") ?? [13, 15, 18];
+  const panel: Rgb = parseHex(colors.panel ?? "") ?? [23, 26, 29];
+  const text: Rgb = [245, 241, 233];
+  const accent: Rgb = parseHex(colors.accent ?? "") ?? [198, 139, 74];
+  const secondary: Rgb = parseHex(colors.secondary ?? "") ?? [149, 189, 207];
   return deriveTokens({
-    bg, panel, text, muted, accent,
-    border: slot(colors, 7, mix(bg, text, 0.15)),
-    strong: slot(colors, 29, text),
-    faint: slot(colors, 11, muted),
-    title: slot(colors, 15, accent),
-    accentStrong: slot(colors, 26, accent),
-    success: slot(colors, 23, [155, 230, 189]),
-    warning: slot(colors, 21, [169, 121, 50]),
-    danger: slot(colors, 20, [224, 90, 79]),
-    info: slot(colors, 22, accent),
+    bg, panel, text, accent,
+    strong: [255, 252, 246],
+    muted: mix(text, panel, 0.35),
+    faint: mix(text, panel, 0.45),
+    border: mix(panel, text, 0.16),
+    title: mix(accent, text, 0.2),
+    accentStrong: secondary,
+    success: [137, 214, 169],
+    warning: [230, 187, 95],
+    danger: [247, 120, 112],
+    info: secondary,
   });
 }
 
-/** Tokens for a Tabr look (--c-* variables of one theme variant). */
-export function buildTabrTokens(vars: Record<string, string>): ThemeTokens {
-  const get = (name: string, fallback: Rgb) => parseHex(vars[name] ?? "") ?? fallback;
-  const text = get("text", [243, 239, 231]);
-  const spice = get("spice", [198, 139, 74]);
-  return deriveTokens({
-    bg: get("ground", [13, 15, 18]),
-    panel: get("panel", [23, 26, 29]),
-    border: get("hair", mix(get("ground", [13, 15, 18]), text, 0.15)),
-    text,
-    strong: text,
-    muted: get("dim", text),
-    faint: get("dim", text),
-    title: get("gold", spice),
-    accent: spice,
-    accentStrong: get("blue", get("focus", spice)),
-    success: get("ok", [155, 230, 189]),
-    warning: get("warn", [169, 121, 50]),
-    danger: get("bad", [224, 90, 79]),
-    info: get("sky", spice),
-  });
+/** A console palette from a House's four dye colours: darkest dye, darkened, is the page; the next lift is the panel; the most vivid light dyes are the accents. */
+export function paletteFromSwatch(swatch: HouseSwatch): Pick<ConsolePalette, "background" | "panel" | "accent" | "secondary"> {
+  const dyes = swatch.colors.map((hex) => parseHex(hex) ?? [43, 43, 43] as Rgb);
+  const byLight = [...dyes].sort((a, b) => luminance(a) - luminance(b));
+  const black: Rgb = [0, 0, 0];
+  let bg = byLight[0];
+  for (let t = 0.3; luminance(bg) > 0.012 && t <= 0.9; t += 0.1) bg = mix(byLight[0], black, t);
+  let panel = mix(bg, byLight[1], 0.5);
+  for (let t = 0.3; luminance(panel) < 0.025 && t <= 0.9; t += 0.1) panel = mix(bg, byLight[1], t);
+  panel = mix(panel, [255, 255, 255], luminance(panel) < 0.02 ? 0.06 : 0);
+  const chroma = (c: Rgb) => Math.max(...c) - Math.min(...c);
+  const bright = dyes.filter((c) => luminance(c) >= 0.08);
+  const pool = (bright.length >= 2 ? bright : byLight.slice(-2)).sort((a, b) => chroma(b) - chroma(a) || luminance(b) - luminance(a));
+  const accent = pool[0];
+  // Prefer a dye that visibly differs from the accent; fall back to any different dye, then the accent itself.
+  const secondary = pool.find((c) => contrast(c, accent) >= 1.3) ?? pool.find((c) => toHex(c) !== toHex(accent)) ?? accent;
+  return { background: toHex(bg), panel: toHex(panel), accent: toHex(accent), secondary: toHex(secondary) };
 }
 
 function loadThemes(): ThemeInfo[] {
-  const themes: ThemeInfo[] = [];
-  for (const [path, source] of Object.entries(paletteSources)) {
-    try {
-      const palette = parseJsonc(source) as { name?: string; description?: string; appearance?: string; colors?: Record<string, string> };
-      if (!palette.colors) continue;
-      themes.push({
-        id: path.replace(/^.*\/dune-/, "").replace(/\.jsonc$/, ""),
-        name: (palette.name ?? path).replace(/^Dune\s+/, ""),
-        description: palette.description ?? "",
-        appearance: palette.appearance === "light" ? "light" : "dark",
-        tokens: buildThemeTokens(palette.colors),
-      });
-    } catch { /* a malformed vendored palette is skipped, never fatal to the console */ }
-  }
-  const tabrNames: Record<string, string> = { fremen: "Fremen", awakening: "Awakening", sietch: "Sietch" };
-  for (const [look, variants] of Object.entries(tabrLooks as Record<string, Record<"dark" | "light", Record<string, string>>>)) {
-    for (const appearance of ["dark", "light"] as const) {
-      themes.push({
-        id: `tabr-${look}${appearance === "light" ? "-dayside" : ""}`,
-        name: `Tabr ${tabrNames[look] ?? look}${appearance === "light" ? " Dayside" : ""}`,
-        description: `The ${tabrNames[look] ?? look} look from the Tabr save editor${appearance === "light" ? ", light variant" : ""}.`,
-        appearance,
-        tokens: buildTabrTokens(variants[appearance]),
-      });
-    }
-  }
-  return themes.filter((t) => t.appearance === OFFERED_APPEARANCE).sort((a, b) => a.name.localeCompare(b.name));
+  const palettes: ThemeInfo[] = CONSOLE_PALETTES.map((palette): ThemeInfo => ({
+    id: palette.id,
+    name: palette.name,
+    description: palette.description,
+    appearance: "dark",
+    tokens: buildThemeTokens(palette),
+    group: palette.group,
+  }));
+  const houses: ThemeInfo[] = HOUSE_SWATCHES.map((swatch): ThemeInfo => ({
+    id: swatch.id,
+    name: swatch.name,
+    description: `The armour dye colours of ${swatch.name}.`,
+    appearance: "dark",
+    tokens: buildThemeTokens(paletteFromSwatch(swatch)),
+    group: swatch.group,
+    dyes: swatch.colors,
+  }));
+  return [...palettes, ...houses].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 let catalogue: ThemeInfo[] | null = null;
-/** Built on first use, so an operator who never leaves the default pays nothing at startup. */
+/** Built on first use. This module is only reachable from the lazy picker chunk and from themeBoot's dynamic import, so the default look never downloads the palettes. */
 export function getThemes(): ThemeInfo[] {
   catalogue ??= loadThemes();
   return catalogue;
@@ -212,40 +181,44 @@ export function loadSelectedTheme(): string {
     const id = window.localStorage.getItem(THEME_STORAGE_KEY);
     if (!id) return DEFAULT_THEME_ID;
     return getThemes().some((t) => t.id === id) ? id : DEFAULT_THEME_ID;
-  } catch { return DEFAULT_THEME_ID; }
+  } catch {
+    // A blocked storage API still allows a choice for this page view. Reopening
+    // the picker must reflect that applied choice instead of claiming Default.
+    const applied = document.documentElement.dataset.theme;
+    return getThemes().some((t) => t.id === applied) ? applied! : DEFAULT_THEME_ID;
+  }
+}
+
+function writeThemeCache(theme: ThemeInfo | null): void {
+  try {
+    if (!theme) window.localStorage.removeItem(THEME_CACHE_KEY);
+    else window.localStorage.setItem(THEME_CACHE_KEY, JSON.stringify({ id: theme.id, appearance: theme.appearance, tokens: theme.tokens } satisfies ThemeCache));
+  } catch { /* the cache only avoids a flash at boot; the choice itself still applies */ }
 }
 
 export function applyTheme(id: string, root: HTMLElement = document.documentElement): void {
   if (id === DEFAULT_THEME_ID && !root.dataset.theme) return;
   const themes = getThemes();
-  Object.keys(themes[0]?.tokens ?? {}).forEach((name) => root.style.removeProperty(name));
+  THEME_TOKEN_NAMES.forEach((name) => root.style.removeProperty(name));
   const theme = themes.find((t) => t.id === id);
   if (!theme) {
     root.style.removeProperty("color-scheme");
     delete root.dataset.theme;
+    writeThemeCache(null);
     return;
   }
+  writeThemeCache(theme);
   Object.entries(theme.tokens).forEach(([name, value]) => root.style.setProperty(name, value));
   root.style.setProperty("color-scheme", theme.appearance);
   root.dataset.theme = theme.id;
 }
 
 export function saveSelectedTheme(id: string): void {
+  // The cache is written first, so another tab reacting to the id change finds both.
+  writeThemeCache(getThemes().find((t) => t.id === id) ?? null);
   try {
     if (id === DEFAULT_THEME_ID) window.localStorage.removeItem(THEME_STORAGE_KEY);
     else window.localStorage.setItem(THEME_STORAGE_KEY, id);
   } catch { /* storage unavailable: the choice lasts for this page view only */ }
   applyTheme(id);
-}
-
-let storageListening = false;
-
-export function initTheme(): void {
-  applyTheme(loadSelectedTheme());
-  if (storageListening) return;
-  storageListening = true;
-  // Another console tab picked a theme: follow it.
-  window.addEventListener("storage", (event) => {
-    if (event.key === THEME_STORAGE_KEY || event.key === null) applyTheme(loadSelectedTheme());
-  });
 }
