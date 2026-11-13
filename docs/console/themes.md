@@ -15,6 +15,18 @@ Jade, Moonstone, Nightfall, Oasis, Rosewood, Saffron, Sandstone, Slate,
 Spice and Steel. Their colour combinations are maintained in
 `console/web/src/themes/consolePalettes.ts`.
 
+### House swatch themes
+
+One theme per in-game House (27, from House Alexin to House Wydras) uses that
+House's four armour-dye colours. The dyes are in
+`console/web/src/themes/houseSwatches.ts`, taken from the community wiki data
+module <https://awakening.wiki/Module:Swatches/data> (colour values only; the
+wiki's text is CC BY-NC-SA 4.0). The engine derives the palette: the darkest dye,
+darkened, becomes the page; a lift toward the second-darkest dye becomes the
+panel; the most vivid light dyes become the accents. Text and accent contrast
+are enforced exactly as for the other palettes, so a pale House (for example
+Kenola) still gets a dark page.
+
 All offered palettes use dark surfaces to match the existing Console controls.
 The picker, browser persistence, cross-tab updates and keyboard controls work
 for every palette. A saved selection that is no longer in the catalogue falls
