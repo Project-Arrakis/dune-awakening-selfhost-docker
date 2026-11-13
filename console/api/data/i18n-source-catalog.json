@@ -1159,6 +1159,7 @@
     "Filter items…",
     "Filter modifiers",
     "Filter names, arguments, return types, or languages",
+    "Filter palettes",
     "Filter settings",
     "Filter table or loaded column names",
     "Filters Queued",
@@ -1832,6 +1833,7 @@
     "No modifiers match your filter.",
     "No offline players were found.",
     "No output.",
+    "No palettes match.",
     "No partitions available",
     "No permissions match your search.",
     "No player sell listings on this exchange.",
@@ -7500,11 +7502,11 @@
     "Applies to this browser only. Choose Default to restore the standard look.": [
       {
         "file": "console/web/src/themes/ThemePanel.tsx",
-        "line": 70,
+        "line": 78,
         "nearby": [
           "Console Theme",
           "Close",
-          "Console theme"
+          "Filter palettes"
         ]
       }
     ],
@@ -10576,7 +10578,7 @@
     "Brutalist industrial: cold blues and purples on near-black.": [
       {
         "file": "console/web/src/themes/consolePalettes.ts",
-        "line": 34,
+        "line": 33,
         "nearby": [
           "Roasted brown with spice orange and cool turquoise.",
           "Neutral charcoal with pale blue and warm ivory.",
@@ -10959,7 +10961,7 @@
     "Caladan: deep ocean blues, sea green and silver.": [
       {
         "file": "console/web/src/themes/consolePalettes.ts",
-        "line": 35,
+        "line": 34,
         "nearby": [
           "Neutral charcoal with pale blue and warm ivory.",
           "Brutalist industrial: cold blues and purples on near-black.",
@@ -14612,17 +14614,17 @@
     "Console theme": [
       {
         "file": "console/web/src/themes/ThemePanel.tsx",
-        "line": 71,
+        "line": 88,
         "nearby": [
-          "Close",
-          "Applies to this browser only. Choose Default to restore the standard look."
+          "Filter palettes",
+          "No palettes match."
         ]
       }
     ],
     "Console Theme": [
       {
         "file": "console/web/src/themes/ThemePanel.tsx",
-        "line": 67,
+        "line": 75,
         "nearby": [
           "The standard console look.",
           "Close",
@@ -22504,6 +22506,26 @@
           "Functions & Procedures",
           "Filter table or loaded column names",
           "Clear schema filter"
+        ]
+      }
+    ],
+    "Filter palettes": [
+      {
+        "file": "console/web/src/themes/ThemePanel.tsx",
+        "line": 83,
+        "nearby": [
+          "Close",
+          "Applies to this browser only. Choose Default to restore the standard look.",
+          "No palettes match."
+        ]
+      },
+      {
+        "file": "console/web/src/themes/ThemePanel.tsx",
+        "line": 84,
+        "nearby": [
+          "Applies to this browser only. Choose Default to restore the standard look.",
+          "No palettes match.",
+          "Console theme"
         ]
       }
     ],
@@ -32846,6 +32868,16 @@
           "Owner",
           "Save or revert roster changes first",
           "Transfer to Custodian"
+        ]
+      }
+    ],
+    "No palettes match.": [
+      {
+        "file": "console/web/src/themes/ThemePanel.tsx",
+        "line": 87,
+        "nearby": [
+          "Filter palettes",
+          "Console theme"
         ]
       }
     ],
@@ -51773,7 +51805,7 @@
     "The Emperor's elite: imperial purple and gold on command black.": [
       {
         "file": "console/web/src/themes/consolePalettes.ts",
-        "line": 36,
+        "line": 35,
         "nearby": [
           "Brutalist industrial: cold blues and purples on near-black.",
           "Caladan: deep ocean blues, sea green and silver.",
@@ -52366,7 +52398,7 @@
     "The standard console look.": [
       {
         "file": "console/web/src/themes/ThemePanel.tsx",
-        "line": 43,
+        "line": 46,
         "nearby": [
           "Console Theme",
           "Close"
@@ -56814,7 +56846,7 @@
     "Warm dark stone with sky blue and sand, from the Tabr save editor.": [
       {
         "file": "console/web/src/themes/consolePalettes.ts",
-        "line": 37,
+        "line": 36,
         "nearby": [
           "Caladan: deep ocean blues, sea green and silver.",
           "The Emperor's elite: imperial purple and gold on command black."

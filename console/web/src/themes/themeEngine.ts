@@ -17,6 +17,8 @@ export interface ThemeInfo {
   description: string;
   appearance: "dark" | "light";
   tokens: ThemeTokens;
+  /** Picker section heading; not persisted. */
+  group?: string;
 }
 
 export function parseHex(value: string): Rgb | null {
@@ -150,6 +152,7 @@ function loadThemes(): ThemeInfo[] {
     description: palette.description,
     appearance: "dark",
     tokens: buildThemeTokens(palette),
+    group: palette.id.startsWith("dd-") ? "Console palettes" : "Dune factions",
   }));
   const houses: ThemeInfo[] = HOUSE_SWATCHES.map((swatch): ThemeInfo => ({
     id: swatch.id,
@@ -157,6 +160,7 @@ function loadThemes(): ThemeInfo[] {
     description: `The armour dye colours of ${swatch.name}.`,
     appearance: "dark",
     tokens: buildThemeTokens(paletteFromSwatch(swatch)),
+    group: swatch.id.startsWith("house-") ? "Houses" : "Outfits and dyes",
   }));
   return [...palettes, ...houses].sort((a, b) => a.name.localeCompare(b.name));
 }
