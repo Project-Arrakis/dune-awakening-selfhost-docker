@@ -17,7 +17,7 @@ Spice, Steel, Harkonnen, Atreides, Sardaukar Imperial and Fremen. Their colour c
 
 ### House swatch palettes
 
-One theme per in-game House (27, from House Alexin to House Wydras) uses that
+One palette per in-game House (27: all 25 Houses plus Harkonnen and Atreides) uses that
 House's four armour-dye colours. The dyes are in
 `console/web/src/themes/houseSwatches.ts`, taken from the community wiki data
 module <https://awakening.wiki/Module:Swatches/data> (colour values only; the
