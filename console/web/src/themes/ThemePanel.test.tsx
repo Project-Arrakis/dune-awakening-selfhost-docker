@@ -9,7 +9,7 @@ describe("ThemePanel", () => {
 
   it("lists Default plus every palette and marks the current one", () => {
     render(<ThemePanel />);
-    expect(screen.getAllByRole("radio")).toHaveLength(47);
+    expect(screen.getAllByRole("radio")).toHaveLength(51);
     expect(screen.getByRole("radio", { name: /Default/ })).toHaveAttribute("aria-checked", "true");
   });
 

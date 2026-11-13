@@ -9,7 +9,7 @@ reopening the picker reflects the applied choice.
 
 ## Palettes
 
-The Console includes 19 original Dune Docker palettes: Amber Dunes, Basalt,
+The Console includes 19 original Dune Docker palettes, plus four restored ones (Harkonnen, Atreides and Sardaukar Imperial from the MIT-licensed Fedaykin Dune themes, licence in `console/web/src/themes/palettes/LICENSE`, and Fremen from the Tabr save editor). The original 19 are: Amber Dunes, Basalt,
 Copper, Deep Desert, Dust Storm, Emerald, Golden Dusk, Ice Blue, Indigo,
 Jade, Moonstone, Nightfall, Oasis, Rosewood, Saffron, Sandstone, Slate,
 Spice and Steel. Their colour combinations are maintained in
