@@ -398,6 +398,7 @@
     "Broadcast checkpoints must not exceed the default countdown",
     "Browse Blueprints",
     "Browse public designs from DuneDocker Base Builder and install one directly for",
+    "Brutalist industrial: cold blues and purples on near-black.",
     "Buggy",
     "Build Cache Cleaned",
     "Build Cache Cleanup Failed",
@@ -444,6 +445,7 @@
     "CSV contains binary data and cannot be imported.",
     "CSV must include a template_id column.",
     "Cached in Database",
+    "Caladan: deep ocean blues, sea green and silver.",
     "Cancel",
     "Cancel Delete",
     "Cancel Import",
@@ -2933,6 +2935,7 @@
     "The Console update was cancelled. Review the update log before retrying.",
     "The Console will start after the Linux host boots, but the Battlegroup will remain stopped until you start it.",
     "The Custom PvP Mode written to disk is",
+    "The Emperor's elite: imperial purple and gold on command black.",
     "The Funcom token was changed successfully and the server is up and running.",
     "The Market Board is unsupported by the detected database schema.",
     "The Market Bot is unsupported by the detected database schema.",
@@ -3278,6 +3281,7 @@
     "Waiting for the game to save the character position",
     "Waiting for the update helper to start.",
     "Warm charcoal with amber and muted turquoise.",
+    "Warm dark stone with sky blue and sand, from the Tabr save editor.",
     "Warming",
     "Warn",
     "Warn players before restart",
@@ -10569,6 +10573,18 @@
         ]
       }
     ],
+    "Brutalist industrial: cold blues and purples on near-black.": [
+      {
+        "file": "console/web/src/themes/consolePalettes.ts",
+        "line": 34,
+        "nearby": [
+          "Roasted brown with spice orange and cool turquoise.",
+          "Neutral charcoal with pale blue and warm ivory.",
+          "Caladan: deep ocean blues, sea green and silver.",
+          "The Emperor's elite: imperial purple and gold on command black."
+        ]
+      }
+    ],
     "Buggy": [
       {
         "file": "console/web/src/features/liveMap/LiveMapPanel.tsx",
@@ -10937,6 +10953,18 @@
           "Buyback Sweeps",
           "Schedule",
           "Interval (Minutes)"
+        ]
+      }
+    ],
+    "Caladan: deep ocean blues, sea green and silver.": [
+      {
+        "file": "console/web/src/themes/consolePalettes.ts",
+        "line": 35,
+        "nearby": [
+          "Neutral charcoal with pale blue and warm ivory.",
+          "Brutalist industrial: cold blues and purples on near-black.",
+          "The Emperor's elite: imperial purple and gold on command black.",
+          "Warm dark stone with sky blue and sand, from the Tabr save editor."
         ]
       }
     ],
@@ -31647,7 +31675,9 @@
         "line": 32,
         "nearby": [
           "Graphite blue with steel silver and sea green.",
-          "Roasted brown with spice orange and cool turquoise."
+          "Roasted brown with spice orange and cool turquoise.",
+          "Brutalist industrial: cold blues and purples on near-black.",
+          "Caladan: deep ocean blues, sea green and silver."
         ]
       }
     ],
@@ -43490,7 +43520,8 @@
         "nearby": [
           "Soft dark taupe with limestone and sage blue.",
           "Graphite blue with steel silver and sea green.",
-          "Neutral charcoal with pale blue and warm ivory."
+          "Neutral charcoal with pale blue and warm ivory.",
+          "Brutalist industrial: cold blues and purples on near-black."
         ]
       }
     ],
@@ -51739,6 +51770,17 @@
         ]
       }
     ],
+    "The Emperor's elite: imperial purple and gold on command black.": [
+      {
+        "file": "console/web/src/themes/consolePalettes.ts",
+        "line": 36,
+        "nearby": [
+          "Brutalist industrial: cold blues and purples on near-black.",
+          "Caladan: deep ocean blues, sea green and silver.",
+          "Warm dark stone with sky blue and sand, from the Tabr save editor."
+        ]
+      }
+    ],
     "The encrypted archive this console produced on the old server, downloaded from its Backups page.": [
       {
         "file": "console/web/src/components/SetupWizard.tsx",
@@ -56766,6 +56808,16 @@
         "nearby": [
           "Volcanic gray with soft silver and warm copper.",
           "Dark umber with burnished copper and sage."
+        ]
+      }
+    ],
+    "Warm dark stone with sky blue and sand, from the Tabr save editor.": [
+      {
+        "file": "console/web/src/themes/consolePalettes.ts",
+        "line": 37,
+        "nearby": [
+          "Caladan: deep ocean blues, sea green and silver.",
+          "The Emperor's elite: imperial purple and gold on command black."
         ]
       }
     ],

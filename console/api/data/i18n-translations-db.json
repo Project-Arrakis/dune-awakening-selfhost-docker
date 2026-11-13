@@ -3540,7 +3540,11 @@
     "Turn off automatic system backups first",
     "Automatic archives stored: {count0}. The next run removes {count1} and keeps {count2}",
     "Backup type",
-    "System Backups"
+    "System Backups",
+    "Brutalist industrial: cold blues and purples on near-black.",
+    "Caladan: deep ocean blues, sea green and silver.",
+    "The Emperor's elite: imperial purple and gold on command black.",
+    "Warm dark stone with sky blue and sand, from the Tabr save editor."
   ],
   "translations": {
     "FR": {
