@@ -17,8 +17,9 @@ Spice, Steel, Harkonnen, Atreides, Sardaukar Imperial and Fremen. Their colour c
 
 ### House swatch palettes
 
-One palette per in-game House (27: all 25 Houses plus Harkonnen and Atreides) uses that
-House's four armour-dye colours. The dyes are in
+One palette per in-game armour swatch (42: all 25 Houses plus Harkonnen and Atreides, and the
+15 others such as Sunset Dye, Dusk Rider, Blue Dasher, CHOAM, Smuggler and Hot Zone) uses that
+swatch's four armour-dye colours. The dyes are in
 `console/web/src/themes/houseSwatches.ts`, taken from the community wiki data
 module <https://awakening.wiki/Module:Swatches/data> (colour values only; the
 wiki's text is CC BY-NC-SA 4.0). The engine derives the palette: the darkest dye,

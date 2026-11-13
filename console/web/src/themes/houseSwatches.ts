@@ -1,5 +1,5 @@
-// Armour dye swatches of the in-game Houses, from the community wiki data module
-// https://awakening.wiki/Module:Swatches/data (colour values only). Four colours per House,
+// Armour dye swatches of the in-game Houses and other outfits, from the community wiki data module
+// https://awakening.wiki/Module:Swatches/data (colour values only). Four colours per entry,
 // in the game's own slot order. themeEngine derives a dark console palette from them.
 export interface HouseSwatch { id: string; name: string; colors: readonly [string, string, string, string]; }
 
@@ -31,4 +31,19 @@ export const HOUSE_SWATCHES: readonly HouseSwatch[] = [
   { id: "house-wallach", name: "House Wallach", colors: ["#959595", "#593730", "#953030", "#303859"] },
   { id: "house-wayku", name: "House Wayku", colors: ["#29304d", "#959595", "#953030", "#cccccc"] },
   { id: "house-wydras", name: "House Wydras", colors: ["#546c5b", "#bcab95", "#507c50", "#2b2b2b"] },
+  { id: "swatch-sunset-dye", name: "Sunset Dye", colors: ["#2b2b2b", "#5b4523", "#bcab95", "#a0581c"] },
+  { id: "swatch-dusk-rider", name: "Dusk Rider", colors: ["#27383f", "#2b2b2b", "#434448", "#bc766c"] },
+  { id: "swatch-blue-dasher", name: "Blue Dasher", colors: ["#5c707c", "#502b31", "#2b2b2b", "#d2a552"] },
+  { id: "swatch-maula", name: "Maula", colors: ["#4d5d6c", "#847867", "#5c707c", "#2b2b2b"] },
+  { id: "swatch-choam", name: "CHOAM", colors: ["#bcac8f", "#bcab95", "#d88746", "#bc8700"] },
+  { id: "swatch-vermillius-gap", name: "Vermillius Gap", colors: ["#593123", "#4c0400", "#d2a552", "#959595"] },
+  { id: "swatch-smuggler", name: "Smuggler", colors: ["#36486c", "#08192b", "#bc863f", "#957130"] },
+  { id: "swatch-water-shipper-utility", name: "Water Shipper Utility", colors: ["#a09b94", "#19303f", "#897468", "#7c2200"] },
+  { id: "swatch-scriveners", name: "Scriveners'", colors: ["#3f1d0f", "#59403f", "#dab57e", "#d58316"] },
+  { id: "swatch-fremen-sietch", name: "Fremen Sietch", colors: ["#b49d76", "#644d25", "#812a14", "#b4984f"] },
+  { id: "swatch-ixian-garment", name: "Ixian Garment", colors: ["#98897a", "#595959", "#90d0da", "#a08c74"] },
+  { id: "swatch-resplendent-seraph", name: "Resplendent Seraph", colors: ["#bcbcbc", "#2b2b2b", "#a0581c", "#a0581c"] },
+  { id: "swatch-palatial-servitors", name: "Palatial Servitors", colors: ["#4d6c68", "#0f1915", "#0f1915", "#86aa9f"] },
+  { id: "swatch-sardaukar-tactical", name: "Sardaukar Tactical", colors: ["#6c6c6c", "#595959", "#b5b5b5", "#b39c54"] },
+  { id: "swatch-hot-zone", name: "Hot Zone", colors: ["#a19964", "#40412f", "#bd6068", "#c5c85f"] },
 ];
