@@ -370,6 +370,25 @@ function childAccessDb() {
   return db;
 }
 
+test("listBaseChildAccess reports unsupported when a relation the save path walks is missing", async (t) => {
+  for (const missing of ["dune.actor_fgl_entities", "dune.actors", "dune.map_names"]) {
+    await t.test(missing, async () => {
+      const db = {
+        query: async (text, values = []) => {
+          if (text.includes("to_regclass")) return { rows: [{ exists: values[0] !== missing }] };
+          if (text.includes("to_regprocedure")) return { rows: [{ exists: true }] };
+          throw new Error(`unexpected query: ${text.slice(0, 40)}`);
+        }
+      };
+      const result = await listBaseChildAccess(db, BASE_ID);
+      assert.equal(result.supported, false);
+      await assert.rejects(
+        () => setBaseChildAccessLevels(db, BASE_ID, [{ actorId: "44186", accessLevel: 3 }]),
+        /permission_set_access_level/);
+    });
+  }
+});
+
 test("object access labels use the game order without reversing stored values", async () => {
   const db = childAccessDb();
   const query = db.query;
@@ -421,6 +440,9 @@ test("listBaseChildAccess categorizes a piece into the right Type filter group",
     ["Choam_PentashieldSurfaceVertical_Placeable", "pentashield"],
     ["Atreides_DoorTall_Placeable", "door"],
     ["Choam_Shelter_DoorWide_Placeable", "door"],
+    // "water" appears in the name, but these are doors -- door wins.
+    ["MTX_Watershippers_Door_Placeable", "door"],
+    ["MTX_Watershippers_Garage_Door_Big_Placeable", "door"],
     // Not in the curated map and no other substring rule applies.
     ["Wall_Placeable", "other"],
     // is_child = false always wins Sub-Fief, regardless of building_type --

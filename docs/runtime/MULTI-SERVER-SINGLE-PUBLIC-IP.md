@@ -1,6 +1,6 @@
 # Running Multiple Dune: Awakening Servers Behind One Public IPv4
 
-**Status:** Current | **Last Updated:** August 2026
+**Status:** Current | **Last Updated:** November 2026
 
 This document is the operator guide and standard operating procedure (SOP) for running multiple independent `dune-awakening-selfhost-docker` battlegroups on one physical server while sharing a single public IPv4 address.
 
@@ -107,6 +107,7 @@ It includes:
 - IGW UDP range;
 - PostgreSQL host port;
 - RabbitMQ Admin host port;
+- RabbitMQ Admin HTTP host port;
 - RabbitMQ Game host port;
 - RabbitMQ Game HTTP host port;
 - RabbitMQ Game local-management host port;
@@ -186,6 +187,9 @@ The following inventory represents the audited single-instance host-facing confi
 | RMQ Game | `31982` | TCP | Host-published game RabbitMQ endpoint |
 | RMQ Game HTTP | `31983` | TCP | Host-published game RabbitMQ HTTP/management endpoint |
 | RMQ Admin | `32573` | TCP | Host loopback publish to admin RMQ `5672` |
+| RMQ Admin HTTP | `32574` | TCP | Host loopback publish to admin RMQ management `15672` (`RMQ_ADMIN_HTTP_PORT`) |
+
+Two optional listeners are outside the planner. The public probe's UDP `32000-32015` is fixed in the probe and is not rewritten by the profile tool; with a single public IPv4, forward it to at most one VM, and the other battlegroups use the Dune Docker relay for latency. The optional encrypted API front door (`DUNE_TLS_FRONT_PORT`, default `8797`, see [`encrypted-api.md`](../console/encrypted-api.md)) is also not managed by the helper; if you enable it on several VMs, give each a distinct port that does not overlap any value in this plan.
 
 See the "Source-of-Truth Reference" table near the end of this document for exactly which file governs each behavior above. The public probe uses host networking on native Linux and confines direct ICE listeners to UDP `32000-32015`.
 
@@ -198,7 +202,7 @@ See the "Source-of-Truth Reference" table near the end of this document for exac
 | Function | VM1 / Instance 1 | VM2 / Instance 2 | VM3 / Instance 3 |
 |---|---:|---:|---:|
 | Player/Game UDP | `7777-7810` | `8777-8810` | `9777-9810` |
-| Public probe direct ICE UDP | `32000-32015` | `32000-32015` | `32000-32015` |
+| Public probe direct ICE UDP (fixed, not planned; forward to one VM only) | `32000-32015` | same range, one VM only | same range, one VM only |
 | IGW UDP | `7888-7921` | `8888-8921` | `9888-9921` |
 | Text Router TCP | `5059` | `6059` | `7059` |
 | Admin Web TCP | `8088` | `9088` | `10088` |
@@ -209,6 +213,7 @@ See the "Source-of-Truth Reference" table near the end of this document for exac
 | RMQ Game TCP | `31982` | `32982` | `33982` |
 | RMQ Game HTTP TCP | `31983` | `32983` | `33983` |
 | RMQ Admin TCP | `32573` | `33573` | `34573` |
+| RMQ Admin HTTP TCP | `32574` | `33574` | `34574` |
 
 There are **no numeric overlaps** among any values in this table.
 
@@ -239,6 +244,7 @@ Current runtime service defaults include:
 ```text
 POSTGRES_PORT=15432
 RMQ_ADMIN_PORT=32573
+RMQ_ADMIN_HTTP_PORT=32574
 RMQ_GAME_PORT=31982
 RMQ_GAME_HTTP_PORT=31983
 RMQ_GAME_LOCAL_HTTP_PORT=15672
@@ -410,7 +416,7 @@ The helper derives current values from repository source rather than assuming th
 
 It currently derives:
 
-- service defaults from `runtime/scripts/runtime-env.sh`;
+- service defaults from `runtime/scripts/lib/ports.sh`;
 - UserEngine `Port` / `IGWPort` defaults from `runtime/scripts/usersettings.py`;
 - game/IGW pool maximum offsets from `runtime/scripts/spawn-server.sh`;
 - Admin Web default from `.env.example`;
@@ -571,6 +577,7 @@ RMQ Game local HTTP TCP  16672
 RMQ Game TCP             32982
 RMQ Game HTTP TCP        32983
 RMQ Admin TCP            33573
+RMQ Admin HTTP TCP       33574
 ```
 
 Expected validation:
@@ -626,7 +633,7 @@ python3 runtime/scripts/usersettings.py materialize-current
 Before editing `.env` by hand, audit for an existing definition rather than appending a duplicate:
 
 ```bash
-grep -nE '^(SERVER_IP|SERVER_IP_MODE|SERVER_BIND_IP|POSTGRES_PORT|RMQ_ADMIN_PORT|RMQ_GAME_PORT|RMQ_GAME_HTTP_PORT|RMQ_GAME_LOCAL_HTTP_PORT|TEXT_ROUTER_PORT|DIRECTOR_PORT|ADMIN_BIND_PORT|ADMIN_WEB_PORT|METRICS_PROMETHEUS_PORT|CLIENT_PORT_BASE|IGW_PORT_BASE)=' .env
+grep -nE '^(SERVER_IP|SERVER_IP_MODE|SERVER_BIND_IP|POSTGRES_PORT|RMQ_ADMIN_PORT|RMQ_ADMIN_HTTP_PORT|RMQ_GAME_PORT|RMQ_GAME_HTTP_PORT|RMQ_GAME_LOCAL_HTTP_PORT|TEXT_ROUTER_PORT|DIRECTOR_PORT|ADMIN_BIND_PORT|ADMIN_WEB_PORT|METRICS_PROMETHEUS_PORT|CLIENT_PORT_BASE|IGW_PORT_BASE)=' .env
 ```
 
 The interactive manager (`runtime/scripts/manager.sh`, UserEngine global-default editor) can also set `Port`/`IGWPort` directly if you prefer a menu over the two `engine-set` commands above. Running map containers retain the prior values until restarted either way.
@@ -737,7 +744,7 @@ Global collision validation: PASS
 ## Phase 14 — Verify `.env`
 
 ```bash
-grep -E '^(SERVER_IP|SERVER_IP_MODE|SERVER_BIND_IP|POSTGRES_PORT|RMQ_ADMIN_PORT|RMQ_GAME_PORT|RMQ_GAME_HTTP_PORT|RMQ_GAME_LOCAL_HTTP_PORT|TEXT_ROUTER_PORT|DIRECTOR_PORT|ADMIN_BIND_PORT|ADMIN_WEB_PORT|METRICS_PROMETHEUS_PORT|CLIENT_PORT_BASE|IGW_PORT_BASE)=' .env
+grep -E '^(SERVER_IP|SERVER_IP_MODE|SERVER_BIND_IP|POSTGRES_PORT|RMQ_ADMIN_PORT|RMQ_ADMIN_HTTP_PORT|RMQ_GAME_PORT|RMQ_GAME_HTTP_PORT|RMQ_GAME_LOCAL_HTTP_PORT|TEXT_ROUTER_PORT|DIRECTOR_PORT|ADMIN_BIND_PORT|ADMIN_WEB_PORT|METRICS_PROMETHEUS_PORT|CLIENT_PORT_BASE|IGW_PORT_BASE)=' .env
 ```
 
 VM2 should show:
@@ -748,6 +755,7 @@ SERVER_IP_MODE=public
 SERVER_BIND_IP=192.168.68.128
 POSTGRES_PORT=16432
 RMQ_ADMIN_PORT=33573
+RMQ_ADMIN_HTTP_PORT=33574
 RMQ_GAME_PORT=32982
 RMQ_GAME_HTTP_PORT=32983
 RMQ_GAME_LOCAL_HTTP_PORT=16672
@@ -806,6 +814,7 @@ RMQ Game local HTTP TCP  16672
 RMQ Game TCP             32982
 RMQ Game HTTP TCP        32983
 RMQ Admin TCP            33573
+RMQ Admin HTTP TCP       33574
 ```
 
 Not every port inside a dynamic Player/Game or IGW range must be actively listening at all times.
@@ -1008,6 +1017,7 @@ git diff HEAD@{1} -- \
   docker-compose*.yml \
   runtime/defaults/UserEngine.ini \
   runtime/scripts/runtime-env.sh \
+  runtime/scripts/lib/ports.sh \
   runtime/scripts/usersettings.py \
   runtime/scripts/manager.sh \
   runtime/scripts/spawn-server.sh \
@@ -1131,6 +1141,7 @@ Player/Game              start-end
 IGW                      start-end
 PostgreSQL               port-port
 RMQ Admin                port-port
+RMQ Admin HTTP           port-port
 RMQ Game                 port-port
 RMQ Game HTTP            port-port
 RMQ Game local HTTP      port-port
@@ -1162,7 +1173,7 @@ This catches:
 | UserEngine `Port` / `IGWPort` defaults | `runtime/defaults/UserEngine.ini`, `runtime/scripts/usersettings.py` |
 | UserEngine interactive editing | `runtime/scripts/manager.sh` |
 | Dynamic Player/Game and IGW pool allocation | `runtime/scripts/spawn-server.sh` |
-| Core service-port defaults | `runtime/scripts/runtime-env.sh` |
+| Core service-port defaults | `runtime/scripts/lib/ports.sh` |
 | PostgreSQL host mapping | `runtime/scripts/start-postgres.sh` |
 | RabbitMQ host mappings | `runtime/scripts/start-rabbitmq.sh` |
 | Text Router host mapping | `runtime/scripts/start-text-router.sh` |

@@ -67,10 +67,18 @@ export type MarketBotStatus = {
   plans?: { activePlanId: string; items: MarketSeedPlanInfo[] };
   buyback: MarketBuybackSchedule;
   seed: MarketSeedSchedule;
+  settings?: MarketBotSettings;
   commodityStackCatalog?: CommodityStackItem[];
   commodityStackGroups?: CommodityStackGroup[];
   reason?: string;
 };
+
+export type MarketBotSettings = {
+  safetyBackups: boolean;
+};
+
+// Server-checked phrase required to turn safety backups off.
+export const MARKET_BOT_DISABLE_BACKUPS_PHRASE = "DISABLE MARKET BOT BACKUPS";
 
 export type MarketSeedPlanInfo = {
   id: string;
@@ -117,6 +125,8 @@ export type MarketProbeResult = MarketCategoryMultipliers & {
 export type MarketRunResult = {
   status: string;
   detail?: string;
+  // true when the run wrote without a safety backup (disabled in settings)
+  backupSkipped?: boolean;
   exchangeId?: string;
   // buyback run
   eligible?: number;
@@ -180,6 +190,7 @@ export const marketBotApi = {
   runSeed: () => post<MarketRunResult>("/api/exchange/market/seed/run", {}),
   // Remove the bot's NPC listings from one exchange without reseeding.
   unseed: (payload: { exchangeId?: string } = {}) => post<MarketRunResult>("/api/exchange/market/seed/clear", payload),
+  saveSettings: (payload: Partial<MarketBotSettings> & { confirmation?: string }) => post<MarketBotSettings>("/api/exchange/market/settings", payload),
   setActivePlan: (payload: { planId: string }) => post<{ activePlanId: string; items: MarketSeedPlanInfo[] }>("/api/exchange/market/plans/active", payload),
   renamePlan: (payload: { planId: string; name: string }) => post<{ activePlanId: string; items: MarketSeedPlanInfo[] }>("/api/exchange/market/plans/name", payload),
   downloadPlanCsv: (planId: string) => apiDownload(`/api/exchange/market/plans/csv?planId=${encodeURIComponent(planId)}`),

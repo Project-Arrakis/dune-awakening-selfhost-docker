@@ -8,6 +8,8 @@ mkdir -p runtime/generated
 [ -f .env ] && . ./.env
 [ -r runtime/generated/battlegroup.env ] && . runtime/generated/battlegroup.env
 source runtime/scripts/runtime-env.sh
+source runtime/scripts/image-tags.sh
+[ -r runtime/generated/image-tags.env ] && . runtime/generated/image-tags.env
 
 SERVER_REGION="$(resolve_server_region)"
 SERVER_IP="$(resolve_server_ip)"
@@ -87,6 +89,19 @@ if [ ! -s "$catalog_tmp" ]; then
   echo "Generated partition catalog is empty." >&2
   exit 1
 fi
+
+# Seasonal maps follow the official template. The Scourge fallback has ended;
+# stale packaged assets must not automatically reintroduce a retired event.
+# Validate before publishing so an invalid/empty extraction keeps the old catalog.
+python3 - "$catalog_tmp" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+rows = json.loads(Path(sys.argv[1]).read_text())
+if not isinstance(rows, list) or not rows:
+    raise ValueError("Cannot publish an empty or invalid partition catalog")
+PY
 
 chmod 0644 "$catalog_tmp"
 mv -f -- "$catalog_tmp" "$catalog_output"

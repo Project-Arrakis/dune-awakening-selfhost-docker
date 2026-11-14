@@ -14,13 +14,14 @@ source runtime/scripts/generated-file-paths.sh
 WORLD_IMAGE_TAG="$(resolve_world_image_tag)"
 IMAGE="registry.funcom.com/funcom/self-hosting/seabass-server-rabbitmq:${WORLD_IMAGE_TAG}"
 RMQ_ADMIN_PORT="$(resolve_rmq_admin_port)"
+RMQ_ADMIN_HTTP_PORT="$(resolve_rmq_admin_http_port)"
 RMQ_GAME_PORT="$(resolve_rmq_game_port)"
 RMQ_GAME_HTTP_PORT="$(resolve_rmq_game_http_port)"
 # Host-side loopback mirror of the game RabbitMQ management endpoint. The
 # container-side management port remains 15672. Keeping the host port
 # configurable lets multi-VM deployments maintain a globally unique host-port
 # namespace while preserving the stock single-server default.
-RMQ_GAME_LOCAL_HTTP_PORT="$(port_env_value RMQ_GAME_LOCAL_HTTP_PORT 15672)"
+RMQ_GAME_LOCAL_HTTP_PORT="$(resolve_rmq_game_local_http_port)"
 
 mkdir -p runtime/rabbitmq-admin/config
 mkdir -p runtime/rabbitmq-game/config
@@ -106,12 +107,43 @@ chmod 644 runtime/rabbitmq-admin/config/enabled_plugins
 docker network create dune-net 2>/dev/null || true
 docker rm -f dune-rmq-admin dune-rmq-game 2>/dev/null || true
 
+# The management API is published on loopback, exactly as it already is for
+# dune-rmq-game below. lib/rabbitmq.sh publishes and polls the hot paths through
+# it, which is what keeps those calls from having to be a container exec each.
+# Until this container is recreated with the mapping the seam simply falls back,
+# so the change is safe to roll out before the next start-rabbitmq.sh run.
+RMQ_ERL_ARGS=()
+if [ -n "${DUNE_RMQ_ERL_ARGS:-}" ]; then
+  RMQ_ERL_ARGS=(-e "RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS=${DUNE_RMQ_ERL_ARGS}")
+fi
+# Each probe boots a separate Erlang VM. Bound that VM's scheduler counts on
+# large hosts without changing broker schedulers or weakening the cookie-based
+# node ping into a TCP-only check.
+RMQ_PROBE_ERL_ARGS='+S 1:1 +SDcpu 1 +SDio 1'
+RMQ_HEALTH_CMD="RABBITMQ_CTL_ERL_ARGS='$RMQ_PROBE_ERL_ARGS' rabbitmq-diagnostics -q ping"
+# Preserve the documented public game-broker HTTP binding (${RMQ_GAME_HTTP_PORT}:15672/tcp)
+# by default alongside the separate loopback shortcut (127.0.0.1:${RMQ_GAME_LOCAL_HTTP_PORT}:15672/tcp).
+# Operators who explicitly want to restrict the external game HTTP binding to a specific
+# host interface IP may opt in by setting RMQ_GAME_HTTP_BIND_IP.
+RMQ_GAME_HTTP_BIND_IP="${RMQ_GAME_HTTP_BIND_IP:-}"
+if [ -n "$RMQ_GAME_HTTP_BIND_IP" ]; then
+  RMQ_GAME_HTTP_PUBLISH="${RMQ_GAME_HTTP_BIND_IP}:${RMQ_GAME_HTTP_PORT}:15672/tcp"
+else
+  RMQ_GAME_HTTP_PUBLISH="${RMQ_GAME_HTTP_PORT}:15672/tcp"
+fi
+
 docker run -d \
   "${DUNE_DOCKER_LOG_ARGS[@]}" \
   --name dune-rmq-admin \
   --network dune-net \
   --restart unless-stopped \
+  --health-cmd "$RMQ_HEALTH_CMD" \
+  --health-interval 30s \
+  --health-timeout 10s \
+  --health-retries 3 \
+  "${RMQ_ERL_ARGS[@]}" \
   -p "127.0.0.1:${RMQ_ADMIN_PORT}:5672" \
+  -p "127.0.0.1:${RMQ_ADMIN_HTTP_PORT}:15672/tcp" \
   -v "$(host_path "$PWD/runtime/rabbitmq-admin/config/rabbitmq.conf"):/etc/rabbitmq/rabbitmq.conf:ro" \
   -v "$(host_path "$PWD/runtime/rabbitmq-admin/config/enabled_plugins"):/etc/rabbitmq/enabled_plugins:ro" \
   "$IMAGE"
@@ -120,9 +152,14 @@ docker run -d \
   --name dune-rmq-game \
   --network dune-net \
   --restart unless-stopped \
+  --health-cmd "$RMQ_HEALTH_CMD" \
+  --health-interval 30s \
+  --health-timeout 10s \
+  --health-retries 3 \
+  "${RMQ_ERL_ARGS[@]}" \
   -p "${RMQ_GAME_PORT}:5672/tcp" \
   -p "127.0.0.1:${RMQ_GAME_LOCAL_HTTP_PORT}:15672/tcp" \
-  -p "${RMQ_GAME_HTTP_PORT}:15672/tcp" \
+  -p "$RMQ_GAME_HTTP_PUBLISH" \
   -v "$(host_path "$PWD/runtime/rabbitmq-game/config/rabbitmq.conf"):/etc/rabbitmq/rabbitmq.conf:ro" \
   -v "$(host_path "$PWD/runtime/rabbitmq-game/config/enabled_plugins"):/etc/rabbitmq/enabled_plugins:ro" \
   -v "$(host_path "$PWD/runtime/rabbitmq-game/certs/cacert.pem"):/etc/rabbitmq/cacert.pem:ro" \
@@ -138,7 +175,7 @@ wait_for_rabbitmq() {
 
   echo "Waiting for $container..."
   for attempt in $(seq 1 36); do
-    if timeout 10 docker exec "$container" rabbitmq-diagnostics -q ping; then
+    if timeout 10 docker exec -e "RABBITMQ_CTL_ERL_ARGS=$RMQ_PROBE_ERL_ARGS" "$container" rabbitmq-diagnostics -q ping; then
       return 0
     fi
     sleep 5

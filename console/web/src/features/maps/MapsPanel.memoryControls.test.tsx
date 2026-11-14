@@ -12,9 +12,32 @@ describe("memory controls help", () => {
     expect(button).toHaveAttribute("aria-expanded", "false");
     expect(tooltip).toHaveTextContent("Disk-backed emergency memory.");
 
+    // A real pointer click focuses the button before dispatching click.
+    fireEvent.focus(button);
     fireEvent.click(button);
     expect(button).toHaveAttribute("aria-expanded", "true");
     fireEvent.keyDown(document, { key: "Escape" });
+    expect(button).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("keeps help open when clicking an icon already opened by hover", () => {
+    render(<InfoTooltip id="swap-help" label="About Memory Swap">Disk-backed emergency memory.</InfoTooltip>);
+    const button = screen.getByRole("button", { name: "About Memory Swap" });
+    fireEvent.pointerEnter(button.closest(".memory-info-tooltip")!);
+    fireEvent.click(button);
+    expect(button).toHaveAttribute("aria-expanded", "true");
+    fireEvent.pointerDown(document.body);
+    expect(button).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("ignores compatibility mouse events after a tap and still closes on pointer leave", () => {
+    render(<InfoTooltip id="swap-help" label="About Memory Swap">Disk-backed emergency memory.</InfoTooltip>);
+    const button = screen.getByRole("button", { name: "About Memory Swap" });
+    const root = button.closest(".memory-info-tooltip")!;
+    fireEvent.click(button);
+    fireEvent.mouseLeave(root);
+    expect(button).toHaveAttribute("aria-expanded", "true");
+    fireEvent.pointerLeave(root);
     expect(button).toHaveAttribute("aria-expanded", "false");
   });
 
@@ -27,7 +50,7 @@ describe("memory controls help", () => {
     const swap = screen.getByRole("button", { name: "About Memory Swap" });
     fireEvent.click(balancer);
     expect(balancer).toHaveAttribute("aria-expanded", "true");
-    fireEvent.mouseEnter(swap.closest(".memory-info-tooltip")!);
+    fireEvent.pointerEnter(swap.closest(".memory-info-tooltip")!);
     expect(balancer).toHaveAttribute("aria-expanded", "false");
     expect(swap).toHaveAttribute("aria-expanded", "true");
   });

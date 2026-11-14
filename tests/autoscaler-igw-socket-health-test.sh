@@ -12,7 +12,10 @@ bash -n "$evidence_lib"
 grep -Fq 'IGW_SOCKET_STALL_SECONDS="${DUNE_AUTOSCALER_IGW_SOCKET_STALL_SECONDS:-120}"' "$script"
 grep -Fq 'IGW_SOCKET_RX_QUEUE_THRESHOLD="${DUNE_AUTOSCALER_IGW_SOCKET_RX_QUEUE_THRESHOLD:-1048576}"' "$script"
 grep -Fq 'IGW_SOCKET_DROP_GRACE_SECONDS="${DUNE_AUTOSCALER_IGW_SOCKET_DROP_GRACE_SECONDS:-30}"' "$script"
-grep -Fq 'cat /proc/net/udp /proc/net/udp6' "$script"
+grep -Fq 'cat /proc/net/udp /proc/net/udp6' "$evidence_lib"
+grep -Fq 'igw_socket_table "$container"' "$script"
+# The sample must not open its own exec any more -- see igw_socket_table.
+! grep -Fq 'docker exec "$container" sh -c' "$script"
 grep -Fq 'dune-server-survival-1|Survival_1' "$script"
 grep -Fq 'dune-server-overmap|Overmap' "$script"
 grep -Fq 'IGW_SOCKET_RECOVERY_COOLDOWN_SECONDS="${DUNE_AUTOSCALER_IGW_SOCKET_RECOVERY_COOLDOWN_SECONDS:-600}"' "$script"
@@ -89,3 +92,49 @@ assert_decision 'recover|110|230' "$threshold" 120 30 230 110 220 2097152 11 209
 assert_decision 'clear||' "$threshold" 120 30 230 110 220 2097152 11 1024 12
 
 echo "autoscaler requires a non-draining saturated IGW queue with ongoing packet drops before recovery"
+
+# Exercise igw_socket_table's transport choice with a stub engine. The point of
+# the host-namespace branch is that it opens no exec at all, so assert on what
+# the stub was asked to do rather than on the sample it returned.
+table_root="$(mktemp -d)"
+trap 'rm -rf "$table_root"' EXIT
+mkdir -p "$table_root/bin"
+cat > "$table_root/bin/docker" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$DOCKER_CALLS"
+case "$1" in
+  inspect) printf '%s\n' "$DOCKER_NETWORK_MODE" ;;
+  exec)    printf 'exec-table\n' ;;
+esac
+STUB
+chmod +x "$table_root/bin/docker"
+PATH="$table_root/bin:$PATH"
+
+assert_table_transport() {
+  local label="$1" network_mode="$2" want_exec="$3"
+  local calls
+
+  DOCKER_CALLS="$table_root/calls" DOCKER_NETWORK_MODE="$network_mode" \
+    igw_socket_table dune-server-survival-1 >/dev/null 2>&1 || true
+  calls="$(cat "$table_root/calls")"
+  rm -f "$table_root/calls"
+
+  if [ "$want_exec" = yes ]; then
+    grep -q '^exec ' <<<"$calls" \
+      || { echo "$label: expected a fallback exec, got: $calls" >&2; exit 1; }
+  else
+    ! grep -q '^exec ' <<<"$calls" \
+      || { echo "$label: opened an exec it did not need: $calls" >&2; exit 1; }
+  fi
+}
+
+# Host networking is what the stack actually runs, and is the case that has to
+# stay exec-free -- this is the per-map, per-scan cost the change removes.
+assert_table_transport 'host networking' host no
+# Anything else has its own socket table, which the host cannot see: the port
+# filter would match nothing and the watchdog would silently read an empty
+# queue, so the exec has to come back.
+assert_table_transport 'bridge networking' dune-net yes
+assert_table_transport 'unknown network mode' '' yes
+
+echo "igw_socket_table reads the host UDP table under host networking and execs only when the namespace differs"

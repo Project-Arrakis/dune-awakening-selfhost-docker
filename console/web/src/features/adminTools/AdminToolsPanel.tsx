@@ -67,6 +67,7 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
   const [transferDefaults, setTransferDefaults] = useState<CharacterTransferSettings | null>(null);
   const [transferPolicies, setTransferPolicies] = useState<IncomingCharacterTransferPolicy[]>([]);
   const [transferResult, setTransferResult] = useState<TransferResult | null>(null);
+  const [transferNeedsApply, setTransferNeedsApply] = useState(false);
   const [liveToolsOpen, setLiveToolsOpen] = useState(true);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [broadcastTitle, setBroadcastTitle] = useState("");
@@ -466,6 +467,7 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
       setTransferOriginal(result.settings);
       setTransferDefaults(result.defaults);
       setTransferPolicies(result.policies);
+      setTransferNeedsApply(result.applied !== true);
     } finally {
       setTransferLoading(false);
     }
@@ -494,35 +496,29 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
     onError("");
     try {
       const response = await adminApi.saveCharacterTransferSettings(transferSettings);
-      const final = await waitForTaskSilently(response.task);
-      const details = taskTechnicalDetails(final);
-      if (final.status !== "succeeded") {
-        setTransferResult({ status: "failed", title: "Character Transfer Save Failed", details: details || final.errorMessage || "" });
-        return;
-      }
-      await loadTransferSettings();
-      setTransferResult({ status: "succeeded", title: "Character Transfer Settings Saved", details });
+      setTransferSettings(response.settings);
+      setTransferOriginal(response.settings);
+      setTransferNeedsApply(false);
+      setTransferResult({ status: "succeeded", title: "Character Transfer Settings Applied" });
     } catch (error) {
+      setTransferNeedsApply(true);
       setTransferResult({ status: "failed", title: "Character Transfer Save Failed", details: error instanceof Error ? error.message : String(error) });
     }
   }
 
   async function restoreTransferDefaults() {
-    if (!(await confirmAction("Restore official character transfer defaults and restart the Battlegroup Director?", { title: "Restore Character Transfer Defaults", confirmLabel: "Restore Defaults" }))) return;
+    if (!(await confirmAction("Restore official character transfer defaults and apply them immediately? No services will be restarted.", { title: "Restore Character Transfer Defaults", confirmLabel: "Restore Defaults" }))) return;
+    setTransferSettings(transferDefaults);
     setTransferResult({ status: "running", title: "Restoring Character Transfer Defaults" });
     onError("");
     try {
       const response = await adminApi.restoreCharacterTransferSettings();
       setTransferSettings(response.settings);
-      const final = await waitForTaskSilently(response.task);
-      const details = taskTechnicalDetails(final);
-      if (final.status !== "succeeded") {
-        setTransferResult({ status: "failed", title: "Character Transfer Restore Failed", details: details || final.errorMessage || "" });
-        return;
-      }
-      await loadTransferSettings();
-      setTransferResult({ status: "succeeded", title: "Character Transfer Defaults Restored", details });
+      setTransferOriginal(response.settings);
+      setTransferNeedsApply(false);
+      setTransferResult({ status: "succeeded", title: "Character Transfer Defaults Applied" });
     } catch (error) {
+      setTransferNeedsApply(true);
       setTransferResult({ status: "failed", title: "Character Transfer Restore Failed", details: error instanceof Error ? error.message : String(error) });
     }
   }
@@ -901,7 +897,8 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
       <button className="playerAdmin_toggleHeader" aria-label={transferOpen ? "Collapse Character Transfer Settings" : "Expand Character Transfer Settings"} onClick={() => setTransferOpen(!transferOpen)}>{transferOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Character Transfer Settings</span></button>
       {transferOpen && <div className="playerAdmin_toggleBody">
         {transferDirty && <p className="dirty-note">Unsaved changes: Character Transfer Settings</p>}
-        <p className="muted">Battlegroup Director transfer policy. Saving restarts only the Director service so the battlegroup-wide transfer rules are reloaded.</p>
+        <p className="muted">Saving applies these transfer rules immediately without restarting Director or game maps. Settings are also saved for future starts.</p>
+        {transferNeedsApply && !transferSaving && !transferDirty && <p className="dirty-note">Live settings are not confirmed. Save to apply the saved settings again.</p>}
         {transferSettings && <div className="character-transfer-grid">
           {transferBooleanRow("ShouldDeleteOriginCharactersDuringTransfers", "Delete origin character after transfer")}
           <label className="character-transfer-row"><span>Incoming character transfer policy</span><select disabled={transferSaving} value={transferSettings.IncomingCharacterTransfers} onChange={(event) => updateTransferSetting("IncomingCharacterTransfers", Number(event.target.value))}>{transferPolicies.map((policy) => <option key={policy.value} value={policy.value}>{policy.label}</option>)}</select><span className="character-transfer-spacer" /></label>
@@ -915,12 +912,13 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
           {transferBooleanRow("ForceIsWorldClosingSoon", "Force world closing soon")}
         </div>}
         <div className="action-line schedule-action-line">
-          <button disabled={transferLoading || transferSaving || !transferDirty} onClick={() => saveTransferSettings()}>Save</button>
+          <button disabled={transferLoading || transferSaving || !transferSettings || (!transferDirty && !transferNeedsApply)} onClick={() => saveTransferSettings()}>Save</button>
           <button disabled={transferLoading || transferSaving || !transferDefaults} onClick={() => restoreTransferDefaults()}>Restore Defaults</button>
           {transferResult && <span className={`inline-task-result result-${transferResult.status === "succeeded" ? "ok" : transferResult.status === "failed" ? "fail" : "running"}`}>
             <strong className={transferResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(transferResult.title, transferResult.status === "running")}</strong>
           </span>}
         </div>
+        {transferResult?.status === "failed" && transferResult.details && <p className="danger-note" role="alert">{transferResult.details}</p>}
       </div>}
     </div>
     <div className={`playerAdmin_toggle admin-history-toggle-panel ${historyOpen ? "open" : ""}`}>

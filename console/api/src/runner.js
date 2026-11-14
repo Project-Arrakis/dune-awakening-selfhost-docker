@@ -30,7 +30,7 @@ const simpleOperations = {
   ports: ["ports"],
   doctor: ["doctor"],
   networkBindFix: ["network", "fix"],
-  storageCleanupImages: ["storage", "cleanup"],
+  storageCleanupImages: ["storage", "cleanup", "--unused-images"],
   storageCleanupBuildCache: ["storage", "cleanup", "--build-cache"],
   start: ["start"],
   stop: ["stop"],
@@ -50,6 +50,7 @@ const simpleOperations = {
   backupSystemCreate: ["db", "backup-system"],
   backupSystemDeleteAll: ["db", "delete-system", "--all"],
   backupAutoDisable: ["db", "auto", "disable"],
+  backupSystemAutoStatus: ["db", "auto-system", "status"],
   init: ["init"],
   restartScheduleStatus: ["restart-schedule", "status"],
   restartScheduleDisable: ["restart-schedule", "disable"],
@@ -68,6 +69,7 @@ const simpleOperations = {
   adminHistory: ["admin", "history"],
   adminItemList: ["admin", "item-list"],
   adminVehicleList: ["admin", "vehicle-list"],
+  experimentalTanksStatus: ["experimental-tanks", "status"],
   adminSkillModules: ["admin", "skill-modules"]
 };
 
@@ -81,10 +83,23 @@ export function validateServiceName(value) {
   return normalized;
 }
 
+// Console diagnostics are readable through Logs; this must not widen the
+// service allowlist used by generic stop/restart operations.
+export function validateLogServiceName(value) {
+  const raw = String(value || "").trim();
+  if (raw === "console" || raw === "redblink-dune-docker-console") return "console";
+  return validateServiceName(raw);
+}
+
 export function buildDuneArgs(operation, payload = {}) {
   if (simpleOperations[operation]) return simpleOperations[operation];
 
   switch (operation) {
+    case "experimentalTanksApply":
+      if (typeof payload.enabled !== "boolean" || payload.confirmRestart !== true) {
+        throw new Error("Confirm the Hagga restart before changing Experimental Tanks.");
+      }
+      return ["experimental-tanks", "apply", String(payload.enabled)];
     case "selfUpdateQaApply":
       return ["self-update", "install-qa", validateCommitSha(payload.sha)];
     case "restartService":
@@ -150,10 +165,28 @@ export function buildDuneArgs(operation, payload = {}) {
         const args = ["db", "auto", "enable", validateUpdateTime(payload.time || "05:00")];
         const retentionDays = validateInteger(payload.retentionDays ?? 0, 0, 3650);
         const intervalHours = validateInteger(payload.intervalHours ?? 24, 1, 168);
-        if (retentionDays > 0 || intervalHours !== 24) args.push(String(retentionDays));
-        if (intervalHours !== 24) args.push(String(intervalHours));
+        // Omitted CLI arguments preserve the saved policy, so even the default
+        // values must be explicit when the Console replaces that policy.
+        args.push(String(retentionDays), String(intervalHours));
         return args;
       }
+    case "backupSystemAutoEnable":
+    case "backupSystemAutoDisable":
+      // A bare disable ({ enabled: false } from an API client) keeps the saved
+      // policy rather than resetting it to the defaults below.
+      if (operation === "backupSystemAutoDisable" && payload.time == null && payload.intervalHours == null && payload.keep == null) {
+        return ["db", "auto-system", "disable"];
+      }
+      // Otherwise all three explicit: omitted CLI arguments keep the saved
+      // policy, which would drop edits saved while the schedule is off.
+      return [
+        "db",
+        "auto-system",
+        operation === "backupSystemAutoEnable" ? "enable" : "disable",
+        validateUpdateTime(payload.time || "04:30"),
+        String(validateInteger(payload.intervalHours ?? 24, 1, 168)),
+        String(validateInteger(payload.keep ?? 7, 1, 365))
+      ];
     case "backupAutoRetention":
       return ["db", "auto", "retention", String(validateInteger(payload.retentionDays, 0, 3650))];
     case "updateAutoEnable":
@@ -166,7 +199,9 @@ export function buildDuneArgs(operation, payload = {}) {
         payload.notifyEnabled === false ? "0" : "1",
         validateMinuteCheckpoints(payload.notifyMinutes ?? "15,10,5,1"),
         payload.waitUntilEmpty ? "1" : "0",
-        String(validateInteger(payload.maxWaitMinutes ?? 360, 0, 10080))
+        String(validateInteger(payload.maxWaitMinutes ?? 360, 0, 10080)),
+        validateOptionalFlag(payload.updateConsole, "updateConsole"),
+        validateOptionalFlag(payload.manageTanks, "manageTanks")
       ];
     case "databaseTables":
       return ["database", "tables", payload.schema || "dune"];
@@ -458,7 +493,7 @@ function killProcessTree(child) {
 }
 
 export function runDockerLogs(service, options = {}) {
-  const normalizedService = validateServiceName(service);
+  const normalizedService = validateLogServiceName(service);
   const useComposeService = normalizedService === "orchestrator";
   const container = useComposeService ? "orchestrator" : dockerContainerForLogService(normalizedService);
   const args = useComposeService
@@ -595,7 +630,7 @@ export function isDynamicServerService(service) {
 
 export function dockerContainerForLogService(service) {
   const raw = String(service || "").trim();
-  const normalized = validateServiceName(raw);
+  const normalized = validateLogServiceName(raw);
   const containers = new Map([
     ["postgres", "dune-postgres"],
     ["rmq-admin", "dune-rmq-admin"],
@@ -608,7 +643,8 @@ export function dockerContainerForLogService(service) {
     ["overmap", "dune-server-overmap"],
     ["orchestrator", "dune-orchestrator"],
     ["autoscaler", "dune-autoscaler"],
-    ["coriolis", "dune-coriolis-coordinator"]
+    ["coriolis", "dune-coriolis-coordinator"],
+    ["console", "redblink-dune-docker-console"]
   ]);
   if (containers.has(normalized)) return containers.get(normalized);
   if (/^dune-server-[a-z0-9-]+$/i.test(normalized)) return normalized;
@@ -633,6 +669,12 @@ function validatePlayerId(value) {
   const raw = String(value || "");
   if (raw === "*" || /^[A-Za-z0-9_:#.-]{1,128}$/.test(raw)) return raw;
   throw new Error("Invalid player id");
+}
+
+function validateOptionalFlag(value, label) {
+  if (value === undefined || value === false) return "0";
+  if (value === true) return "1";
+  throw new Error(`${label} must be true or false`);
 }
 
 function validateInteger(value, min, max) {

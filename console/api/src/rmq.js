@@ -1,9 +1,200 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { closeSync, existsSync, fstatSync, openSync, readSync } from "node:fs";
+import { resolve } from "node:path";
 import { redact } from "./redact.js";
 
 const RMQ_CONTAINER = "dune-rmq-game";
 const BUILTIN_COMMAND_AUTH_TOKEN = "Nu6VmPWUMvdPMeB7qErr";
+
+const cachedRmqCreds = new Map();
+const cachedReadyQueues = new Map();
+let transportCredentials;
+let transportRevision = 0;
+
+function transportKey(config) {
+  const user = process.env.DUNE_RMQ_ADMIN_USER || '';
+  const password = process.env.DUNE_RMQ_ADMIN_PASSWORD || '';
+  if (!transportCredentials || transportCredentials.user !== user || transportCredentials.password !== password) {
+    transportCredentials = { user, password };
+    transportRevision++;
+    cachedRmqCreds.clear();
+    cachedReadyQueues.clear();
+  }
+  // Opaque process-local revision: no password-derived hash or secret in keys.
+  // In-flight responses keep their old revision after credentials change.
+  return JSON.stringify([
+    resolve(config?.repoRoot || process.cwd()), resolveRmqGameHttpBaseUrl(),
+    transportRevision
+  ]);
+}
+
+function rememberTransport(cache, key, value) {
+  if (!cache.has(key) && cache.size >= 16) cache.delete(cache.keys().next().value);
+  cache.set(key, value);
+}
+
+function readBoundedLogText(filePath, maxEdgeBytes = 128 * 1024) {
+  let fd = null;
+  try {
+    fd = openSync(filePath, "r");
+    const size = fstatSync(fd).size;
+    if (size <= 0) return "";
+    if (size <= maxEdgeBytes * 2) {
+      const buf = Buffer.allocUnsafe(size);
+      const bytesRead = readSync(fd, buf, 0, size, 0);
+      return buf.subarray(0, bytesRead).toString("utf8");
+    }
+    const headBuf = Buffer.allocUnsafe(maxEdgeBytes);
+    const tailBuf = Buffer.allocUnsafe(maxEdgeBytes);
+    const headRead = readSync(fd, headBuf, 0, maxEdgeBytes, 0);
+    const tailRead = readSync(fd, tailBuf, 0, maxEdgeBytes, size - maxEdgeBytes);
+    return `${headBuf.subarray(0, headRead).toString("utf8")}\n${tailBuf.subarray(0, tailRead).toString("utf8")}`;
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync(fd);
+      } catch {
+        // Ignore close errors.
+      }
+    }
+  }
+}
+
+function resolveRmqAdminCreds(repoRoot, key, now) {
+  const cached = cachedRmqCreds.get(key);
+  if (cached?.expiresAt > now) return cached.credentials;
+  const envUser = String(process.env.DUNE_RMQ_ADMIN_USER || "").trim();
+  const envPass = String(process.env.DUNE_RMQ_ADMIN_PASSWORD || "").trim();
+  if (envUser && envPass) {
+    const credentials = { user: envUser, pass: envPass };
+    rememberTransport(cachedRmqCreds, key, { credentials, expiresAt: now + 300_000 });
+    return credentials;
+  }
+  const logFile = resolve(repoRoot || process.cwd(), "runtime/text-router/director-current.log");
+  try {
+    if (existsSync(logFile)) {
+      const text = readBoundedLogText(logFile);
+      const patterns = [
+        /Generated new admin credentials:\s*(bgd\.[^/\s]+\.admin)\s*\/\s*([A-Za-z0-9+/=]+)/g,
+        /(bgd\.[^/\s]+\.admin)\/([A-Za-z0-9+/=]+) => allow administrator/g
+      ];
+      let found = null;
+      let latestPosition = -1;
+      for (const pattern of patterns) {
+        let match;
+        while ((match = pattern.exec(text)) !== null) {
+          if (match.index > latestPosition) {
+            found = { user: match[1], pass: match[2] };
+            latestPosition = match.index;
+          }
+        }
+      }
+      if (found) {
+        rememberTransport(cachedRmqCreds, key, { credentials: found, expiresAt: now + 60_000 });
+        return found;
+      }
+    }
+  } catch {
+    // Fallback to dockerExec if credentials cannot be read from log.
+  }
+  return null;
+}
+
+function resolveRmqGameHttpBaseUrl() {
+  if (process.env.DUNE_RMQ_GAME_HTTP_URL) return process.env.DUNE_RMQ_GAME_HTTP_URL.replace(/\/+$/, "");
+  const port = Number(process.env.RMQ_GAME_LOCAL_HTTP_PORT || 15672) || 15672;
+  return `http://127.0.0.1:${port}`;
+}
+
+// Shared management connection for the opt-in chat recorder. Never include
+// broker responses, URLs or credentials in caller-visible errors.
+export async function requestRmqGameHttp(config, method, path, body, { fetchImpl = globalThis.fetch, now = Date.now } = {}) {
+  if (process.env.DUNE_RMQ_TRANSPORT === "exec") throw new Error("Chat collection needs the RabbitMQ management connection.");
+  const key = transportKey(config);
+  let creds = resolveRmqAdminCreds(config?.repoRoot, key, now());
+  // The publisher's director-current.log is a rotating tail: startup credentials
+  // can scroll out. Use the same bounded, streamed director-log fallback as
+  // runtime/scripts/lib/rabbitmq.sh; never send its output to logs or errors.
+  if (!creds) {
+    creds = await readDirectorRmqCredentials();
+    if (creds) rememberTransport(cachedRmqCreds, key, { credentials: creds, expiresAt: now() + 60_000 });
+  }
+  if (!creds) throw new Error("Chat collection needs the RabbitMQ management connection.");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5000);
+  try {
+    const response = await fetchImpl(`${resolveRmqGameHttpBaseUrl()}${path}`, {
+      method, redirect: "error", signal: controller.signal,
+      headers: { Authorization: `Basic ${Buffer.from(`${creds.user}:${creds.pass}`).toString("base64")}`, "Content-Type": "application/json" },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) })
+    });
+    if ([401, 403].includes(response.status)) cachedRmqCreds.delete(key);
+    if (!response.ok) throw Object.assign(new Error("Chat collection could not reach its RabbitMQ queue."), { statusCode: response.status });
+    if (response.status === 204 || method === "DELETE") return null;
+    // Poll responses are bounded by count/truncate at the broker as well.
+    let bytes = 0;
+    const chunks = [];
+    for await (const chunk of response.body) {
+      bytes += chunk.length;
+      if (bytes > 2 * 1024 * 1024) throw new Error("Chat response exceeded its size limit.");
+      chunks.push(chunk);
+    }
+    const text = Buffer.concat(chunks).toString("utf8");
+    return text ? JSON.parse(text) : null;
+  } catch (error) {
+    throw Object.assign(new Error("Chat collection is unavailable. Check the RabbitMQ management connection."), { brokerStatus: error.statusCode });
+  } finally { clearTimeout(timer); }
+}
+
+export function readDirectorRmqCredentials({ spawnImpl = spawn } = {}) {
+  return new Promise(resolveResult => {
+    let child, text = "", finished = false;
+    const timer = setTimeout(() => finish(null), 3000);
+    function finish(value) {
+      if (finished) return;
+      finished = true; clearTimeout(timer);
+      child?.kill("SIGTERM"); resolveResult(value);
+    }
+    try {
+      child = spawnImpl("docker", ["logs", "dune-director"], { stdio: ["ignore", "pipe", "ignore"] });
+      child.on("error", () => finish(null));
+      child.on("close", () => finish(null));
+      child.stdout.on("data", chunk => {
+        text += chunk.toString("utf8");
+        const match = /Generated new admin credentials:\s*(bgd\.[^/\s]{1,180}\.admin)\s*\/\s*([A-Za-z0-9+/=]{1,512})(?=\s|$)/.exec(text);
+        if (match && /\s/.test(text.slice(match.index + match[0].length, match.index + match[0].length + 1))) finish({ user: match[1], pass: match[2] });
+        else if (Buffer.byteLength(text) >= 1024 * 1024) finish(null);
+      });
+    } catch { finish(null); }
+  });
+}
+
+async function tryRmqGameHttpGet(config, path, key, now, fetchImpl) {
+  if (globalThis.__testSpawn || process.env.DUNE_RMQ_TRANSPORT === "exec") return null;
+  const creds = resolveRmqAdminCreds(config?.repoRoot, key, now);
+  if (!creds) return null;
+  const auth = Buffer.from(`${creds.user}:${creds.pass}`, "utf8").toString("base64");
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Math.min(config?.commandTimeoutMs || 5000, 5000));
+  try {
+    const response = await fetchImpl(`${resolveRmqGameHttpBaseUrl()}${path}`, {
+      method: "GET",
+      headers: { Authorization: `Basic ${auth}`, Accept: "application/json" },
+      signal: controller.signal
+    });
+    if (response.status === 401 || response.status === 403) {
+      cachedRmqCreds.delete(key);
+      return null;
+    }
+    if (!response.ok) return null;
+    return await response.json();
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 export function validateBroadcastMessage(message) {
   const raw = String(message || "").trim();
@@ -189,8 +380,29 @@ export async function publishCarePackageWhisper(config, fields) {
   };
 }
 
-export async function listReadyRabbitQueues(config) {
-  const output = await dockerExec(
+export async function listReadyRabbitQueues(config, { fetchImpl = globalThis.fetch, exec = dockerExec, now = Date.now } = {}) {
+  const key = transportKey(config);
+  if (!globalThis.__testSpawn) {
+    const cached = cachedReadyQueues.get(key);
+    if (cached?.expiresAt > now()) {
+      return new Set(cached.queues);
+    }
+    const httpQueues = await tryRmqGameHttpGet(config, "/api/queues/%2F?columns=name,consumers,state", key, now(), fetchImpl);
+    if (Array.isArray(httpQueues)) {
+      const ready = new Set();
+      for (const row of httpQueues) {
+        const name = String(row?.name || "").trim();
+        const consumers = Number(row?.consumers);
+        const state = String(row?.state || "").trim();
+        if (name && Number.isInteger(consumers) && consumers > 0 && (!state || state === "running")) {
+          ready.add(name);
+        }
+      }
+      rememberTransport(cachedReadyQueues, key, { queues: new Set(ready), expiresAt: now() + 5000 });
+      return new Set(ready);
+    }
+  }
+  const output = await exec(
     ["exec", RMQ_CONTAINER, "rabbitmqctl", "-q", "list_queues", "name", "consumers", "state"],
     config.commandTimeoutMs
   );
@@ -199,6 +411,9 @@ export async function listReadyRabbitQueues(config) {
     const [name = "", consumersText = "", state = ""] = line.trim().split(/\s+/);
     const consumers = Number(consumersText);
     if (name && Number.isInteger(consumers) && consumers > 0 && (!state || state === "running")) ready.add(name);
+  }
+  if (!globalThis.__testSpawn) {
+    rememberTransport(cachedReadyQueues, key, { queues: new Set(ready), expiresAt: now() + 5000 });
   }
   return ready;
 }

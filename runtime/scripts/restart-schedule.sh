@@ -8,6 +8,8 @@ HOST_ROOT_DIR="${DUNE_HOST_REPO_ROOT:-$ROOT_DIR}"
 [ -f .env ] && . ./.env
 [ -r runtime/generated/battlegroup.env ] && . runtime/generated/battlegroup.env
 source runtime/scripts/runtime-env.sh
+# shellcheck source=runtime/scripts/lib/postgres.sh
+source runtime/scripts/lib/postgres.sh
 source runtime/scripts/host-file-ownership.sh
 
 IFS=: read -r HOST_SERVICE_UID HOST_SERVICE_GID <<< "$(dune_resolve_host_owner)"
@@ -512,7 +514,7 @@ show_status() {
 }
 
 run_now() {
-  local public_ip_fallback lifecycle_lock_file rc
+  local public_ip_fallback lifecycle_lock_file rc history_started history_started_epoch history_finished
 
   lifecycle_lock_file="${DUNE_BATTLEGROUP_LIFECYCLE_LOCK_FILE:-runtime/generated/battlegroup-lifecycle.lock}"
   mkdir -p "$(dirname "$lifecycle_lock_file")"
@@ -547,10 +549,22 @@ run_now() {
   fi
 
   echo "Stopping battlegroup..."
-  runtime/scripts/stop-all.sh
+  history_started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  history_started_epoch="$(date +%s)"
+  if ! runtime/scripts/stop-all.sh; then
+    history_finished="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    runtime/scripts/restart-history.sh record battlegroup Battlegroup Scheduled "Scheduled restart" Failed "$history_started" "$history_finished" "$(( $(date +%s) - history_started_epoch ))" || true
+    return 1
+  fi
   echo
   echo "Starting battlegroup..."
-  DUNE_START_FOREGROUND_DEFERRED_RECONCILE=1 runtime/scripts/start-all.sh
+  if ! DUNE_START_FOREGROUND_DEFERRED_RECONCILE=1 runtime/scripts/start-all.sh; then
+    history_finished="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    runtime/scripts/restart-history.sh record battlegroup Battlegroup Scheduled "Scheduled restart" Failed "$history_started" "$history_finished" "$(( $(date +%s) - history_started_epoch ))" || true
+    return 1
+  fi
+  history_finished="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  runtime/scripts/restart-history.sh record battlegroup Battlegroup Scheduled "Scheduled restart" Succeeded "$history_started" "$history_finished" "$(( $(date +%s) - history_started_epoch ))" || true
   replay_spicefield_overrides_after_scheduled_restart
 }
 
@@ -619,7 +633,7 @@ scheduled_restart_public_ip_fallback() {
   [ "$mode" = "public" ] || return 0
 
   if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx dune-postgres; then
-    ip="$(docker exec dune-postgres psql -U postgres -d dune -Atc "
+    ip="$(psql_value "
       select value
       from dune.network_address_config
       where key = 'game_addr_ip'

@@ -1,4 +1,14 @@
+<div align="center" dir="ltr">
+
+**English** · [简体中文](docs/readme/README_zh.md) · [繁體中文](docs/readme/README_zh-TW.md) · [日本語](docs/readme/README_ja.md) · [한국어](docs/readme/README_ko.md) · [Türkçe](docs/readme/README_tr.md) · [Русский](docs/readme/README_ru.md) · [Tiếng Việt](docs/readme/README_vi.md) · [ไทย](docs/readme/README_th.md) · [Deutsch](docs/readme/README_de.md) · [Español](docs/readme/README_es.md) · [Français](docs/readme/README_fr.md) · [Українська](docs/readme/README_uk.md) · [Polski](docs/readme/README_pl.md) · [Português (Brasil)](docs/readme/README_pt-BR.md) · [العربية](docs/readme/README_ar.md) · [فارسی](docs/readme/README_fa.md) · [Bahasa Indonesia](docs/readme/README_id.md) · [Italiano](docs/readme/README_it.md) · [Ελληνικά](docs/readme/README_el.md) · [മലയാളം](docs/readme/README_ml.md) · [Roman Urdu](docs/readme/README_ur-Latn.md) · [Română](docs/readme/README_ro.md)
+
+</div>
+
 # Dune: Awakening Docker - Self-Hosted Server Console
+
+<p align="center">
+  <img src="assets/community-trending.svg" alt="Dune Awakening Community — #1 Repository Of The Day, Week, and Month" width="840" height="79">
+</p>
 
 ![Dune Awakening Self-Host Docker cover](assets/cover.png)
 
@@ -12,16 +22,16 @@ The project is experimental, and Funcom self-hosting behavior may change over ti
 
 ## What You Can Do
 
-- Set up and manage the server from your browser
-- Monitor status, logs, readiness, backups, and updates
-- Manage players, inventories, progression, rewards, vehicles, and admin actions
-- Control maps, Sietches, Deep Desert layouts, and live map activity
-- Configure memory, autoscaling, and game settings
-- Manage databases, bases, storage, and player blueprints
-- Plan, preview, and share base layouts in 3D with the Base Builder
-- Extend the console with optional Community Addons
+- **Deploy & Operate:** Guided browser setup, updates, service controls, scheduled restarts, restart queues, diagnostics, and recovery.
+- **See It Live:** Interactive world maps, player and vehicle tracking, resource locations, server health, performance, and logs.
+- **Control Arrakis:** Configure maps, Sietches, Deep Desert layouts, autoscaling, memory, gameplay settings, and **experimental Regis Tanks**.
+- **Manage Players:** Player and guild tools, inventories, progression, bases, storage, vehicles, Landsraad, rewards, and Care Packages.
+- **Run the Economy:** Browse Exchange listings and automate trading with the built-in Market Bot.
+- **Protect Your Server:** Database and encrypted system backups, restore and migration tools, access roles, scoped API keys, and encrypted API access.
+- **Build & Share:** Design bases in 3D, import and share blueprints, and showcase your server with a public profile and latency checks.
+- **Make It Yours:** Community Addons, Discord integration, multiple Console languages, and community translation corrections.
 
-See the [Screenshots Gallery](docs/screenshots.md) for a closer look.
+Take the controls and explore your command center! [Try the Console](https://try.dunedocker.app/) with sample data — no installation needed.
 
 ## Requirements
 
@@ -61,6 +71,7 @@ For public/internet hosting, forward these ports:
 | `31983` | TCP | RabbitMQ Game HTTP Endpoint |
 | `7777-7810` | UDP | Game Traffic |
 | `32000-32015` | UDP | Optional direct public-directory latency probes; relay remains available when closed |
+| `8797` | TCP | Optional encrypted API access (HTTPS); see [Encrypted API access](docs/console/encrypted-api.md) |
 
 Keep database and internal admin ports private. Do not expose the Web UI to untrusted users.
 
@@ -71,10 +82,18 @@ Run the installer from a regular user account with `sudo` access, not while logg
 Copy and paste this command on a fresh Linux server:
 
 ```sh
-sh -c 'set -eu; echo "==> Setting up Dune Docker Console..."; if command -v curl >/dev/null 2>&1; then _download() { curl -fsSL "$1"; }; _download_progress() { curl -fSL "$1"; }; _download_effective_url() { curl -fsSLI -o /dev/null -w "%{url_effective}" "$1"; }; elif command -v wget >/dev/null 2>&1; then _download() { wget -qO- "$1"; }; _download_progress() { wget -O- "$1"; }; _download_effective_url() { wget -qS --spider "$1" 2>&1 | grep -i "^ *Location:" | tail -1 | awk "{print \$2}"; }; else echo "==> Neither curl nor wget found. Installing prerequisites..."; if command -v apt-get >/dev/null 2>&1; then sudo apt-get update && sudo apt-get install -y ca-certificates curl tar; elif command -v dnf >/dev/null 2>&1; then sudo dnf install -y curl tar; elif command -v yum >/dev/null 2>&1; then sudo yum install -y curl tar; elif command -v zypper >/dev/null 2>&1; then sudo zypper install -y curl tar; elif command -v pacman >/dev/null 2>&1; then sudo pacman -Sy --noconfirm curl tar; elif command -v apk >/dev/null 2>&1; then sudo apk add --no-cache curl tar; elif command -v xbps-install >/dev/null 2>&1; then sudo xbps-install -Sy curl tar; else echo "Could not detect package manager. Please install curl or wget manually." >&2; exit 1; fi; _download() { curl -fsSL "$1"; }; _download_progress() { curl -fSL "$1"; }; _download_effective_url() { curl -fsSLI -o /dev/null -w "%{url_effective}" "$1"; }; fi; mkdir -p "$HOME/dune-awakening-selfhost-docker"; cd "$HOME/dune-awakening-selfhost-docker"; echo "==> Finding the latest release..."; latest_url="$(_download_effective_url https://github.com/Red-Blink/dune-awakening-selfhost-docker/releases/latest)"; version="${latest_url##*/}"; echo "==> Downloading dune-awakening-selfhost-docker ${version}..."; _download_progress "https://github.com/Red-Blink/dune-awakening-selfhost-docker/archive/refs/tags/${version}.tar.gz" | tar -xz --strip-components=1; chmod +x install.sh; echo "==> Starting the installer..."; ./install.sh'
+curl -fsSL https://raw.githubusercontent.com/Red-Blink/dune-awakening-selfhost-docker/main/bootstrap.sh | sh
 ```
 
 The installer downloads the latest release, starts the Web UI, and tells you which address to open. Complete the remaining setup in your browser.
+
+The default installation path is `~/dune-awakening-selfhost-docker`. To use a different Linux disk, set the complete destination explicitly:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Red-Blink/dune-awakening-selfhost-docker/main/bootstrap.sh | DUNE_INSTALL_DIR=/mnt/dune/dune-awakening-selfhost-docker sh
+```
+
+On Windows, run the command in the supported Linux VM or Ubuntu WSL2 terminal—not PowerShell, Command Prompt, or Docker Desktop's internal shell. The bootstrap checks that the destination is writable and has space before it extracts anything; failed downloads never leave a partially overwritten installation.
 
 On Alpine Linux, the installer uses the distribution's Docker and Docker Compose packages and starts Docker through OpenRC. If the community repository is unavailable, the installer asks before changing repository configuration.
 
@@ -113,7 +132,14 @@ Developers can start with the [Official Addon Template](https://github.com/Red-B
 
 ## Contributing
 
-Issues, fixes, and improvements are welcome. Keep secrets, generated runtime files, and backups out of Git, and never expose the Web UI to untrusted users.
+Dune Docker welcomes contributions from developers, server owners, and players. Check existing [issues](https://github.com/Red-Blink/dune-awakening-selfhost-docker/issues) and [pull requests](https://github.com/Red-Blink/dune-awakening-selfhost-docker/pulls) before starting to avoid duplicate work.
+
+- **Report Bugs:** Include your project version, steps to reproduce, and what you expected to happen. Add relevant logs or screenshots with passwords and personal information removed.
+- **Suggest Improvements:** Explain the problem your idea would solve and how it would help the community. Discuss larger changes in an issue before implementing them.
+- **Submit Pull Requests:** Keep changes focused, link related issues, and explain what changed and how you tested it.
+- **Help Beyond Code:** Improve documentation, test changes, create community addons, or suggest translation corrections directly from the Console.
+
+For questions or to discuss an idea, join the [Discord Community](https://discord.gg/duneawakeningdocker).
 
 ## Credits and License
 

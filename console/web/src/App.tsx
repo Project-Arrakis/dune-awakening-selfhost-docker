@@ -1,6 +1,7 @@
 import { Fragment, lazy, useCallback, useEffect, useRef, useState } from "react";
-import { Archive, Bug, Building2, Car, CircleHelp, Database, Download, ExternalLink, FileText, Gift, Heart, Home, Landmark, Map as MapIcon, Menu, MessageCircle, PackagePlus, RefreshCw, Server, Settings, Shield, Sparkles, Store, Users, X } from "lucide-react";
-import { api, AUTH_SESSION_EXPIRED_EVENT, AUTH_SESSION_EXPIRED_MESSAGE, post, setCsrfToken } from "./api/client";
+import { Archive, Bug, Building2, Car, CircleHelp, Database, Download, ExternalLink, FileText, Gift, Globe, Heart, Home, Landmark, Map as MapIcon, Menu, MessageCircle, PackagePlus, RefreshCw, Server, Settings, Shield, Sparkles, Store, Users, X } from "lucide-react";
+import { api, AUTH_SESSION_EXPIRED_EVENT, AUTH_SESSION_EXPIRED_MESSAGE, loginRequest, post, setCsrfToken } from "./api/client";
+import { TotpSetupScreen } from "./features/auth/TotpSetupScreen";
 import { setServerPorts, setAdminPort, type ServerPorts } from "./api/serverPorts";
 import { serverApi, type RestartQueueTarget } from "./api/server";
 import { updatesApi } from "./api/updates";
@@ -11,6 +12,7 @@ import { SetupWizard } from "./components/SetupWizard";
 import { TaskProgress } from "./components/TaskProgress";
 import { ConfirmDialog, type ConfirmDialogDetail, type ConfirmDialogOutcome, type ConfirmDialogRequest } from "./components/common/ConfirmDialog";
 import { LazyTabBoundary } from "./components/common/LazyTabBoundary";
+import { ThemeLauncher } from "./themes/ThemeLauncher";
 import type { RestartGateChoice } from "./features/server/restartQueueGuard";
 import { loadPinnedAddons, savePinnedAddons, type PinnedAddon } from "./features/addons/pinnedAddons";
 import { hasAddonUpdates } from "./features/addons/addonVersions";
@@ -30,17 +32,22 @@ import {
   stackActionPendingResult,
   type HomeLoadResult,
   type HomeTaskResult,
+  type StorageCleanupOperation,
   type RestartLifecycleState
 } from "./features/server/ServerPanels";
-import { parseUpdateTask, stackVersionButtonLabel, stackVersionButtonTitle } from "./features/updates/updateUtils";
+import { parseUpdateTask, stackVersionButtonLabel, preferKnownVersions, stackVersionButtonTitle, withInstalledVersion } from "./features/updates/updateUtils";
 import { formatUiSentence, stripAnsi, summarizeCommandText, titleCase } from "./lib/display";
 import { useStaleBuildWatcher } from "./lib/staleBuildWatcher";
+import { ConsoleLanguageObserver } from "./features/language/ConsoleLanguageObserver";
 
 // The array is the source of truth (not just a type-level union) so restoring
 // a persisted tab (see loadPersistedTab below) can validate against the real,
 // current list at runtime instead of a hand-duplicated copy that could drift.
-export const ALL_TABS = ["Home", "Server Control", "Services", "Players", "Guilds", "Bases", "Vehicles", "Exchange", "Landsraad", "Admin Tools", "Live Map", "Maps", "Care Package", "Addons", "Database", "Storage", "Backups", "Logs", "Updates", "Settings"] as const;
-type Tab = typeof ALL_TABS[number];
+export const ALL_TABS = ["Home", "Server Control", "Services", "Players", "Guilds", "Bases", "Vehicles", "Exchange", "Landsraad", "Admin Tools", "Live Map", "Maps", "Care Package", "Addons", "Language", "Database", "Storage", "Backups", "Logs", "Chat", "Updates", "Settings"] as const;
+// Exported so a panel routing to another tab types its destination against the
+// real list rather than `string`. Type-only, so a panel importing it back does
+// not create a runtime cycle.
+export type Tab = typeof ALL_TABS[number];
 const ACTIVE_TAB_STORAGE_KEY = "dune-console:active-tab";
 
 // Persisted in sessionStorage, not localStorage: it should survive the
@@ -93,13 +100,15 @@ type PublicDirectoryStatus = {
 let openConfirmDialog: ((request: ConfirmDialogRequest) => void) | null = null;
 
 const AddonsPanel = lazy(() => import("./features/addons/AddonsPanel").then((module) => ({ default: module.AddonsPanel })));
+const LanguagePanel = lazy(() => import("./features/language/LanguagePanel").then((module) => ({ default: module.LanguagePanel })));
 const AdminToolsPanel = lazy(() => import("./features/adminTools/AdminToolsPanel").then((module) => ({ default: module.AdminToolsPanel })));
-const BasesPanel = lazy(() => import("./features/bases/BasesPanel").then((module) => ({ default: module.BasesPanel })));
+const BasesPage = lazy(() => import("./features/bases/BasesPage").then((module) => ({ default: module.BasesPage })));
 const BackupsPanel = lazy(() => import("./features/backups/BackupsPanel").then((module) => ({ default: module.BackupsPanel })));
 const CarePackagePanel = lazy(() => import("./features/carePackage/CarePackagePanel").then((module) => ({ default: module.CarePackagePanel })));
 const DatabasePanel = lazy(() => import("./features/database/DatabasePanel").then((module) => ({ default: module.DatabasePanel })));
 const GuildsPanel = lazy(() => import("./features/guilds/GuildsPanel").then((module) => ({ default: module.GuildsPanel })));
 const LogsPanel = lazy(() => import("./features/logs/LogsPanel").then((module) => ({ default: module.LogsPanel })));
+const ChatPanel = lazy(() => import("./features/chat/ChatPanel").then((module) => ({ default: module.ChatPanel })));
 const LiveMapPanel = lazy(() => import("./features/liveMap/LiveMapPanel").then((module) => ({ default: module.LiveMapPanel })));
 const LandsraadPanel = lazy(() => import("./features/landsraad/LandsraadPanel").then((module) => ({ default: module.LandsraadPanel })));
 const MapsPanel = lazy(() => import("./features/maps/MapsPanel").then((module) => ({ default: module.MapsPanel })));
@@ -331,6 +340,7 @@ const navGroups: { title: string; items: { tab: Tab; icon: React.ReactNode }[] }
       { tab: "Database", icon: <Database size={18} /> },
       { tab: "Updates", icon: <RefreshCw size={18} /> },
       { tab: "Logs", icon: <FileText size={18} /> },
+      { tab: "Chat", icon: <MessageCircle size={18} /> },
       { tab: "Settings", icon: <Settings size={18} /> }
     ]
   },
@@ -356,6 +366,39 @@ const navGroups: { title: string; items: { tab: Tab; icon: React.ReactNode }[] }
     ]
   }
 ];
+
+// The tabs the sidebar actually lists. Language is opened from the header;
+// "Services" and "Storage" render but have no nav entry, so Home routes must
+// check against this, not ALL_TABS -- landing on a tab
+// with no highlighted nav item and no way back reads as a broken jump.
+export const NAV_TABS: readonly Tab[] = navGroups.flatMap((group) => group.items.map((item) => item.tab));
+
+// One tick of the poll that decides when a start, stop or restart has finished.
+// Always fresh: a cached snapshot from mid-stop can end the action early. It
+// also moves Home's "Updated" clock, which this loop otherwise never touches.
+export async function loadRunningActionStatus(
+  load: (options: { fresh?: boolean }) => Promise<HomeLoadResult>,
+  setSampledAtMs: (ms: number) => void
+) {
+  const result = await load({ fresh: true });
+  if ((result.statusLoaded || result.readinessLoaded) && result.sampledAtMs) setSampledAtMs(result.sampledAtMs);
+  return result;
+}
+
+// A fresh status read takes ~4s on a loaded host, longer than the 3s tick, so
+// without this the ticks run status checks back to back for the whole action.
+export function skipWhileInFlight(tick: () => Promise<void>) {
+  let inFlight = false;
+  return async () => {
+    if (inFlight) return;
+    inFlight = true;
+    try {
+      await tick();
+    } finally {
+      inFlight = false;
+    }
+  };
+}
 
 const COMMUNITY_CONTRIBUTORS_URL = "https://github.com/Red-Blink/dune-awakening-selfhost-docker/graphs/contributors";
 const DUNE_DOCKER_WEBSITE_URL = "https://dunedocker.app/";
@@ -416,12 +459,24 @@ function AppFooter() {
 export function App() {
   const [auth, setAuth] = useState(false);
   const [password, setPassword] = useState("");
+  // Tier 3 second factor (RFC §2.3/§4). All inert unless the server actually
+  // asks for a code, so a console with CONSOLE_TOTP_ENABLED unset renders the
+  // same single password field it always has.
+  const [totpCode, setTotpCode] = useState("");
+  const [recoveryCode, setRecoveryCode] = useState("");
+  const [totpRequired, setTotpRequired] = useState(false);
+  const [recoveryAvailable, setRecoveryAvailable] = useState(false);
+  const [useRecoveryCode, setUseRecoveryCode] = useState(false);
+  const [setupMode, setSetupMode] = useState<"enroll" | "resetup" | null>(null);
+  const [settingsTotpOpen, setSettingsTotpOpen] = useState(false);
+  const [credentialRevision, setCredentialRevision] = useState(0);
   const [tab, setTab] = useActiveTab();
   // Bumped when a failure elsewhere (a restore that needs the game images)
   // sends the operator to Updates to install them. A nonce rather than a
   // boolean so a second failure re-triggers it after the first was handled.
   const [installGameFilesRequest, setInstallGameFilesRequest] = useState(0);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [languagePickerOpen, setLanguagePickerOpen] = useState(false);
   const [pinnedAddons, setPinnedAddons] = useState<PinnedAddon[]>(() => loadPinnedAddons());
   const [selectedPinnedAddonId, setSelectedPinnedAddonId] = useState("");
   const [addonUpdatesAvailable, setAddonUpdatesAvailable] = useState(false);
@@ -438,10 +493,18 @@ export function App() {
   const [task, setTask] = useState<Task | null>(null);
   const [backupRestoreTask, setBackupRestoreTask] = useState<Task | null>(null);
   const [homeTaskResult, setHomeTaskResult] = useState<HomeTaskResult | null>(null);
+  const [storageCleanupResult, setStorageCleanupResult] = useState<HomeTaskResult | null>(null);
+  const [storageCleanupOperation, setStorageCleanupOperation] = useState<StorageCleanupOperation>("");
   const [funcomTokenResult, setFuncomTokenResult] = useState<HomeTaskResult | null>(() => loadPersistedFuncomTokenResult());
   const [homeRunningAction, setHomeRunningAction] = useState<"start" | "stop" | "restart" | "">("");
   const [homeRestartStarted, setHomeRestartStarted] = useState(false);
+  // Lives here, not in HomePanel: status/readiness already survive a tab
+  // switch, and component state would reset the age to zero on every remount --
+  // which is what made every visit to Home flash "Updated 0s ago".
+  const [homeSampledAtMs, setHomeSampledAtMs] = useState(0);
   const [stackVersionStatus, setStackVersionStatus] = useState<Record<string, string>>({ status: "Checking", current: "", latest: "" });
+  const [installedVersion, setInstalledVersion] = useState("");
+  const stackBadgeStatus = withInstalledVersion(stackVersionStatus, installedVersion);
   const stackActionStartedAt = useRef(0);
   const stackActionReadyPolls = useRef(0);
   const stackRestartLifecycle = useRef<RestartLifecycleState>(createRestartLifecycleState());
@@ -477,6 +540,17 @@ export function App() {
       setRedeploySetupOpen(false);
       setConfirmRequest(null);
       setError(AUTH_SESSION_EXPIRED_MESSAGE);
+      // Without this, an expiry landing while totpRequired/setupMode is set
+      // leaves the login screen stuck -- no password field (totpRequired keeps
+      // rendering the code/recovery field), or a dead-end setup screen with no
+      // way back to plain login.
+      setTotpRequired(false);
+      setTotpCode("");
+      setRecoveryCode("");
+      setUseRecoveryCode(false);
+      setRecoveryAvailable(false);
+      setSetupMode(null);
+      setSettingsTotpOpen(false);
     };
     window.addEventListener(AUTH_SESSION_EXPIRED_EVENT, handleSessionExpired);
     return () => window.removeEventListener(AUTH_SESSION_EXPIRED_EVENT, handleSessionExpired);
@@ -487,11 +561,24 @@ export function App() {
   }, [pinnedAddons]);
 
   useEffect(() => {
-    api<{ authenticated: boolean; csrfToken: string | null; config?: { ports?: Partial<ServerPorts>; port?: number } }>("/api/auth/state").then((state) => {
+    api<{ authenticated: boolean; csrfToken: string | null; scope?: string | null; config?: { ports?: Partial<ServerPorts>; port?: number; version?: string } }>("/api/auth/state").then((state) => {
+      // A reload or second tab during two-factor setup: the enrollment-scope
+      // session is "authenticated" but can reach nothing except the setup
+      // routes, so resume the setup screen instead of rendering a console
+      // where every call is refused.
+      if (state.authenticated && (state.scope === "enroll" || state.scope === "resetup")) {
+        setCsrfToken(state.csrfToken);
+        setSetupMode(state.scope);
+        setServerPorts(state.config?.ports);
+        setAdminPort(state.config?.port);
+        setInstalledVersion(String(state.config?.version || ""));
+        return;
+      }
       setAuth(state.authenticated);
       setCsrfToken(state.csrfToken);
       setServerPorts(state.config?.ports);
       setAdminPort(state.config?.port);
+      setInstalledVersion(String(state.config?.version || ""));
     }).catch(() => undefined);
   }, []);
 
@@ -594,10 +681,67 @@ export function App() {
     request?.resolve(outcome);
   }
 
+  // Uses loginRequest, not post(), because every status this route returns
+  // (200 authenticated/enrollmentRequired/resetupRequired, 401 wrong-password/
+  // totpRequired/recoveryFailed, 429 rate-limited) is a real outcome to branch
+  // on -- there is no session yet at login time, so the shared
+  // session-expiry-on-401 handling used elsewhere would misrepresent all of them.
   async function login() {
-    const result = await post<{ authenticated: boolean; csrfToken: string }>("/api/auth/login", { password });
-    setCsrfToken(result.csrfToken);
-    setAuth(result.authenticated);
+    const body: Record<string, string> = { password };
+    if (useRecoveryCode && recoveryCode) body.recoveryCode = recoveryCode;
+    else if (totpRequired && totpCode) body.totpCode = totpCode;
+    const { status, body: result } = await loginRequest(body);
+
+    if (status === 200 && result.authenticated) {
+      setCsrfToken(String(result.csrfToken || ""));
+      setAuth(true);
+      setTotpRequired(false);
+      setTotpCode("");
+      setRecoveryCode("");
+      setUseRecoveryCode(false);
+      setRecoveryAvailable(false);
+      return;
+    }
+    if (status === 200 && (result.enrollmentRequired || result.resetupRequired)) {
+      setCsrfToken(String(result.csrfToken || ""));
+      setSetupMode(result.enrollmentRequired ? "enroll" : "resetup");
+      return;
+    }
+    if (status === 401 && result.totpRequired) {
+      setTotpRequired(true);
+      setRecoveryAvailable(Boolean(result.recoveryAvailable));
+      throw new Error(String(result.error || "Enter your authenticator code."));
+    }
+    if (status === 401 && result.recoveryFailed) {
+      throw new Error(String(result.error || "That recovery code was not accepted."));
+    }
+    throw new Error(String(result.error || "Sign-in failed."));
+  }
+
+  // After enrollment/re-setup the server invalidates that session and requires a
+  // fresh, normal password+TOTP login (RFC §4) -- return to the plain login form
+  // rather than assuming success.
+  function afterTotpSetup() {
+    // Also used as onCancel ("Back to sign in"): every OTHER terminal branch
+    // of this flow (a confirmed enrollment, a 409 already-configured) ends the
+    // server-side enrollment session; leaving via Cancel used to skip that,
+    // so the session (and any pending secret on it) stayed live for the rest
+    // of its TTL (review finding).
+    void post("/api/auth/logout").catch(() => { /* best effort -- proceed to login either way */ });
+    setSetupMode(null);
+    setPassword("");
+    setTotpCode("");
+    setRecoveryCode("");
+    setTotpRequired(false);
+    setUseRecoveryCode(false);
+    setCsrfToken(null);
+    // Owner-initiated enrollment (Settings -> Two-Factor Authentication, issue
+    // #665) reaches this function while `auth` is still true from the normal
+    // session it started in -- forced first-login enrollment never had this
+    // problem (auth was always false at this point). Without this, cancelling
+    // or completing setup left the app trying to render the authenticated
+    // shell against a session the server just invalidated above.
+    setAuth(false);
   }
 
   async function logoutAfterPasswordChange() {
@@ -617,23 +761,31 @@ export function App() {
     try { await action(); } catch (err) { setError(err instanceof Error ? err.message : String(err)); }
   }
 
-  const loadStackStatus = useCallback(async () => {
+  // `fresh` is forwarded to the API to bypass its status cache. The in-flight
+  // dedupe below is deliberately not keyed on it: a cached read already in
+  // flight is fine to share, and the restart lifecycle re-polls on its own
+  // interval anyway.
+  const loadStackStatus = useCallback(async (options: { fresh?: boolean } = {}) => {
     if (stackStatusLoadRef.current) return stackStatusLoadRef.current;
     stackStatusLoadRef.current = (async () => {
       setError("");
       const [nextStatus, nextReadiness] = await Promise.allSettled([
-        withTimeout(serverApi.status(), 90000, "Server status check timed out."),
-        withTimeout(serverApi.readiness(), 90000, "Readiness check timed out.")
+        withTimeout(serverApi.status({ fresh: options.fresh }), 90000, "Server status check timed out."),
+        withTimeout(serverApi.readiness({ fresh: options.fresh }), 90000, "Readiness check timed out.")
       ]);
-      const result: HomeLoadResult = { statusLoaded: false, readinessLoaded: false, statusError: "", readinessError: "", statusText: "", readinessText: "" };
+      const result: HomeLoadResult = { statusLoaded: false, readinessLoaded: false, statusError: "", readinessError: "", statusText: "", readinessText: "", sampledAtMs: 0 };
       if (nextStatus.status === "fulfilled") {
         setStatus(nextStatus.value.stdout);
         result.statusText = nextStatus.value.stdout;
         result.statusLoaded = true;
+        // The server stamps when the command actually ran. Fall back to now for
+        // an older API that does not send it, so the age is never negative.
+        result.sampledAtMs = Date.parse(nextStatus.value.sampledAt || "") || Date.now();
       } else {
         result.statusError = nextStatus.reason instanceof Error ? nextStatus.reason.message : String(nextStatus.reason);
       }
       if (nextReadiness.status === "fulfilled") {
+        if (!result.sampledAtMs) result.sampledAtMs = Date.parse(nextReadiness.value.sampledAt || "") || Date.now();
         const readinessText = nextReadiness.value.stdout || nextReadiness.value.stderr || "";
         result.readinessText = readinessText;
         setReadiness(readinessText);
@@ -658,7 +810,7 @@ export function App() {
     setHomeRestartStarted(false);
     let active = true;
     async function refreshRunningAction() {
-      const result = await loadStackStatus().catch(() => null);
+      const result = await loadRunningActionStatus(loadStackStatus, setHomeSampledAtMs).catch(() => null);
       if (!active || !result) return;
       const statusText = result.statusText;
       const readinessText = result.readinessText;
@@ -676,8 +828,8 @@ export function App() {
           stackRestartSuccessAnnounced.current = true;
           setHomeTaskResult({ status: "succeeded", title: "Battlegroup Restarted Successfully" });
         }
-        if (isHomeActionComplete(statusText, readinessText)) setHomeRunningAction("");
-      } else if (homeRunningAction === "start" && elapsedMs >= 8000 && isHomeActionComplete(statusText, readinessText)) {
+        if (isHomeActionComplete(statusText, readinessText, elapsedMs)) setHomeRunningAction("");
+      } else if (homeRunningAction === "start" && elapsedMs >= 8000 && isHomeActionComplete(statusText, readinessText, elapsedMs)) {
         stackActionReadyPolls.current += 1;
         if (stackActionReadyPolls.current >= 2) {
           setHomeTaskResult({ status: "succeeded", title: "Battlegroup Started Successfully" });
@@ -689,8 +841,9 @@ export function App() {
         stackActionReadyPolls.current = 0;
       }
     }
-    const id = window.setInterval(refreshRunningAction, 3000);
-    refreshRunningAction();
+    const tick = skipWhileInFlight(refreshRunningAction);
+    const id = window.setInterval(tick, 3000);
+    tick();
     return () => {
       active = false;
       window.clearInterval(id);
@@ -719,23 +872,72 @@ export function App() {
     void (async () => {
       try {
         const final = await waitForTaskSilently((await updatesApi.checkStack()).task);
-        if (!cancelled) setStackVersionStatus(parseUpdateTask(final));
+        if (!cancelled) setStackVersionStatus((previous) => preferKnownVersions(previous, parseUpdateTask(final)));
       } catch {
-        if (!cancelled) setStackVersionStatus({ status: "Unavailable", current: "", latest: "" });
+        if (!cancelled) setStackVersionStatus((previous) => preferKnownVersions(previous, { status: "Unavailable", current: "", latest: "" }));
       }
     })();
     return () => { cancelled = true; };
   }, [auth, setupComplete]);
 
+  if (setupMode) {
+    return <TotpSetupScreen mode={setupMode} onComplete={afterTotpSetup} onCancel={afterTotpSetup} />;
+  }
+
   if (!auth) {
+    const passwordFields = totpRequired ? (
+      <div className="login-password-fields">
+        {useRecoveryCode ? (
+          <input
+            type="text"
+            id="login-recovery-code"
+            name="login-recovery-code"
+            aria-label="Recovery code"
+            autoComplete="one-time-code"
+            value={recoveryCode}
+            onChange={(event) => setRecoveryCode(event.target.value)}
+            placeholder="Recovery code"
+            autoFocus
+          />
+        ) : (
+          <input
+            type="text"
+            id="login-totp-code"
+            name="login-totp-code"
+            aria-label="Authenticator code"
+            autoComplete="one-time-code"
+            inputMode="numeric"
+            value={totpCode}
+            onChange={(event) => setTotpCode(event.target.value)}
+            placeholder="Authenticator code"
+            autoFocus
+          />
+        )}
+        <button type="submit" className="login-primary-button">Sign In</button>
+        {recoveryAvailable && (
+          <button
+            type="button"
+            className="login-password-toggle"
+            onClick={() => { setUseRecoveryCode(!useRecoveryCode); setTotpCode(""); setRecoveryCode(""); }}
+          >
+            {useRecoveryCode ? "Use your authenticator instead" : "Lost access to your authenticator?"}
+          </button>
+        )}
+      </div>
+    ) : (
+      <div className="login-password-fields">
+        <input type="password" id="login-admin-password" name="login-admin-password" aria-label="Admin password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Admin Password" />
+        <button type="submit" className="login-primary-button">Sign In</button>
+      </div>
+    );
     return (
       <main className="login-screen">
+        <ConsoleLanguageObserver />
         <form className="login-panel" onSubmit={(event) => { event.preventDefault(); void safe(login); }}>
           <h1>Dune Docker Console</h1>
           <img className="login-logo" src="/dune-docker-logo.png" alt="Dune Docker Console logo" />
           <p>Beyond the Dunes, Every Choice Shapes the Future</p>
-          <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Admin Password" />
-          <button type="submit">Sign In</button>
+          {passwordFields}
           {error && <p className="error">{error === AUTH_SESSION_EXPIRED_MESSAGE
             ? <>Your browser login session expired.<br />Sign in again to continue.</>
             : error}</p>}
@@ -758,6 +960,7 @@ export function App() {
   if (firstRunSetup) {
     return (
       <div className="app-shell setup-only-shell">
+        <ConsoleLanguageObserver />
         <main className="home-main setup-main">
           <div className="home-backdrop" aria-hidden="true">
             <span className="home-sand-fine" />
@@ -795,12 +998,13 @@ export function App() {
 
   return (
     <div className="app-shell">
+      <ConsoleLanguageObserver />
       <aside className="sidebar">
         <div className="sidebar-brand">
           <button className="sidebar-home-button" type="button" onClick={() => { setRedeploySetupOpen(false); setTab("Home"); closeMobileNav(); }} title="Open Home">
             <h1>Dune Docker Console</h1>
           </button>
-          <button className="stack-version-button" title={stackVersionButtonTitle(stackVersionStatus)} aria-label={stackVersionButtonTitle(stackVersionStatus)} onClick={() => { setRedeploySetupOpen(false); setTab("Updates"); closeMobileNav(); }}>{stackVersionButtonLabel(stackVersionStatus)}</button>
+          <button className="stack-version-button" title={stackVersionButtonTitle(stackBadgeStatus)} aria-label={stackVersionButtonTitle(stackBadgeStatus)} onClick={() => { setRedeploySetupOpen(false); setTab("Updates"); closeMobileNav(); }}>{stackVersionButtonLabel(stackBadgeStatus)}</button>
           <button
             className="sidebar-menu-toggle"
             type="button"
@@ -836,9 +1040,9 @@ export function App() {
               ))}
               {group.title === "Community" && (
                 <>
-                  <a className="sidebar-request-button" href={REDBLINK_DISCORD_URL} target="_blank" rel="noreferrer"><MessageCircle size={18} />Requests</a>
-                  <a className="sidebar-request-button" href={REDBLINK_DISCORD_URL} target="_blank" rel="noreferrer"><Bug size={18} />Report Issues</a>
-                  <a className="sidebar-request-button" href={REDBLINK_DISCORD_URL} target="_blank" rel="noreferrer"><CircleHelp size={18} />Get Help</a>
+                  <a className="sidebar-request-button" href={REDBLINK_DISCORD_URL} target="_blank" rel="noreferrer"><span className="sidebar-nav-main"><MessageCircle size={18} aria-hidden="true" /><span>Requests</span></span><ExternalLink className="sidebar-external-link" size={14} aria-hidden="true" /></a>
+                  <a className="sidebar-request-button" href={REDBLINK_DISCORD_URL} target="_blank" rel="noreferrer"><span className="sidebar-nav-main"><Bug size={18} aria-hidden="true" /><span>Report Issues</span></span><ExternalLink className="sidebar-external-link" size={14} aria-hidden="true" /></a>
+                  <a className="sidebar-request-button" href={REDBLINK_DISCORD_URL} target="_blank" rel="noreferrer"><span className="sidebar-nav-main"><CircleHelp size={18} aria-hidden="true" /><span>Get Help</span></span><ExternalLink className="sidebar-external-link" size={14} aria-hidden="true" /></a>
                 </>
               )}
             </section>
@@ -865,14 +1069,27 @@ export function App() {
               rel="noreferrer"
               title="Open Public Server Listing"
             >{publicDirectoryStatus.listingClaimed ? "Claimed Listing" : "Unclaimed Listing"}</a>}
+            <button
+              className="community-button language-shortcut"
+              type="button"
+              title="Console Language"
+              aria-label="Console Language"
+              aria-haspopup="dialog"
+              aria-expanded={languagePickerOpen || tab === "Language"}
+              onClick={() => {
+                setLanguagePickerOpen(true);
+                closeMobileNav();
+              }}
+            ><Globe size={19} aria-hidden="true" /></button>
+            <ThemeLauncher onOpen={closeMobileNav} />
             <a className="community-button discord" href={REDBLINK_DISCORD_URL} target="_blank" rel="noreferrer" title="Join Discord"><span>Join Discord</span><DiscordLogo size={19} /></a>
             <a className="community-button support" href={REDBLINK_KOFI_URL} target="_blank" rel="noreferrer" title="Support Project"><span>Support Project</span><KofiLogo size={19} /></a>
           </div>
         </header>
         {error && <div className="error-banner">{error}</div>}
         {redeploySetupOpen && <SetupWizard initialStep={setupJump.step} jumpNonce={setupJump.nonce} mode="redeploy" onSetupComplete={async () => setSetupState(await setupApi.state())} />}
-        {!redeploySetupOpen && tab === "Home" && <HomePanel status={status} readiness={readiness} taskResult={homeTaskResult} setTaskResult={setHomeTaskResult} funcomTokenResult={funcomTokenResult} setFuncomTokenResult={setFuncomTokenResult} runningAction={homeRunningAction} restartStartObserved={homeRestartStarted} setRunningAction={setHomeRunningAction} onLoad={loadStackStatus} confirmAction={confirmDialog} restartGate={restartGateChoice} />}
-        {!redeploySetupOpen && tab === "Server Control" && <ServerPanel setTask={setTask} setStatus={setStatus} status={status} setReadiness={setReadiness} setPorts={setPorts} setDoctor={setDoctor} ports={ports} readiness={readiness} doctor={doctor} taskResult={homeTaskResult} setTaskResult={setHomeTaskResult} funcomTokenResult={funcomTokenResult} setFuncomTokenResult={setFuncomTokenResult} runningAction={homeRunningAction} restartStartObserved={homeRestartStarted} setRunningAction={setHomeRunningAction} onError={setError} confirmAction={confirmDialog} restartGate={restartGateChoice} onRedeploy={() => {
+        {!redeploySetupOpen && tab === "Home" && <HomePanel status={status} readiness={readiness} taskResult={homeTaskResult} setTaskResult={setHomeTaskResult} funcomTokenResult={funcomTokenResult} setFuncomTokenResult={setFuncomTokenResult} runningAction={homeRunningAction} restartStartObserved={homeRestartStarted} setRunningAction={setHomeRunningAction} onLoad={loadStackStatus} confirmAction={confirmDialog} restartGate={restartGateChoice} sampledAtMs={homeSampledAtMs} setSampledAtMs={setHomeSampledAtMs} onNavigate={(nextTab) => { setRedeploySetupOpen(false); setSelectedPinnedAddonId(""); setTab(nextTab); }} />}
+        {!redeploySetupOpen && tab === "Server Control" && <ServerPanel setTask={setTask} setStatus={setStatus} status={status} setReadiness={setReadiness} setPorts={setPorts} setDoctor={setDoctor} ports={ports} readiness={readiness} doctor={doctor} storageCleanupResult={storageCleanupResult} setStorageCleanupResult={setStorageCleanupResult} storageCleanupOperation={storageCleanupOperation} setStorageCleanupOperation={setStorageCleanupOperation} taskResult={homeTaskResult} setTaskResult={setHomeTaskResult} funcomTokenResult={funcomTokenResult} setFuncomTokenResult={setFuncomTokenResult} runningAction={homeRunningAction} restartStartObserved={homeRestartStarted} setRunningAction={setHomeRunningAction} onError={setError} confirmAction={confirmDialog} restartGate={restartGateChoice} onRedeploy={() => {
           setSetupJump((current) => ({ step: 0, nonce: current.nonce + 1 }));
           setSelectedPinnedAddonId("");
           setRedeploySetupOpen(true);
@@ -880,7 +1097,7 @@ export function App() {
         {!redeploySetupOpen && tab === "Services" && <LazyTabBoundary label="Loading Services"><ServicesPanel services={services} setServices={setServices} setTask={setTask} openLogs={(service) => { setRedeploySetupOpen(false); setSelectedLogService(service); setTab("Logs"); }} onError={setError} confirmAction={confirmDialog} restartGate={restartGateChoice} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Players" && <LazyTabBoundary label="Loading Players"><PlayersPanel onError={setError} confirmAction={confirmDialog} onOpenBase={(baseId) => { setBaseFocusRequest((current) => ({ baseId, nonce: current.nonce + 1 })); setTab("Bases"); }} renderCharacterAdmin={(props) => <LazyTabBoundary label="Loading Player Details"><CharacterAdminUI {...props} onError={setError} confirmAction={confirmDialog} waitForTask={waitForTaskSilently} formatMutationResult={formatMutationResult} restartGate={restartGateChoice} /></LazyTabBoundary>} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Guilds" && <LazyTabBoundary label="Loading Guilds"><GuildsPanel onError={setError} confirmAction={confirmDialog} /></LazyTabBoundary>}
-        {!redeploySetupOpen && tab === "Bases" && <LazyTabBoundary label="Loading Bases"><BasesPanel onError={setError} confirmAction={confirmDialog} restartGate={restartGateChoice} formatMutationResult={formatMutationResult} focusRequest={baseFocusRequest} /></LazyTabBoundary>}
+        {!redeploySetupOpen && tab === "Bases" && <LazyTabBoundary label="Loading Bases"><BasesPage onError={setError} confirmAction={confirmDialog} restartGate={restartGateChoice} formatMutationResult={formatMutationResult} focusRequest={baseFocusRequest} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Vehicles" && <LazyTabBoundary label="Loading Vehicles"><VehiclesPanel onError={setError} confirmAction={confirmDialog} formatMutationResult={formatMutationResult} focusRequest={vehicleFocusRequest} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Exchange" && <LazyTabBoundary label="Loading Market Board"><ExchangePanel onError={setError} confirmAction={confirmDialog} formatMutationResult={formatMutationResult} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Landsraad" && <LazyTabBoundary label="Loading Landsraad"><LandsraadPanel onError={setError} confirmAction={confirmDialog} restartGate={restartGateChoice} /></LazyTabBoundary>}
@@ -889,6 +1106,7 @@ export function App() {
         {!redeploySetupOpen && tab === "Maps" && <LazyTabBoundary label="Loading Maps"><MapsPanel onError={setError} confirmAction={confirmDialog} restartGate={restartGateChoice} confirmSettingsRestart={confirmSettingsRestart} waitForTaskWithUpdates={waitForTaskWithUpdates} taskTechnicalDetails={taskTechnicalDetails} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Care Package" && <LazyTabBoundary label="Loading Care Package"><CarePackagePanel onError={setError} confirmAction={confirmDialog} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Addons" && <LazyTabBoundary label="Loading Addons"><AddonsPanel pinnedAddons={pinnedAddons} setPinnedAddons={setPinnedAddons} selectedAddonId={selectedPinnedAddonId} clearSelectedAddon={() => setSelectedPinnedAddonId("")} setAddonUpdateAvailable={setAddonUpdatesAvailable} confirmAction={confirmDialog} /></LazyTabBoundary>}
+        {(languagePickerOpen || tab === "Language") && <LazyTabBoundary label="Loading Language"><LanguagePanel onClose={() => {setLanguagePickerOpen(false);if(tab === "Language")setTab("Home");}} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Database" && <LazyTabBoundary label="Loading Database"><DatabasePanel /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Storage" && <LazyTabBoundary label="Loading Storage"><StoragePanel onError={setError} confirmAction={confirmDialog} formatMutationResult={formatMutationResult} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Backups" && <LazyTabBoundary label="Loading Backups"><BackupsPanel
@@ -911,9 +1129,12 @@ export function App() {
             isTerminalTask={isTerminalTask}
           /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Logs" && <LazyTabBoundary label="Loading Logs"><LogsPanel selectedService={selectedLogService} setSelectedService={setSelectedLogService} text={logs} setText={setLogs} onError={setError} /></LazyTabBoundary>}
+        {!redeploySetupOpen && tab === "Chat" && <LazyTabBoundary label="Loading Chat"><ChatPanel onError={setError} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Updates" && <LazyTabBoundary label="Loading Updates"><UpdatesPanel
             installGameFilesRequest={installGameFilesRequest}
             onInstallGameFilesHandled={() => setInstallGameFilesRequest(0)}
+            onStackStatus={setStackVersionStatus}
+            installedConsoleVersion={installedVersion}
             confirmAction={confirmDialog}
             waitForTask={waitForTaskSilently}
             parseKeyValueText={parseKeyValueText}
@@ -927,11 +1148,22 @@ export function App() {
           onPasswordChanged={logoutAfterPasswordChange}
           publicListingUrl={publicDirectoryStatus?.serverId ? publicServerListingUrl(publicDirectoryStatus.serverId) : undefined}
           confirmAction={confirmDialog}
+          onTotpEnrollmentStarted={() => setSettingsTotpOpen(true)}
+          credentialRevision={credentialRevision}
         /></LazyTabBoundary>}
         {!redeploySetupOpen && tab !== "Maps" && <TaskProgress task={task} onDismiss={() => setTask(null)} />}
         <AppFooter />
       </main>
       <ConfirmDialog request={confirmRequest} onClose={closeConfirmDialog} />
+      {settingsTotpOpen && <TotpSetupScreen mode="enroll" presentation="dialog" onComplete={continued => {
+        setSettingsTotpOpen(false);
+        if (continued) setCredentialRevision(value => value + 1);
+        else afterTotpSetup();
+      }} onCancel={continued => {
+        setSettingsTotpOpen(false);
+        if (continued) setCredentialRevision(value => value + 1);
+        else afterTotpSetup();
+      }} />}
     </div>
   );
 }

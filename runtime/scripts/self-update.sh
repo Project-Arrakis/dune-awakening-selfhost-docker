@@ -117,6 +117,9 @@ SELF_UPDATE_STATUS_STARTED_AT=""
 SELF_UPDATE_STATUS_FINALIZED=0
 SELF_UPDATE_STATUS_STAGE="launching"
 SELF_UPDATE_STATUS_PERCENT=1
+if [[ "$SELF_UPDATE_RUN_ID" =~ ^[0-9a-fA-F-]{36}$ ]]; then
+  echo "Console update run: $SELF_UPDATE_RUN_ID"
+fi
 
 self_update_status_enabled() {
   [[ "$SELF_UPDATE_RUN_ID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$ ]]
@@ -179,7 +182,11 @@ self_update_on_exit() {
   local rc=$?
   trap - EXIT
   if self_update_status_enabled && [ "$SELF_UPDATE_STATUS_FINALIZED" != "1" ] && [ "$rc" -ne 0 ]; then
-    self_update_write_status failed "$SELF_UPDATE_STATUS_STAGE" "$SELF_UPDATE_STATUS_PERCENT" "Console update failed. Review runtime/generated/web-self-update.log for details." "$(date -Is)" || true
+    # api_get runs inside command substitutions. Its shell flags cannot reach
+    # this parent, but its durable, run-specific failure record can.
+    if ! grep -qx 'state=failed' "$SELF_UPDATE_STATUS_DIR/$SELF_UPDATE_RUN_ID.env" 2>/dev/null; then
+      self_update_write_status failed "$SELF_UPDATE_STATUS_STAGE" "$SELF_UPDATE_STATUS_PERCENT" "Console update failed. Review runtime/generated/web-self-update.log for details." "$(date -Is)" || true
+    fi
   fi
   exit "$rc"
 }
@@ -244,6 +251,13 @@ github_curl_headers() {
 }
 
 api_curl_common_args() {
+  if [ "$cmd" = "check" ] || [ "$cmd" = "status" ]; then
+    # Two REST probes plus the existing 20s web fallback stay well inside the
+    # Console's polling window. Downloads/install retries remain unchanged.
+    printf '%s\n' --connect-timeout 10 --max-time 15 --retry 0
+    github_curl_headers
+    return
+  fi
   printf '%s\n' \
     --connect-timeout 15 \
     --max-time 60 \
@@ -275,18 +289,20 @@ download_archive_with_progress() {
   local url="$1"
   local out="$2"
   local label="$3"
-  local timeout_seconds interval_seconds error_file curl_pid curl_rc bytes megabytes ticks=0
+  local timeout_seconds interval_seconds error_file headers_file limit_message curl_pid curl_rc bytes megabytes ticks=0
   local -a curl_args
 
   timeout_seconds="$(self_update_download_timeout_seconds)"
   interval_seconds="$(self_update_progress_interval_seconds)"
   error_file="$(mktemp)"
+  headers_file="$(mktemp)"
   mapfile -t curl_args < <(github_curl_headers)
 
   self_update_running downloading 20 "$label (starting download)."
   set +e
   timeout --signal=TERM --kill-after=10 "${timeout_seconds}s" \
     curl -fsSL \
+      --dump-header "$headers_file" \
       "${curl_args[@]}" \
       --connect-timeout 15 \
       --retry 3 \
@@ -315,7 +331,11 @@ download_archive_with_progress() {
   curl_rc=$?
   set -e
   if [ "$curl_rc" -ne 0 ]; then
-    if [ "$curl_rc" -eq 124 ]; then
+    limit_message="$(python3 runtime/scripts/http-rate-limit.py "$headers_file")"
+    if [ -n "$limit_message" ]; then
+      self_update_finish_failure downloading 20 "$limit_message"
+      echo "$limit_message" >&2
+    elif [ "$curl_rc" -eq 124 ]; then
       self_update_finish_failure downloading 20 "$label timed out after ${timeout_seconds} seconds. Check the server's connection to GitHub, then retry."
       echo "$label timed out after ${timeout_seconds} seconds." >&2
     elif [ -s "$error_file" ]; then
@@ -324,11 +344,11 @@ download_archive_with_progress() {
     else
       self_update_finish_failure downloading 20 "$label failed after retrying. Check the server's connection to GitHub, then retry."
     fi
-    rm -f "$error_file"
+    rm -f "$error_file" "$headers_file"
     return "$curl_rc"
   fi
 
-  rm -f "$error_file"
+  rm -f "$error_file" "$headers_file"
   bytes="$(stat -c '%s' "$out" 2>/dev/null || printf '0')"
   [[ "$bytes" =~ ^[0-9]+$ ]] || bytes=0
   if [ "$bytes" -le 0 ]; then
@@ -342,19 +362,21 @@ download_archive_with_progress() {
 
 api_get() {
   local path="$1"
-  local tmp_body
+  local tmp_body tmp_headers limit_message
   local http_code
   local curl_rc
   local -a curl_args
 
   API_LAST_STATUS=""
   tmp_body="$(mktemp)"
+  tmp_headers="$(mktemp)"
   mapfile -t curl_args < <(api_curl_common_args)
 
   set +e
   http_code="$(
     curl -sSL \
       "${curl_args[@]}" \
+      --dump-header "$tmp_headers" \
       -o "$tmp_body" \
       -w '%{http_code}' \
       "${GITHUB_API_BASE}/repos/${GITHUB_REPO}${path}"
@@ -363,18 +385,23 @@ api_get() {
   set -e
 
   if [ "$curl_rc" -ne 0 ]; then
-    rm -f "$tmp_body"
+    rm -f "$tmp_body" "$tmp_headers"
     return "$curl_rc"
   fi
 
   API_LAST_STATUS="$http_code"
   if [ "${http_code:-000}" -lt 200 ] || [ "${http_code:-000}" -ge 300 ]; then
-    rm -f "$tmp_body"
+    limit_message="$(python3 runtime/scripts/http-rate-limit.py "$tmp_headers" "$tmp_body")"
+    if [ -n "$limit_message" ]; then
+      echo "$limit_message" >&2
+      self_update_finish_failure "$SELF_UPDATE_STATUS_STAGE" "$SELF_UPDATE_STATUS_PERCENT" "$limit_message"
+    fi
+    rm -f "$tmp_body" "$tmp_headers"
     return 22
   fi
 
   cat "$tmp_body"
-  rm -f "$tmp_body"
+  rm -f "$tmp_body" "$tmp_headers"
 }
 
 print_release_fetch_failure() {
@@ -426,7 +453,7 @@ print(value if value is not None else "")' "$field"
 
 latest_release_tag_from_releases_list() {
   local json
-  json="$(releases_json 2>/dev/null)" || return 1
+  json="$(releases_json)" || return 1
   [ -n "$json" ] || return 1
   printf '%s' "$json" | python3 -c 'import json, sys
 try:
@@ -479,7 +506,7 @@ read_cached_latest_release_tag() {
 latest_release_tag() {
   local json tag
 
-  json="$(latest_release_json 2>/dev/null)" || true
+  json="$(latest_release_json)" || true
   if [ -n "$json" ]; then
     tag="$(printf '%s' "$json" | extract_json_field tag_name 2>/dev/null || true)"
     if [ -n "$tag" ]; then
@@ -488,7 +515,7 @@ latest_release_tag() {
     fi
   fi
 
-  tag="$(latest_release_tag_from_releases_list 2>/dev/null || true)"
+  tag="$(latest_release_tag_from_releases_list || true)"
   if [ -n "$tag" ]; then
     printf '%s' "$tag"
     return 0
@@ -499,7 +526,7 @@ latest_release_tag() {
 
 list_release_rows() {
   local json
-  json="$(releases_json 2>/dev/null)" || return 1
+  json="$(releases_json)" || return 1
   [ -n "$json" ] || return 1
   printf '%s' "$json" | python3 -c 'import json, sys
 try:
@@ -523,7 +550,7 @@ for release in data:
 release_tarball_url() {
   local tag="$1"
   local json
-  json="$(api_get "/releases/tags/${tag}" 2>/dev/null)" || return 1
+  json="$(api_get "/releases/tags/${tag}")" || return 1
   [ -n "$json" ] || return 1
   printf '%s' "$json" | extract_json_field tarball_url
 }
@@ -642,6 +669,7 @@ local_state_paths() {
   cat <<'EOF'
 .env
 runtime/generated/battlegroup.env
+runtime/generated/experimental-tanks.json
 runtime/generated/db-backup.env
 runtime/generated/director-character-transfer.ini
 runtime/generated/director-capacity.ini
@@ -695,22 +723,48 @@ print_local_state_not_readable() {
   echo "No release files were replaced."
 }
 
-ensure_local_state_readable() {
+first_unreadable_local_state_path() {
   local path
 
   while IFS= read -r path; do
     [ -e "$path" ] || continue
     if [ ! -f "$path" ] || [ ! -r "$path" ]; then
-      print_local_state_not_readable "$path"
-      exit 13
+      printf '%s\n' "$path"
+      return 0
     fi
   done < <(local_state_paths)
 }
 
+ensure_local_state_readable() {
+  local blocked repair_attempted=0 repair_script="runtime/scripts/repair-host-runtime-permissions.sh"
+
+  blocked="$(first_unreadable_local_state_path)"
+  [ -n "$blocked" ] || return 0
+
+  # A root-run restart, such as the game auto-update, can leave state files
+  # root-owned. Try the supported repair once; it cannot fix a non-file path.
+  if [ -f "$blocked" ] && [ -x "$repair_script" ]; then
+    echo "Local state file is not readable; repairing host-managed runtime ownership: $blocked"
+    # The repair can fix this file and still fail a later check, so re-check
+    # readability whatever it returns.
+    "$repair_script" || echo "Host runtime ownership repair reported a problem." >&2
+    blocked="$(first_unreadable_local_state_path)"
+    [ -n "$blocked" ] || return 0
+    repair_attempted=1
+  fi
+
+  print_local_state_not_readable "$blocked"
+  if [ "$repair_attempted" = "1" ]; then
+    echo "An automatic ownership repair was attempted and did not clear this path."
+  fi
+  exit 13
+}
+
 ensure_self_update_preflight() {
   ensure_self_update_writable
-  ensure_local_state_readable
+  # Docker access first: the local-state check may run a Docker-based repair.
   ensure_docker_access_for_console_rebuild
+  ensure_local_state_readable
 }
 
 download_release_archive() {
@@ -767,6 +821,7 @@ backup_current_stack() {
 remove_backed_up_project_files() {
   local backup_dir="$1"
   local manifest path relative target parent unsafe_path blocked_path
+  local -a removal_batch=()
 
   [ -s "$backup_dir/project-files.tgz" ] || return 0
   unsafe_path=""
@@ -788,7 +843,7 @@ remove_backed_up_project_files() {
     esac
     target="$ROOT_DIR/$relative"
     if [ -f "$target" ] || [ -L "$target" ]; then
-      parent="$(dirname "$target")"
+      parent="${target%/*}"
       if [ ! -w "$parent" ] || [ ! -x "$parent" ]; then
         blocked_path="$target"
         break
@@ -817,9 +872,16 @@ remove_backed_up_project_files() {
     [ -n "$relative" ] || continue
     target="$ROOT_DIR/$relative"
     if [ -f "$target" ] || [ -L "$target" ]; then
-      rm -f "$target"
+      removal_batch+=("$target")
+      if [ "${#removal_batch[@]}" -ge 256 ]; then
+        rm -f -- "${removal_batch[@]}"
+        removal_batch=()
+      fi
     fi
   done < "$manifest"
+  if [ "${#removal_batch[@]}" -gt 0 ]; then
+    rm -f -- "${removal_batch[@]}"
+  fi
 
   rm -f "$manifest"
 }
@@ -1118,7 +1180,7 @@ install_qa_commit() {
   remove_backed_up_project_files "$backup_dir"
   (
     cd "$src"
-    tar --exclude='.git' -cf - .
+    tar --owner="$DUNE_HOST_UID" --group="$DUNE_HOST_GID" --exclude='.git' -cf - .
   ) | (
     cd "$ROOT_DIR"
     tar -xf -
@@ -1177,7 +1239,9 @@ running_console_env_value() {
 
 host_repo_owner_id() {
   local field="$1"
-  local path="${HOST_ROOT_DIR:-$ROOT_DIR}"
+  # HOST_ROOT_DIR is for Docker bind sources, not local filesystem access.
+  # The update helper sees this checkout at /repo, not at its host pathname.
+  local path="$ROOT_DIR"
 
   if command -v stat >/dev/null 2>&1; then
     case "$field" in
@@ -1192,19 +1256,73 @@ host_repo_owner_id() {
 }
 
 normalize_host_owner_env() {
-  local owner_uid owner_gid
+  local owner_uid owner_gid saved_uid saved_gid incoming_uid identity_gid
 
   owner_uid="$(host_repo_owner_id uid)"
   owner_gid="$(host_repo_owner_id gid)"
+  saved_uid="$(read_env_file_value DUNE_HOST_UID 2>/dev/null || true)"
+  saved_gid="$(read_env_file_value DUNE_HOST_GID 2>/dev/null || true)"
+  incoming_uid="${DUNE_HOST_UID:-}"
+  identity_gid="$owner_gid"
 
-  if [ -z "${DUNE_HOST_UID:-}" ] || { [ "${DUNE_HOST_UID:-}" = "0" ] && [ -n "$owner_uid" ] && [ "$owner_uid" != "0" ]; }; then
-    DUNE_HOST_UID="${owner_uid:-$(id -u)}"
+  if [ -z "$incoming_uid" ] || [ "$incoming_uid" = "0" ]; then
+    if [[ "$saved_uid" =~ ^[0-9]+$ ]] && [ "$saved_uid" != "0" ]; then
+      DUNE_HOST_UID="$saved_uid"
+      identity_gid="${saved_gid:-$owner_gid}"
+    else
+      DUNE_HOST_UID="${owner_uid:-$(id -u)}"
+    fi
+  elif [ "$saved_uid" = "$incoming_uid" ]; then
+    identity_gid="${saved_gid:-$owner_gid}"
   fi
-  if [ -z "${DUNE_HOST_GID:-}" ] || { [ "${DUNE_HOST_GID:-}" = "0" ] && [ -n "$owner_gid" ] && [ "$owner_gid" != "0" ]; }; then
-    DUNE_HOST_GID="${owner_gid:-$(id -g)}"
+  # Treat an inherited root UID/GID as a pair. A non-root identity may
+  # legitimately have GID 0; do not silently change that explicit group.
+  if [ -z "${DUNE_HOST_GID:-}" ] || { [ "${DUNE_HOST_GID:-}" = "0" ] && { [ -z "$incoming_uid" ] || [ "$incoming_uid" = "0" ]; }; }; then
+    DUNE_HOST_GID="${identity_gid:-$(id -g)}"
+  fi
+  if ! [[ "$DUNE_HOST_UID" =~ ^[0-9]+$ && "$DUNE_HOST_GID" =~ ^[0-9]+$ ]]; then
+    echo "Invalid host identity. Set numeric DUNE_HOST_UID and DUNE_HOST_GID before updating." >&2
+    return 1
   fi
 
   export DUNE_HOST_UID DUNE_HOST_GID
+}
+
+run_update_as_host_owner() {
+  normalize_host_owner_env
+  [ "$(id -u)" = "0" ] && [ "$DUNE_HOST_UID" != "0" ] || return 0
+
+  # Older automatic-update units run as root. Drop privileges before creating
+  # locks, backups or source files, rather than repairing their ownership later.
+  # Python is already required for the update's local-state snapshot.
+  echo "Running Console update as installation owner $DUNE_HOST_UID:$DUNE_HOST_GID."
+  exec python3 - "$ROOT_DIR/runtime/scripts/self-update.sh" "$@" <<'PY'
+import os
+import pwd
+import sys
+
+uid, gid = int(os.environ['DUNE_HOST_UID']), int(os.environ['DUNE_HOST_GID'])
+groups = {gid}
+try:
+    account = pwd.getpwuid(uid)
+except KeyError:
+    account = None
+if account is not None:
+    groups.update(os.getgrouplist(account.pw_name, gid))
+    os.environ['HOME'] = account.pw_dir
+    os.environ['USER'] = os.environ['LOGNAME'] = account.pw_name
+try:
+    groups.add(os.stat('/var/run/docker.sock').st_gid)
+except FileNotFoundError:
+    pass
+try:
+    os.setgroups(sorted(groups))
+    os.setgid(gid)
+    os.setuid(uid)
+except OSError as error:
+    sys.exit(f'Cannot run update as installation owner: {error}. No update files were installed.')
+os.execv('/bin/bash', ['bash', *sys.argv[1:]])
+PY
 }
 
 restore_local_state_ownership() {
@@ -1218,6 +1336,8 @@ restore_local_state_ownership() {
     runtime/generated \
     runtime/generated/battlegroup.env \
     runtime/generated/db-backup.env \
+    runtime/generated/system-backup-auto.env \
+    runtime/generated/system-backup-auto-last.env \
     runtime/generated/director-character-transfer.ini \
     runtime/generated/director-capacity.ini \
     runtime/generated/director-deepdesert-dual.ini \
@@ -1253,6 +1373,9 @@ restore_local_state_ownership() {
     runtime/addons/state.json \
     runtime/secrets/public-directory.json \
     runtime/secrets/funcom-token.txt \
+    runtime/system-backup \
+    runtime/system-backup/passphrase \
+    runtime/system-backup/passphrase.json \
     2>/dev/null || true
 }
 
@@ -1315,6 +1438,7 @@ rebuild_web_console_now() {
   self_update_running restarting 94 "Restarting the updated web console."
   docker rm -f "$service" >/dev/null 2>&1 || true
   COMPOSE_PROJECT_NAME="$web_compose_project" DUNE_COMPOSE_PROJECT_NAME="$DUNE_COMPOSE_PROJECT_NAME" DUNE_HOST_REPO_ROOT="$HOST_ROOT_DIR" docker compose -f docker-compose.web.yml up -d --force-recreate "$service"
+  if [ -x runtime/scripts/tls-front.sh ]; then runtime/scripts/tls-front.sh reconcile; fi
 }
 
 reconcile_coriolis_coordinator_after_deploy() {
@@ -1382,6 +1506,11 @@ rebuild_web_console_after_update() {
     rebuild_web_console_now "$service"
     echo "Dune Docker Console was rebuilt successfully."
   fi
+}
+
+refresh_shutdown_protection_after_update() {
+  [ -x runtime/scripts/shutdown-protection.sh ] || return 0
+  runtime/scripts/shutdown-protection.sh refresh || true
 }
 
 install_cli_command_after_update() {
@@ -1490,7 +1619,7 @@ install_release_tag_from_archive() {
   remove_backed_up_project_files "$backup_dir"
   (
     cd "$src"
-    tar --exclude='.git' -cf - .
+    tar --owner="$DUNE_HOST_UID" --group="$DUNE_HOST_GID" --exclude='.git' -cf - .
   ) | (
     cd "$ROOT_DIR"
     tar -xf -
@@ -1523,6 +1652,7 @@ tag="${2:-}"
 
 case "$cmd" in
   rebuild-web-console)
+    run_update_as_host_owner "$@"
     dune_persist_compose_project_name "$ROOT_DIR" "$DUNE_COMPOSE_PROJECT_NAME"
     service="${tag:-}"
     if [ -z "$service" ]; then
@@ -1572,6 +1702,7 @@ case "$cmd" in
     ;;
 
   install|apply)
+    run_update_as_host_owner "$@"
     acquire_self_update_lock
     dune_persist_compose_project_name "$ROOT_DIR" "$DUNE_COMPOSE_PROJECT_NAME"
     if [ -z "$tag" ] || [ "$tag" = "latest" ]; then
@@ -1600,11 +1731,13 @@ case "$cmd" in
     ensure_self_update_preflight
     install_release_tag "$tag"
     install_cli_command_after_update
+    refresh_shutdown_protection_after_update
     rebuild_web_console_after_update
     self_update_finish_success
     ;;
 
   install-qa)
+    run_update_as_host_owner "$@"
     acquire_self_update_lock
     dune_persist_compose_project_name "$ROOT_DIR" "$DUNE_COMPOSE_PROJECT_NAME"
     validate_commit_sha "$tag" || {
@@ -1614,6 +1747,18 @@ case "$cmd" in
     ensure_self_update_preflight
     install_qa_commit "$tag"
     install_cli_command_after_update
+    # #1341 (Layer 3 review): this call was present in the install|apply
+    # branch above (Finding 1, CRITICAL) but missing here. A real operator
+    # upgrading via install|apply from a release that predates this
+    # migration runs the OLD, already-running script, which never migrates
+    # DISCORD_OBSERVER_ROLE_IDS -- install-qa's own script invocation is
+    # always fresh (it is downloaded/checked out, then run directly, never
+    # an already-running process), so an operator testing a QA build gets
+    # no belt-and-braces migration either, unlike install|apply's eventual
+    # second call once a release that HAS this fix is installed. Calling it
+    # here too closes that gap for the QA path.
+    migrate_discord_role_ids_env
+    refresh_shutdown_protection_after_update
     rebuild_web_console_after_update
     self_update_finish_success
     ;;

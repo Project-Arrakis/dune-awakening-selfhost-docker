@@ -3,12 +3,17 @@ import { Boxes, ChevronDown, ChevronUp, Trash2, X } from "lucide-react";
 import type { VehicleModule, VehicleRow, VehicleSharedEntry } from "../../api/vehicles";
 import { DataTable, type SortDirection } from "../../components/common/DataTable";
 import { cachedInstanceNames, resolveInstanceNames } from "../maps/instanceNames";
+import { sectorForWorldPoint } from "../liveMap/liveMapSectorGrid";
 import { friendlyMapName } from "../maps/mapNames";
 import { VehiclePermissionsTab } from "./VehiclePermissionsTab";
 import { VehicleStorageOverlay } from "./VehicleStorageOverlay";
 
 const GLOBAL_COLUMNS = ["name", "type", "owner", "shared_with", "condition_percent", "fuel_percent", "location"];
-const PLAYER_COLUMNS = ["name", "type", "relationship", "owner", "condition_percent", "fuel_percent", "location"];
+const PLAYER_COLUMNS = ["name", "type", "condition_percent", "fuel_percent", "location"];
+// Shown when a player's list mixes access levels; hidden when every row is the same level.
+const PLAYER_ACCESS_COLUMNS = ["name", "type", "relationship", "owner", "condition_percent", "fuel_percent", "location"];
+// Co-owner view: every row has the same access level but the owner differs, so keep Owner only.
+const PLAYER_OWNER_COLUMNS = ["name", "type", "owner", "condition_percent", "fuel_percent", "location"];
 const COLUMN_LABELS: Record<string, string> = {
   name: "Vehicle",
   type: "Type",
@@ -23,6 +28,8 @@ const COLUMN_LABELS: Record<string, string> = {
 type VehicleTableProps = {
   rows: VehicleRow[];
   context?: "global" | "player";
+  showAccessColumns?: boolean;
+  showOwnerColumn?: boolean;
   emptyMessage?: string;
   sortColumn?: string;
   sortDirection?: SortDirection;
@@ -42,6 +49,9 @@ type VehicleTableProps = {
   // shipped), so PlayerVehiclesTab's mount is unaffected until these are
   // deliberately wired through there too.
   canDeleteVehicle?: boolean;
+  // capabilities.vehicleStoredDelete. Off, a Stored for Recovery row stays
+  // blocked.
+  canDeleteStoredVehicle?: boolean;
   // Whether the server can read a vehicle's cargo hold at all
   // (capabilities.vehicleStorage). Off by default so a mount that does not
   // pass it through never offers a button that comes back unsupported.
@@ -105,6 +115,14 @@ function vehicleLifecycleLocation(row: VehicleRow) {
   }
 }
 
+// States the server refuses to delete, as tooltips. VehicleRecovery applies
+// only when canDeleteStoredVehicle is off.
+const DELETE_BLOCKED_REASONS: Record<string, string> = {
+  Travel: "In Transit — cannot be deleted until it arrives",
+  VehicleBackup: "In Vehicle Backup — cannot be deleted until its owner takes it back out",
+  VehicleRecovery: "Stored for Recovery — cannot be deleted as an ordinary vehicle"
+};
+
 function formatMapPartition(row: VehicleRow, instanceNames: Map<string, string>) {
   const rawMap = String(row.map || "").trim();
   const lifecycleLocation = vehicleLifecycleLocation(row);
@@ -126,9 +144,9 @@ function mapGridSector(row: VehicleRow): string | null {
   const x = toNumber(row.x);
   const y = toNumber(row.y);
   if (x === null || y === null) return null;
-  const letter = String.fromCharCode(65 + Math.max(0, Math.min(8, Math.floor((1125000 - y) / 250000))));
-  const number = Math.max(0, Math.min(8, Math.floor((x + 1125000) / 250000))) + 1;
-  return `${letter}-${number}`;
+  // Same grid as the Live Map; null outside it rather than a clamped edge cell.
+  const sector = sectorForWorldPoint(x, y);
+  return sector ? `${sector[0]}-${sector.slice(1)}` : null;
 }
 
 function formatDurability(value: unknown): string {
@@ -190,9 +208,9 @@ function renderComponent(module: VehicleModule, index: number) {
 }
 
 export function VehicleTable({
-  rows, context = "global", emptyMessage = "No vehicles have been found yet.", sortColumn, sortDirection, onSort,
+  rows, context = "global", showAccessColumns = false, showOwnerColumn = false, emptyMessage = "No vehicles have been found yet.", sortColumn, sortDirection, onSort,
   canEditPermissions = false, onPermissionsSaved, focusVehicleId, focusNonce, confirmAction,
-  canDeleteVehicle = false, storageSupported = false, onError, queuedDeleteVehicleIds, deletingId, cancelingDeleteId, onDeleteVehicle, onCancelQueuedDelete
+  canDeleteVehicle = false, canDeleteStoredVehicle = false, storageSupported = false, onError, queuedDeleteVehicleIds, deletingId, cancelingDeleteId, onDeleteVehicle, onCancelQueuedDelete
 }: VehicleTableProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [expandedTab, setExpandedTab] = useState<"components" | "permissions">("components");
@@ -203,7 +221,7 @@ export function VehicleTable({
   const [instanceNames, setInstanceNames] = useState<Map<string, string>>(new Map());
   const expandedContentRef = useRef<HTMLDivElement>(null);
   const satisfiedFocusNonceRef = useRef<number | undefined>(undefined);
-  const columns = context === "player" ? PLAYER_COLUMNS : GLOBAL_COLUMNS;
+  const columns = context === "player" ? (showAccessColumns ? PLAYER_ACCESS_COLUMNS : showOwnerColumn ? PLAYER_OWNER_COLUMNS : PLAYER_COLUMNS) : GLOBAL_COLUMNS;
   const partitionMapsKey = [...new Set(rows.map((row) => vehiclePartitionMap(row.map)).filter(Boolean))].sort().join(",");
 
   useEffect(() => {
@@ -300,6 +318,8 @@ export function VehicleTable({
         const id = String(vehicle.id);
         const label = vehicle.name || `vehicle ${id}`;
         const queued = queuedDeleteVehicleIds?.has(id) ?? false;
+        const storedDelete = canDeleteStoredVehicle && vehicle.lifecycle_state === "VehicleRecovery";
+        const blockedReason = storedDelete ? "" : DELETE_BLOCKED_REASONS[String(vehicle.lifecycle_state || "")];
         return queued
           ? <span className="vehicles-queued-delete" title="Delete queued — applies when this map next restarts or stops">
               <Trash2 size={16} aria-label={`Delete queued for ${label}`} />
@@ -313,10 +333,13 @@ export function VehicleTable({
             </span>
           : <button
               className="icon-toggle-button danger"
-              title="Delete Vehicle"
-              aria-label={`Delete ${label}`}
+              title={blockedReason || (storedDelete ? "Delete Stored Vehicle" : "Delete Vehicle")}
+              aria-label={blockedReason ? `Cannot delete ${label}: ${blockedReason}` : `Delete ${storedDelete ? "stored vehicle " : ""}${label}`}
+              // aria-disabled keeps the button focusable, so the reason is
+              // reachable by keyboard.
+              aria-disabled={blockedReason ? true : undefined}
               disabled={deletingId === id}
-              onClick={(event) => { event.stopPropagation(); onDeleteVehicle?.(vehicle); }}
+              onClick={(event) => { event.stopPropagation(); if (!blockedReason) onDeleteVehicle?.(vehicle); }}
             ><Trash2 size={16} /></button>;
       } : undefined}
       secondaryActionPosition="start"

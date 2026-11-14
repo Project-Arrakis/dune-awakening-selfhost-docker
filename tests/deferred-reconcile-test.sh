@@ -121,8 +121,11 @@ echo "PASS deferred-reconcile-falls-back-when-the-helper-will-not-start"
 # is down read exactly like one that ran and found nothing to do.
 
 deferred_project="$test_root/deferred"
-mkdir -p "$deferred_project/runtime/scripts" "$deferred_project/runtime/generated"
+mkdir -p "$deferred_project/runtime/scripts/lib" "$deferred_project/runtime/generated"
 cp "$repo_root/runtime/scripts/deferred-reconcile.sh" "$deferred_project/runtime/scripts/"
+# Its readiness poll queries through the shared Postgres seam.
+cp "$repo_root/runtime/scripts/lib/postgres.sh" "$deferred_project/runtime/scripts/lib/"
+cp "$repo_root/runtime/scripts/lib/ports.sh" "$deferred_project/runtime/scripts/lib/"
 
 # wait_for_core_ready needs the three core containers up and partitions 1 and 2
 # reporting ready; this mock satisfies both so the steps are reached at all.
@@ -153,7 +156,10 @@ chmod +x "$deferred_project/runtime/scripts/sietches.sh"
 deferred_status=0
 (
   cd "$deferred_project"
-  PATH="$bin_dir:$PATH" bash runtime/scripts/deferred-reconcile.sh
+  # The seam would otherwise pick its TCP leg wherever a psql client happens to
+  # be installed and dial a server that does not exist; the exec leg is the one
+  # the `docker` mock above covers.
+  PATH="$bin_dir:$PATH" DUNE_PSQL_TRANSPORT=exec bash runtime/scripts/deferred-reconcile.sh
 ) > "$test_root/deferred.log" 2>&1 || deferred_status=$?
 
 grep -q "Survival_1 dimensions FAILED" "$test_root/deferred.log" \

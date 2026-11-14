@@ -16,6 +16,7 @@ import {
   renameMarketSeedPlan,
   setActiveMarketSeedPlan
 } from "./marketSeedPlans.js";
+import { readMarketBotSettings } from "./marketBotSettings.js";
 
 export {
   decodeSeedPlanCsvUpload,
@@ -49,6 +50,7 @@ export async function marketBotStatus(config, db) {
     plans: listMarketSeedPlans(config),
     buyback: readBuybackSchedule(config),
     seed: readSeedSchedule(config),
+    settings: readMarketBotSettings(config),
     commodityStackCatalog: COMMODITY_STACK_CATALOG,
     commodityStackGroups: COMMODITY_STACK_GROUPS,
     ...(supported ? {} : { reason: `Unsupported by detected schema. Missing required table(s): ${REQUIRED_TABLES.map((t) => `dune.${t}`).join(", ")}` })
