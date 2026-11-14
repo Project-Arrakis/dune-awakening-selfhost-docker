@@ -32,8 +32,7 @@ test("groups Discord controls and keeps password two-factor protection in Accoun
   render(<SettingsPanel onPasswordChanged={vi.fn()} onTotpEnrollmentStarted={vi.fn()} confirmAction={vi.fn()} />);
   const discord = await screen.findByRole("region", { name: "Discord" });
   expect(within(discord).getByRole("button", { name: "Expand Discord Sign In" })).toBeVisible();
-  // Hosted-bot management belongs to the stacked #215 implementation.
-  expect(within(discord).queryByRole("button", { name: "Expand Server Bot" })).toBeNull();
+  expect(within(discord).getByRole("button", { name: "Expand Server Bot" })).toBeVisible();
   const security = screen.getByRole("region", { name: "Account Security" });
   expect(await within(security).findByRole("button", { name: "Expand Two Factor Authentication" })).toBeVisible();
   expect(within(security).getByText("Off")).toBeVisible();

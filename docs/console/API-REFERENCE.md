@@ -1111,6 +1111,15 @@ semantics.
 | GET | `/api/public-directory/status` | Get public directory status | None |
 | POST | `/api/settings/public-directory` | Save public directory and anonymous-count settings | `enabled?`, `anonymousCountEnabled?`, `discordInvite?` |
 | POST | `/api/settings/public-directory/claim` | Claim server listing | `code` |
+| GET | `/api/settings/discord-bot` | Read the Discord Bot adapter's current settings state (enabled flag, configured role IDs per tier, whether a bot token is configured). Never returns the token itself. | None |
+| POST | `/api/settings/discord-bot/enable` | Enable the Discord Bot adapter: validates the given role IDs, generates a fresh adapter token, and writes it and the enabled flag plus role IDs to `.env` **and mirrors them live into the running process** -- takes effect immediately, no restart. Returns the plaintext token **once** -- it is never returned again by `GET /api/settings/discord-bot`. | `playerRoleIds?`, `moderatorRoleIds?`, `adminRoleIds?` (each a comma-separated string of Discord role snowflakes) |
+| POST | `/api/settings/discord-bot/role-ids` | Update only the 3 role-ID env keys for an already-enabled adapter, writing to `.env` and mirroring live into the running process -- takes effect immediately, no restart. Never touches the token file or the enabled flag. | `playerRoleIds?`, `moderatorRoleIds?`, `adminRoleIds?` (each a comma-separated string of Discord role snowflakes) |
+| POST | `/api/settings/discord-bot/restart` | Maintainer review finding (upstream PR #215): this used to recreate the bot container via `docker compose up --force-recreate`, which a real reproduction showed is not an atomic swap -- a failed recreate could leave the console down with nothing to roll back to. Since every setting above already takes effect live with no restart needed, this route is now a confirmation no-op: it audits the call and returns success, but touches no container. Kept only so existing callers have something to call. | None |
+| POST | `/api/settings/discord-bot/regenerate-token` | Overwrite the adapter token file with a freshly generated token. File-only -- does not touch `.env`; takes effect immediately since the token file's content is read fresh on every request. Returns the plaintext token **once**. | None |
+| POST | `/api/settings/discord-bot/disable` | Owner-only. Fully reset the Discord Bot adapter back to never-configured: invalidates the token (file removed), clears all 3 role-ID env keys, and clears the persisted hosted/self-hosted choice and hosted-bot connection -- live and immediately, no restart. | None |
+| POST | `/api/settings/discord-bot/oauth-config` | Configure the hosted-bot connection's own, independent Discord Application (Client ID + Redirect URI) -- deliberately separate from Settings -> Discord OAuth's console-sign-in credentials; neither requires the other. Mirrors live into the running process (same as the other settings above) -- takes effect immediately, no restart. | `clientId?` (Discord snowflake), `redirectUri?` (URL) |
+| POST | `/api/settings/discord-bot/oauth-secret` | Save the hosted-bot connection's Discord Application client secret. File-only, written to its own secrets file, never echoed back. | `secret` (at least 20 characters) |
+| POST | `/api/settings/discord-bot/choice` | Persist the hosted/self-hosted deployment choice immediately, ahead of role config or enabling the adapter. Does not restart the console -- nothing about the live adapter's runtime behavior depends on this value. | `deploymentChoice` (`"hosted"` or `"self-hosted"`) |
 | POST | `/api/settings/server-startup` | Choose whether the Battlegroup starts automatically when the Console boots | `autoStartBattlegroup` (boolean) |
 | GET | `/api/settings/experimental-tanks` | Experimental Tanks state, plus `queuedEntryId` and `queuedEnabled` when a change is queued behind the restart queue | None |
 | POST | `/api/settings/experimental-tanks` | Enable or disable Experimental Tanks (restarts Hagga) as a task | `enabled` (boolean), `confirmRestart: true` |
@@ -1263,6 +1272,17 @@ Ops responses are bounded by `DUNE_OPS_QUERY_TIMEOUT_MS` (default 5000) and `DUN
 |--------|-------|-------------|------------|
 | POST | `/api/integrations/discord/guilds/storage` | Get guild storage | `guild:read` |
 | POST | `/api/integrations/discord/guilds/find` | Search items across the linked player's guild | `guild:read` |
+
+### Hosted Bot Registration
+
+| Method | Route | Description | IAM Action | Tier |
+|--------|-------|-------------|-----------|------|
+| GET | `/api/integrations/discord/hosted-bot/oauth/start` | Begin hosted bot registration OAuth flow (Discord login) | `updates:read` | admin+ |
+| GET | `/api/integrations/discord/hosted-bot/oauth/callback` | OAuth callback handler for hosted bot registration | `updates:read` | admin+ |
+| POST | `/api/integrations/discord/hosted-bot/register` | Complete hosted bot registration with OAuth token and adapter secret | `settings:discord-bot-hosted-register` | owner |
+| POST | `/api/integrations/discord/hosted-bot/auto-invite/start` | Start the fully-automated auto-invite flow: silently enables the hosted-bot adapter token if needed, asks mentat-link to mint a pending state, and returns the single Discord consent-screen `authorizeUrl` for the console to open in a popup | `settings:discord-bot-hosted-oauth` | owner |
+| GET | `/api/integrations/discord/hosted-bot/auto-invite/complete` | Popup return leg reached via mentat-link's signed bounce page; verifies the double-submit state cookie and renders a small page that `postMessage`s the outcome (`ok`/`guildName`/`reason`/`reclaimed`/`confirmationId`) back to the opener before closing | `settings:discord-bot-hosted-oauth` | owner |
+| GET | `/api/integrations/discord/hosted-bot/auto-invite/confirmation-status` | Round 4 completion-signal poll: forwards `confirmationId` to mentat-link's own `/confirmation-status` proxy and returns `{status, guildName?}`; on `status: "confirmed"`, persists the connected guild the same way the old `/register` route does | `settings:discord-bot-hosted-oauth` | owner |
 
 ---
 

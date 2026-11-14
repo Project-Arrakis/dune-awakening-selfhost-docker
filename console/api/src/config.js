@@ -229,6 +229,22 @@ export function loadConfig() {
   // purely to drive the boot-time warning below (env-var secrets are visible
   // via `ps`/`/proc/<pid>/environ`; `_FILE`/runtime/secrets/ is preferred).
   const discordBotHandoffSecretEnvManaged = Boolean(process.env.DISCORD_BOT_HANDOFF_SECRET);
+  // NOT an EnvManaged flag, deliberately -- reverted after a same-day self
+  // review found it was actively wrong for this specific secret, unlike its
+  // two siblings above. runtime/scripts/lib/console-secrets-env.sh's
+  // export_discord_hosted_bot_oauth_client_secret() re-exports THIS SECRET'S
+  // OWN FILE (the one POST /api/settings/discord-bot/oauth-secret writes) as
+  // this exact env var on every console restart/recreate -- the documented,
+  // sole intended path for this secret, unlike DISCORD_OAUTH_CLIENT_SECRET
+  // which genuinely supports direct .env configuration as a first-class
+  // alternative to the UI. An EnvManaged flag here can't tell "operator set a
+  // real env var" apart from "the shell auto-exported the file I'm trying to
+  // rotate right now" -- it would self-lock the Settings UI's rotate route
+  // permanently 400 after the very first successful UI-driven configuration,
+  // which is worse than the silent-no-op bug it was meant to fix (that bug
+  // requires an operator to bypass the UI and set the env var directly, a
+  // much rarer path for a secret this deployment model doesn't otherwise
+  // support setting that way).
   const oauthHomeGuildId = /^\d{17,19}$/.test(process.env.DISCORD_HOME_GUILD_ID || "") ? process.env.DISCORD_HOME_GUILD_ID : "";
   // Console-native role -> tier mapping (rfc-console-auth.md §2.1.1). Each key is
   // a comma-separated list of Discord role IDs; malformed entries are dropped,
@@ -336,6 +352,69 @@ export function loadConfig() {
     discordOAuthClientId: process.env.DISCORD_OAUTH_CLIENT_ID || "",
     discordOAuthClientSecret: readInlineOrFile(process.env.DISCORD_OAUTH_CLIENT_SECRET, resolve(secretsDir, "discord-oauth-client-secret.txt")),
     discordOAuthRedirectUri: process.env.DISCORD_OAUTH_REDIRECT_URI || "",
+    // Real UAT finding (2026-09-09): "Connect to hosted bot" originally
+    // reused discordOAuthClientId/discordOAuthClientSecret above (the
+    // console-sign-in app), on a second registered redirect URI -- the
+    // operator objected directly: console sign-in and the hosted-bot
+    // connection are unrelated capabilities and must each work without the
+    // other configured at all ("we have OAuth without bot and bot without
+    // OAuth"). These are now a fully independent Discord Application's
+    // credentials -- an operator can configure hosted-bot-connect without
+    // ever touching console sign-in, and vice versa. Same
+    // readInlineOrFile()/secrets-file convention as the sign-in secret
+    // above, just its own file so the two secrets are never conflated.
+    discordHostedBotOAuthClientId: process.env.DISCORD_HOSTED_BOT_OAUTH_CLIENT_ID || "",
+    discordHostedBotOAuthClientSecret: readInlineOrFile(process.env.DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET, resolve(secretsDir, "discord-hosted-bot-oauth-client-secret.txt")),
+    discordHostedBotOAuthRedirectUri: process.env.DISCORD_HOSTED_BOT_OAUTH_REDIRECT_URI || "",
+    // The hosted mentat bot's console-registration endpoint. Overridable
+    // ONLY so an integration test can point this at a local fake listener
+    // instead of the real host -- found necessary during this task's own
+    // fix round 1 (Important #5): mentat-backend.darkdante.org is a real,
+    // live, internal-only production hostname that IS reachable from this
+    // dev/CI environment (confirmed directly with curl), so a test that
+    // needs to prove "no outbound call was made" cannot safely assert that
+    // against the real hardcoded URL -- an accidental regression could
+    // otherwise send a real POST to the live hosted-bot service. No
+    // operator ever needs to set this in a real deployment; it is not
+    // documented in .env.example for that reason.
+    mentatBackendRegisterUrl: process.env.MENTAT_BACKEND_REGISTER_URL || "https://mentat-backend.darkdante.org/api/consoles/register",
+    // mentat#343+/dune-awakening-selfhost-docker#832 Phase 6: the
+    // fully-automated auto-invite flow's own two endpoints, deliberately
+    // separate config values from mentatBackendRegisterUrl above (that one
+    // is the OLD flow's direct-to-mentat-backend call; this flow calls
+    // mentat-LINK's proxy instead, so mentat-link's requireProxySecret
+    // hop-auth header gets attached automatically -- Core itself never
+    // needs to hold MENTAT_PROXY_SHARED_SECRET). Same test-only override
+    // reasoning as mentatBackendRegisterUrl: mentat-link.darkdante.org is a
+    // real, live, reachable hostname this dev/CI environment could
+    // otherwise accidentally hit.
+    mentatLinkAutoInviteStartUrl: process.env.MENTAT_LINK_AUTO_INVITE_START_URL || "https://mentat-link.darkdante.org/api/consoles/auto-invite/start",
+    // Round 4 (dune-awakening-selfhost-docker#876, design doc §13): the
+    // completion-signal poll target -- same "Core never holds
+    // MENTAT_PROXY_SHARED_SECRET" reasoning as mentatLinkAutoInviteStartUrl
+    // above, and the same test-only override need (mentat-link.darkdante.org
+    // is a real, live, reachable hostname).
+    mentatLinkConfirmationStatusUrl: process.env.MENTAT_LINK_CONFIRMATION_STATUS_URL || "https://mentat-link.darkdante.org/api/consoles/auto-invite/confirmation-status",
+    // The redirect_uri embedded in the Discord authorize URL this flow
+    // builds -- a FIXED value (mentat-link's own callback route), unlike
+    // the OLD flow's operator-configured discordHostedBotOAuthRedirectUri.
+    // There is exactly one correct value in every real deployment (design
+    // doc goal G2: the operator never configures anything Discord-related
+    // for this path), so this is env-overridable for tests only, not
+    // documented in .env.example as an operator-facing setting.
+    autoInviteDiscordRedirectUri: process.env.AUTO_INVITE_DISCORD_REDIRECT_URI || "https://mentat-link.darkdante.org/api/consoles/auto-invite/callback",
+    // dune-awakening-selfhost-docker#903: the Discord Application ID the
+    // one-click consent screen (autoInvite.js's buildAutoInviteAuthorizeUrl())
+    // authorizes against -- previously a bare, non-overridable literal in
+    // autoInvite.js itself. Sahir Venn's client_id remains the correct
+    // default for every real deployment of this fork (design doc goal G2:
+    // the operator never configures anything Discord-related for the
+    // hosted path), but making it env-overridable (matching every other
+    // hosted-bot config value's own pattern) lets a self-hoster running
+    // their own hosted-bot backend point this flow at their own Discord
+    // Application instead -- the one thing an upstream reviewer would
+    // otherwise flag as hardcoded to a single organization.
+    autoInviteDiscordClientId: process.env.AUTO_INVITE_DISCORD_CLIENT_ID || "1546203607807041697",
     discordOAuthApiBaseUrl: process.env.DISCORD_OAUTH_BASE_URL || "https://discord.com/api/v10",
     discordOAuthAllowOwnerBootstrap: process.env.DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP === "1",
     discordOAuthOwnerAllowlist: String(process.env.DISCORD_OAUTH_OWNER_ALLOWLIST || "").split(",").map((item) => item.trim()).filter((item) => /^\d{17,19}$/.test(item)),

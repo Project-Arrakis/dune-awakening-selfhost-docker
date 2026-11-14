@@ -8,6 +8,7 @@ import { RecoveryCodesPanel } from "../auth/RecoveryCodesPanel";
 import { DiscordSetupWizard } from "../auth/DiscordSetupWizard";
 import { HttpsSetup } from "../auth/HttpsSetup";
 import { restartConsoleAndReload } from "../../lib/consoleRestart";
+import { DiscordBotSection } from "./DiscordBotSection";
 import { firstDefined, formatUiSentence, friendlyColumnName } from "../../lib/display";
 import { ApiKeysSection } from "./ApiKeysSection";
 import { ExperimentalFeatures } from "./ExperimentalFeatures";
@@ -167,6 +168,7 @@ export function SettingsPanel({ onPasswordChanged, onOpenAccessControl, publicLi
   // by the embedded DiscordSetupWizard -- porting them here would both
   // collide with discordOAuthOpen's real declaration below and add dead
   // state with no JSX consumer on this branch.
+  const [discordBotOpen, setDiscordBotOpen] = useState(false);
   const [webPort, setWebPort] = useState("");
   const [webPortRedirectUrl, setWebPortRedirectUrl] = useState("");
   const [webPortRedirectCountdown, setWebPortRedirectCountdown] = useState<number | null>(null);
@@ -873,6 +875,10 @@ export function SettingsPanel({ onPasswordChanged, onOpenAccessControl, publicLi
         <div className="settings-account-group-options">
           {discordOAuthSection}
           {discordOAuthConfigured && <div className="settings-access-link"><ShieldCheck size={18} aria-hidden="true" /><div><strong>Manage Member Access</strong><p>Choose what admins, moderators, and players can do in the Console.</p><a href="?tab=Access%20Control" onClick={onOpenAccessControl ? (event) => { event.preventDefault(); onOpenAccessControl(); } : undefined}>Open Access Control</a></div></div>}
+          <div className={`playerAdmin_toggle ${discordBotOpen ? "open" : ""}`}>
+            <button className="playerAdmin_toggleHeader" aria-label={discordBotOpen ? "Collapse Server Bot" : "Expand Server Bot"} aria-expanded={discordBotOpen} onClick={() => setDiscordBotOpen(!discordBotOpen)}><Bot size={20} aria-hidden="true" /><span className="settings-option-copy"><span>Server Bot</span><small>Commands and notifications in your Discord server.</small></span>{discordBotOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}</button>
+            {discordBotOpen && <DiscordBotSection />}
+          </div>
         </div>
       </section>
       <PermissionGate action="settings:write"><div className={`playerAdmin_toggle settings-server-startup-toggle ${serverStartupOpen ? "open" : ""}`}>
