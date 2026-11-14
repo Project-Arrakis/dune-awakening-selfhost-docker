@@ -92,7 +92,7 @@ function isCovered(route) {
   if (route.path.startsWith(DISCORD_PREFIX)) return true;
   // Deliberate local shadow of the module-level PUBLIC_EXACT above (kept
   // during the 2026-09-21 upstream rebase, not a duplication mistake): the
-  // two /2fa/* entries are not public at all -- they require an
+  // These /2fa/* entries are not public at all -- they require an
   // enrollment-scope session AND membership in server.js's ENROLL_ALLOWED.
   // They sit here only because the central gate does not cover them, and the
   // separate test below pins that distinction so "add it to the module-level

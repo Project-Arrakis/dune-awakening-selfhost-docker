@@ -1,9 +1,13 @@
+import { PermissionGate } from "../../lib/consoleAccess";
 import { useEffect, useState } from "react";
-import { ChevronDown, ChevronUp } from "lucide-react";
-import { api, post, setCsrfToken } from "../../api/client";
+import { Bot, ChevronDown, ChevronUp, LogIn, ShieldCheck } from "lucide-react";
+import { api, post, postForResult, setCsrfToken } from "../../api/client";
 import { SecretInput } from "../../components/SecretInput";
 import { InfoTooltip, KeyValueGrid, StatusPill } from "../../components/common/DisplayPrimitives";
 import { RecoveryCodesPanel } from "../auth/RecoveryCodesPanel";
+import { DiscordSetupWizard } from "../auth/DiscordSetupWizard";
+import { HttpsSetup } from "../auth/HttpsSetup";
+import { restartConsoleAndReload } from "../../lib/consoleRestart";
 import { firstDefined, formatUiSentence, friendlyColumnName } from "../../lib/display";
 import { ApiKeysSection } from "./ApiKeysSection";
 import { ExperimentalFeatures } from "./ExperimentalFeatures";
@@ -42,18 +46,30 @@ type ConfirmAction = (
 ) => Promise<boolean>;
 
 type SettingsPanelProps = {
+  onOpenAccessControl?: () => void;
+  credentialRevision?: number;
   onPasswordChanged: () => Promise<void>;
   publicListingUrl?: string;
   // Needed by the API Keys section, which confirms before revoking a key.
   confirmAction: ConfirmAction;
-  // Called after POST /api/auth/2fa/enable succeeds, so App can switch to the
+  // Called after POST /api/auth/2fa/enable succeeds, so App can open the
   // same TotpSetupScreen the old forced-enrollment login flow used -- this
   // panel doesn't own that top-level view state.
   onTotpEnrollmentStarted: () => void;
-  credentialRevision?: number;
+  // #643: true exactly once, when this mount follows a reconfiguration
+  // Discord OAuth round-trip (App's own discordSetupReturnMarker) -- auto-
+  // expands the Discord OAuth accordion below. onDiscordSetupAutoOpened must
+  // be called once consumed, so App can clear it and a later remount of this
+  // panel (navigate away from Settings and back) never re-triggers it.
+  autoOpenDiscordSetup?: boolean;
+  onDiscordSetupAutoOpened?: () => void;
+  // #676 §7: same one-shot pattern, for the guided offer screen's "take me
+  // there" branch when Discord's own MFA already covers the acting tier.
+  autoOpenTwoFactor?: boolean;
+  onTwoFactorAutoOpened?: () => void;
 };
 
-export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmAction, onTotpEnrollmentStarted, credentialRevision = 0 }: SettingsPanelProps) {
+export function SettingsPanel({ onPasswordChanged, onOpenAccessControl, publicListingUrl, confirmAction, onTotpEnrollmentStarted, autoOpenDiscordSetup, onDiscordSetupAutoOpened, autoOpenTwoFactor, onTwoFactorAutoOpened, credentialRevision = 0 }: SettingsPanelProps) {
   const [settings, setSettings] = useState<Record<string, unknown> | null>(null);
   const [currentPassword, setCurrentPassword] = useState("");
   // Tier 3 credential state. secondFactorEnrolled is read from /api/auth/me,
@@ -64,8 +80,20 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
   // Hiding the controls then is the worst possible response -- that is exactly
   // when the operator needs them.
   const [secondFactorUnavailable, setSecondFactorUnavailable] = useState(false);
+  // #676 §8: true when the acting session authenticated via Discord OAuth,
+  // not the console password -- drives contextual copy on the TOTP
+  // enable/disable forms, since that session may not know the password at all.
+  const [discordSessionActing, setDiscordSessionActing] = useState(false);
   const [passwordTotpCode, setPasswordTotpCode] = useState("");
   const [twoFactorOpen, setTwoFactorOpen] = useState(false);
+  // #676 §7: same one-shot pattern as autoOpenDiscordSetup above.
+  useEffect(() => {
+    if (autoOpenTwoFactor) {
+      setTwoFactorOpen(true);
+      onTwoFactorAutoOpened?.();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot on mount
+  }, []);
   const [totpEnablePassword, setTotpEnablePassword] = useState("");
   const [totpEnableSaving, setTotpEnableSaving] = useState(false);
   const [totpEnableResult, setTotpEnableResult] = useState<SettingsTaskResult | null>(null);
@@ -79,6 +107,43 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
   const [regenerateResult, setRegenerateResult] = useState<SettingsTaskResult | null>(null);
   const [regeneratedCodes, setRegeneratedCodes] = useState<string[] | null>(null);
   const [regenerateAcknowledged, setRegenerateAcknowledged] = useState(false);
+  // Discord OAuth (Tier 1) -- #643: the embedded DiscordSetupWizard now owns
+  // all of this, replacing the manual per-field form that used to live here.
+  //
+  // #676 §3: the accordion defaults OPEN once Discord OAuth is configured
+  // (primary) and closed otherwise -- but that default must stay overridable
+  // by hand, so this is `null` (no manual choice yet) until the operator
+  // actually toggles it, and the computed value below falls back to the
+  // config-driven default whenever no override is set.
+  const [discordOAuthOpenOverride, setDiscordOAuthOpenOverride] = useState<boolean | null>(null);
+  // #643: consume the one-shot auto-open prop exactly once on mount -- never
+  // re-checked afterward, so toggling the accordion closed by hand doesn't
+  // get silently reopened by a stale prop value from a parent re-render.
+  useEffect(() => {
+    if (autoOpenDiscordSetup) {
+      setDiscordOAuthOpenOverride(true);
+      onDiscordSetupAutoOpened?.();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot on mount
+  }, []);
+  // #676 §6: soft-disable / re-enable / forget.
+  const [discordDisableOpen, setDiscordDisableOpen] = useState(false);
+  const [discordDisablePassword, setDiscordDisablePassword] = useState("");
+  const [discordDisableTotpCode, setDiscordDisableTotpCode] = useState("");
+  const [discordDisableSaving, setDiscordDisableSaving] = useState(false);
+  const [discordDisableResult, setDiscordDisableResult] = useState<SettingsTaskResult | null>(null);
+  const [discordEnableSaving, setDiscordEnableSaving] = useState(false);
+  const [discordEnableResult, setDiscordEnableResult] = useState<SettingsTaskResult | null>(null);
+  const [discordForgetOpen, setDiscordForgetOpen] = useState(false);
+  const [discordForgetPassword, setDiscordForgetPassword] = useState("");
+  const [discordForgetTotpCode, setDiscordForgetTotpCode] = useState("");
+  const [discordForgetConfirmText, setDiscordForgetConfirmText] = useState("");
+  const [discordForgetSaving, setDiscordForgetSaving] = useState(false);
+  const [discordForgetResult, setDiscordForgetResult] = useState<SettingsTaskResult | null>(null);
+  // #676 §7: the zero-2FA guard's UI half -- the server is the sole source of
+  // truth for whether this fires (see totpDisableRoute), the client only
+  // reacts to the 409 it returns rather than duplicating the same check.
+  const [totpDisableZeroFactorWarning, setTotpDisableZeroFactorWarning] = useState(false);
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [passwordResult, setPasswordResult] = useState<SettingsTaskResult | null>(null);
@@ -94,9 +159,18 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
   const [claimCode, setClaimCode] = useState("");
   const [loginPasswordOpen, setLoginPasswordOpen] = useState(false);
   const [webPortOpen, setWebPortOpen] = useState(false);
+  // dune-awakening-selfhost-docker#748+: the ONLY genuinely new state this
+  // wizard needs here -- tier1-upstream's own discordOAuthOpen (computed,
+  // line ~547) and the raw Client ID/Secret/Redirect URI form state
+  // (discordClientId etc.) belong to fork main's OWN separate, pre-existing
+  // "Discord OAuth" console-sign-in section, superseded on tier1-upstream
+  // by the embedded DiscordSetupWizard -- porting them here would both
+  // collide with discordOAuthOpen's real declaration below and add dead
+  // state with no JSX consumer on this branch.
   const [webPort, setWebPort] = useState("");
   const [webPortRedirectUrl, setWebPortRedirectUrl] = useState("");
   const [webPortRedirectCountdown, setWebPortRedirectCountdown] = useState<number | null>(null);
+  const [httpsSetupOpen, setHttpsSetupOpen] = useState(false);
   async function refreshCredentialState() {
     // Read independently of /api/settings: if this awaited inside refresh()
     // without its own try/catch, a transient failure there would abort before
@@ -106,6 +180,10 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
       const me = await api<{ secondFactorEnrolled?: boolean; secondFactorUnavailable?: boolean; user?: { id?: string } }>("/api/auth/me");
       setSecondFactorEnrolled(Boolean(me.secondFactorEnrolled));
       setSecondFactorUnavailable(Boolean(me.secondFactorUnavailable));
+      // #676 §8: "local-owner" is the server's own literal fallback for a
+      // password/TOTP session's empty userId (server.js /api/auth/me route) --
+      // anything else means this session is Discord-authenticated.
+      setDiscordSessionActing(Boolean(me.user?.id) && me.user?.id !== "local-owner");
     } catch {
       // Unknown, not "no". Mirror the server's canonical unknown shape --
       // {enrolled:false, unavailable:true}, BOTH flags. Setting only
@@ -117,7 +195,6 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
       setSecondFactorUnavailable(true);
     }
   }
-  useEffect(() => { if (credentialRevision) void refreshCredentialState(); }, [credentialRevision]);
   const [apiKeysOpen, setApiKeysOpen] = useState(false);
   const [encryptedApiOpen, setEncryptedApiOpen] = useState(false);
   const [serverStartupOpen, setServerStartupOpen] = useState(false);
@@ -134,6 +211,9 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
   useEffect(() => {
     refresh().catch(() => undefined);
   }, []);
+  useEffect(() => {
+    if (credentialRevision) void refreshCredentialState();
+  }, [credentialRevision]);
   useEffect(() => {
     if (!passwordResult || passwordResult.status === "running") return;
     const id = window.setTimeout(() => setPasswordResult(null), 5400);
@@ -262,7 +342,10 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
       setTotpEnableSaving(false);
     }
   }
-  async function disableTwoFactor() {
+  // #676 §7: acknowledged=true resubmits after the zero-2FA guard's warning
+  // was shown and the operator chose "Disable anyway" -- the guard itself is
+  // entirely server-side (totpDisableRoute); this only reacts to its 409.
+  async function disableTwoFactor(acknowledged = false) {
     if (!totpDisablePassword) {
       setTotpDisableResult({ status: "failed", title: "Disable Failed", message: "Enter your current login password." });
       return;
@@ -271,18 +354,31 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
       setTotpDisableResult({ status: "failed", title: "Disable Failed", message: "Enter your current authenticator code." });
       return;
     }
-    const confirmed = await confirmAction(
-      "Two-factor authentication will be turned off, and your current recovery codes will stop working. You can enable it again any time.",
-      { title: "Disable two-factor authentication?", confirmLabel: "Disable", danger: true }
-    );
-    if (!confirmed) return;
+    if (!acknowledged) {
+      const confirmed = await confirmAction(
+        "Two-factor authentication will be turned off, and your current recovery codes will stop working. You can enable it again any time.",
+        { title: "Disable two-factor authentication?", confirmLabel: "Disable", danger: true }
+      );
+      if (!confirmed) return;
+    }
+    setTotpDisableZeroFactorWarning(false);
     setTotpDisableSaving(true);
-    setTotpDisableResult({ status: "running", title: "Disabling Two-Factor Authentication..." });
+    setTotpDisableResult({ status: "running", title: "Disabling Two Factor Authentication..." });
     try {
-      await post("/api/auth/2fa/disable", { currentPassword: totpDisablePassword, totpCode: totpDisableTotpCode.trim() });
+      const { status, body } = await postForResult<{ error?: string; zeroFactorWarning?: boolean }>("/api/auth/2fa/disable", {
+        currentPassword: totpDisablePassword,
+        totpCode: totpDisableTotpCode.trim(),
+        ...(acknowledged ? { acknowledgeNoOtherFactor: true } : {}),
+      });
+      if (status === 409 && body.zeroFactorWarning) {
+        setTotpDisableZeroFactorWarning(true);
+        setTotpDisableResult(null);
+        return;
+      }
+      if (status < 200 || status >= 300) throw new Error(body.error || `Request failed: ${status}`);
       setTotpDisablePassword("");
       setTotpDisableTotpCode("");
-      setTotpDisableResult({ status: "succeeded", title: "Two-Factor Authentication Disabled" });
+      setTotpDisableResult({ status: "succeeded", title: "Two Factor Authentication Disabled" });
       await refreshCredentialState();
     } catch (error) {
       setTotpDisableTotpCode("");
@@ -291,6 +387,93 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
       setTotpDisableSaving(false);
     }
   }
+  // #676 §6: soft-disable. Requires fresh Tier-3 proof (self-lockout guard,
+  // not credential integrity -- see server.js's own comment on this route)
+  // and restarts immediately and non-skippably (§6.3): showing "disabled" in
+  // this UI before the restart actually applies it would be misleading
+  // specifically during the scenario (suspected compromise) this exists for.
+  async function disableDiscordOAuth() {
+    if (!discordDisablePassword) {
+      setDiscordDisableResult({ status: "failed", title: "Disable Failed", message: "Enter your current login password." });
+      return;
+    }
+    const confirmed = await confirmAction(
+      "Discord access will be paused immediately. Use your Console password to sign in while it is paused. Your application and role settings will be kept. The Console will rebuild before this page reconnects.",
+      { title: "Disable Discord Sign In?", confirmLabel: "Disable", danger: true }
+    );
+    if (!confirmed) return;
+    setDiscordDisableSaving(true);
+    setDiscordDisableResult({ status: "running", title: "Disabling Discord Sign In..." });
+    try {
+      await post("/api/settings/discord-oauth/disable", {
+        currentPassword: discordDisablePassword,
+        ...(discordDisableTotpCode.trim() ? { totpCode: discordDisableTotpCode.trim() } : {}),
+      });
+      setDiscordDisablePassword("");
+      setDiscordDisableTotpCode("");
+      await restartConsoleAndReload((c) => c.discordOAuthDisabled === true, {
+        onRestarting: () => setDiscordDisableResult({ status: "running", title: "Rebuilding Console..." }),
+        onTimeout: (message) => setDiscordDisableResult({ status: "failed", title: "Console Still Rebuilding", message }),
+      });
+    } catch (error) {
+      setDiscordDisableResult({ status: "failed", title: "Disable Failed", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setDiscordDisableSaving(false);
+    }
+  }
+
+  // #676 §6.3: no fresh proof required -- re-enabling only restores an
+  // existing login option, it can never strand the acting session.
+  async function enableDiscordOAuth() {
+    setDiscordEnableSaving(true);
+    setDiscordEnableResult({ status: "running", title: "Enabling Discord Sign In..." });
+    try {
+      await post("/api/settings/discord-oauth/enable", {});
+      await restartConsoleAndReload((c) => c.discordOAuthDisabled !== true, {
+        onRestarting: () => setDiscordEnableResult({ status: "running", title: "Rebuilding Console..." }),
+        onTimeout: (message) => setDiscordEnableResult({ status: "failed", title: "Console Still Rebuilding", message }),
+      });
+    } catch (error) {
+      setDiscordEnableResult({ status: "failed", title: "Enable Failed", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setDiscordEnableSaving(false);
+    }
+  }
+
+  // #676 §6.4: irreversible for the role/guild mapping (the Client Secret
+  // alone can always be regenerated from Discord's own portal) -- typed
+  // confirmation replaces the standard confirmAction dialog here, judged
+  // insufficient friction for an action this destructive.
+  async function forgetDiscordOAuth() {
+    if (discordForgetConfirmText.trim().toLowerCase() !== "forget") {
+      setDiscordForgetResult({ status: "failed", title: "Not Confirmed", message: 'Type "forget" to confirm.' });
+      return;
+    }
+    if (!discordForgetPassword) {
+      setDiscordForgetResult({ status: "failed", title: "Removal Failed", message: "Enter your current Console password." });
+      return;
+    }
+    setDiscordForgetSaving(true);
+    setDiscordForgetResult({ status: "running", title: "Removing Discord Connection..." });
+    try {
+      await post("/api/settings/discord-oauth/forget", {
+        currentPassword: discordForgetPassword,
+        ...(discordForgetTotpCode.trim() ? { totpCode: discordForgetTotpCode.trim() } : {}),
+      });
+      setDiscordForgetPassword("");
+      setDiscordForgetTotpCode("");
+      setDiscordForgetConfirmText("");
+      await restartConsoleAndReload((c) => c.discordOAuthConfigured !== true && c.discordOAuthDisabled !== true, {
+        onRestarting: () => setDiscordForgetResult({ status: "running", title: "Rebuilding Console..." }),
+        onTimeout: (message) => setDiscordForgetResult({ status: "failed", title: "Console Still Rebuilding", message }),
+      });
+    } catch (error) {
+      setDiscordForgetResult({ status: "failed", title: "Removal Failed", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setDiscordForgetSaving(false);
+    }
+  }
+
   async function changeWebPort() {
     const port = Number(webPort);
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
@@ -393,115 +576,27 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
   const autoStartBattlegroup = serverStartup.settings?.autoStartBattlegroup !== false;
   const passwordEnvManaged = Boolean(config.adminPasswordEnvManaged);
   const consoleTotpAvailable = config.consoleTotpEnabled === true;
+  // #676 §3/§6: the three Discord OAuth states this page's structure is
+  // driven by. discordOAuthDisabled is independent of discordOAuthConfigured
+  // (config.js gates the latter to false whenever the former is true) --
+  // reading only discordOAuthConfigured could not tell "never configured"
+  // apart from "configured, then soft-disabled."
+  const discordOAuthConfigured = config.discordOAuthConfigured === true;
+  const discordOAuthDisabled = config.discordOAuthDisabled === true;
+  const discordOAuthOpen = discordOAuthOpenOverride ?? discordOAuthConfigured;
   const currentPort = String(config.port || "8088");
-  return <section className="panel">
-    <div className="panel-title"><h2>Settings</h2><div className="action-row settings-title-actions">
-      <div className="memory-feature-toggle settings-anonymous-count-control">
-        <InfoTooltip id="anonymous-count-help" label="About Anonymous Count">Helps us understand how many Dune Docker servers are in use, including local and unlisted installations. Only anonymous server presence is reported—never your server name, IP address, players, or configuration. These statistics help demonstrate project usage and guide future development.</InfoTooltip>
-        <label className={`switch-checkbox settings-anonymous-count-toggle ${anonymousCountEnabled ? "enabled" : "disabled"}`}>
-          <input
-            type="checkbox"
-            disabled={anonymousCountSaving}
-            checked={anonymousCountEnabled}
-            onChange={(event) => { void changeAnonymousCount(event.target.checked); }}
-          />
-          <span className="switch-label">Anonymous Count:</span>
-          <strong className="switch-state">{anonymousCountSaving ? "Saving" : anonymousCountEnabled ? "Enabled" : "Disabled"}</strong>
-        </label>
-      </div>
-      {serverListingVisible && <label className={`switch-checkbox settings-server-listing-toggle ${serverListingEnabled ? "enabled" : "disabled"}`}>
-        <input
-          type="checkbox"
-          disabled={serverListingSaving}
-          checked={serverListingEnabled}
-          onChange={(event) => { void changeServerListing(event.target.checked); }}
-        />
-        <span className="switch-label">Server Listing:</span>
-        <strong className="switch-state">{serverListingSaving ? "Saving" : serverListingEnabled ? "Enabled" : "Disabled"}</strong>
-      </label>}
-      <button onClick={refresh}>Refresh</button>
-    </div></div>
-    {serverListingError && <p className="error settings-server-listing-error">{serverListingError}</p>}
-    {serverListingVisible && serverListingEnabled && publicDirectory.probeError &&
-      <p className="error settings-server-listing-error">Server listing issue: {publicDirectory.probeError}</p>}
-    <div className="settings-section-stack">
-      {serverListingVisible && <div className={`playerAdmin_toggle settings-public-profile-toggle ${publicProfileOpen ? "open" : ""}`}>
-        <button className="playerAdmin_toggleHeader" aria-label={publicProfileOpen ? "Collapse Public Listing Profile" : "Expand Public Listing Profile"} onClick={() => setPublicProfileOpen(!publicProfileOpen)}>
-          {publicProfileOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
-          <span>Public Listing Profile</span>
-        </button>
-        {publicProfileOpen && <div className="playerAdmin_toggleBody">
-          <p className="muted">Public descriptions, community links, recruitment details, and Player Portal settings are managed on DuneDocker.app. Generate a claim code from {publicListingUrl
-            ? <a className="settings-server-page-link" href={publicListingUrl} target="_blank" rel="noreferrer">[Your Server Page]</a>
-            : "[Your Server Page]"}, then paste it below.</p>
-          <label className="settings-discord-field">
-            <span className="field-label-row"><span className="settings-discord-label">Generated Claim Code</span></span>
-            <input
-              disabled={publicProfileSaving}
-              value={claimCode}
-              onChange={(event) => setClaimCode(event.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, "").slice(0, 14))}
-              placeholder="ABCD-EF12-3456"
-              autoComplete="off"
-            />
-          </label>
-          <div className="action-row">
-            <button disabled={publicProfileSaving || claimCode.replace(/[^A-Z0-9]/g, "").length !== 12} onClick={() => { void verifyListingClaim(); }}>
-              {publicProfileSaving ? "Verifying..." : "Verify Generated Code"}
-            </button>
-            {publicProfileResult && <span className={`inline-task-result result-${publicProfileResult.status === "succeeded" ? "ok" : publicProfileResult.status === "failed" ? "fail" : "running"}`}>
-              <strong className={publicProfileResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(publicProfileResult.title, publicProfileResult.status === "running")}</strong>
-              {publicProfileResult.message && <span className="inline-task-message">{formatResultMessage(publicProfileResult.message)}</span>}
-            </span>}
-          </div>
-        </div>}
-      </div>}
-      <div className={`playerAdmin_toggle settings-server-startup-toggle ${serverStartupOpen ? "open" : ""}`}>
-        <button className="playerAdmin_toggleHeader" aria-label={serverStartupOpen ? "Collapse Server Startup" : "Expand Server Startup"} onClick={() => setServerStartupOpen(!serverStartupOpen)}>
-          {serverStartupOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
-          <span>Server Startup</span>
-        </button>
-        {serverStartupOpen && <div className="playerAdmin_toggleBody settings-server-startup-body">
-          <div className="settings-server-startup-copy">
-            <strong>Start Battlegroup Automatically</strong>
-            <p className="muted">The Console always starts with Docker. When this is disabled, the Battlegroup remains stopped after the Linux host boots until you start it manually.</p>
-          </div>
-          <label className={`switch-checkbox settings-server-startup-control ${autoStartBattlegroup ? "enabled" : "disabled"}`}>
-            <input
-              type="checkbox"
-              disabled={serverStartupSaving || settings === null}
-              checked={autoStartBattlegroup}
-              onChange={(event) => { void changeServerStartup(event.target.checked); }}
-            />
-            <span className="switch-label">Automatic Startup:</span>
-            <strong className="switch-state">{serverStartupSaving ? "Saving" : autoStartBattlegroup ? "Enabled" : "Disabled"}</strong>
-          </label>
-          {serverStartupResult && <span className={`inline-task-result settings-server-startup-result result-${serverStartupResult.status === "succeeded" ? "ok" : serverStartupResult.status === "failed" ? "fail" : "running"}`}>
-            <strong className={serverStartupResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(serverStartupResult.title, serverStartupResult.status === "running")}</strong>
-            {serverStartupResult.message && <span className="inline-task-message">{formatResultMessage(serverStartupResult.message)}</span>}
-          </span>}
-        </div>}
-      </div>
-      <RuntimeSettingsSummary settings={settings} />
-      <ConsoleAccessNotice status={settings?.consoleAccess as ConsoleAccessStatus | undefined} confirmAction={confirmAction} onConfirmed={refresh} />
-      <ExperimentalFeatures confirmAction={confirmAction} />
-      <div className={`playerAdmin_toggle settings-web-port-toggle ${webPortOpen ? "open" : ""}`}>
-        <button className="playerAdmin_toggleHeader" aria-label={webPortOpen ? "Collapse Web Console Port" : "Expand Web Console Port"} onClick={() => setWebPortOpen(!webPortOpen)}>{webPortOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Web Console Port</span></button>
-        {webPortOpen && <div className="playerAdmin_toggleBody">
-          <p className="muted">Change the browser port used by this web console.</p>
-          <p className="attention-text">After saving, this page will stop responding on port {currentPort}. Open the new address shown in the result message.</p>
-          <div className="settings-password-grid settings-web-port-grid">
-            <label>Console Port<input disabled={webPortSaving} type="number" min="1" max="65535" step="1" value={webPort} onChange={(event) => setWebPort(event.target.value.replace(/[^\d]/g, "").slice(0, 5))} placeholder="8088" /></label>
-          </div>
-          <div className="action-row">
-            <button disabled={webPortSaving || Boolean(webPortRedirectUrl) || !webPort || webPort === currentPort} onClick={() => { void changeWebPort(); }}>{webPortSaving ? "Saving..." : "Save And Restart Console"}</button>
-            {webPortResult && <span className={`inline-task-result result-${webPortResult.status === "succeeded" ? "ok" : webPortResult.status === "failed" ? "fail" : "running"}`}>
-              <strong className={webPortResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(webPortResult.title, webPortResult.status === "running")}</strong>
-              <span className="inline-task-message">{formatWebPortResultMessage(webPortResult, webPortRedirectUrl, webPortRedirectCountdown)}</span>
-            </span>}
-          </div>
-        </div>}
-      </div>
-      <div className={`playerAdmin_toggle settings-login-password-toggle ${loginPasswordOpen ? "open" : ""}`}>
+  // #676 §3: extracted so render order can flip based on which credential is
+  // primary right now, without duplicating either block's JSX.
+  const passwordSignInSection = <>
+      {/* #676 §3: shown only once Discord OAuth is the primary sign-in path --
+          states plainly that this is now the break-glass fallback, and (once
+          Discord's own MFA covers this tier) that the password's separate
+          two-factor can safely be turned off here any time, independent of
+          the one-time guided offer that may have already covered this. */}
+      {discordOAuthConfigured && <p className="muted settings-password-fallback-note">
+        Keep your Console password available so you can sign in if Discord is unavailable. Manage its authenticator protection below.
+      </p>}
+      <PermissionGate action="settings:change-password"><div className={`playerAdmin_toggle settings-login-password-toggle ${loginPasswordOpen ? "open" : ""}`}>
         <button className="playerAdmin_toggleHeader" aria-label={loginPasswordOpen ? "Collapse Login Password" : "Expand Login Password"} onClick={() => setLoginPasswordOpen(!loginPasswordOpen)}>{loginPasswordOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Login Password</span></button>
         {loginPasswordOpen && <div className="playerAdmin_toggleBody">
           <p className="muted">Change the password used to sign in to this web console.</p>
@@ -529,18 +624,14 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
             </ul>
           </div>}
           <div className="action-row">
-            <button disabled={passwordEnvManaged || passwordSaving || !passwordMeetsRequirements || !passwordsMatch || (secondFactorEnrolled && !passwordTotpCode.trim())} onClick={() => { void changeLoginPassword(); }}>{passwordSaving ? "Saving..." : "Change Password"}</button>
+            <PermissionGate action="settings:change-password"><button disabled={passwordEnvManaged || passwordSaving || !passwordMeetsRequirements || !passwordsMatch || (secondFactorEnrolled && !passwordTotpCode.trim())} onClick={() => { void changeLoginPassword(); }}>{passwordSaving ? "Saving..." : "Change Password"}</button></PermissionGate>
             {passwordResult && <span className={`inline-task-result result-${passwordResult.status === "succeeded" ? "ok" : passwordResult.status === "failed" ? "fail" : "running"}`}>
               <strong className={passwordResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(passwordResult.title, passwordResult.status === "running")}</strong>
               {passwordResult.message && <span className="inline-task-message">{formatResultMessage(passwordResult.message)}</span>}
             </span>}
           </div>
         </div>}
-      </div>
-      <div className={`playerAdmin_toggle settings-encrypted-api-toggle ${encryptedApiOpen ? "open" : ""}`}>
-        <button className="playerAdmin_toggleHeader" aria-label={encryptedApiOpen ? "Collapse Encrypted API Access" : "Expand Encrypted API Access"} onClick={() => setEncryptedApiOpen(!encryptedApiOpen)}>{encryptedApiOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Encrypted API Access</span></button>
-        {encryptedApiOpen && <div className="playerAdmin_toggleBody"><EncryptedApiSection /></div>}
-      </div>
+      </div></PermissionGate>
       {/* Rendered OUTSIDE the secondFactorEnrolled gate. While these codes are on
           screen they are the ONLY copy that will ever exist -- the previous sheet
           is already invalidated server-side and only digests persist. Gating them
@@ -565,20 +656,20 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
       {secondFactorUnavailable && <p className="attention-text">
         This console&apos;s two-factor state could not be read, so password changes and
         recovery-code regeneration are unavailable right now. Do not delete
-        <code> runtime/generated/console-second-factor.json</code> &mdash; see the sign-in
-        page&apos;s error for recovery guidance.
+        <code> runtime/generated/console-second-factor.json</code>. Follow the recovery
+        guidance shown on the sign in page.
       </p>}
       {(secondFactorEnrolled || consoleTotpAvailable) && !secondFactorUnavailable && !regeneratedCodes && <div className={`playerAdmin_toggle ${twoFactorOpen ? "open" : ""}`}>
-        <button className="playerAdmin_toggleHeader" aria-label={twoFactorOpen ? "Collapse Two-Factor Authentication" : "Expand Two-Factor Authentication"} onClick={() => setTwoFactorOpen(!twoFactorOpen)}>
-          {twoFactorOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Two-Factor Authentication</span>
-          {!secondFactorEnrolled && <span className="theme-note"> (off)</span>}
+        <button className="playerAdmin_toggleHeader" aria-label={twoFactorOpen ? "Collapse Two Factor Authentication" : "Expand Two Factor Authentication"} onClick={() => setTwoFactorOpen(!twoFactorOpen)}>
+          <ShieldCheck size={20} aria-hidden="true" /><span className="settings-option-copy"><span>Two Factor Authentication</span><small>Add an authenticator code to your Console password.</small></span>
+          <span className={`settings-option-status ${secondFactorEnrolled ? "is-on" : "is-off"}`}>{secondFactorEnrolled ? "On" : "Off"}</span>{twoFactorOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
         </button>
         {twoFactorOpen && (secondFactorEnrolled ? <div className="playerAdmin_toggleBody">
           <p className="muted">Generate a fresh set of 10 recovery codes. Your authenticator is unchanged, and you stay signed in everywhere.</p>
           <p className="attention-text">Your existing recovery codes stop working the moment new ones are issued.</p>
           <div className="settings-password-grid">
-            <label htmlFor="settings-regen-password">Password (to confirm it&apos;s you)<SecretInput id="settings-regen-password" name="settings-regen-password" disabled={regenerateSaving} value={regeneratePassword} onChange={(event) => setRegeneratePassword(event.target.value)} placeholder="Your login password" /></label>
-            <label htmlFor="settings-regen-totp">Authenticator Code (to confirm it&apos;s you)<input
+            <label htmlFor="settings-regen-password">Current Console Password<SecretInput id="settings-regen-password" name="settings-regen-password" disabled={regenerateSaving} value={regeneratePassword} onChange={(event) => setRegeneratePassword(event.target.value)} placeholder="Your login password" /></label>
+            <label htmlFor="settings-regen-totp">Authenticator Code<input
               id="settings-regen-totp"
               name="settings-regen-totp"
               disabled={regenerateSaving}
@@ -590,18 +681,26 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
             /></label>
           </div>
           <div className="action-row">
-            <button disabled={regenerateSaving || !regeneratePassword || !regenerateTotpCode.trim()} onClick={() => { void regenerateRecoveryCodes(); }}>{regenerateSaving ? "Generating..." : "Regenerate Recovery Codes"}</button>
+            <PermissionGate action="settings:regenerate-recovery-codes"><button disabled={regenerateSaving || !regeneratePassword || !regenerateTotpCode.trim()} onClick={() => { void regenerateRecoveryCodes(); }}>{regenerateSaving ? "Generating..." : "Regenerate Recovery Codes"}</button></PermissionGate>
             {regenerateResult && <span className={`inline-task-result result-${regenerateResult.status === "succeeded" ? "ok" : regenerateResult.status === "failed" ? "fail" : "running"}`}>
               <strong className={regenerateResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(regenerateResult.title, regenerateResult.status === "running")}</strong>
               {regenerateResult.message && <span className="inline-task-message">{formatResultMessage(regenerateResult.message)}</span>}
             </span>}
           </div>
-          <hr className="auto-update-settings-divider" />
-          <h4>Disable Two-Factor Authentication</h4>
+          <div className="settings-section-separator" role="separator" />
+          <h4>Disable Two Factor Authentication</h4>
           <p className="attention-text">Turns two-factor off entirely and deletes every remaining recovery code. Signing in goes back to password-only until you enable it again.</p>
+          {totpDisableZeroFactorWarning && <div className="settings-zero-factor-warning attention-text">
+            <p>Disabling this will leave your console with no two-factor authentication anywhere. Discord sign in does not require Discord 2FA for your role.</p>
+            <p className="muted">You can turn on &ldquo;Require Discord two-factor for Owner and Admin&rdquo; under Discord → Discord Sign In (Change application credentials) to keep two-factor protection on your Discord login.</p>
+            <div className="action-row">
+              <PermissionGate action="settings:disable-totp"><button className="danger" disabled={totpDisableSaving} onClick={() => { void disableTwoFactor(true); }}>{totpDisableSaving ? "Disabling..." : "Disable anyway"}</button></PermissionGate>
+              <button type="button" className="login-password-toggle" onClick={() => setTotpDisableZeroFactorWarning(false)}>Cancel</button>
+            </div>
+          </div>}
           <div className="settings-password-grid">
-            <label htmlFor="settings-totp-disable-password">Password (to confirm it&apos;s you)<SecretInput id="settings-totp-disable-password" name="settings-totp-disable-password" disabled={totpDisableSaving} value={totpDisablePassword} onChange={(event) => setTotpDisablePassword(event.target.value)} placeholder="Your login password (to disable)" /></label>
-            <label htmlFor="settings-totp-disable-code">Authenticator Code (to confirm it&apos;s you)<input
+            <label htmlFor="settings-totp-disable-password">Current Console Password<SecretInput id="settings-totp-disable-password" name="settings-totp-disable-password" disabled={totpDisableSaving} value={totpDisablePassword} onChange={(event) => setTotpDisablePassword(event.target.value)} placeholder="Your login password (to disable)" /></label>
+            <label htmlFor="settings-totp-disable-code">Authenticator Code<input
               id="settings-totp-disable-code"
               name="settings-totp-disable-code"
               disabled={totpDisableSaving}
@@ -613,7 +712,7 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
             /></label>
           </div>
           <div className="action-row">
-            <button disabled={totpDisableSaving || !totpDisablePassword || !totpDisableTotpCode.trim()} onClick={() => { void disableTwoFactor(); }}>{totpDisableSaving ? "Disabling..." : "Disable Two-Factor Authentication"}</button>
+            <PermissionGate action="settings:disable-totp"><button disabled={totpDisableSaving || !totpDisablePassword || !totpDisableTotpCode.trim()} onClick={() => { void disableTwoFactor(); }}>{totpDisableSaving ? "Disabling..." : "Disable Two Factor Authentication"}</button></PermissionGate>
             {totpDisableResult && <span className={`inline-task-result result-${totpDisableResult.status === "succeeded" ? "ok" : totpDisableResult.status === "failed" ? "fail" : "running"}`}>
               <strong className={totpDisableResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(totpDisableResult.title, totpDisableResult.status === "running")}</strong>
               {totpDisableResult.message && <span className="inline-task-message">{formatResultMessage(totpDisableResult.message)}</span>}
@@ -621,12 +720,16 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
           </div>
         </div> : <div className="playerAdmin_toggleBody">
           <p className="muted">Off by default. Turn it on to require an authenticator app code (plus 10 one-time recovery codes as backup) in addition to your password at sign-in.</p>
+          {/* #676 §8: contextual copy for a Discord-authenticated session --
+              this is the password credential's OWN 2FA, unrelated to Discord
+              sign-in, and this session may not know the password at all. */}
+          {discordSessionActing && <p className="muted">This protects the console&apos;s separate password login. Don&apos;t know it? Check <code>runtime/secrets/admin-web-password.txt</code> on the host, or ask whoever manages the server.</p>}
           <div className="settings-password-grid">
-            <label htmlFor="settings-totp-enable-password">Password (to confirm it&apos;s you)<SecretInput id="settings-totp-enable-password" name="settings-totp-enable-password" disabled={totpEnableSaving} value={totpEnablePassword} onChange={(event) => setTotpEnablePassword(event.target.value)} placeholder="Your login password" /></label>
+            <label htmlFor="settings-totp-enable-password">Current Console Password<SecretInput id="settings-totp-enable-password" name="settings-totp-enable-password" disabled={totpEnableSaving} value={totpEnablePassword} onChange={(event) => setTotpEnablePassword(event.target.value)} placeholder="Your login password" /></label>
           </div>
-          <p className="muted">You&apos;ll see a QR code to scan, then 10 recovery codes to save. This session stays signed in; your other sessions are signed out.</p>
+          <p className="muted">Scan the QR code and confirm your authenticator code to finish. You&apos;ll stay signed in.</p>
           <div className="action-row">
-            <button disabled={totpEnableSaving || !totpEnablePassword} onClick={() => { void enableTwoFactor(); }}>{totpEnableSaving ? "Starting..." : "Enable Two-Factor Authentication"}</button>
+            <PermissionGate action="settings:enable-totp"><button disabled={totpEnableSaving || !totpEnablePassword} onClick={() => { void enableTwoFactor(); }}>{totpEnableSaving ? "Starting..." : "Enable 2FA"}</button></PermissionGate>
             {totpEnableResult && <span className={`inline-task-result result-${totpEnableResult.status === "succeeded" ? "ok" : totpEnableResult.status === "failed" ? "fail" : "running"}`}>
               <strong className={totpEnableResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(totpEnableResult.title, totpEnableResult.status === "running")}</strong>
               {totpEnableResult.message && <span className="inline-task-message">{formatResultMessage(totpEnableResult.message)}</span>}
@@ -634,10 +737,227 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
           </div>
         </div>)}
       </div>}
+  </>;
+
+  // #676 §6: the tri-state Discord OAuth section -- the embedded wizard
+  // (#643) when configured-and-active or never-configured, a compact banner
+  // with Re-enable/Forget when soft-disabled.
+  const discordOAuthSection = discordOAuthDisabled ? <div className="playerAdmin_toggle open settings-discord-disabled-banner">
+      <div className="playerAdmin_toggleBody">
+        <p className="settings-disabled-heading"><LogIn size={20} aria-hidden="true" /><strong>Discord Sign In</strong><span className="settings-option-status is-off">Disabled</span></p>
+        <p className="muted">Your application and access roles are saved. Enable Discord sign in whenever you are ready.</p>
+        <div className="action-row">
+          <PermissionGate action="settings:enable-discord-oauth"><button disabled={discordEnableSaving} onClick={() => { void enableDiscordOAuth(); }}>{discordEnableSaving ? "Enabling..." : "Enable Discord Sign In"}</button></PermissionGate>
+          {discordEnableResult && <span className={`inline-task-result result-${discordEnableResult.status === "succeeded" ? "ok" : discordEnableResult.status === "failed" ? "fail" : "running"}`}>
+            <strong className={discordEnableResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(discordEnableResult.title, discordEnableResult.status === "running")}</strong>
+            {discordEnableResult.message && <span className="inline-task-message">{formatResultMessage(discordEnableResult.message)}</span>}
+          </span>}
+        </div>
+        <div className="settings-section-separator" role="separator" />
+        <button type="button" className="login-password-toggle" onClick={() => setDiscordForgetOpen(!discordForgetOpen)}>{discordForgetOpen ? "Hide" : "Remove Discord Connection"}</button>
+        {discordForgetOpen && <div className="settings-discord-forget-form">
+          <p className="attention-text">Remove the saved application credentials, connected Discord server, and access roles from this Console. Your Discord application is kept in Discord. You can connect it again later using its credentials.</p>
+          <div className="settings-password-grid">
+            <label htmlFor="settings-discord-forget-password">Current Console Password<SecretInput id="settings-discord-forget-password" name="settings-discord-forget-password" disabled={discordForgetSaving} value={discordForgetPassword} onChange={(event) => setDiscordForgetPassword(event.target.value)} placeholder="Your login password" /></label>
+            {secondFactorEnrolled && <label htmlFor="settings-discord-forget-code">Authenticator Code<input
+              id="settings-discord-forget-code"
+              name="settings-discord-forget-code"
+              disabled={discordForgetSaving}
+              value={discordForgetTotpCode}
+              onChange={(event) => setDiscordForgetTotpCode(stripCodeWhitespace(event.target.value))}
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              placeholder="Current 6-digit code"
+            /></label>}
+            <label htmlFor="settings-discord-forget-confirm">Type &ldquo;forget&rdquo; To Confirm<input id="settings-discord-forget-confirm" name="settings-discord-forget-confirm" disabled={discordForgetSaving} value={discordForgetConfirmText} onChange={(event) => setDiscordForgetConfirmText(event.target.value)} placeholder="forget" /></label>
+          </div>
+          <div className="action-row">
+            <PermissionGate action="settings:forget-discord-oauth"><button className="danger" disabled={discordForgetSaving || discordForgetConfirmText.trim().toLowerCase() !== "forget" || !discordForgetPassword || (secondFactorEnrolled && !discordForgetTotpCode.trim())} onClick={() => { void forgetDiscordOAuth(); }}>{discordForgetSaving ? "Removing..." : "Remove Discord Connection"}</button></PermissionGate>
+            {discordForgetResult && <span className={`inline-task-result result-${discordForgetResult.status === "succeeded" ? "ok" : discordForgetResult.status === "failed" ? "fail" : "running"}`}>
+              <strong className={discordForgetResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(discordForgetResult.title, discordForgetResult.status === "running")}</strong>
+              {discordForgetResult.message && <span className="inline-task-message">{formatResultMessage(discordForgetResult.message)}</span>}
+            </span>}
+          </div>
+        </div>}
+      </div>
+    </div> : <div className={`playerAdmin_toggle ${discordOAuthOpen ? "open" : ""}`}>
+      {/* #643: replaces the old manual Client ID/Secret/roles form with the
+          same guided wizard the pre-login flow uses -- full replacement, no
+          "keep both forms" fallback (design decision, discord-settings-embed
+          L1 design §6). onDone/onCancel just collapse this accordion; unlike
+          the pre-login flow, reconfiguring from an already-authenticated
+          session never forces a logout (see the wizard's own embedded-mode
+          handling, #643 §4.1). */}
+      <button className="playerAdmin_toggleHeader" aria-label={discordOAuthOpen ? "Collapse Discord Sign In" : "Expand Discord Sign In"} aria-expanded={discordOAuthOpen} onClick={() => setDiscordOAuthOpenOverride(!discordOAuthOpen)}><LogIn size={20} aria-hidden="true" /><span className="settings-option-copy"><span>Discord Sign In</span><small>Let members use their Discord account to access the Console.</small></span><span className={`settings-option-status ${discordOAuthConfigured ? "is-on" : "is-off"}`}>{discordOAuthConfigured ? "Connected" : "Not Set Up"}</span>{discordOAuthOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}</button>
+      {discordOAuthOpen && <div className="playerAdmin_toggleBody settings-discord-wizard-embed">
+        <DiscordSetupWizard
+          embedded
+          onConfigureHttps={() => {
+            setHttpsSetupOpen(true); setWebPortOpen(true);
+            requestAnimationFrame(() => document.getElementById("settings-console-connection")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+          }}
+          onCancel={() => setDiscordOAuthOpenOverride(false)}
+          onDone={() => { setDiscordOAuthOpenOverride(false); void refresh(); }}
+        />
+        {/* #676 §6: only once there is something to disable -- "never
+            configured" shows just the wizard, no danger action. */}
+        {discordOAuthConfigured && <>
+          <div className="settings-section-separator" role="separator" />
+          <button type="button" className="settings-discord-manage-action" aria-expanded={discordDisableOpen} onClick={() => setDiscordDisableOpen(!discordDisableOpen)}>{discordDisableOpen ? "Hide Disable Options" : "Disable Discord Sign In"}</button>
+          {discordDisableOpen && <div className="settings-discord-disable-form">
+            <h4>Pause Discord Access</h4><p>Discord access stops immediately. Your application and role settings are kept, and you can still use your Console password. This page will wait for the Console to finish rebuilding.</p>
+            <div className="settings-password-grid">
+              <label htmlFor="settings-discord-disable-password">Current Console Password<SecretInput id="settings-discord-disable-password" name="settings-discord-disable-password" disabled={discordDisableSaving} value={discordDisablePassword} onChange={(event) => setDiscordDisablePassword(event.target.value)} placeholder="Your login password" /></label>
+              {secondFactorEnrolled && <label htmlFor="settings-discord-disable-code">Authenticator Code<input
+                id="settings-discord-disable-code"
+                name="settings-discord-disable-code"
+                disabled={discordDisableSaving}
+                value={discordDisableTotpCode}
+                onChange={(event) => setDiscordDisableTotpCode(stripCodeWhitespace(event.target.value))}
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                placeholder="Current 6-digit code"
+              /></label>}
+            </div>
+            <div className="action-row">
+              <PermissionGate action="settings:disable-discord-oauth"><button className="danger" disabled={discordDisableSaving || !discordDisablePassword || (secondFactorEnrolled && !discordDisableTotpCode.trim())} onClick={() => { void disableDiscordOAuth(); }}>{discordDisableSaving ? "Disabling..." : "Disable Discord Sign In"}</button></PermissionGate>
+              {discordDisableResult && <span className={`inline-task-result result-${discordDisableResult.status === "succeeded" ? "ok" : discordDisableResult.status === "failed" ? "fail" : "running"}`}>
+                <strong className={discordDisableResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(discordDisableResult.title, discordDisableResult.status === "running")}</strong>
+                {discordDisableResult.message && <span className="inline-task-message">{formatResultMessage(discordDisableResult.message)}</span>}
+              </span>}
+            </div>
+          </div>}
+        </>}
+      </div>}
+    </div>;
+
+  return <section className="panel settings-panel">
+    <div className="panel-title"><h2>Settings</h2><div className="action-row settings-title-actions">
+      <div className="memory-feature-toggle settings-anonymous-count-control">
+        <InfoTooltip id="anonymous-count-help" label="About Anonymous Count">Helps us understand how many Dune Docker servers are in use, including local and unlisted installations. Only anonymous server presence is reported—never your server name, IP address, players, or configuration. These statistics help demonstrate project usage and guide future development.</InfoTooltip>
+        <label className={`switch-checkbox settings-anonymous-count-toggle ${anonymousCountEnabled ? "enabled" : "disabled"}`}>
+          <PermissionGate action="settings:write"><input
+            type="checkbox"
+            disabled={anonymousCountSaving}
+            checked={anonymousCountEnabled}
+            onChange={(event) => { void changeAnonymousCount(event.target.checked); }}
+          /></PermissionGate>
+          <span className="switch-label">Anonymous Count:</span>
+          <strong className="switch-state">{anonymousCountSaving ? "Saving" : anonymousCountEnabled ? "Enabled" : "Disabled"}</strong>
+        </label>
+      </div>
+      {serverListingVisible && <label className={`switch-checkbox settings-server-listing-toggle ${serverListingEnabled ? "enabled" : "disabled"}`}>
+        <PermissionGate action="settings:write"><input
+          type="checkbox"
+          disabled={serverListingSaving}
+          checked={serverListingEnabled}
+          onChange={(event) => { void changeServerListing(event.target.checked); }}
+        /></PermissionGate>
+        <span className="switch-label">Server Listing:</span>
+        <strong className="switch-state">{serverListingSaving ? "Saving" : serverListingEnabled ? "Enabled" : "Disabled"}</strong>
+      </label>}
+      <button onClick={refresh}>Refresh</button>
+    </div></div>
+    {serverListingError && <p className="error settings-server-listing-error">{serverListingError}</p>}
+    {serverListingVisible && serverListingEnabled && publicDirectory.probeError &&
+      <p className="error settings-server-listing-error">Server listing issue: {publicDirectory.probeError}</p>}
+    <div className="settings-section-stack">
+      <RuntimeSettingsSummary settings={settings} />
+      <ConsoleAccessNotice status={settings?.consoleAccess as ConsoleAccessStatus | undefined} confirmAction={confirmAction} onConfirmed={refresh} />
+      <section className="settings-account-group" aria-labelledby="settings-security-heading">
+        <header className="settings-account-group-heading"><ShieldCheck size={22} aria-hidden="true" /><div><h3 id="settings-security-heading">Account Security</h3><p>Manage your Console password and authenticator protection.</p></div></header>
+        <div className="settings-account-group-options">{passwordSignInSection}</div>
+      </section>
+      <section className="settings-account-group" aria-labelledby="settings-discord-heading">
+        <header className="settings-account-group-heading"><Bot size={22} aria-hidden="true" /><div><h3 id="settings-discord-heading">Discord</h3><p>Connect your community and manage Discord access.</p></div></header>
+        <div className="settings-account-group-options">
+          {discordOAuthSection}
+          {discordOAuthConfigured && <div className="settings-access-link"><ShieldCheck size={18} aria-hidden="true" /><div><strong>Manage Member Access</strong><p>Choose what admins, moderators, and players can do in the Console.</p><a href="?tab=Access%20Control" onClick={onOpenAccessControl ? (event) => { event.preventDefault(); onOpenAccessControl(); } : undefined}>Open Access Control</a></div></div>}
+        </div>
+      </section>
+      <PermissionGate action="settings:write"><div className={`playerAdmin_toggle settings-server-startup-toggle ${serverStartupOpen ? "open" : ""}`}>
+        <button className="playerAdmin_toggleHeader" aria-label={serverStartupOpen ? "Collapse Server Startup" : "Expand Server Startup"} onClick={() => setServerStartupOpen(!serverStartupOpen)}>
+          {serverStartupOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+          <span>Server Startup</span>
+        </button>
+        {serverStartupOpen && <div className="playerAdmin_toggleBody settings-server-startup-body">
+          <div className="settings-server-startup-copy">
+            <strong>Start Battlegroup Automatically</strong>
+            <p className="muted">The Console always starts with Docker. When this is disabled, the Battlegroup remains stopped after the Linux host boots until you start it manually.</p>
+          </div>
+          <label className={`switch-checkbox settings-server-startup-control ${autoStartBattlegroup ? "enabled" : "disabled"}`}>
+            <PermissionGate action="settings:write"><input
+              type="checkbox"
+              disabled={serverStartupSaving || settings === null}
+              checked={autoStartBattlegroup}
+              onChange={(event) => { void changeServerStartup(event.target.checked); }}
+            /></PermissionGate>
+            <span className="switch-label">Automatic Startup:</span>
+            <strong className="switch-state">{serverStartupSaving ? "Saving" : autoStartBattlegroup ? "Enabled" : "Disabled"}</strong>
+          </label>
+          {serverStartupResult && <span className={`inline-task-result settings-server-startup-result result-${serverStartupResult.status === "succeeded" ? "ok" : serverStartupResult.status === "failed" ? "fail" : "running"}`}>
+            <strong className={serverStartupResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(serverStartupResult.title, serverStartupResult.status === "running")}</strong>
+            {serverStartupResult.message && <span className="inline-task-message">{formatResultMessage(serverStartupResult.message)}</span>}
+          </span>}
+        </div>}
+      </div></PermissionGate>
+      <PermissionGate action="settings:change-port"><div id="settings-console-connection" className={`playerAdmin_toggle settings-web-port-toggle ${webPortOpen ? "open" : ""}`}>
+        <button className="playerAdmin_toggleHeader" aria-label={webPortOpen ? "Collapse Web Console Port" : "Expand Web Console Port"} onClick={() => setWebPortOpen(!webPortOpen)}>{webPortOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Web Console Port</span></button>
+        {webPortOpen && <div className="playerAdmin_toggleBody">
+          <p className="muted">Change the browser port used by this web console.</p>
+          <p className="attention-text">After saving, this page will stop responding on port {currentPort}. Open the new address shown in the result message.</p>
+          <div className="settings-password-grid settings-web-port-grid">
+            <label>Console Port<input disabled={webPortSaving} type="number" min="1" max="65535" step="1" value={webPort} onChange={(event) => setWebPort(event.target.value.replace(/[^\d]/g, "").slice(0, 5))} placeholder="8088" /></label>
+          </div>
+          <div className="action-row">
+            <PermissionGate action="settings:change-port"><button disabled={webPortSaving || Boolean(webPortRedirectUrl) || !webPort || webPort === currentPort} onClick={() => { void changeWebPort(); }}>{webPortSaving ? "Saving..." : "Save And Restart Console"}</button></PermissionGate>
+            {webPortResult && <span className={`inline-task-result result-${webPortResult.status === "succeeded" ? "ok" : webPortResult.status === "failed" ? "fail" : "running"}`}>
+              <strong className={webPortResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(webPortResult.title, webPortResult.status === "running")}</strong>
+              <span className="inline-task-message">{formatWebPortResultMessage(webPortResult, webPortRedirectUrl, webPortRedirectCountdown)}</span>
+            </span>}
+          </div>
+          <HttpsSetup initiallyOpen={httpsSetupOpen} />
+        </div>}
+      </div></PermissionGate>
       <div className={`playerAdmin_toggle settings-api-keys-toggle ${apiKeysOpen ? "open" : ""}`}>
         <button className="playerAdmin_toggleHeader" aria-label={apiKeysOpen ? "Collapse API Keys" : "Expand API Keys"} onClick={() => setApiKeysOpen(!apiKeysOpen)}>{apiKeysOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>API Keys</span></button>
         {apiKeysOpen && <div className="playerAdmin_toggleBody"><ApiKeysSection confirmAction={confirmAction} /></div>}
       </div>
+      <div className={`playerAdmin_toggle settings-encrypted-api-toggle ${encryptedApiOpen ? "open" : ""}`}>
+        <button className="playerAdmin_toggleHeader" aria-label={encryptedApiOpen ? "Collapse Encrypted API Access" : "Expand Encrypted API Access"} onClick={() => setEncryptedApiOpen(!encryptedApiOpen)}>{encryptedApiOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Encrypted API Access</span></button>
+        {encryptedApiOpen && <div className="playerAdmin_toggleBody"><EncryptedApiSection /></div>}
+      </div>
+      <ExperimentalFeatures confirmAction={confirmAction} />
+      {serverListingVisible && <PermissionGate action="settings:write"><div className={`playerAdmin_toggle settings-public-profile-toggle ${publicProfileOpen ? "open" : ""}`}>
+        <button className="playerAdmin_toggleHeader" aria-label={publicProfileOpen ? "Collapse Public Listing Profile" : "Expand Public Listing Profile"} onClick={() => setPublicProfileOpen(!publicProfileOpen)}>
+          {publicProfileOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+          <span>Public Listing Profile</span>
+        </button>
+        {publicProfileOpen && <div className="playerAdmin_toggleBody">
+          <p className="muted">Public descriptions, community links, recruitment details, and Player Portal settings are managed on DuneDocker.app. Generate a claim code from {publicListingUrl
+            ? <a className="settings-server-page-link" href={publicListingUrl} target="_blank" rel="noreferrer">[Your Server Page]</a>
+            : "[Your Server Page]"}, then paste it below.</p>
+          <label className="settings-discord-field">
+            <span className="field-label-row"><span className="settings-discord-label">Generated Claim Code</span></span>
+            <input
+              disabled={publicProfileSaving}
+              value={claimCode}
+              onChange={(event) => setClaimCode(event.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, "").slice(0, 14))}
+              placeholder="ABCD-EF12-3456"
+              autoComplete="off"
+            />
+          </label>
+          <div className="action-row">
+            <PermissionGate action="settings:write"><button disabled={publicProfileSaving || claimCode.replace(/[^A-Z0-9]/g, "").length !== 12} onClick={() => { void verifyListingClaim(); }}>
+              {publicProfileSaving ? "Verifying..." : "Verify Generated Code"}
+            </button></PermissionGate>
+            {publicProfileResult && <span className={`inline-task-result result-${publicProfileResult.status === "succeeded" ? "ok" : publicProfileResult.status === "failed" ? "fail" : "running"}`}>
+              <strong className={publicProfileResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(publicProfileResult.title, publicProfileResult.status === "running")}</strong>
+              {publicProfileResult.message && <span className="inline-task-message">{formatResultMessage(publicProfileResult.message)}</span>}
+            </span>}
+          </div>
+        </div>}
+      </div></PermissionGate>}
     </div>
   </section>;
 }
@@ -670,7 +990,12 @@ function adminPasswordChecks(password: string) {
 function RuntimeSettingsSummary({ settings }: { settings: Record<string, unknown> | null }) {
   const config = (settings?.config as Record<string, unknown> | undefined) || {};
   const files = (settings?.files as Record<string, unknown> | undefined) || {};
-  return <div className="action-sections">
+  return <div className="action-sections settings-runtime-details">
+    <section className="action-section">
+      <h4>Files Checklist</h4>
+      <div className="check-grid">{Object.entries(files).map(([key, value]) => <article className="check-card" key={key}><div><strong>{friendlyFileLabel(key)}</strong><p>{value ? "Found" : "Missing"}</p></div><StatusPill value={value ? "Ready" : "Attention Needed"} /></article>)}</div>
+      {!Object.keys(files).length && <p>Runtime file checks have not loaded yet.</p>}
+    </section>
     <section className="action-section">
       <h4>Runtime Configuration</h4>
       <KeyValueGrid items={[
@@ -683,11 +1008,6 @@ function RuntimeSettingsSummary({ settings }: { settings: Record<string, unknown
         ["Runtime path", config.runtimePath],
         ["Task retention", config.taskRetention]
       ]} />
-    </section>
-    <section className="action-section">
-      <h4>Files Checklist</h4>
-      <div className="check-grid">{Object.entries(files).map(([key, value]) => <article className="check-card" key={key}><div><strong>{friendlyFileLabel(key)}</strong><p>{value ? "Found" : "Missing"}</p></div><StatusPill value={value ? "Ready" : "Attention Needed"} /></article>)}</div>
-      {!Object.keys(files).length && <p>Runtime file checks have not loaded yet.</p>}
     </section>
   </div>;
 }

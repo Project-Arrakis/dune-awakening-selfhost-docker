@@ -65,7 +65,7 @@ export function createAuth(config) {
       persistenceCredential = config.adminPassword;
       persistenceSecret = config.sessionSecret;
     }
-    return createHmac("sha256", persistenceKey).update(JSON.stringify([entry.id, entry.csrf, entry.expiresAt, entry.tier || "owner", entry.userId || "", entry.username || "", entry.guildId || "", Boolean(config.adminPasswordEnvManaged)])).digest("base64url");
+    return createHmac("sha256", persistenceKey).update(JSON.stringify([entry.id, entry.csrf, entry.expiresAt, entry.tier || "owner", entry.userId || "", entry.username || "", entry.guildId || "", Boolean(config.adminPasswordEnvManaged), ...(entry.displayName ? [String(entry.displayName)] : [])])).digest("base64url");
   }
 
   function constantTimeStringEqual(left, right) {
@@ -93,6 +93,7 @@ export function createAuth(config) {
           tier: entry.tier || "owner",
           userId: entry.userId || "",
           username: entry.username || "",
+          displayName: entry.displayName || entry.username || "",
           guildId: entry.guildId || ""
         });
       }
@@ -124,6 +125,7 @@ export function createAuth(config) {
           tier: session.tier || "owner",
           userId: session.userId || "",
           username: session.username || "",
+          ...(session.displayName ? { displayName: session.displayName } : {}),
           guildId: session.guildId || "",
           mac: sessionMac(session)
         });
@@ -148,11 +150,11 @@ export function createAuth(config) {
   // re-checked by commit() at confirm time so a stale/concurrent resetup
   // session can't overwrite an authenticator a different session already
   // replaced (review finding, upstream PR #201, 2026-09-06).
-  function makeSession({ tier = "owner", userId = "", username = "", guildId = "", scope = null, ttlMs = DEFAULT_TTL_MS, renewable = true, expectedFactorVersion = null } = {}) {
+  function makeSession({ tier = "owner", userId = "", username = "", displayName = "", guildId = "", scope = null, ttlMs = DEFAULT_TTL_MS, renewable = true, expectedFactorVersion = null } = {}) {
     const id = randomBytes(32).toString("base64url");
     const csrf = randomBytes(24).toString("base64url");
     const expiresAt = now() + ttlMs;
-    const session = { id, csrf, expiresAt, tier, userId, username, guildId, scope, renewable, expectedFactorVersion };
+    const session = { id, csrf, expiresAt, tier, userId, username, displayName, guildId, scope, renewable, expectedFactorVersion };
     sessions.set(id, session);
     if (!scope) persistSessions(true);
     return { ...session, cookie: `${id}.${sign(id)}` };
@@ -171,6 +173,15 @@ export function createAuth(config) {
     }
     if (session.renewable !== false) session.expiresAt = now() + DEFAULT_TTL_MS;
     if (!session.scope) persistSessions(false);
+    return session;
+  }
+
+  // Server-side lookup by session id, for a flow that must hand data back to
+  // a specific live session it did not receive a cookie for (the Discord setup
+  // callback). Expiry is honored exactly as readSession does.
+  function readSessionById(id) {
+    const session = sessions.get(id);
+    if (!session || session.expiresAt < now()) return null;
     return session;
   }
 
@@ -194,15 +205,7 @@ export function createAuth(config) {
     return session && session.expiresAt >= now() ? session : null;
   }
 
-  function readSessionById(id) {
-    const session = sessions.get(id);
-    if (!session || session.expiresAt < now()) {
-      sessions.delete(id);
-      return null;
-    }
-    return session;
-  }
-
+  // Invalidate one session by id (enrollment completion, logout, rotation).
   function invalidateSession(id) {
     const session = sessions.get(id);
     const removed = sessions.delete(id);
@@ -259,6 +262,7 @@ export function createAuth(config) {
       sessions.delete(id);
       count++;
     }
+    if (count) persistSessions(true);
     return count;
   }
 
@@ -296,7 +300,7 @@ export function createAuth(config) {
     return session;
   }
 
-  return { makeSession, readSession, revokeSession, peekSession, readSessionById, passwordMatches, requireAuth, invalidateSession, invalidatePasswordSessions, invalidateResetupSessions };
+  return { makeSession, readSession, readSessionById, revokeSession, peekSession, passwordMatches, requireAuth, invalidateSession, invalidatePasswordSessions, invalidateResetupSessions };
 }
 
 export function setSessionCookie(res, session, config = {}, { maxAgeSeconds = 43200 } = {}) {
