@@ -1,5 +1,6 @@
 {
   "sourceStrings": [
+    "\"Start Again\" only resets this screen. The request already sent may still complete if the server owner confirms it later.",
     "% Coverage",
     "% threshold using the",
     "'s backpack as Solido Replicator items. The player must relog to see them in-game, and must unlock every building piece and placeable included in a blueprint before it can be placed.",
@@ -98,6 +99,7 @@
     "Above Price Threshold",
     "Access",
     "Access Control",
+    "Access Roles",
     "Account",
     "Account Approval Needed",
     "Account Entitlement",
@@ -132,14 +134,17 @@
     "Add Owner ID",
     "Add Package",
     "Add Schedule",
+    "Add To Discord",
     "Add Verified Peer & Sync",
     "Add XP",
     "Add an authenticator code to your Console password.",
     "Add an item to this container",
     "Add as",
+    "Add bot to Discord",
     "Add community-built tools into your Dune Docker Console. Discover addons created by the community, see what each one adds, review what it can access, and enable new features whenever you're ready to expand your console.",
     "Add the redirect URI shown below to the Redirects list.",
     "Add this address to your application's OAuth2 redirects.",
+    "Add this redirect URI to your Discord application. Change it only if you use a different public Console address.",
     "Add to Batch",
     "Add to Guild",
     "Add to container",
@@ -165,6 +170,7 @@
     "Admin Panel",
     "Admin Password",
     "Admin Role ID",
+    "Admin Role ID (Optional)",
     "Admin Tools",
     "Admin action ID",
     "Admin command",
@@ -232,6 +238,7 @@
     "Another Player",
     "Any map or guild",
     "Appends to the next free slot. Existing stacks are never topped up — this always creates a new slot.",
+    "Application Details",
     "Application Saved. Continue with Discord to choose your server and access roles.",
     "Applied Successfully",
     "Applied To Term",
@@ -288,6 +295,7 @@
     "Authenticator code",
     "Author",
     "Authorization Failed",
+    "Authorize",
     "Authorize Discord to choose a server you own and configure member access. You can also sign in with your Console password.",
     "Auto Grant",
     "Auto Grant Rule Already Exists.",
@@ -424,8 +432,10 @@
     "Blueprints.",
     "Body",
     "Body is required.",
+    "Bot Hosting",
     "Bot Items",
     "Bot Listings",
+    "Bot Setup Progress",
     "Bot User IDs",
     "Broadcast Body",
     "Broadcast Checkpoints (Min)",
@@ -598,6 +608,8 @@
     "Choose the language for this browser. Translations are included with project updates.",
     "Choose what admins, moderators, and players can do in the Console.",
     "Choose what each access level can do. Assign people to these levels using Discord roles.",
+    "Choose where your bot will run.",
+    "Choose which Discord roles can use bot commands. These fields are optional.",
     "Choose which layers -- and sub-types -- are on when the map first loads.",
     "Choose…",
     "Choosing the wrong identity can make restored characters unavailable in game. Adoption will be blocked unless the current Funcom token matches the backup Battlegroup.",
@@ -626,6 +638,7 @@
     "Clearing…",
     "Click",
     "Click a dotted cell to add it. New cells must remain connected edge-to-edge.",
+    "Click here to continue in a new tab",
     "Client \"",
     "Client ID",
     "Client Secret",
@@ -660,6 +673,7 @@
     "Collapse Public Listing Profile",
     "Collapse Schedule Server Restart",
     "Collapse Select Items",
+    "Collapse Server Bot",
     "Collapse Server Startup",
     "Collapse Two Factor Authentication",
     "Collapse Two-Factor Authentication",
@@ -679,6 +693,7 @@
     "Combined RAM and swap usage",
     "Command History",
     "Command history will appear here after an admin action runs.",
+    "Commands and notifications in your Discord server.",
     "Commodity Stack Quantities",
     "Community",
     "Community Addons",
@@ -710,15 +725,21 @@
     "Confirming the character held still across that save",
     "Conflict",
     "Congratulations",
+    "Connect",
+    "Connect Bot",
     "Connect DBeaver or another PostgreSQL application without exposing the database to your network. PostgreSQL remains bound to the server loopback interface, and the encrypted SSH connection carries database traffic.",
     "Connect DBeaver to PostgreSQL",
+    "Connect Sahir Venn to a Discord server you own. Discord will ask you to approve the connection.",
+    "Connect Your Bot",
     "Connect securely before continuing setup.",
     "Connect your Discord application, or create one to get started.",
     "Connect your community and manage Discord access.",
     "Connected",
     "Connected Players",
+    "Connected to hosted bot for",
     "Connecting",
     "Connecting To Steam",
+    "Connecting…",
     "Connection Unavailable",
     "Console",
     "Console Access Review",
@@ -727,6 +748,7 @@
     "Console Port",
     "Console Still Rebuilding",
     "Console Theme",
+    "Console URL",
     "Console Update",
     "Console Update Already Running",
     "Console Update Cancelled",
@@ -746,8 +768,11 @@
     "Content",
     "Contents",
     "Contents view",
+    "Continue",
     "Continue With Discord",
     "Continue With Tailscale",
+    "Continue unlocks once the bot is connected above.",
+    "Continue unlocks once you confirm you've invited the bot.",
     "Continue?",
     "Contract Abandon Cooldown",
     "Contract Repeat Cooldown",
@@ -767,6 +792,7 @@
     "Copy key fingerprint",
     "Copy the",
     "Copy this key now. It will not be shown again.",
+    "Copy this now. It won't be shown again. Use Regenerate Token to get a new one if you lose it.",
     "Core Map",
     "Coriolis Coordinator",
     "Coriolis Countdown",
@@ -774,11 +800,13 @@
     "Cosmetics",
     "Could Not Load Access Rules",
     "Could Not Start Setup",
+    "Could not connect. Try again, or use the advanced setup below.",
     "Could not fill missing translations.",
     "Could not load API status:",
     "Could not load listings. Click again to retry.",
     "Could not load this section.",
     "Could not load translation database status.",
+    "Could not reach Discord. Try again in a moment.",
     "Could not refresh API status:",
     "Could not save DeepL API key.",
     "Could not save mesh enrollment secret.",
@@ -979,6 +1007,7 @@
     "Developer raw package item textarea",
     "Diagnostic Note",
     "Diagnostic Warning",
+    "Didn't hear back in time. Check Discord directly, or click Start Again to try again.",
     "Dimension",
     "Direct Unlocks",
     "Direct edits to database tables.",
@@ -987,6 +1016,7 @@
     "Director heartbeat not recently observed",
     "Disable",
     "Disable Backups",
+    "Disable Bot",
     "Disable Discord Sign In",
     "Disable Discord Sign In?",
     "Disable Failed",
@@ -1030,7 +1060,9 @@
     "Discord User",
     "Discord access stops immediately. Your application and role settings are kept, and you can still use your Console password. This page will wait for the Console to finish rebuilding.",
     "Discord application client ID",
+    "Discord application client secret",
     "Discord identifies the server owner automatically, so no Owner Role ID is needed. Signing in with the Console password also grants Owner access.",
+    "Discord says you don't own this server. Only the server owner can connect it.",
     "Discord sign in requires HTTPS.",
     "Discord sign-in is connected",
     "Discord's Developer Portal",
@@ -1140,6 +1172,7 @@
     "Enable",
     "Enable 2FA",
     "Enable All Items on This Page",
+    "Enable Bot",
     "Enable Discord Sign In",
     "Enable Encrypted API Access",
     "Enable Failed",
@@ -1152,9 +1185,11 @@
     "Enable Two-Factor Authentication",
     "Enable all {count0} matching items",
     "Enable or disable all items on this page",
+    "Enable the connection, then copy the token into your bot configuration.",
     "Enabled",
     "Enabled (Token Saver)",
     "Enabled (Traffic Saver)",
+    "Enabled.",
     "Enabling Discord Sign In...",
     "Enabling Memory Swap...",
     "Enabling Message of the Day",
@@ -1232,6 +1267,7 @@
     "Expand Public Listing Profile",
     "Expand Schedule Server Restart",
     "Expand Select Items",
+    "Expand Server Bot",
     "Expand Server Startup",
     "Expand Two Factor Authentication",
     "Expand Two-Factor Authentication",
@@ -1313,6 +1349,7 @@
     "Find in JSON",
     "Find the Incorrect Text",
     "Finish",
+    "Finish in the Discord popup, then come back here.",
     "Finish the first-time setup to unlock the console.",
     "Finishing Console Update",
     "Finishing the console update and recording the backup location.",
@@ -1489,6 +1526,7 @@
     "Host Swappiness",
     "Host Uptime",
     "Host installation detection is unavailable. Docker connectors were checked.",
+    "Hosted Bot",
     "Hours",
     "How long the banner stays on screen — applies to both message types.",
     "Hungarian",
@@ -1499,6 +1537,7 @@
     "I have saved these codes somewhere safe",
     "I know this console's admin password",
     "I've Saved It",
+    "I've invited the bot to this Discord server",
     "ID",
     "IGW/S2S UDP ports start at",
     "INFO",
@@ -1557,6 +1596,7 @@
     "Install Game Files",
     "Install Terminals",
     "Install mode",
+    "Installation Guide",
     "Installed",
     "Installed Phrase Catalog",
     "Installing Console Release",
@@ -1792,10 +1832,12 @@
     "MOTD",
     "Macedonian",
     "Malay",
+    "Manage Discord bot commands, notifications and access to in-game data.",
     "Manage Member Access",
     "Manage your Console password and authenticator protection.",
     "Managed Swap",
     "Manual Backup",
+    "Manual Connection",
     "Manual Grant",
     "Manual Template",
     "Manual Vehicle ID",
@@ -1887,6 +1929,7 @@
     "Mode",
     "Mode and memory settings saved successfully.",
     "Moderator Role ID",
+    "Moderator Role ID (Optional)",
     "Modified",
     "Modifier",
     "Modifier Category",
@@ -1929,6 +1972,7 @@
     "New",
     "New Application",
     "New Automatic Backup Passphrase",
+    "New Bot Token",
     "New Faction",
     "New Owner",
     "New Package Name",
@@ -2209,6 +2253,7 @@
     "Passwords do not match",
     "Passwords do not match.",
     "Paste a new one to replace",
+    "Paste new to replace",
     "Paste new token",
     "Paste token",
     "Paste your Funcom self-host token here. When you continue, the console saves it securely on this server and keeps it out of logs.",
@@ -2263,6 +2308,7 @@
     "Player Must Be Offline",
     "Player Notice",
     "Player Role ID",
+    "Player Role ID (Optional)",
     "Player Search Failed",
     "Player State",
     "Player Summary",
@@ -2490,8 +2536,11 @@
     "Refreshing generated map catalogs.",
     "Refreshing...",
     "Refreshing…",
+    "Regenerate",
+    "Regenerate Discord Bot Token",
     "Regenerate Per Player Loot Enabled",
     "Regenerate Recovery Codes",
+    "Regenerate Token",
     "Regeneration Failed",
     "Region",
     "Regis Tank",
@@ -2499,6 +2548,7 @@
     "Regis Tanks in Hagga Basin",
     "Regis Tanks in the desert",
     "Regis Tanks restore:",
+    "Register",
     "Reinstall Game Files",
     "Reinstall latest public release",
     "Relinking restored characters to current Docker player identities.",
@@ -2684,6 +2734,7 @@
     "Rewards Grant",
     "Right-drag to tilt and rotate.",
     "Roasted brown with spice orange and cool turquoise.",
+    "Role/token actions are paused while a Discord connection request is in progress.",
     "Role:",
     "Romanian",
     "Roster",
@@ -2710,6 +2761,7 @@
     "Run port checks to see listener status.",
     "Run the command on the computer running DBeaver",
     "Run the command shown in Doctor manually, then restart the battlegroup.",
+    "Run your own bot and connect it to this Console.",
     "Running",
     "Running database migrations for the updated build.",
     "Running, newly started, and rebalanced game servers now preserve the configured emergency swap allowance.",
@@ -2752,7 +2804,9 @@
     "Save Buyback Schedule",
     "Save Changes",
     "Save Collection Settings",
+    "Save Connection",
     "Save Custom Settings",
+    "Save Discord Bot Role IDs",
     "Save Encrypted Key",
     "Save Enrollment Secret",
     "Save IP Monitor",
@@ -2768,6 +2822,7 @@
     "Save Protection Settings",
     "Save Queue",
     "Save Reseed Schedule",
+    "Save Roles",
     "Save Row",
     "Save Schedule",
     "Save Settings",
@@ -2899,6 +2954,7 @@
     "Select the matching .backup.yaml file.",
     "Selected Item",
     "Selected player has no Admin action ID, so CLI-backed grants are disabled.",
+    "Self Hosted",
     "Self-Deaths",
     "Self-Host Management Console",
     "Seller",
@@ -2913,6 +2969,7 @@
     "Sending...",
     "Serbian",
     "Server",
+    "Server Bot",
     "Server Configurations",
     "Server Control",
     "Server Controls",
@@ -2968,6 +3025,7 @@
     "Setting Category",
     "Setting Key",
     "Setting Up...",
+    "Setting up your console's connection…",
     "Settings",
     "Settings Save Failed",
     "Settings Saved Successfully",
@@ -3070,6 +3128,7 @@
     "Standalone manager for playtime, daily streak,.....",
     "Standard",
     "Start",
+    "Start Again",
     "Start All",
     "Start Battlegroup Automatically",
     "Start Deployment",
@@ -3282,6 +3341,8 @@
     "The row was not updated. Refresh the table and try again.",
     "The saved UserGame combat selection could not be determined.",
     "The saved position could not be loaded.",
+    "The server owner denied the request on Discord. Click Start Again to try again.",
+    "The server owner didn't respond in time. Click Start Again to try again.",
     "The server was installed successfully. The full console is ready to open.",
     "The standard console look.",
     "The system backup was restored. This host now carries the archive's configuration, credentials and database.",
@@ -3315,6 +3376,7 @@
     "This can take a while on a fresh server. Elapsed time:",
     "This cargo hold is empty.",
     "This claim contains",
+    "This connection attempt expired. Try again.",
     "This console now requires an authenticator app. Scan the code below with an app like Google Authenticator or Authy, then enter the 6-digit code it shows.",
     "This console's two-factor state could not be read, so password changes and recovery-code regeneration are unavailable right now. Do not delete",
     "This creates a public address for your Console. Keep your password and 2FA enabled. The temporary address changes if the connector restarts. For a permanent address, use a named Cloudflare tunnel with your own domain.",
@@ -3327,13 +3389,16 @@
     "This game database does not provide the base backup tables and functions needed for export and import.",
     "This guild has no members.",
     "This host is limited to",
+    "This immediately invalidates the current token. Your bot will stop working until you paste the new token wherever it's configured. This cannot be undone.",
     "This installation does not include the encrypted API access. Update Dune Docker to get it.",
+    "This invalidates the current adapter token and clears your saved role mappings and hosted/self-hosted choice. You'll go through setup again to re-enable it. This cannot be undone.",
     "This is an administrative parking owner. Verify building access in-game after the transfer before using it broadly.",
     "This is an administrative parking owner. Verify the vehicle can still be entered and driven in-game after the transfer before using it broadly.",
     "This is the additional host swap file created and managed by the Console. Existing host swap is counted first, so this can be 0 GB when the host already has enough swap.",
     "This is the port guidance most users need.",
     "This item's stored maximum durability is invalid and cannot be edited safely.",
     "This key has expired. Create a new key to restore access.",
+    "This lets the configured Discord roles issue bot commands against this console.",
     "This map is configured Always On and is waiting for the autoscaler to start it.",
     "This may take a few seconds while Docker and Dune complete their health checks.",
     "This pinned addon is not installed, enabled, or fully loaded yet.",
@@ -3344,12 +3409,16 @@
     "This protects the console's separate password login. Don't know it? Check",
     "This reapplies your server identity and Funcom token settings, then restarts the deployment flow so the console uses the updated values. Keep this page open while the progress updates.",
     "This section encountered an unexpected error. Refresh and try again.",
+    "This server is already connected:",
+    "This server was previously connected to a different Console. That connection has been replaced, and role configuration was reset. Please reconfigure roles in the next step.",
     "This server's build",
     "This server's database patches",
+    "This server's ownership changed on Discord since the request was sent. Click Start Again to try again.",
     "This starts the Dune Docker deployment. The console will prepare local settings, download required server assets, update the database, and start the game services. First-time deployment can take a while, so keep this page open while the progress updates.",
     "This story map stays Dynamic so its completed instance is retired and the next visit starts in a fresh server process.",
     "This summary excludes your unsaved edits below.",
     "This table has no rows to preview.",
+    "This takes effect immediately for new bot commands.",
     "This vehicle has a pending delete queued and cannot be modified. Cancel the delete first.",
     "This vehicle has no Owner. Set one before saving.",
     "This vehicle is not shared with anyone else.",
@@ -3367,6 +3436,7 @@
     "Toggles sandstorm spawning. 1 = ON (default), 0 = OFF.",
     "Toggles sandstorm treasure spawning. 1 = ON (default), 0 = OFF.",
     "Toggles whether players take sun exposure/heat damage. True/1 = ON (default), False/0 = OFF.",
+    "Token",
     "Token Mismatch Detected",
     "Token Save Failed",
     "Token delivery verified. Persistent ownership still requires the player's account entitlement and cannot be verified by the Console.",
@@ -3517,12 +3587,16 @@
     "Use Fix Binding, then restart the battlegroup so game sockets bind to the local IP.",
     "Use Restore Starter Skills after a progression reset leaves the starting tree locked.",
     "Use Saved Passphrase",
+    "Use a Discord application for this bot connection. Console sign-in is configured separately.",
     "Use a credit name of up to 60 plain-text characters.",
     "Use inherited or game defaults",
     "Use only letters, numbers, dots, and hyphens.",
+    "Use the hosted bot without running another service.",
+    "Use this Console URL and the token above in your bot configuration.",
     "Use this area for player maintenance and high-impact admin actions. Some actions require the player to be online, while database repairs require the player to be offline.",
     "Use this dashboard for setup, service health, logs, backups, updates, and player admin actions.",
     "Use your authenticator instead",
+    "Use your own Discord application to connect the same hosted bot.",
     "Used)",
     "UserEngine",
     "UserEngine settings",
@@ -3612,6 +3686,7 @@
     "Weekly",
     "Weeks",
     "Welcome",
+    "Welcome back. Click Authorize once you've invited the bot.",
     "Welcome to Dune Docker Console",
     "What Enabling and Disabling Does",
     "What should this host do?",
@@ -3619,6 +3694,8 @@
     "When enabled and players are online, restart requests hold in a countdown queue with in-game warnings before the server cycles. Restarts requested while no players are online run immediately.",
     "When on, the console takes a full database backup before every Market Bot write: buyback sweeps, reseeds, and NPC listing removals, scheduled or manual. Only the newest Market Bot backups are kept (DUNE_MARKET_BOT_BACKUP_KEEP, default 5). Turning this off skips those backups; existing backups are kept.",
     "Whether per-player loot is regenerated each time a player interacts with a loot container. Field-confirmed. Enabling this can make a single container farmable indefinitely.",
+    "Which are you using?",
+    "Which server is this for?",
     "Whichever history is not kept is still saved to the pre-restore safety copy, not deleted -- but it stops being the live record.",
     "Whisper Message",
     "Why Listings Were Not Bought",
@@ -3638,6 +3715,7 @@
     "XP",
     "Yes",
     "You can turn on &ldquo;Require Discord two-factor for Owner and Admin&rdquo; under Discord → Discord Sign In (Change application credentials) to keep two-factor protection on your Discord login.",
+    "You cancelled on Discord's consent screen. Try again whenever you're ready.",
     "You have the option to enter and use your own personal DeepL API key here if you own one. Otherwise, please leave this setting untouched — the console already includes a pre-populated 53-language database, automatic fallback translation, and Dune-Docker peer synchronization.",
     "You just signed in with Discord for the first time on this console. Since your password login also has two-factor authentication turned on, you may want to review whether you still need both.",
     "You will need your",
@@ -3647,6 +3725,7 @@
     "Your Correction",
     "Your DeepL API key has been encrypted with AES-256-GCM (scrypt) and stored in the local host vault.",
     "Your Discord account isn't linked to a character yet.",
+    "Your Discord authorization will be used once to verify you own this server, then sent to and independently verified by the hosted bot service (mentat), and discarded. It is never stored.",
     "Your Guild",
     "Your PvP Statistics",
     "Your Server",
@@ -3656,6 +3735,8 @@
     "Your access level has no pages enabled. Ask the Console owner to review your access.",
     "Your application and access roles are saved. Enable Discord sign in whenever you are ready.",
     "Your application is ready. Add its Client ID and Client Secret below to connect it.",
+    "Your bot is connected. Save these role permissions to finish setup.",
+    "Your browser blocked the popup.",
     "Your browser login session expired.",
     "Your browser login session expired. Sign in again to continue.",
     "Your character isn't in a guild.",
@@ -3722,6 +3803,7 @@
     "has",
     "has owner access.",
     "held",
+    "idle",
     "ies",
     "inserts one or more new stacks (quantities above an item's stack limit are split), and can queue several items at once.",
     "is connected.",
@@ -4223,7 +4305,7 @@
     ", then paste it below.": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 939,
+        "line": 945,
         "nearby": [
           "[Your Server Page]",
           "Generated Claim Code",
@@ -4303,7 +4385,7 @@
     ". Follow the recovery guidance shown on the sign in page.": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 659,
+        "line": 661,
         "nearby": [
           "Change Password",
           "This console's two-factor state could not be read, so password changes and recovery-code regeneration are unavailable right now. Do not delete",
@@ -4375,7 +4457,7 @@
     ". Open the new address shown in the result message.": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 908,
+        "line": 914,
         "nearby": [
           "Change the browser port used by this web console.",
           "After saving, this page will stop responding on port",
@@ -4435,7 +4517,7 @@
     ". Update the environment value to change it.": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 603,
+        "line": 605,
         "nearby": [
           "Change the password used to sign in to this web console.",
           "The login password is managed by",
@@ -4549,6 +4631,18 @@
           "the player",
           "Loading blueprints...",
           "No blueprints found. Import a blueprint above."
+        ]
+      }
+    ],
+    "\"Start Again\" only resets this screen. The request already sent may still complete if the server owner confirms it later.": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1096,
+        "nearby": [
+          "This server was previously connected to a different Console. That connection has been replaced, and role configuration was reset. Please reconfigure roles in the next step.",
+          "Start Again",
+          "Connecting…",
+          "Connect Bot"
         ]
       }
     ],
@@ -4707,7 +4801,7 @@
     "[Your Server Page]": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 939,
+        "line": 945,
         "nearby": [
           "Public Listing Profile",
           "Public descriptions, community links, recruitment details, and Player Portal settings are managed on DuneDocker.app. Generate a claim code from",
@@ -4716,7 +4810,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 938,
+        "line": 944,
         "nearby": [
           "Public descriptions, community links, recruitment details, and Player Portal settings are managed on DuneDocker.app. Generate a claim code from",
           ", then paste it below.",
@@ -5149,7 +5243,7 @@
     "6-digit code": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 616,
+        "line": 618,
         "nearby": [
           "Confirm new password",
           "Authenticator Code",
@@ -5406,7 +5500,7 @@
     "ABCD-EF12-3456": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 946,
+        "line": 952,
         "nearby": [
           ", then paste it below.",
           "Generated Claim Code",
@@ -5430,7 +5524,7 @@
     "About Anonymous Count": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 837,
+        "line": 839,
         "nearby": [
           "Disable Discord Sign In",
           "Settings",
@@ -5694,6 +5788,18 @@
         ]
       }
     ],
+    "Access Roles": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1328,
+        "nearby": [
+          "Continue unlocks once the bot is connected above.",
+          "Continue unlocks once you confirm you've invited the bot.",
+          "Choose which Discord roles can use bot commands. These fields are optional.",
+          "Player Role ID (Optional)"
+        ]
+      }
+    ],
     "access.": [
       {
         "file": "console/web/src/features/settings/IamPolicyEditor.tsx",
@@ -5755,7 +5861,7 @@
     "Account Security": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 868,
+        "line": 870,
         "nearby": [
           "Refresh",
           "Server listing issue:",
@@ -6244,7 +6350,7 @@
     "Add an authenticator code to your Console password.": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 664,
+        "line": 666,
         "nearby": [
           "Expand Two Factor Authentication",
           "Two Factor Authentication",
@@ -6321,6 +6427,18 @@
           "Standard",
           "Close",
           "Pick from the item catalog. Buildings, contracts, emotes, and unsafe items are not selectable."
+        ]
+      }
+    ],
+    "Add bot to Discord": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1268,
+        "nearby": [
+          "Change",
+          "Which are you using?",
+          "Setting up your console's connection…",
+          "Connect Sahir Venn to a Discord server you own. Discord will ask you to approve the connection."
         ]
       }
     ],
@@ -6483,6 +6601,18 @@
         ]
       }
     ],
+    "Add this redirect URI to your Discord application. Change it only if you use a different public Console address.": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1149,
+        "nearby": [
+          "Discord application client secret",
+          "Redirect URI",
+          "Saving...",
+          "Save Connection"
+        ]
+      }
+    ],
     "Add to Batch": [
       {
         "file": "console/web/src/features/bases/BaseInventoryTab.tsx",
@@ -6504,6 +6634,18 @@
           "Adding…",
           "Cancel",
           "Deleting…"
+        ]
+      }
+    ],
+    "Add To Discord": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1155,
+        "nearby": [
+          "Saving...",
+          "Save Connection",
+          "Authorize",
+          "Welcome back. Click Authorize once you've invited the bot."
         ]
       }
     ],
@@ -6869,6 +7011,27 @@
           "(Required)",
           "Discord Role ID"
         ]
+      },
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1413,
+        "nearby": [
+          "Player Role ID",
+          "Moderator Role ID",
+          "Save Roles",
+          "Regenerate Token"
+        ]
+      }
+    ],
+    "Admin Role ID (Optional)": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1333,
+        "nearby": [
+          "Moderator Role ID (Optional)",
+          "Discord Role ID",
+          "Back"
+        ]
       }
     ],
     "Admin Tools": [
@@ -7063,7 +7226,7 @@
     "After saving, this page will stop responding on port": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 908,
+        "line": 914,
         "nearby": [
           "Web Console Port",
           "Change the browser port used by this web console.",
@@ -7766,7 +7929,7 @@
     "Anonymous Count:": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 845,
+        "line": 847,
         "nearby": [
           "About Anonymous Count",
           "Helps us understand how many Dune Docker servers are in use, including local and unlisted installations. Only anonymous server presence is reported—never your server name, IP address, players, or configuration. These statistics help demonstrate project usage and guide future development.",
@@ -7802,7 +7965,7 @@
     "API Keys": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 923,
+        "line": 929,
         "nearby": [
           "Collapse API Keys",
           "Expand API Keys",
@@ -7820,6 +7983,18 @@
           "slots used",
           "Select item to add",
           "Quantity"
+        ]
+      }
+    ],
+    "Application Details": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1136,
+        "nearby": [
+          "Your browser blocked the popup.",
+          "Click here to continue in a new tab",
+          "Use a Discord application for this bot connection. Console sign-in is configured separately.",
+          "Client ID"
         ]
       }
     ],
@@ -8343,7 +8518,7 @@
     "At Least 13 Characters": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 606,
+        "line": 608,
         "nearby": [
           "Current password",
           "New Password",
@@ -8353,7 +8528,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 982,
+        "line": 988,
         "nearby": [
           "Verifying...",
           "Verify Generated Code",
@@ -8675,7 +8850,7 @@
     "Authenticator Code": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 608,
+        "line": 610,
         "nearby": [
           "Passwords do not match",
           "Confirm new password",
@@ -8685,7 +8860,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 672,
+        "line": 674,
         "nearby": [
           "Current Console Password",
           "Your login password",
@@ -8695,7 +8870,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 703,
+        "line": 705,
         "nearby": [
           "Current Console Password",
           "Your login password (to disable)",
@@ -8705,7 +8880,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 762,
+        "line": 764,
         "nearby": [
           "Current Console Password",
           "Your login password",
@@ -8715,7 +8890,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 811,
+        "line": 813,
         "nearby": [
           "Current Console Password",
           "Your login password",
@@ -8762,6 +8937,28 @@
         "nearby": [
           "Please make sure the Funcom token belongs to the current Battlegroup ID, then save it again.",
           "Unset"
+        ]
+      }
+    ],
+    "Authorize": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 994,
+        "nearby": [
+          "This immediately invalidates the current token. Your bot will stop working until you paste the new token wherever it's configured. This cannot be undone.",
+          "Regenerate",
+          "Your Discord authorization will be used once to verify you own this server, then sent to and independently verified by the hosted bot service (mentat), and discarded. It is never stored.",
+          "Connect"
+        ]
+      },
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1156,
+        "nearby": [
+          "Save Connection",
+          "Add To Discord",
+          "Welcome back. Click Authorize once you've invited the bot.",
+          "Connected to hosted bot for"
         ]
       }
     ],
@@ -9138,7 +9335,7 @@
     "Automatic Startup:": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 895,
+        "line": 901,
         "nearby": [
           "Start Battlegroup Automatically",
           "The Console always starts with Docker. When this is disabled, the Battlegroup remains stopped after the Linux host boots until you start it manually.",
@@ -9287,6 +9484,36 @@
           "Save",
           "Members can sign in with Discord. Edit Access opens Discord to verify server ownership before updating the connected server or roles.",
           "Discord Settings Actions"
+        ]
+      },
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1336,
+        "nearby": [
+          "Admin Role ID (Optional)",
+          "Discord Role ID",
+          "Continue",
+          "Save"
+        ]
+      },
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1353,
+        "nearby": [
+          "Save",
+          "Your bot is connected. Save these role permissions to finish setup.",
+          "Save Roles",
+          "Enable"
+        ]
+      },
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1364,
+        "nearby": [
+          "Enable",
+          "Enable the connection, then copy the token into your bot configuration.",
+          "Enable Bot",
+          "Retry"
         ]
       }
     ],
@@ -10898,6 +11125,15 @@
         ]
       }
     ],
+    "Bot Hosting": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 11,
+        "nearby": [
+          "Self Hosted"
+        ]
+      }
+    ],
     "Bot Items": [
       {
         "file": "console/web/src/features/exchange/ExchangePanel.tsx",
@@ -10919,6 +11155,18 @@
           "Player Listings",
           "Discard Unsaved Changes?",
           "Discard and Leave"
+        ]
+      }
+    ],
+    "Bot Setup Progress": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1219,
+        "nearby": [
+          "Copy",
+          "Copy this now. It won't be shown again. Use Regenerate Token to get a new one if you lose it.",
+          "Hosted Bot",
+          "Self Hosted"
         ]
       }
     ],
@@ -11502,7 +11750,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 698,
+        "line": 700,
         "nearby": [
           "Disabling...",
           "Disable anyway",
@@ -12037,6 +12285,16 @@
           "Rank",
           "Member"
         ]
+      },
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1246,
+        "nearby": [
+          "Hosted Bot",
+          "Self Hosted",
+          "Which are you using?",
+          "Add bot to Discord"
+        ]
       }
     ],
     "Change Database Password": [
@@ -12097,7 +12355,7 @@
     "Change Password": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 627,
+        "line": 629,
         "nearby": [
           "Password requirements",
           "Saving...",
@@ -12129,7 +12387,7 @@
     "Change the browser port used by this web console.": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 907,
+        "line": 913,
         "nearby": [
           "Expand Web Console Port",
           "Web Console Port",
@@ -12153,7 +12411,7 @@
     "Change the password used to sign in to this web console.": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 602,
+        "line": 604,
         "nearby": [
           "Expand Login Password",
           "Login Password",
@@ -12236,7 +12494,7 @@
     "Changing Login Password...": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 272,
+        "line": 274,
         "nearby": [
           "Password Change Failed",
           "Enter your current authenticator code.",
@@ -13346,12 +13604,12 @@
     "Choose what admins, moderators, and players can do in the Console.": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 875,
+        "line": 877,
         "nearby": [
           "Connect your community and manage Discord access.",
           "Manage Member Access",
           "Open Access Control",
-          "Collapse Server Startup"
+          "Collapse Server Bot"
         ]
       }
     ],
@@ -13364,6 +13622,30 @@
           "Access Control",
           "Policy tier",
           "Access"
+        ]
+      }
+    ],
+    "Choose where your bot will run.": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 14,
+        "nearby": [
+          "Run your own bot and connect it to this Console.",
+          "Use the hosted bot without running another service.",
+          "idle",
+          "You cancelled on Discord's consent screen. Try again whenever you're ready."
+        ]
+      }
+    ],
+    "Choose which Discord roles can use bot commands. These fields are optional.": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1329,
+        "nearby": [
+          "Continue unlocks once you confirm you've invited the bot.",
+          "Access Roles",
+          "Player Role ID (Optional)",
+          "Discord Role ID"
         ]
       }
     ],
@@ -13856,6 +14138,18 @@
         ]
       }
     ],
+    "Click here to continue in a new tab": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1110,
+        "nearby": [
+          "Finish in the Discord popup, then come back here.",
+          "Your browser blocked the popup.",
+          "Application Details",
+          "Use a Discord application for this bot connection. Console sign-in is configured separately."
+        ]
+      }
+    ],
     "Client \"": [
       {
         "file": "console/web/src/features/maps/MapsPanel.tsx",
@@ -13898,6 +14192,16 @@
           "Discord application client ID",
           "Client Secret"
         ]
+      },
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1143,
+        "nearby": [
+          "Application Details",
+          "Use a Discord application for this bot connection. Console sign-in is configured separately.",
+          "Discord application client ID",
+          "Client Secret"
+        ]
       }
     ],
     "Client secret": [
@@ -13931,6 +14235,16 @@
           "Discord application client ID",
           "(saved)",
           "Paste a new one to replace"
+        ]
+      },
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1144,
+        "nearby": [
+          "Client ID",
+          "Discord application client ID",
+          "Paste new to replace",
+          "Discord application client secret"
         ]
       }
     ],
@@ -14308,7 +14622,7 @@
     "Collapse API Keys": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 923,
+        "line": 929,
         "nearby": [
           "Saving...",
           "Save And Restart Console",
@@ -14368,7 +14682,7 @@
     "Collapse Discord Sign In": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 791,
+        "line": 793,
         "nearby": [
           "Removing...",
           "Remove Discord Connection",
@@ -14392,7 +14706,7 @@
     "Collapse Encrypted API Access": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 927,
+        "line": 933,
         "nearby": [
           "Expand API Keys",
           "API Keys",
@@ -14428,7 +14742,7 @@
     "Collapse Login Password": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 600,
+        "line": 602,
         "nearby": [
           "Listing Claim Failed",
           "Keep your Console password available so you can sign in if Discord is unavailable. Manage its authenticator protection below.",
@@ -14452,7 +14766,7 @@
     "Collapse Public Listing Profile": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 932,
+        "line": 938,
         "nearby": [
           "Expand Encrypted API Access",
           "Encrypted API Access",
@@ -14485,13 +14799,25 @@
         ]
       }
     ],
-    "Collapse Server Startup": [
+    "Collapse Server Bot": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
         "line": 879,
         "nearby": [
           "Choose what admins, moderators, and players can do in the Console.",
           "Open Access Control",
+          "Expand Server Bot",
+          "Server Bot"
+        ]
+      }
+    ],
+    "Collapse Server Startup": [
+      {
+        "file": "console/web/src/features/settings/SettingsPanel.tsx",
+        "line": 885,
+        "nearby": [
+          "Server Bot",
+          "Commands and notifications in your Discord server.",
           "Expand Server Startup",
           "Server Startup"
         ]
@@ -14500,7 +14826,7 @@
     "Collapse Two Factor Authentication": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 663,
+        "line": 665,
         "nearby": [
           "This console's two-factor state could not be read, so password changes and recovery-code regeneration are unavailable right now. Do not delete",
           ". Follow the recovery guidance shown on the sign in page.",
@@ -14512,7 +14838,7 @@
     "Collapse Web Console Port": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 905,
+        "line": 911,
         "nearby": [
           "Enabled",
           "Disabled",
@@ -14727,6 +15053,18 @@
           "Clear",
           "Advanced history output",
           "Not Installed"
+        ]
+      }
+    ],
+    "Commands and notifications in your Discord server.": [
+      {
+        "file": "console/web/src/features/settings/SettingsPanel.tsx",
+        "line": 879,
+        "nearby": [
+          "Expand Server Bot",
+          "Server Bot",
+          "Collapse Server Startup",
+          "Expand Server Startup"
         ]
       }
     ],
@@ -15059,7 +15397,7 @@
     "Confirm new password": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 607,
+        "line": 609,
         "nearby": [
           "Matches",
           "Passwords do not match",
@@ -15071,7 +15409,7 @@
     "Confirm New Password": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 607,
+        "line": 609,
         "nearby": [
           "New Password",
           "At Least 13 Characters",
@@ -15164,6 +15502,30 @@
         ]
       }
     ],
+    "Connect": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 996,
+        "nearby": [
+          "Authorize",
+          "Your Discord authorization will be used once to verify you own this server, then sent to and independently verified by the hosted bot service (mentat), and discarded. It is never stored.",
+          "The server owner denied the request on Discord. Click Start Again to try again.",
+          "This server's ownership changed on Discord since the request was sent. Click Start Again to try again."
+        ]
+      }
+    ],
+    "Connect Bot": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1103,
+        "nearby": [
+          "\"Start Again\" only resets this screen. The request already sent may still complete if the server owner confirms it later.",
+          "Connecting…",
+          "Finish in the Discord popup, then come back here.",
+          "Your browser blocked the popup."
+        ]
+      }
+    ],
     "Connect DBeaver or another PostgreSQL application without exposing the database to your network. PostgreSQL remains bound to the server loopback interface, and the encrypted SSH connection carries database traffic.": [
       {
         "file": "console/web/src/features/database/DatabasePanel.tsx",
@@ -15188,6 +15550,18 @@
         ]
       }
     ],
+    "Connect Sahir Venn to a Discord server you own. Discord will ask you to approve the connection.": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1279,
+        "nearby": [
+          "Add bot to Discord",
+          "Setting up your console's connection…",
+          "This server is already connected:",
+          "Manual Connection"
+        ]
+      }
+    ],
     "Connect securely before continuing setup.": [
       {
         "file": "console/web/src/features/auth/DiscordSetupWizard.tsx",
@@ -15200,10 +15574,22 @@
         ]
       }
     ],
+    "Connect Your Bot": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1440,
+        "nearby": [
+          "Manual Connection",
+          "Use your own Discord application to connect the same hosted bot.",
+          "Use this Console URL and the token above in your bot configuration.",
+          "Console URL"
+        ]
+      }
+    ],
     "Connect your community and manage Discord access.": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 872,
+        "line": 874,
         "nearby": [
           "Manage your Console password and authenticator protection.",
           "Discord",
@@ -15227,12 +15613,24 @@
     "Connected": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 791,
+        "line": 793,
         "nearby": [
           "Discord Sign In",
           "Let members use their Discord account to access the Console.",
           "Not Set Up",
           "Hide Disable Options"
+        ]
+      }
+    ],
+    "Connected to hosted bot for": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1160,
+        "nearby": [
+          "Authorize",
+          "Welcome back. Click Authorize once you've invited the bot.",
+          "Which server is this for?",
+          "Register"
         ]
       }
     ],
@@ -15276,6 +15674,18 @@
           "Downloading Server Files",
           "Loading Steam Metadata",
           "Logging In To Steam"
+        ]
+      }
+    ],
+    "Connecting…": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1103,
+        "nearby": [
+          "Start Again",
+          "\"Start Again\" only resets this screen. The request already sent may still complete if the server owner confirms it later.",
+          "Connect Bot",
+          "Finish in the Discord popup, then come back here."
         ]
       }
     ],
@@ -15378,7 +15788,7 @@
     "Console Port": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 910,
+        "line": 916,
         "nearby": [
           "After saving, this page will stop responding on port",
           ". Open the new address shown in the result message.",
@@ -15390,7 +15800,7 @@
     "Console Still Rebuilding": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 416,
+        "line": 418,
         "nearby": [
           "Disabling Discord Sign In...",
           "Rebuilding Console...",
@@ -15400,7 +15810,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 434,
+        "line": 436,
         "nearby": [
           "Enabling Discord Sign In...",
           "Rebuilding Console...",
@@ -15410,7 +15820,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 468,
+        "line": 470,
         "nearby": [
           "Removing Discord Connection...",
           "Rebuilding Console...",
@@ -15533,6 +15943,17 @@
           "Auto Updates Save Failed",
           "Console update completed successfully.",
           "Reinstall latest public release"
+        ]
+      }
+    ],
+    "Console URL": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1442,
+        "nearby": [
+          "Connect Your Bot",
+          "Use this Console URL and the token above in your bot configuration.",
+          "Installation Guide"
         ]
       }
     ],
@@ -15776,6 +16197,52 @@
         ]
       }
     ],
+    "Continue": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1320,
+        "nearby": [
+          "Use your own Discord application to connect the same hosted bot.",
+          "I've invited the bot to this Discord server",
+          "Continue unlocks once the bot is connected above.",
+          "Continue unlocks once you confirm you've invited the bot."
+        ]
+      },
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1337,
+        "nearby": [
+          "Discord Role ID",
+          "Back",
+          "Save",
+          "Your bot is connected. Save these role permissions to finish setup."
+        ]
+      }
+    ],
+    "Continue unlocks once the bot is connected above.": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1321,
+        "nearby": [
+          "I've invited the bot to this Discord server",
+          "Continue",
+          "Continue unlocks once you confirm you've invited the bot.",
+          "Access Roles"
+        ]
+      }
+    ],
+    "Continue unlocks once you confirm you've invited the bot.": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1322,
+        "nearby": [
+          "Continue",
+          "Continue unlocks once the bot is connected above.",
+          "Access Roles",
+          "Choose which Discord roles can use bot commands. These fields are optional."
+        ]
+      }
+    ],
     "Continue With Discord": [
       {
         "file": "console/web/src/features/auth/DiscordSetupWizard.tsx",
@@ -16004,6 +16471,16 @@
           "Authenticate and keep the terminal open",
           "Enter the server’s SSH password when prompted. Password characters will not appear while typing. A blank terminal after login means the tunnel is active; close it with"
         ]
+      },
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1210,
+        "nearby": [
+          "Manage Discord bot commands, notifications and access to in-game data.",
+          "New Bot Token",
+          "Copy this now. It won't be shown again. Use Regenerate Token to get a new one if you lose it.",
+          "Bot Setup Progress"
+        ]
       }
     ],
     "Copy API address": [
@@ -16063,6 +16540,18 @@
           "Create Key",
           "Copied",
           "Copy"
+        ]
+      }
+    ],
+    "Copy this now. It won't be shown again. Use Regenerate Token to get a new one if you lose it.": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1212,
+        "nearby": [
+          "New Bot Token",
+          "Copy",
+          "Bot Setup Progress",
+          "Hosted Bot"
         ]
       }
     ],
@@ -16161,6 +16650,18 @@
         ]
       }
     ],
+    "Could not connect. Try again, or use the advanced setup below.": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 556,
+        "nearby": [
+          "This connection attempt expired. Try again.",
+          "Could not reach Discord. Try again in a moment.",
+          "Enable Bot",
+          "This lets the configured Discord roles issue bot commands against this console."
+        ]
+      }
+    ],
     "Could Not Load Access Rules": [
       {
         "file": "console/web/src/features/settings/IamPolicyEditor.tsx",
@@ -16205,6 +16706,18 @@
         ]
       }
     ],
+    "Could not reach Discord. Try again in a moment.": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 555,
+        "nearby": [
+          "Discord says you don't own this server. Only the server owner can connect it.",
+          "This connection attempt expired. Try again.",
+          "Could not connect. Try again, or use the advanced setup below.",
+          "Enable Bot"
+        ]
+      }
+    ],
     "Could not refresh API status:": [
       {
         "file": "console/web/src/features/settings/EncryptedApiSection.tsx",
@@ -16220,7 +16733,7 @@
     "Could Not Start Setup": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 326,
+        "line": 328,
         "nearby": [
           "Generating New Recovery Codes...",
           "Regeneration Failed",
@@ -16230,7 +16743,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 340,
+        "line": 342,
         "nearby": [
           "Enter your current login password.",
           "Starting Two-Factor Setup...",
@@ -16696,7 +17209,7 @@
     "Current 6-digit code": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 680,
+        "line": 682,
         "nearby": [
           "Your login password",
           "Authenticator Code",
@@ -16706,7 +17219,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 770,
+        "line": 772,
         "nearby": [
           "Your login password",
           "Authenticator Code",
@@ -16716,7 +17229,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 819,
+        "line": 821,
         "nearby": [
           "Your login password",
           "Authenticator Code",
@@ -16728,7 +17241,7 @@
     "Current 6-digit code (to disable)": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 711,
+        "line": 713,
         "nearby": [
           "Your login password (to disable)",
           "Authenticator Code",
@@ -16764,7 +17277,7 @@
     "Current Console Password": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 671,
+        "line": 673,
         "nearby": [
           "Generate a fresh set of 10 recovery codes. Your authenticator is unchanged, and you stay signed in everywhere.",
           "Your existing recovery codes stop working the moment new ones are issued.",
@@ -16774,7 +17287,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 702,
+        "line": 704,
         "nearby": [
           "Disable anyway",
           "Cancel",
@@ -16784,7 +17297,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 728,
+        "line": 730,
         "nearby": [
           "This protects the console's separate password login. Don't know it? Check",
           "on the host, or ask whoever manages the server.",
@@ -16794,7 +17307,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 761,
+        "line": 763,
         "nearby": [
           "Remove Discord Connection",
           "Remove the saved application credentials, connected Discord server, and access roles from this Console. Your Discord application is kept in Discord. You can connect it again later using its credentials.",
@@ -16804,7 +17317,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 810,
+        "line": 812,
         "nearby": [
           "Pause Discord Access",
           "Discord access stops immediately. Your application and role settings are kept, and you can still use your Console password. This page will wait for the Console to finish rebuilding.",
@@ -16837,7 +17350,7 @@
     "Current password": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 605,
+        "line": 607,
         "nearby": [
           ". Update the environment value to change it.",
           "Current Password",
@@ -16849,7 +17362,7 @@
     "Current Password": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 605,
+        "line": 607,
         "nearby": [
           "The login password is managed by",
           ". Update the environment value to change it.",
@@ -19095,6 +19608,18 @@
         ]
       }
     ],
+    "Didn't hear back in time. Check Discord directly, or click Start Again to try again.": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1053,
+        "nearby": [
+          "This server's ownership changed on Discord since the request was sent. Click Start Again to try again.",
+          "The server owner didn't respond in time. Click Start Again to try again.",
+          "Start Again",
+          "This server was previously connected to a different Console. That connection has been replaced, and role configuration was reset. Please reconfigure roles in the next step."
+        ]
+      }
+    ],
     "Dimension": [
       {
         "file": "console/web/src/features/maps/MapsPanel.tsx",
@@ -19169,7 +19694,7 @@
     "Disable": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 360,
+        "line": 362,
         "nearby": [
           "Enter your current authenticator code.",
           "Disable two-factor authentication?",
@@ -19179,7 +19704,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 402,
+        "line": 404,
         "nearby": [
           "Enter your current login password.",
           "Disable Discord Sign In?",
@@ -19195,6 +19720,16 @@
           "Send Now",
           "Enable",
           "Delete"
+        ]
+      },
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 887,
+        "nearby": [
+          "Disable Bot",
+          "This invalidates the current adapter token and clears your saved role mappings and hosted/self-hosted choice. You'll go through setup again to re-enable it. This cannot be undone.",
+          "Regenerate Discord Bot Token",
+          "This immediately invalidates the current token. Your bot will stop working until you paste the new token wherever it's configured. This cannot be undone."
         ]
       }
     ],
@@ -19213,7 +19748,7 @@
     "Disable anyway": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 697,
+        "line": 699,
         "nearby": [
           "You can turn on &ldquo;Require Discord two-factor for Owner and Admin&rdquo; under Discord → Discord Sign In (Change application credentials) to keep two-factor protection on your Discord login.",
           "Disabling...",
@@ -19246,10 +19781,32 @@
         ]
       }
     ],
+    "Disable Bot": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 885,
+        "nearby": [
+          "This takes effect immediately for new bot commands.",
+          "Save",
+          "This invalidates the current adapter token and clears your saved role mappings and hosted/self-hosted choice. You'll go through setup again to re-enable it. This cannot be undone.",
+          "Disable"
+        ]
+      },
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1418,
+        "nearby": [
+          "Save Roles",
+          "Regenerate Token",
+          "Role/token actions are paused while a Discord connection request is in progress.",
+          "This server is already connected:"
+        ]
+      }
+    ],
     "Disable Discord Sign In": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 806,
+        "line": 808,
         "nearby": [
           "Not Set Up",
           "Hide Disable Options",
@@ -19259,7 +19816,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 823,
+        "line": 825,
         "nearby": [
           "Current 6-digit code",
           "Disabling...",
@@ -19271,7 +19828,7 @@
     "Disable Discord Sign In?": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 402,
+        "line": 404,
         "nearby": [
           "Disable Failed",
           "Enter your current login password.",
@@ -19293,7 +19850,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 350,
+        "line": 352,
         "nearby": [
           "Starting Two-Factor Setup...",
           "Could Not Start Setup",
@@ -19302,7 +19859,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 354,
+        "line": 356,
         "nearby": [
           "Enter your current login password.",
           "Enter your current authenticator code.",
@@ -19311,7 +19868,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 385,
+        "line": 387,
         "nearby": [
           "Disabling Two Factor Authentication...",
           "Two Factor Authentication Disabled",
@@ -19320,7 +19877,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 397,
+        "line": 399,
         "nearby": [
           "Two Factor Authentication Disabled",
           "Enter your current login password.",
@@ -19329,7 +19886,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 419,
+        "line": 421,
         "nearby": [
           "Rebuilding Console...",
           "Console Still Rebuilding",
@@ -19417,7 +19974,7 @@
     "Disable Two Factor Authentication": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 691,
+        "line": 693,
         "nearby": [
           "Generating...",
           "Regenerate Recovery Codes",
@@ -19427,7 +19984,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 715,
+        "line": 717,
         "nearby": [
           "Current 6-digit code (to disable)",
           "Disabling...",
@@ -19439,7 +19996,7 @@
     "Disable two-factor authentication?": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 360,
+        "line": 362,
         "nearby": [
           "Disable Failed",
           "Enter your current authenticator code.",
@@ -19566,7 +20123,7 @@
     "Disabling Discord Sign In...": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 406,
+        "line": 408,
         "nearby": [
           "Disable Discord Sign In?",
           "Disable",
@@ -19597,7 +20154,7 @@
     "Disabling this will leave your console with no two-factor authentication anywhere. Discord sign in does not require Discord 2FA for your role.": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 694,
+        "line": 696,
         "nearby": [
           "Disable Two Factor Authentication",
           "Turns two-factor off entirely and deletes every remaining recovery code. Signing in goes back to password-only until you enable it again.",
@@ -19609,7 +20166,7 @@
     "Disabling Two Factor Authentication...": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 366,
+        "line": 368,
         "nearby": [
           "Disable two-factor authentication?",
           "Disable",
@@ -19621,7 +20178,7 @@
     "Disabling...": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 697,
+        "line": 699,
         "nearby": [
           "Disabling this will leave your console with no two-factor authentication anywhere. Discord sign in does not require Discord 2FA for your role.",
           "You can turn on &ldquo;Require Discord two-factor for Owner and Admin&rdquo; under Discord → Discord Sign In (Change application credentials) to keep two-factor protection on your Discord login.",
@@ -19631,7 +20188,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 715,
+        "line": 717,
         "nearby": [
           "Authenticator Code",
           "Current 6-digit code (to disable)",
@@ -19641,7 +20198,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 823,
+        "line": 825,
         "nearby": [
           "Authenticator Code",
           "Current 6-digit code",
@@ -19883,7 +20440,7 @@
     "Discord": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 872,
+        "line": 874,
         "nearby": [
           "Account Security",
           "Manage your Console password and authenticator protection.",
@@ -19895,7 +20452,7 @@
     "Discord access stops immediately. Your application and role settings are kept, and you can still use your Console password. This page will wait for the Console to finish rebuilding.": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 808,
+        "line": 810,
         "nearby": [
           "Disable Discord Sign In",
           "Pause Discord Access",
@@ -19913,6 +20470,28 @@
           "Client ID",
           "Client Secret",
           "(saved)"
+        ]
+      },
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1143,
+        "nearby": [
+          "Use a Discord application for this bot connection. Console sign-in is configured separately.",
+          "Client ID",
+          "Client Secret",
+          "Paste new to replace"
+        ]
+      }
+    ],
+    "Discord application client secret": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1144,
+        "nearby": [
+          "Client Secret",
+          "Paste new to replace",
+          "Redirect URI",
+          "Add this redirect URI to your Discord application. Change it only if you use a different public Console address."
         ]
       }
     ],
@@ -19978,6 +20557,44 @@
           "Require Discord 2FA For Owners And Admins",
           "Recommended"
         ]
+      },
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1331,
+        "nearby": [
+          "Choose which Discord roles can use bot commands. These fields are optional.",
+          "Player Role ID (Optional)",
+          "Moderator Role ID (Optional)"
+        ]
+      },
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1332,
+        "nearby": [
+          "Moderator Role ID (Optional)",
+          "Admin Role ID (Optional)"
+        ]
+      },
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1333,
+        "nearby": [
+          "Admin Role ID (Optional)",
+          "Back",
+          "Continue"
+        ]
+      }
+    ],
+    "Discord says you don't own this server. Only the server owner can connect it.": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 553,
+        "nearby": [
+          "idle",
+          "You cancelled on Discord's consent screen. Try again whenever you're ready.",
+          "This connection attempt expired. Try again.",
+          "Could not reach Discord. Try again in a moment."
+        ]
       }
     ],
     "Discord Settings Actions": [
@@ -19995,7 +20612,7 @@
     "Discord Sign In": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 747,
+        "line": 749,
         "nearby": [
           "Starting...",
           "Enable 2FA",
@@ -20005,7 +20622,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 791,
+        "line": 793,
         "nearby": [
           "Collapse Discord Sign In",
           "Expand Discord Sign In",
@@ -21501,12 +22118,31 @@
           "Delete",
           "Not scheduled"
         ]
+      },
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 799,
+        "nearby": [
+          "Enable Bot",
+          "This lets the configured Discord roles issue bot commands against this console.",
+          "Save Discord Bot Role IDs",
+          "This takes effect immediately for new bot commands."
+        ]
+      },
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1361,
+        "nearby": [
+          "Back",
+          "Save Roles",
+          "Enable the connection, then copy the token into your bot configuration."
+        ]
       }
     ],
     "Enable 2FA": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 732,
+        "line": 734,
         "nearby": [
           "Scan the QR code and confirm your authenticator code to finish. You'll stay signed in.",
           "Starting...",
@@ -21548,10 +22184,32 @@
         ]
       }
     ],
+    "Enable Bot": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 797,
+        "nearby": [
+          "Could not reach Discord. Try again in a moment.",
+          "Could not connect. Try again, or use the advanced setup below.",
+          "This lets the configured Discord roles issue bot commands against this console.",
+          "Enable"
+        ]
+      },
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1365,
+        "nearby": [
+          "Enable the connection, then copy the token into your bot configuration.",
+          "Back",
+          "Retry",
+          "Enabled."
+        ]
+      }
+    ],
     "Enable Discord Sign In": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 750,
+        "line": 752,
         "nearby": [
           "Your application and access roles are saved. Enable Discord sign in whenever you are ready.",
           "Enabling...",
@@ -21594,7 +22252,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 437,
+        "line": 439,
         "nearby": [
           "Rebuilding Console...",
           "Console Still Rebuilding",
@@ -21701,6 +22359,18 @@
           "Six Tier 6 Presets · Hagga Basin",
           "Settings → Experimental Features → Regis Tanks. Enable and wait for Hagga to finish restarting.",
           "Spawn Your Tank"
+        ]
+      }
+    ],
+    "Enable the connection, then copy the token into your bot configuration.": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1362,
+        "nearby": [
+          "Save Roles",
+          "Enable",
+          "Back",
+          "Enable Bot"
         ]
       }
     ],
@@ -21820,10 +22490,22 @@
         ]
       }
     ],
+    "Enabled.": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1383,
+        "nearby": [
+          "Enable Bot",
+          "Retry",
+          "Token",
+          "Player Role ID"
+        ]
+      }
+    ],
     "Enabling Discord Sign In...": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 429,
+        "line": 431,
         "nearby": [
           "Console Still Rebuilding",
           "Disable Failed",
@@ -21865,7 +22547,7 @@
     "Enabling...": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 750,
+        "line": 752,
         "nearby": [
           "Disabled",
           "Your application and access roles are saved. Enable Discord sign in whenever you are ready.",
@@ -21887,7 +22569,7 @@
     "Encrypted API Access": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 927,
+        "line": 933,
         "nearby": [
           "Collapse Encrypted API Access",
           "Expand Encrypted API Access",
@@ -21956,7 +22638,7 @@
     "Enter a port number between 1 and 65535.": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 480,
+        "line": 482,
         "nearby": [
           "Removal Failed",
           "Port Change Failed",
@@ -22106,7 +22788,7 @@
     "Enter your current authenticator code.": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 268,
+        "line": 270,
         "nearby": [
           "New password and confirmation do not match.",
           "Password Change Failed",
@@ -22116,7 +22798,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 300,
+        "line": 302,
         "nearby": [
           "Enter your current login password.",
           "Regeneration Failed",
@@ -22125,7 +22807,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 354,
+        "line": 356,
         "nearby": [
           "Enter your current login password.",
           "Disable Failed",
@@ -22137,7 +22819,7 @@
     "Enter your current Console password.": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 453,
+        "line": 455,
         "nearby": [
           "Type \"forget\" to confirm.",
           "Removal Failed",
@@ -22149,7 +22831,7 @@
     "Enter your current login password.": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 253,
+        "line": 255,
         "nearby": [
           "Password Change Failed",
           "New password must meet all password requirements."
@@ -22157,7 +22839,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 296,
+        "line": 298,
         "nearby": [
           "Password Change Failed",
           "Regeneration Failed",
@@ -22166,7 +22848,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 326,
+        "line": 328,
         "nearby": [
           "Regeneration Failed",
           "Could Not Start Setup",
@@ -22175,7 +22857,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 350,
+        "line": 352,
         "nearby": [
           "Could Not Start Setup",
           "Disable Failed",
@@ -22184,7 +22866,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 397,
+        "line": 399,
         "nearby": [
           "Disable Failed",
           "Disable Discord Sign In?",
@@ -22663,7 +23345,7 @@
     "Expand API Keys": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 923,
+        "line": 929,
         "nearby": [
           "Save And Restart Console",
           "Collapse API Keys",
@@ -22723,7 +23405,7 @@
     "Expand Discord Sign In": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 791,
+        "line": 793,
         "nearby": [
           "Remove Discord Connection",
           "Collapse Discord Sign In",
@@ -22747,7 +23429,7 @@
     "Expand Encrypted API Access": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 927,
+        "line": 933,
         "nearby": [
           "API Keys",
           "Collapse Encrypted API Access",
@@ -22783,7 +23465,7 @@
     "Expand Login Password": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 600,
+        "line": 602,
         "nearby": [
           "Keep your Console password available so you can sign in if Discord is unavailable. Manage its authenticator protection below.",
           "Collapse Login Password",
@@ -22807,7 +23489,7 @@
     "Expand Public Listing Profile": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 932,
+        "line": 938,
         "nearby": [
           "Encrypted API Access",
           "Collapse Public Listing Profile",
@@ -22840,12 +23522,24 @@
         ]
       }
     ],
-    "Expand Server Startup": [
+    "Expand Server Bot": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
         "line": 879,
         "nearby": [
           "Open Access Control",
+          "Collapse Server Bot",
+          "Server Bot",
+          "Commands and notifications in your Discord server."
+        ]
+      }
+    ],
+    "Expand Server Startup": [
+      {
+        "file": "console/web/src/features/settings/SettingsPanel.tsx",
+        "line": 885,
+        "nearby": [
+          "Commands and notifications in your Discord server.",
           "Collapse Server Startup",
           "Server Startup",
           "Start Battlegroup Automatically"
@@ -22855,7 +23549,7 @@
     "Expand Two Factor Authentication": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 663,
+        "line": 665,
         "nearby": [
           ". Follow the recovery guidance shown on the sign in page.",
           "Collapse Two Factor Authentication",
@@ -22867,7 +23561,7 @@
     "Expand Web Console Port": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 905,
+        "line": 911,
         "nearby": [
           "Disabled",
           "Collapse Web Console Port",
@@ -23330,7 +24024,7 @@
     "Files Checklist": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 995,
+        "line": 1001,
         "nearby": [
           "Number",
           "Special Character",
@@ -23911,6 +24605,18 @@
         ]
       }
     ],
+    "Finish in the Discord popup, then come back here.": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1105,
+        "nearby": [
+          "Connecting…",
+          "Connect Bot",
+          "Your browser blocked the popup.",
+          "Click here to continue in a new tab"
+        ]
+      }
+    ],
     "Finish the first-time setup to unlock the console.": [
       {
         "file": "console/web/src/App.tsx",
@@ -24462,7 +25168,7 @@
     "forget": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 772,
+        "line": 774,
         "nearby": [
           "Current 6-digit code",
           "Type &ldquo;forget&rdquo; To Confirm",
@@ -24485,7 +25191,7 @@
     "Found": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 996,
+        "line": 1002,
         "nearby": [
           "Special Character",
           "Files Checklist",
@@ -25139,7 +25845,7 @@
     "Generate a fresh set of 10 recovery codes. Your authenticator is unchanged, and you stay signed in everywhere.": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 668,
+        "line": 670,
         "nearby": [
           "On",
           "Off",
@@ -25151,7 +25857,7 @@
     "Generated Claim Code": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 941,
+        "line": 947,
         "nearby": [
           "[Your Server Page]",
           ", then paste it below.",
@@ -25163,7 +25869,7 @@
     "Generating New Recovery Codes...": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 304,
+        "line": 306,
         "nearby": [
           "Regeneration Failed",
           "Enter your current authenticator code.",
@@ -25174,7 +25880,7 @@
     "Generating...": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 684,
+        "line": 686,
         "nearby": [
           "Authenticator Code",
           "Current 6-digit code",
@@ -26438,7 +27144,7 @@
     "Helps us understand how many Dune Docker servers are in use, including local and unlisted installations. Only anonymous server presence is reported—never your server name, IP address, players, or configuration. These statistics help demonstrate project usage and guide future development.": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 837,
+        "line": 839,
         "nearby": [
           "Settings",
           "About Anonymous Count",
@@ -26462,7 +27168,7 @@
     "Hide": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 757,
+        "line": 759,
         "nearby": [
           "Enabling...",
           "Enable Discord Sign In",
@@ -26474,7 +27180,7 @@
     "Hide Disable Options": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 806,
+        "line": 808,
         "nearby": [
           "Connected",
           "Not Set Up",
@@ -26721,6 +27427,26 @@
         ]
       }
     ],
+    "Hosted Bot": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 13,
+        "nearby": [
+          "Self Hosted",
+          "Run your own bot and connect it to this Console."
+        ]
+      },
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1245,
+        "nearby": [
+          "Copy this now. It won't be shown again. Use Regenerate Token to get a new one if you lose it.",
+          "Bot Setup Progress",
+          "Self Hosted",
+          "Change"
+        ]
+      }
+    ],
     "Hours": [
       {
         "file": "console/web/src/features/backups/BackupsPanel.tsx",
@@ -26892,6 +27618,18 @@
         ]
       }
     ],
+    "I've invited the bot to this Discord server": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1317,
+        "nearby": [
+          "Manual Connection",
+          "Use your own Discord application to connect the same hosted bot.",
+          "Continue",
+          "Continue unlocks once the bot is connected above."
+        ]
+      }
+    ],
     "I've Saved It": [
       {
         "file": "console/web/src/features/settings/ApiKeysSection.tsx",
@@ -26901,6 +27639,18 @@
           "Copy",
           "Loading API Keys...",
           "No API keys yet."
+        ]
+      }
+    ],
+    "idle": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 338,
+        "nearby": [
+          "Use the hosted bot without running another service.",
+          "Choose where your bot will run.",
+          "You cancelled on Discord's consent screen. Try again whenever you're ready.",
+          "Discord says you don't own this server. Only the server owner can connect it."
         ]
       }
     ],
@@ -27750,6 +28500,16 @@
           "This database schema does not support CHOAM terminal placement.",
           "CHOAM Terminals Installed",
           "CHOAM Terminals Already Installed"
+        ]
+      }
+    ],
+    "Installation Guide": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1443,
+        "nearby": [
+          "Use this Console URL and the token above in your bot configuration.",
+          "Console URL"
         ]
       }
     ],
@@ -28908,7 +29668,7 @@
     "Keep your Console password available so you can sign in if Discord is unavailable. Manage its authenticator protection below.": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 597,
+        "line": 599,
         "nearby": [
           "Public Listing Claimed",
           "Listing Claim Failed",
@@ -29602,7 +30362,7 @@
     "Let members use their Discord account to access the Console.": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 791,
+        "line": 793,
         "nearby": [
           "Expand Discord Sign In",
           "Discord Sign In",
@@ -29780,7 +30540,7 @@
     "Listing Claim Failed": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 563,
+        "line": 565,
         "nearby": [
           "Verifying Listing Claim...",
           "Public Listing Claimed",
@@ -31153,7 +31913,7 @@
     "Login Password": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 600,
+        "line": 602,
         "nearby": [
           "Collapse Login Password",
           "Expand Login Password",
@@ -31165,7 +31925,7 @@
     "Login Password Changed": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 281,
+        "line": 283,
         "nearby": [
           "Enter your current authenticator code.",
           "Changing Login Password...",
@@ -31251,7 +32011,7 @@
     "Lowercase Letter": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 983,
+        "line": 989,
         "nearby": [
           "Verify Generated Code",
           "At Least 13 Characters",
@@ -31320,10 +32080,22 @@
         ]
       }
     ],
+    "Manage Discord bot commands, notifications and access to in-game data.": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1186,
+        "nearby": [
+          "Which server is this for?",
+          "Register",
+          "New Bot Token",
+          "Copy"
+        ]
+      }
+    ],
     "Manage Member Access": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 875,
+        "line": 877,
         "nearby": [
           "Discord",
           "Connect your community and manage Discord access.",
@@ -31335,7 +32107,7 @@
     "Manage your Console password and authenticator protection.": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 868,
+        "line": 870,
         "nearby": [
           "Server listing issue:",
           "Account Security",
@@ -31364,6 +32136,28 @@
           "SQL Safety Backup",
           "Imported Backup",
           "Unknown"
+        ]
+      }
+    ],
+    "Manual Connection": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1293,
+        "nearby": [
+          "Connect Sahir Venn to a Discord server you own. Discord will ask you to approve the connection.",
+          "This server is already connected:",
+          "Use your own Discord application to connect the same hosted bot.",
+          "I've invited the bot to this Discord server"
+        ]
+      },
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1432,
+        "nearby": [
+          "Role/token actions are paused while a Discord connection request is in progress.",
+          "This server is already connected:",
+          "Use your own Discord application to connect the same hosted bot.",
+          "Connect Your Bot"
         ]
       }
     ],
@@ -31925,7 +32719,7 @@
     "Matches": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 607,
+        "line": 609,
         "nearby": [
           "At Least 13 Characters",
           "Confirm New Password",
@@ -32538,7 +33332,7 @@
     "Missing": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 996,
+        "line": 1002,
         "nearby": [
           "Files Checklist",
           "Found",
@@ -32619,6 +33413,27 @@
           "(Required)",
           "Discord Role ID",
           "(Optional)"
+        ]
+      },
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1412,
+        "nearby": [
+          "Token",
+          "Player Role ID",
+          "Admin Role ID",
+          "Save Roles"
+        ]
+      }
+    ],
+    "Moderator Role ID (Optional)": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1332,
+        "nearby": [
+          "Player Role ID (Optional)",
+          "Discord Role ID",
+          "Admin Role ID (Optional)"
         ]
       }
     ],
@@ -33225,6 +34040,18 @@
         ]
       }
     ],
+    "New Bot Token": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1208,
+        "nearby": [
+          "Register",
+          "Manage Discord bot commands, notifications and access to in-game data.",
+          "Copy",
+          "Copy this now. It won't be shown again. Use Regenerate Token to get a new one if you lose it."
+        ]
+      }
+    ],
     "New Faction": [
       {
         "file": "console/web/src/features/players/PlayerFactionAssignment.tsx",
@@ -33320,7 +34147,7 @@
     "New Password": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 606,
+        "line": 608,
         "nearby": [
           "Current Password",
           "Current password",
@@ -33342,7 +34169,7 @@
     "New password and confirmation do not match.": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 261,
+        "line": 263,
         "nearby": [
           "New password must meet all password requirements.",
           "Password Change Failed",
@@ -33353,7 +34180,7 @@
     "New password must meet all password requirements.": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 257,
+        "line": 259,
         "nearby": [
           "Enter your current login password.",
           "Password Change Failed",
@@ -35161,7 +35988,7 @@
     "Not Confirmed": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 449,
+        "line": 451,
         "nearby": [
           "Console Still Rebuilding",
           "Enable Failed",
@@ -35380,7 +36207,7 @@
     "Not Set Up": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 791,
+        "line": 793,
         "nearby": [
           "Let members use their Discord account to access the Console.",
           "Connected",
@@ -35510,7 +36337,7 @@
     "Number": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 985,
+        "line": 991,
         "nearby": [
           "Lowercase Letter",
           "Uppercase Letter",
@@ -35668,7 +36495,7 @@
     "Off": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 665,
+        "line": 667,
         "nearby": [
           "Add an authenticator code to your Console password.",
           "On",
@@ -35802,7 +36629,7 @@
     "Off by default. Turn it on to require an authenticator app code (plus 10 one-time recovery codes as backup) in addition to your password at sign-in.": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 722,
+        "line": 724,
         "nearby": [
           "Disabling...",
           "Disable Two Factor Authentication",
@@ -35935,7 +36762,7 @@
     "On": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 665,
+        "line": 667,
         "nearby": [
           "Two Factor Authentication",
           "Add an authenticator code to your Console password.",
@@ -36088,7 +36915,7 @@
     "on the host, or ask whoever manages the server.": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 726,
+        "line": 728,
         "nearby": [
           "Off by default. Turn it on to require an authenticator app code (plus 10 one-time recovery codes as backup) in addition to your password at sign-in.",
           "This protects the console's separate password login. Don't know it? Check",
@@ -36280,12 +37107,12 @@
     "Open Access Control": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 875,
+        "line": 877,
         "nearby": [
           "Manage Member Access",
           "Choose what admins, moderators, and players can do in the Console.",
-          "Collapse Server Startup",
-          "Expand Server Startup"
+          "Collapse Server Bot",
+          "Expand Server Bot"
         ]
       }
     ],
@@ -37592,14 +38419,14 @@
     "Password Change Failed": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 253,
+        "line": 255,
         "nearby": [
           "Enter your current login password."
         ]
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 257,
+        "line": 259,
         "nearby": [
           "Enter your current login password.",
           "New password must meet all password requirements."
@@ -37607,7 +38434,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 261,
+        "line": 263,
         "nearby": [
           "New password must meet all password requirements.",
           "New password and confirmation do not match."
@@ -37615,7 +38442,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 268,
+        "line": 270,
         "nearby": [
           "New password and confirmation do not match.",
           "Enter your current authenticator code.",
@@ -37624,7 +38451,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 289,
+        "line": 291,
         "nearby": [
           "Login Password Changed",
           "Signing you out so you can log back in with the new password.",
@@ -37689,7 +38516,7 @@
     "Password requirements": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 622,
+        "line": 624,
         "nearby": [
           "Two-factor is enabled, so changing the password needs a current code from your authenticator as well.",
           "Password Requirements",
@@ -37701,7 +38528,7 @@
     "Password Requirements": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 621,
+        "line": 623,
         "nearby": [
           "6-digit code",
           "Two-factor is enabled, so changing the password needs a current code from your authenticator as well.",
@@ -37725,7 +38552,7 @@
     "Passwords do not match": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 607,
+        "line": 609,
         "nearby": [
           "Confirm New Password",
           "Matches",
@@ -37754,6 +38581,18 @@
           "Client Secret",
           "(saved)",
           "Client secret",
+          "Redirect URI"
+        ]
+      }
+    ],
+    "Paste new to replace": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1144,
+        "nearby": [
+          "Discord application client ID",
+          "Client Secret",
+          "Discord application client secret",
           "Redirect URI"
         ]
       }
@@ -37833,7 +38672,7 @@
     "Pause Discord Access": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 808,
+        "line": 810,
         "nearby": [
           "Hide Disable Options",
           "Disable Discord Sign In",
@@ -38669,6 +39508,28 @@
           "Discord Role ID",
           "(Recommended)"
         ]
+      },
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1411,
+        "nearby": [
+          "Enabled.",
+          "Token",
+          "Moderator Role ID",
+          "Admin Role ID"
+        ]
+      }
+    ],
+    "Player Role ID (Optional)": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1331,
+        "nearby": [
+          "Access Roles",
+          "Choose which Discord roles can use bot commands. These fields are optional.",
+          "Discord Role ID",
+          "Moderator Role ID (Optional)"
+        ]
       }
     ],
     "Player Search Failed": [
@@ -38934,7 +39795,7 @@
     "Port Change Failed": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 480,
+        "line": 482,
         "nearby": [
           "Console Still Rebuilding",
           "Removal Failed",
@@ -38944,7 +39805,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 500,
+        "line": 502,
         "nearby": [
           "Saving Web Console Port...",
           "Web Console Port Saved",
@@ -39871,7 +40732,7 @@
     "Public descriptions, community links, recruitment details, and Player Portal settings are managed on DuneDocker.app. Generate a claim code from": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 937,
+        "line": 943,
         "nearby": [
           "Expand Public Listing Profile",
           "Public Listing Profile",
@@ -39925,7 +40786,7 @@
     "Public Listing Claimed": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 556,
+        "line": 558,
         "nearby": [
           "Server Startup Save Failed",
           "Verifying Listing Claim...",
@@ -39937,7 +40798,7 @@
     "Public Listing Profile": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 934,
+        "line": 940,
         "nearby": [
           "Collapse Public Listing Profile",
           "Expand Public Listing Profile",
@@ -40968,7 +41829,7 @@
     "Rebuilding Console...": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 415,
+        "line": 417,
         "nearby": [
           "Disable",
           "Disabling Discord Sign In...",
@@ -40978,7 +41839,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 433,
+        "line": 435,
         "nearby": [
           "Disable Failed",
           "Enabling Discord Sign In...",
@@ -40988,7 +41849,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 467,
+        "line": 469,
         "nearby": [
           "Enter your current Console password.",
           "Removing Discord Connection...",
@@ -41389,6 +42250,16 @@
           "Client secret",
           "Copy Redirect URI",
           "Add this address to your application's OAuth2 redirects."
+        ]
+      },
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1146,
+        "nearby": [
+          "Paste new to replace",
+          "Discord application client secret",
+          "Add this redirect URI to your Discord application. Change it only if you use a different public Console address.",
+          "Saving..."
         ]
       }
     ],
@@ -42124,10 +42995,34 @@
         ]
       }
     ],
+    "Regenerate": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 951,
+        "nearby": [
+          "Regenerate Discord Bot Token",
+          "This immediately invalidates the current token. Your bot will stop working until you paste the new token wherever it's configured. This cannot be undone.",
+          "Authorize",
+          "Your Discord authorization will be used once to verify you own this server, then sent to and independently verified by the hosted bot service (mentat), and discarded. It is never stored."
+        ]
+      }
+    ],
+    "Regenerate Discord Bot Token": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 949,
+        "nearby": [
+          "This invalidates the current adapter token and clears your saved role mappings and hosted/self-hosted choice. You'll go through setup again to re-enable it. This cannot be undone.",
+          "Disable",
+          "This immediately invalidates the current token. Your bot will stop working until you paste the new token wherever it's configured. This cannot be undone.",
+          "Regenerate"
+        ]
+      }
+    ],
     "Regenerate Recovery Codes": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 684,
+        "line": 686,
         "nearby": [
           "Current 6-digit code",
           "Generating...",
@@ -42136,10 +43031,22 @@
         ]
       }
     ],
+    "Regenerate Token": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1417,
+        "nearby": [
+          "Admin Role ID",
+          "Save Roles",
+          "Disable Bot",
+          "Role/token actions are paused while a Discord connection request is in progress."
+        ]
+      }
+    ],
     "Regeneration Failed": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 296,
+        "line": 298,
         "nearby": [
           "Signing you out so you can log back in with the new password.",
           "Password Change Failed",
@@ -42148,7 +43055,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 300,
+        "line": 302,
         "nearby": [
           "Enter your current login password.",
           "Enter your current authenticator code.",
@@ -42157,7 +43064,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 319,
+        "line": 321,
         "nearby": [
           "Enter your current authenticator code.",
           "Generating New Recovery Codes...",
@@ -42273,6 +43180,18 @@
           "If Regis Tanks are enabled, they are switched off and confirmed off before the game files are updated. They are switched on again only after a newer Dune Docker release from RedBlink has been installed and supports the new game build. Without a new release they stay off. Without this option, an update is blocked while Regis Tanks are enabled.",
           "Save Auto Updates",
           "Enabled"
+        ]
+      }
+    ],
+    "Register": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1177,
+        "nearby": [
+          "Connected to hosted bot for",
+          "Which server is this for?",
+          "Manage Discord bot commands, notifications and access to in-game data.",
+          "New Bot Token"
         ]
       }
     ],
@@ -42437,7 +43356,7 @@
     "Removal Failed": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 453,
+        "line": 455,
         "nearby": [
           "Not Confirmed",
           "Type \"forget\" to confirm.",
@@ -42447,7 +43366,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 471,
+        "line": 473,
         "nearby": [
           "Rebuilding Console...",
           "Console Still Rebuilding",
@@ -42581,7 +43500,7 @@
     "Remove Discord Connection": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 757,
+        "line": 759,
         "nearby": [
           "Enable Discord Sign In",
           "Hide",
@@ -42591,7 +43510,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 775,
+        "line": 777,
         "nearby": [
           "forget",
           "Removing...",
@@ -42739,7 +43658,7 @@
     "Remove the saved application credentials, connected Discord server, and access roles from this Console. Your Discord application is kept in Discord. You can connect it again later using its credentials.": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 759,
+        "line": 761,
         "nearby": [
           "Hide",
           "Remove Discord Connection",
@@ -42773,7 +43692,7 @@
     "Removing Discord Connection...": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 457,
+        "line": 459,
         "nearby": [
           "Removal Failed",
           "Enter your current Console password.",
@@ -42821,7 +43740,7 @@
     "Removing...": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 775,
+        "line": 777,
         "nearby": [
           "Type &ldquo;forget&rdquo; To Confirm",
           "forget",
@@ -45191,6 +46110,16 @@
         ]
       },
       {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1379,
+        "nearby": [
+          "Back",
+          "Enable Bot",
+          "Enabled.",
+          "Token"
+        ]
+      },
+      {
         "file": "console/web/src/features/bases/BaseInventoryTab.tsx",
         "line": 991,
         "nearby": [
@@ -45225,16 +46154,6 @@
           "Auto-refill state could not be read.",
           "About Auto-Refill",
           "Auto-Refill"
-        ]
-      },
-      {
-        "file": "console/web/src/features/bases/BasePermissionsTab.tsx",
-        "line": 210,
-        "nearby": [
-          "New Owner",
-          "Loading permissions…",
-          "Exactly one Owner. Promoting a player demotes the current Owner to Co-Owner. Changes apply to the running map immediately. Transferring to the system custodian parks ownership on a reserved identity and keeps the roster intact.",
-          "Search a player to add"
         ]
       }
     ],
@@ -45552,6 +46471,18 @@
           "Signed-in Account",
           "Administrator",
           "Sign Out"
+        ]
+      }
+    ],
+    "Role/token actions are paused while a Discord connection request is in progress.": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1420,
+        "nearby": [
+          "Regenerate Token",
+          "Disable Bot",
+          "This server is already connected:",
+          "Manual Connection"
         ]
       }
     ],
@@ -46001,6 +46932,17 @@
         ]
       }
     ],
+    "Run your own bot and connect it to this Console.": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 14,
+        "nearby": [
+          "Hosted Bot",
+          "Use the hosted bot without running another service.",
+          "Choose where your bot will run."
+        ]
+      }
+    ],
     "running": [
       {
         "file": "console/web/src/features/maps/MapsPanel.tsx",
@@ -46074,7 +47016,7 @@
     "Runtime Configuration": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 1000,
+        "line": 1006,
         "nearby": [
           "Missing",
           "Runtime file checks have not loaded yet.",
@@ -46086,7 +47028,7 @@
     "Runtime file checks have not loaded yet.": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 997,
+        "line": 1003,
         "nearby": [
           "Found",
           "Missing",
@@ -46478,7 +47420,7 @@
     "Save And Restart Console": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 913,
+        "line": 919,
         "nearby": [
           "Console Port",
           "Saving...",
@@ -46605,6 +47547,18 @@
         ]
       }
     ],
+    "Save Connection": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1150,
+        "nearby": [
+          "Add this redirect URI to your Discord application. Change it only if you use a different public Console address.",
+          "Saving...",
+          "Add To Discord",
+          "Authorize"
+        ]
+      }
+    ],
     "Save Custom Settings": [
       {
         "file": "console/web/src/features/maps/MapsPanel.tsx",
@@ -46614,6 +47568,18 @@
           "Enter a supported value within the displayed range before saving.",
           "Discard Custom Settings Changes",
           "Set every Server Setting on this tab back to its default value"
+        ]
+      }
+    ],
+    "Save Discord Bot Role IDs": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 846,
+        "nearby": [
+          "This lets the configured Discord roles issue bot commands against this console.",
+          "Enable",
+          "This takes effect immediately for new bot commands.",
+          "Save"
         ]
       }
     ],
@@ -46804,6 +47770,28 @@
         ]
       }
     ],
+    "Save Roles": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1354,
+        "nearby": [
+          "Your bot is connected. Save these role permissions to finish setup.",
+          "Back",
+          "Enable",
+          "Enable the connection, then copy the token into your bot configuration."
+        ]
+      },
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1416,
+        "nearby": [
+          "Moderator Role ID",
+          "Admin Role ID",
+          "Regenerate Token",
+          "Disable Bot"
+        ]
+      }
+    ],
     "Save Row": [
       {
         "file": "console/web/src/features/database/DatabasePanel.tsx",
@@ -46979,7 +47967,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 846,
+        "line": 848,
         "nearby": [
           "Helps us understand how many Dune Docker servers are in use, including local and unlisted installations. Only anonymous server presence is reported—never your server name, IP address, players, or configuration. These statistics help demonstrate project usage and guide future development.",
           "Anonymous Count:",
@@ -46989,7 +47977,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 857,
+        "line": 859,
         "nearby": [
           "Disabled",
           "Server Listing:",
@@ -46998,7 +47986,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 896,
+        "line": 902,
         "nearby": [
           "The Console always starts with Docker. When this is disabled, the Battlegroup remains stopped after the Linux host boots until you start it manually.",
           "Automatic Startup:",
@@ -47213,7 +48201,7 @@
     "Saving Server Startup...": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 531,
+        "line": 533,
         "nearby": [
           "Web Console Port Saved",
           "Port Change Failed",
@@ -47270,7 +48258,7 @@
     "Saving Web Console Port...": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 486,
+        "line": 488,
         "nearby": [
           "Port Change Failed",
           "Enter a port number between 1 and 65535.",
@@ -47356,7 +48344,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 627,
+        "line": 629,
         "nearby": [
           "Password Requirements",
           "Password requirements",
@@ -47366,7 +48354,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 913,
+        "line": 919,
         "nearby": [
           ". Open the new address shown in the result message.",
           "Console Port",
@@ -47402,6 +48390,16 @@
           "on the host.",
           "Enable Discord Sign In",
           "Discord Connected"
+        ]
+      },
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1150,
+        "nearby": [
+          "Redirect URI",
+          "Add this redirect URI to your Discord application. Change it only if you use a different public Console address.",
+          "Save Connection",
+          "Add To Discord"
         ]
       },
       {
@@ -47515,7 +48513,7 @@
     "Scan the QR code and confirm your authenticator code to finish. You'll stay signed in.": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 730,
+        "line": 732,
         "nearby": [
           "Current Console Password",
           "Your login password",
@@ -48848,6 +49846,26 @@
         ]
       }
     ],
+    "Self Hosted": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 12,
+        "nearby": [
+          "Bot Hosting",
+          "Hosted Bot"
+        ]
+      },
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1245,
+        "nearby": [
+          "Bot Setup Progress",
+          "Hosted Bot",
+          "Change",
+          "Which are you using?"
+        ]
+      }
+    ],
     "Self-Deaths": [
       {
         "file": "console/web/src/features/players/CombatPanel.tsx",
@@ -49017,6 +50035,18 @@
           "Players",
           "Sietches",
           "Storage"
+        ]
+      }
+    ],
+    "Server Bot": [
+      {
+        "file": "console/web/src/features/settings/SettingsPanel.tsx",
+        "line": 879,
+        "nearby": [
+          "Collapse Server Bot",
+          "Expand Server Bot",
+          "Commands and notifications in your Discord server.",
+          "Collapse Server Startup"
         ]
       }
     ],
@@ -49190,7 +50220,7 @@
     "Server listing issue:": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 863,
+        "line": 865,
         "nearby": [
           "Disabled",
           "Refresh",
@@ -49202,7 +50232,7 @@
     "Server Listing:": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 856,
+        "line": 858,
         "nearby": [
           "Enabled",
           "Disabled",
@@ -49237,7 +50267,7 @@
     "Server Startup": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 881,
+        "line": 887,
         "nearby": [
           "Collapse Server Startup",
           "Expand Server Startup",
@@ -49249,7 +50279,7 @@
     "Server Startup Save Failed": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 543,
+        "line": 545,
         "nearby": [
           "The Battlegroup will start automatically after the Linux host boots.",
           "The Console will start after the Linux host boots, but the Battlegroup will remain stopped until you start it.",
@@ -49261,7 +50291,7 @@
     "Server Startup Saved": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 537,
+        "line": 539,
         "nearby": [
           "Port Change Failed",
           "Saving Server Startup...",
@@ -49747,6 +50777,18 @@
         ]
       }
     ],
+    "Setting up your console's connection…": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1270,
+        "nearby": [
+          "Which are you using?",
+          "Add bot to Discord",
+          "Connect Sahir Venn to a Discord server you own. Discord will ask you to approve the connection.",
+          "This server is already connected:"
+        ]
+      }
+    ],
     "Setting Up...": [
       {
         "file": "console/web/src/features/settings/RealtimeAgentNotice.tsx",
@@ -49814,7 +50856,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 835,
+        "line": 837,
         "nearby": [
           "Disabling...",
           "Disable Discord Sign In",
@@ -50625,7 +51667,7 @@
     "Signing you out so you can log back in with the new password.": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 281,
+        "line": 283,
         "nearby": [
           "Changing Login Password...",
           "Login Password Changed",
@@ -51113,7 +52155,7 @@
     "Special Character": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 986,
+        "line": 992,
         "nearby": [
           "Uppercase Letter",
           "Number",
@@ -51338,10 +52380,30 @@
         ]
       }
     ],
+    "Start Again": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1063,
+        "nearby": [
+          "The server owner didn't respond in time. Click Start Again to try again.",
+          "Didn't hear back in time. Check Discord directly, or click Start Again to try again.",
+          "This server was previously connected to a different Console. That connection has been replaced, and role configuration was reset. Please reconfigure roles in the next step."
+        ]
+      },
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1088,
+        "nearby": [
+          "This server was previously connected to a different Console. That connection has been replaced, and role configuration was reset. Please reconfigure roles in the next step.",
+          "\"Start Again\" only resets this screen. The request already sent may still complete if the server owner confirms it later.",
+          "Connecting…"
+        ]
+      }
+    ],
     "Start Battlegroup Automatically": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 885,
+        "line": 891,
         "nearby": [
           "Expand Server Startup",
           "Server Startup",
@@ -51573,7 +52635,7 @@
     "Starting Two-Factor Setup...": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 330,
+        "line": 332,
         "nearby": [
           "Could Not Start Setup",
           "Enter your current login password.",
@@ -51584,7 +52646,7 @@
     "Starting...": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 732,
+        "line": 734,
         "nearby": [
           "Your login password",
           "Scan the QR code and confirm your authenticator code to finish. You'll stay signed in.",
@@ -53579,7 +54641,7 @@
     "The Battlegroup will start automatically after the Linux host boots.": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 539,
+        "line": 541,
         "nearby": [
           "Saving Server Startup...",
           "Server Startup Saved",
@@ -53615,7 +54677,7 @@
     "The Console always starts with Docker. When this is disabled, the Battlegroup remains stopped after the Linux host boots until you start it manually.": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 886,
+        "line": 892,
         "nearby": [
           "Server Startup",
           "Start Battlegroup Automatically",
@@ -53697,7 +54759,7 @@
     "The Console will start after the Linux host boots, but the Battlegroup will remain stopped until you start it.": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 540,
+        "line": 542,
         "nearby": [
           "Server Startup Saved",
           "The Battlegroup will start automatically after the Linux host boots.",
@@ -53992,7 +55054,7 @@
     "The login password is managed by": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 603,
+        "line": 605,
         "nearby": [
           "Login Password",
           "Change the password used to sign in to this web console.",
@@ -54374,6 +55436,30 @@
         "nearby": [
           "Teleport Player",
           "Teleport"
+        ]
+      }
+    ],
+    "The server owner denied the request on Discord. Click Start Again to try again.": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1050,
+        "nearby": [
+          "Your Discord authorization will be used once to verify you own this server, then sent to and independently verified by the hosted bot service (mentat), and discarded. It is never stored.",
+          "Connect",
+          "This server's ownership changed on Discord since the request was sent. Click Start Again to try again.",
+          "The server owner didn't respond in time. Click Start Again to try again."
+        ]
+      }
+    ],
+    "The server owner didn't respond in time. Click Start Again to try again.": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1052,
+        "nearby": [
+          "The server owner denied the request on Discord. Click Start Again to try again.",
+          "This server's ownership changed on Discord since the request was sent. Click Start Again to try again.",
+          "Didn't hear back in time. Check Discord directly, or click Start Again to try again.",
+          "Start Again"
         ]
       }
     ],
@@ -54815,10 +55901,22 @@
         ]
       }
     ],
+    "This connection attempt expired. Try again.": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 554,
+        "nearby": [
+          "You cancelled on Discord's consent screen. Try again whenever you're ready.",
+          "Discord says you don't own this server. Only the server owner can connect it.",
+          "Could not reach Discord. Try again in a moment.",
+          "Could not connect. Try again, or use the advanced setup below."
+        ]
+      }
+    ],
     "This console's two-factor state could not be read, so password changes and recovery-code regeneration are unavailable right now. Do not delete": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 657,
+        "line": 659,
         "nearby": [
           "Saving...",
           "Change Password",
@@ -54957,6 +56055,18 @@
         ]
       }
     ],
+    "This immediately invalidates the current token. Your bot will stop working until you paste the new token wherever it's configured. This cannot be undone.": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 950,
+        "nearby": [
+          "Disable",
+          "Regenerate Discord Bot Token",
+          "Regenerate",
+          "Authorize"
+        ]
+      }
+    ],
     "This installation does not include the encrypted API access. Update Dune Docker to get it.": [
       {
         "file": "console/web/src/features/settings/EncryptedApiSection.tsx",
@@ -54966,6 +56076,18 @@
           "Retrying automatically.",
           "HTTPS API Address",
           "Copy API address"
+        ]
+      }
+    ],
+    "This invalidates the current adapter token and clears your saved role mappings and hosted/self-hosted choice. You'll go through setup again to re-enable it. This cannot be undone.": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 886,
+        "nearby": [
+          "Save",
+          "Disable Bot",
+          "Disable",
+          "Regenerate Discord Bot Token"
         ]
       }
     ],
@@ -55041,6 +56163,18 @@
           "Revoke",
           "Give external tools their own API keys, with only the permissions they need. You can disable or revoke a key at any time.",
           "Create Key"
+        ]
+      }
+    ],
+    "This lets the configured Discord roles issue bot commands against this console.": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 798,
+        "nearby": [
+          "Could not connect. Try again, or use the advanced setup below.",
+          "Enable Bot",
+          "Enable",
+          "Save Discord Bot Role IDs"
         ]
       }
     ],
@@ -55141,7 +56275,7 @@
     "This protects the console's separate password login. Don't know it? Check": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 726,
+        "line": 728,
         "nearby": [
           "Disable Two Factor Authentication",
           "Off by default. Turn it on to require an authenticator app code (plus 10 one-time recovery codes as backup) in addition to your password at sign-in.",
@@ -55174,6 +56308,39 @@
         ]
       }
     ],
+    "This server is already connected:": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1285,
+        "nearby": [
+          "Setting up your console's connection…",
+          "Connect Sahir Venn to a Discord server you own. Discord will ask you to approve the connection.",
+          "Manual Connection",
+          "Use your own Discord application to connect the same hosted bot."
+        ]
+      },
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1430,
+        "nearby": [
+          "Disable Bot",
+          "Role/token actions are paused while a Discord connection request is in progress.",
+          "Manual Connection",
+          "Use your own Discord application to connect the same hosted bot."
+        ]
+      }
+    ],
+    "This server was previously connected to a different Console. That connection has been replaced, and role configuration was reset. Please reconfigure roles in the next step.": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1078,
+        "nearby": [
+          "Didn't hear back in time. Check Discord directly, or click Start Again to try again.",
+          "Start Again",
+          "\"Start Again\" only resets this screen. The request already sent may still complete if the server owner confirms it later."
+        ]
+      }
+    ],
     "This server's build": [
       {
         "file": "console/web/src/features/bases/BaseBackupsView.tsx",
@@ -55195,6 +56362,18 @@
           "File database patches",
           "Backup name cannot be empty.",
           "Backup name cannot start with ##."
+        ]
+      }
+    ],
+    "This server's ownership changed on Discord since the request was sent. Click Start Again to try again.": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1051,
+        "nearby": [
+          "Connect",
+          "The server owner denied the request on Discord. Click Start Again to try again.",
+          "The server owner didn't respond in time. Click Start Again to try again.",
+          "Didn't hear back in time. Check Discord directly, or click Start Again to try again."
         ]
       }
     ],
@@ -55241,6 +56420,18 @@
           "No matching rows found.",
           "Edit Row",
           "Open Large JSON Editor"
+        ]
+      }
+    ],
+    "This takes effect immediately for new bot commands.": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 847,
+        "nearby": [
+          "Enable",
+          "Save Discord Bot Role IDs",
+          "Save",
+          "Disable Bot"
         ]
       }
     ],
@@ -55475,6 +56666,18 @@
           "parallel start",
           "GB of its",
           "GB RAM."
+        ]
+      }
+    ],
+    "Token": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1406,
+        "nearby": [
+          "Retry",
+          "Enabled.",
+          "Player Role ID",
+          "Moderator Role ID"
         ]
       }
     ],
@@ -56104,7 +57307,7 @@
     "Turns two-factor off entirely and deletes every remaining recovery code. Signing in goes back to password-only until you enable it again.": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 692,
+        "line": 694,
         "nearby": [
           "Regenerate Recovery Codes",
           "Disable Two Factor Authentication",
@@ -56116,7 +57319,7 @@
     "Two Factor Authentication": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 664,
+        "line": 666,
         "nearby": [
           "Collapse Two Factor Authentication",
           "Expand Two Factor Authentication",
@@ -56128,7 +57331,7 @@
     "Two Factor Authentication Disabled": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 381,
+        "line": 383,
         "nearby": [
           "Disable",
           "Disabling Two Factor Authentication...",
@@ -56139,7 +57342,7 @@
     "Two-factor is enabled, so changing the password needs a current code from your authenticator as well.": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 619,
+        "line": 621,
         "nearby": [
           "Authenticator Code",
           "6-digit code",
@@ -56242,7 +57445,7 @@
     "Type \"forget\" to confirm.": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 449,
+        "line": 451,
         "nearby": [
           "Enable Failed",
           "Not Confirmed",
@@ -56254,7 +57457,7 @@
     "Type &ldquo;forget&rdquo; To Confirm": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 772,
+        "line": 774,
         "nearby": [
           "Authenticator Code",
           "Current 6-digit code",
@@ -57626,7 +58829,7 @@
     "Uppercase Letter": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 984,
+        "line": 990,
         "nearby": [
           "At Least 13 Characters",
           "Lowercase Letter",
@@ -57663,6 +58866,18 @@
           "CHOAM Terminal Position Reset Failed",
           "Memory Swap Not Saved",
           "Enable Memory Swap"
+        ]
+      }
+    ],
+    "Use a Discord application for this bot connection. Console sign-in is configured separately.": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1142,
+        "nearby": [
+          "Click here to continue in a new tab",
+          "Application Details",
+          "Client ID",
+          "Discord application client ID"
         ]
       }
     ],
@@ -57796,6 +59011,18 @@
         ]
       }
     ],
+    "Use the hosted bot without running another service.": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 14,
+        "nearby": [
+          "Hosted Bot",
+          "Run your own bot and connect it to this Console.",
+          "Choose where your bot will run.",
+          "idle"
+        ]
+      }
+    ],
     "Use this area for player maintenance and high-impact admin actions. Some actions require the player to be online, while database repairs require the player to be offline.": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
@@ -57808,6 +59035,18 @@
         ]
       }
     ],
+    "Use this Console URL and the token above in your bot configuration.": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1441,
+        "nearby": [
+          "Use your own Discord application to connect the same hosted bot.",
+          "Connect Your Bot",
+          "Console URL",
+          "Installation Guide"
+        ]
+      }
+    ],
     "Use your authenticator instead": [
       {
         "file": "console/web/src/App.tsx",
@@ -57817,6 +59056,28 @@
           "Sign In",
           "Lost access to your authenticator?",
           "Admin password"
+        ]
+      }
+    ],
+    "Use your own Discord application to connect the same hosted bot.": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1294,
+        "nearby": [
+          "This server is already connected:",
+          "Manual Connection",
+          "I've invited the bot to this Discord server",
+          "Continue"
+        ]
+      },
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1433,
+        "nearby": [
+          "This server is already connected:",
+          "Manual Connection",
+          "Connect Your Bot",
+          "Use this Console URL and the token above in your bot configuration."
         ]
       }
     ],
@@ -58263,7 +59524,7 @@
     "Verify Generated Code": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 952,
+        "line": 958,
         "nearby": [
           "ABCD-EF12-3456",
           "Verifying...",
@@ -58299,7 +59560,7 @@
     "Verifying Listing Claim...": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 550,
+        "line": 552,
         "nearby": [
           "The Console will start after the Linux host boots, but the Battlegroup will remain stopped until you start it.",
           "Server Startup Save Failed",
@@ -58357,7 +59618,7 @@
     "Verifying...": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 952,
+        "line": 958,
         "nearby": [
           "Generated Claim Code",
           "ABCD-EF12-3456",
@@ -58979,7 +60240,7 @@
     "Web Console Port": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 905,
+        "line": 911,
         "nearby": [
           "Collapse Web Console Port",
           "Expand Web Console Port",
@@ -58991,7 +60252,7 @@
     "Web Console Port Saved": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 494,
+        "line": 496,
         "nearby": [
           "Enter a port number between 1 and 65535.",
           "Saving Web Console Port...",
@@ -59041,6 +60302,18 @@
           "Finish",
           "Host Check",
           "Docker Setup"
+        ]
+      }
+    ],
+    "Welcome back. Click Authorize once you've invited the bot.": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1157,
+        "nearby": [
+          "Add To Discord",
+          "Authorize",
+          "Connected to hosted bot for",
+          "Which server is this for?"
         ]
       }
     ],
@@ -59137,6 +60410,30 @@
           "Safety Backups Off",
           "Back Up the Database Before Every Write",
           "Back Up Before Every Write"
+        ]
+      }
+    ],
+    "Which are you using?": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1261,
+        "nearby": [
+          "Self Hosted",
+          "Change",
+          "Add bot to Discord",
+          "Setting up your console's connection…"
+        ]
+      }
+    ],
+    "Which server is this for?": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1163,
+        "nearby": [
+          "Welcome back. Click Authorize once you've invited the bot.",
+          "Connected to hosted bot for",
+          "Register",
+          "Manage Discord bot commands, notifications and access to in-game data."
         ]
       }
     ],
@@ -59416,12 +60713,24 @@
     "You can turn on &ldquo;Require Discord two-factor for Owner and Admin&rdquo; under Discord → Discord Sign In (Change application credentials) to keep two-factor protection on your Discord login.": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 695,
+        "line": 697,
         "nearby": [
           "Turns two-factor off entirely and deletes every remaining recovery code. Signing in goes back to password-only until you enable it again.",
           "Disabling this will leave your console with no two-factor authentication anywhere. Discord sign in does not require Discord 2FA for your role.",
           "Disabling...",
           "Disable anyway"
+        ]
+      }
+    ],
+    "You cancelled on Discord's consent screen. Try again whenever you're ready.": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 552,
+        "nearby": [
+          "Choose where your bot will run.",
+          "idle",
+          "Discord says you don't own this server. Only the server owner can connect it.",
+          "This connection attempt expired. Try again."
         ]
       }
     ],
@@ -59475,7 +60784,7 @@
     "Your application and access roles are saved. Enable Discord sign in whenever you are ready.": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 748,
+        "line": 750,
         "nearby": [
           "Discord Sign In",
           "Disabled",
@@ -59505,6 +60814,30 @@
           "Loading…",
           "Your Vehicles",
           "Your Storage"
+        ]
+      }
+    ],
+    "Your bot is connected. Save these role permissions to finish setup.": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1351,
+        "nearby": [
+          "Continue",
+          "Save",
+          "Back",
+          "Save Roles"
+        ]
+      }
+    ],
+    "Your browser blocked the popup.": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1109,
+        "nearby": [
+          "Connect Bot",
+          "Finish in the Discord popup, then come back here.",
+          "Click here to continue in a new tab",
+          "Application Details"
         ]
       }
     ],
@@ -59587,6 +60920,18 @@
         ]
       }
     ],
+    "Your Discord authorization will be used once to verify you own this server, then sent to and independently verified by the hosted bot service (mentat), and discarded. It is never stored.": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 995,
+        "nearby": [
+          "Regenerate",
+          "Authorize",
+          "Connect",
+          "The server owner denied the request on Discord. Click Start Again to try again."
+        ]
+      }
+    ],
     "Your existing IP setting was not active before this update. Console access has been preserved until you confirm it.": [
       {
         "file": "console/web/src/features/settings/ConsoleAccessNotice.tsx",
@@ -59602,7 +60947,7 @@
     "Your existing recovery codes stop working the moment new ones are issued.": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 669,
+        "line": 671,
         "nearby": [
           "Off",
           "Generate a fresh set of 10 recovery codes. Your authenticator is unchanged, and you stay signed in everywhere.",
@@ -59638,7 +60983,7 @@
     "Your login password": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 671,
+        "line": 673,
         "nearby": [
           "Your existing recovery codes stop working the moment new ones are issued.",
           "Current Console Password",
@@ -59648,7 +60993,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 728,
+        "line": 730,
         "nearby": [
           "on the host, or ask whoever manages the server.",
           "Current Console Password",
@@ -59658,7 +61003,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 761,
+        "line": 763,
         "nearby": [
           "Remove the saved application credentials, connected Discord server, and access roles from this Console. Your Discord application is kept in Discord. You can connect it again later using its credentials.",
           "Current Console Password",
@@ -59668,7 +61013,7 @@
       },
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 810,
+        "line": 812,
         "nearby": [
           "Discord access stops immediately. Your application and role settings are kept, and you can still use your Console password. This page will wait for the Console to finish rebuilding.",
           "Current Console Password",
@@ -59680,7 +61025,7 @@
     "Your login password (to disable)": [
       {
         "file": "console/web/src/features/settings/SettingsPanel.tsx",
-        "line": 702,
+        "line": 704,
         "nearby": [
           "Cancel",
           "Current Console Password",
