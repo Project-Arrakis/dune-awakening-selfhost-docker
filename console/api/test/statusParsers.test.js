@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildMapStatusResponse, buildMapsListResponse, buildServerStatusResponse, parseBackupAutoStatus, parseBackupListRows, parseDoctorWarnings, parseFlsSummary, parseHomeStatus, parseMapListRows, parseMemoryStatusRows, parsePortRows, parseRabbitConnections, parseReadyRows, parseServerPartitionRows, parseSkillModules, parseStatusGameServers, parseStatusListenerRows } from "../src/statusParsers.js";
+import { buildMapStatusResponse, buildMapsListResponse, buildServerStatusResponse, parseBackupAutoStatus, parseBackupListRows, parseDoctorWarnings, parseSystemBackupAutoStatus, parseFlsSummary, parseHomeStatus, parseMapListRows, parseMemoryStatusRows, parsePortRows, parseRabbitConnections, parseReadyRows, parseServerPartitionRows, parseSkillModules, parseStatusGameServers, parseStatusListenerRows } from "../src/statusParsers.js";
 
 const healthyStatus = `=== Dune status ===
 Overall:     READY
@@ -218,6 +218,54 @@ test("status fixture exposes exact logical listeners and game servers", () => {
     "DeepDesert_1 S2S:7897/UDP"
   ]);
   assert.deepEqual(parseStatusGameServers(healthyStatusWithSections).map((row) => row.map), ["Survival_1", "Overmap"]);
+});
+
+// status.sh reports one row per expected always-on map server, not the two it
+// used to hardcode. The fixture above stays as the fresh-install shape; this is
+// the real dune2 roster, where two maps have a second partition and therefore a
+// "#<partition>" label.
+test("status game server parser reads a full always-on roster", () => {
+  const roster = `=== Game servers ===
+MAP                      STATE         UPTIME
+Survival_1               READY         Up 4 hours
+Survival_1#60            READY         Up 4 hours
+Overmap                  READY         Up 4 hours
+SH_Arrakeen              WARMING       Up 12 seconds
+DeepDesert_1             NOT RUNNING   missing
+DeepDesert_1#59          WAIT          pending
+
+Note: 6 always-on map servers expected, starting 2 at a time.`;
+
+  const rows = parseStatusGameServers(roster);
+
+  assert.deepEqual(rows.map((row) => row.map), [
+    "Survival_1",
+    "Survival_1#60",
+    "Overmap",
+    "SH_Arrakeen",
+    "DeepDesert_1",
+    "DeepDesert_1#59"
+  ]);
+  // "NOT RUNNING" contains a space, so it exercises the lazy group in the row
+  // regex rather than just the single-token states.
+  assert.deepEqual(rows.map((row) => row.state), [
+    "READY",
+    "READY",
+    "READY",
+    "WARMING",
+    "NOT RUNNING",
+    "WAIT"
+  ]);
+  assert.deepEqual(rows.map((row) => row.uptime), [
+    "Up 4 hours",
+    "Up 4 hours",
+    "Up 4 hours",
+    "Up 12 seconds",
+    "missing",
+    "pending"
+  ]);
+  // The concurrency note must not be mistaken for a map.
+  assert.equal(rows.length, 6);
 });
 
 test("server status response provides a typed contract and preserves command diagnostics", () => {
@@ -472,4 +520,43 @@ Systemd timer:   enabled`
   const failed = parseBackupAutoStatus({ exitCode: 1, stderr: "runtime/scripts/db.sh: line 966: runtime/generated/db-backup.env: Permission denied" });
   assert.equal(failed.ok, false);
   assert.equal(failed.reason, "Backup scheduler status file is not readable by the web admin user.");
+});
+
+test("parseSystemBackupAutoStatus reads the scheduled system backup status", () => {
+  const stdout = [
+    "=== Scheduled system backups ===",
+    "Enabled:          true",
+    "Backup time:      04:30",
+    "Interval hours:   12",
+    "Keep:             9",
+    "Passphrase:       saved",
+    "Passphrase set:   2026-11-09T10:00:00Z",
+    "Execution:        image",
+    "Systemd timer:    enabled",
+    "Next run:         Tue 2026-11-10 04:30:00 UTC",
+    "Last run:         2026-11-09T04:30:02+00:00",
+    "Last result:      success",
+    "Last archive:     dune-system-20261109-043002-77-1.tar.gz.enc"
+  ].join("\n");
+  const status = parseSystemBackupAutoStatus({ exitCode: 0, stdout });
+  assert.equal(status.ok, true);
+  assert.equal(status.enabled, true);
+  assert.equal(status.backupTime, "04:30");
+  assert.equal(status.intervalHours, "12");
+  assert.equal(status.keep, "9");
+  assert.equal(status.execution, "image");
+  assert.equal(status.timer, "enabled");
+  assert.equal(status.nextRun, "Tue 2026-11-10 04:30:00 UTC");
+  assert.equal(status.lastResult, "success");
+  assert.equal(status.lastArchive, "dune-system-20261109-043002-77-1.tar.gz.enc");
+
+  const fresh = parseSystemBackupAutoStatus({
+    exitCode: 0,
+    stdout: ["Enabled:          false", "Execution:        unknown", "Next run:         -", "Last run:         never", "Last result:      none"].join("\n")
+  });
+  assert.equal(fresh.enabled, false);
+  assert.equal(fresh.execution, "");
+  assert.equal(fresh.nextRun, "");
+  assert.equal(fresh.lastRunAt, "");
+  assert.equal(fresh.lastResult, "");
 });

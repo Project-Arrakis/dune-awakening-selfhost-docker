@@ -37,6 +37,15 @@ def values(
 
 
 class BoolNormalizationTests(unittest.TestCase):
+    def test_combat_controls_describe_scope_and_unverified_cross_system_priority(self):
+        for field in ("partition_pvp_enabled", "partition_pve_enabled", "legacy_pvp_enabled", "server_pve", "force_pvp_all_partitions", "security_zones_enabled", "pvp_mode"):
+            self.assertTrue(usersettings.FIELD_DESCRIPTIONS.get(field), field)
+        self.assertEqual(usersettings.FIELD_LABELS["partition_pvp_enabled"], "Partition PvP Selection")
+        self.assertEqual(usersettings.FIELD_LABELS["partition_pve_enabled"], "Partition PvE Selection")
+        self.assertIn("not the northern", usersettings.FIELD_DESCRIPTIONS["partition_pvp_enabled"])
+        self.assertIn("not the southern", usersettings.FIELD_DESCRIPTIONS["partition_pve_enabled"])
+        self.assertIn("priority is not verified", usersettings.FIELD_DESCRIPTIONS["pvp_mode"])
+
     def test_recognizes_true_variants(self):
         for text in ("1", "true", "True", " TRUE ", "yes", "Yes", "on", "ON"):
             self.assertTrue(usersettings.bool_or_none(text), msg=text)

@@ -4,6 +4,7 @@
 runtime/secrets/
 runtime/generated/
 runtime/backups/
+runtime/system-backup/
 runtime/addons/
 *.bak-before-*
 
@@ -24,6 +25,7 @@ work/
 console/api/node_modules/
 console/web/node_modules/
 console/web/dist/
+console/web/dist-preview/
 *.tsbuildinfo
 **/bin/
 **/obj/

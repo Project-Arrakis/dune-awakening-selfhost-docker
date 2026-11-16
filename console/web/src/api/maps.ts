@@ -15,6 +15,7 @@ export type UserSettingField = {
   label?: string;
   minimum?: number | null;
   maximum?: number | null;
+  allowEmpty?: boolean;
   recommendedMinimum?: number | null;
   recommendedMaximum?: number | null;
   options?: string[];
@@ -114,6 +115,9 @@ export type PartitionCombatStateRow = {
   serverDisplayName: string | null;
   configuredState: PartitionCombatState;
   materializedState: PartitionCombatState | null;
+  customPvpMode?: string | null;
+  customPvpModeSource?: "profile" | "runtime-file" | "default" | null;
+  materializedCustomPvpMode?: string | null;
   source: string;
   securityZonesEnabled: boolean;
   restartRequired: boolean;

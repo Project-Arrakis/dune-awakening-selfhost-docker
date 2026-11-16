@@ -55,6 +55,13 @@ const SCHEMA = `
   create table dune.building_instances (building_id bigint not null, instance_id integer not null, owner_entity_id bigint);
   create table dune.actor_fgl_entities (entity_id bigint not null, actor_id bigint not null);
   create table dune.actors (id bigint primary key, map text, partition_id bigint, owner_account_id bigint);
+  -- baseMapLocation falls back to the claim's pieces when the totem's own
+  -- partition_id is NULL; columns match baseDelete.integration.test.js.
+  create table dune.placeables (
+    id bigint primary key references dune.actors(id) on delete cascade,
+    owner_entity_id bigint,
+    building_type text
+  );
   create table dune.map_names (map_name_id smallint primary key, map_name text not null);
   create table dune.permission_actor (actor_id bigint primary key, actor_name text);
   -- The foreign key is production's, transcribed from the shipped schema the
@@ -416,6 +423,53 @@ test("real PostgreSQL: baseMapLocation distinguishes a broken owner-entity link 
     // The unbroken case is unaffected.
     const location = await baseMapLocation(db, BASE_ID);
     assert.equal(location.map, MAP_NAME);
+  });
+});
+
+// A live totem can lose its partition_id (ON DELETE SET NULL against
+// world_partition) while its pieces keep the real one. Reading that as
+// partition 0 made every queued refill "write-safe" and it was applied into the
+// running map, which then overwrote it.
+async function seedNullPartitionBase(pool, { piecePartitions }) {
+  const baseId = 3001;
+  const claimActor = 3004;
+  const entity = 7001;
+  await pool.query("insert into dune.buildings (id) values ($1)", [baseId]);
+  await pool.query("insert into dune.building_instances (building_id, instance_id, owner_entity_id) values ($1, 0, $2)", [baseId, entity]);
+  await pool.query("insert into dune.actor_fgl_entities (entity_id, actor_id) values ($1, $2)", [entity, claimActor]);
+  await pool.query("insert into dune.actors (id, map, partition_id) values ($1, 'HaggaBasin', null)", [claimActor]);
+  for (const [index, partitionId] of piecePartitions.entries()) {
+    const pieceId = 3010 + index;
+    await pool.query("insert into dune.actors (id, map, partition_id) values ($1, 'HaggaBasin', $2)", [pieceId, partitionId]);
+    await pool.query("insert into dune.placeables (id, owner_entity_id, building_type) values ($1, $2, 'fuelgenerator_placeable')", [pieceId, entity]);
+  }
+  return baseId;
+}
+
+test("real PostgreSQL: baseMapLocation falls back to the pieces' partition when the totem's is NULL", async (t) => {
+  await withDatabase(t, async (pool) => {
+    // The majority partition wins, so one stray piece cannot pick the target.
+    const baseId = await seedNullPartitionBase(pool, { piecePartitions: [1, 1, 37, null] });
+    const location = await baseMapLocation(pgTransactionalDb(pool), baseId);
+    assert.deepEqual(location, { map: "HaggaBasin", partitionId: 1 });
+  });
+});
+
+test("real PostgreSQL: baseMapLocation keeps partition 0 when no piece has a partition either", async (t) => {
+  await withDatabase(t, async (pool) => {
+    // A base backup nulls every actor's partition; it is genuinely unsimulated.
+    const baseId = await seedNullPartitionBase(pool, { piecePartitions: [null, null] });
+    const location = await baseMapLocation(pgTransactionalDb(pool), baseId);
+    assert.equal(location.partitionId, 0);
+  });
+});
+
+test("real PostgreSQL: baseMapLocation prefers the totem's own partition over its pieces", async (t) => {
+  await withDatabase(t, async (pool) => {
+    const baseId = await seedNullPartitionBase(pool, { piecePartitions: [1, 1] });
+    await pool.query("update dune.actors set partition_id = 36 where id = 3004");
+    const location = await baseMapLocation(pgTransactionalDb(pool), baseId);
+    assert.equal(location.partitionId, 36);
   });
 });
 

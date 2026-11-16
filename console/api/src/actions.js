@@ -29,9 +29,11 @@
 // ---- Namespaces ----
 
 export const NAMESPACES = {
+  COMMUNITY:   "community",
   SETUP:       "setup",
   SERVER:      "server",
   LOGS:        "logs",
+  CHAT:        "chat",
   BACKUPS:     "backups",
   DATABASE:    "database",
   UPDATES:     "updates",
@@ -50,6 +52,7 @@ export const NAMESPACES = {
   BLUEPRINTS:  "blueprints",
   VEHICLES:    "vehicles",
   EXCHANGE:    "exchange",
+  REALTIME:    "realtime",
 };
 
 // ---- Actions: route → action mapping ----
@@ -60,6 +63,9 @@ export const NAMESPACES = {
 // against the normalized path.
 
 export const ROUTE_ACTIONS = {
+  "GET /api/chat/history":                     "chat:read",
+  "POST /api/chat/settings":                   "chat:configure",
+  "DELETE /api/chat/history":                  "chat:configure",
   // --- Setup ---
   "GET /api/setup/state":                      "setup:read",
   "GET /api/setup/tasks":                      "setup:read",
@@ -74,6 +80,7 @@ export const ROUTE_ACTIONS = {
   // --- Server ---
   "GET /api/server/status":                    "server:read",
   "GET /api/server/performance":               "server:read",
+  "GET /api/server/restart-history":           "server:read",
   "GET /api/server/readiness":                 "server:read",
   "GET /api/server/ports":                     "server:read",
   "GET /api/server/services":                  "server:read",
@@ -124,6 +131,13 @@ export const ROUTE_ACTIONS = {
   "POST /api/backups/system/create":           "backups:create-system",
   "POST /api/backups/system/delete-selected":  "backups:delete-system",
   "POST /api/backups/system/delete-all":       "backups:delete-system",
+  "GET /api/backups/system/auto":              "backups:read",
+  "POST /api/backups/system/auto":             "backups:write-config",
+  // Sets the key every scheduled archive is encrypted with. Write-only, but
+  // still a credential: owner-only (denied to admin in policy.js) and never
+  // covered by a `backups: write` API key level.
+  "PUT /api/backups/system/passphrase":        "backups:set-system-passphrase",
+  "DELETE /api/backups/system/passphrase":     "backups:set-system-passphrase",
 
   // --- Database ---
   "GET /api/database/status":                  "database:read",
@@ -164,6 +178,9 @@ export const ROUTE_ACTIONS = {
   "GET /api/settings":                         "settings:read",
   "POST /api/settings":                        "settings:write",
   "POST /api/settings/admin-password":         "settings:change-password",
+  "POST /api/auth/2fa/recovery-codes/regenerate": "settings:regenerate-recovery-codes",
+  "POST /api/auth/2fa/enable":                    "settings:enable-totp",
+  "POST /api/auth/2fa/disable":                   "settings:disable-totp",
   "POST /api/settings/web-port":               "settings:change-port",
   "GET /api/settings/iam/policies":            "settings:read",
   "PUT /api/settings/iam/policy":              "settings:write",
@@ -171,14 +188,43 @@ export const ROUTE_ACTIONS = {
   "GET /api/settings/api-keys":                "settings:read",
   "GET /api/settings/api-keys/catalog":        "settings:read",
   "POST /api/settings/api-keys":               "settings:write",
+  // Realtime Data (services/realtime.js): live sandworms, NPCs, vehicles and
+  // storms from the optional MapViewer3D position agent. Read-only, its own
+  // namespace so an API key gets it only when "Realtime Data" is granted;
+  // player positions additionally need players:read.
+  "GET /api/realtime/healthz":                 "realtime:read",
+  "GET /api/realtime/objects":                 "realtime:read",
+  "GET /api/realtime/stream":                  "realtime:read",
+  // Realtime Data agent (services/realtimeAgent.js): shows the optional position agent and
+  // sets it up or removes it. It runs as root with ptrace rights, so this is Settings: owner
+  // only, never reachable with an API key or an addon.
+  "GET /api/settings/realtime-agent":          "settings:read",
+  "POST /api/settings/realtime-agent":         "settings:write",
+  // Encrypted API access (services/encryptedApi.js): the optional HTTPS front door. Shows its state and
+  // key fingerprint and turns it on or off. Settings, so never reachable with an API key.
+  "GET /api/settings/encrypted-api":           "settings:read",
+  "POST /api/settings/encrypted-api":          "settings:write",
+  "POST /api/settings/console-access/confirm": "settings:write",
   "POST /api/settings/public-directory":       "settings:write",
   "POST /api/settings/public-directory/claim": "settings:write",
+  "POST /api/settings/server-startup":          "settings:write",
+  "GET /api/settings/experimental-tanks":      "settings:read",
+  "POST /api/settings/experimental-tanks":     "settings:write",
+  "POST /api/i18n/translate":                  "settings:write",
+  "POST /api/i18n/key":                        "settings:write",
+  "DELETE /api/i18n/key":                      "settings:write",
+  "POST /api/i18n/settings":                   "settings:write",
+  "POST /api/i18n/sync-all":                   "settings:write",
+  "POST /api/i18n/suggestions":                "community:suggest-translation",
 
   // --- Players (read) ---
   "GET /api/players":                          "players:read",
+  "GET /api/players/list-settings":            "players:read",
+  "GET /api/players/combat":                   "players:read",
   "GET /api/players/online":                   "players:read",
   "GET /api/players/search":                   "players:read",
   "GET /api/players/deleted-characters":       "players:read",
+  "POST /api/players/list-settings":           "players:configure-list",
 
   // --- Vehicles ---
   "GET /api/vehicles":                         "vehicles:read",
@@ -205,6 +251,7 @@ export const ROUTE_ACTIONS = {
   "POST /api/exchange/market/buyback/run":     "exchange:market-write",
   "POST /api/exchange/market/seed/run":        "exchange:market-write",
   "POST /api/exchange/market/seed/clear":      "exchange:market-write",
+  "POST /api/exchange/market/settings":        "exchange:market-write",
   "GET /api/exchange/market/plans/csv":        "exchange:market",
   "POST /api/exchange/market/plans/csv":       "exchange:market-write",
   "POST /api/exchange/market/plans/active":    "exchange:market-write",
@@ -243,6 +290,13 @@ export const ROUTE_ACTIONS = {
   // bases:mutate prefix rule, where it would resolve silently rather than
   // failing closed.
   "POST /api/bases/auto-refill/settings":      "bases:write-config",
+  // Base backups (the game's "pick up base" tool). Listing and exporting are
+  // reads, matching GET /api/bases/{id}/export. Import creates a whole base
+  // (actors, pieces, storage items) for a player, so it is its own action:
+  // no bases:read or bases:mutate grant should be read as consent to it.
+  // owner/admin grant bases:*, so they reach it; lower tiers do not.
+  "GET /api/base-backups":                     "bases:read",
+  "POST /api/base-backups/import":             "bases:import-backup",
 
   // --- Storage (read) ---
   "GET /api/storage":                          "storage:read",
@@ -492,6 +546,23 @@ export const REGEX_ACTIONS_BY_METHOD = {
 // the part that would distinguish them. Routes that need that distinction
 // go here instead, tested as a real regex before the prefix fallback.
 export const REGEX_ACTIONS_BY_METHOD_PATTERN = [
+  // GET /api/base-backups/{id}/export -- the backup as a file (see
+  // bases:export-backup below). Anchored so nothing else under
+  // /api/base-backups/ resolves: that path has no prefix rule, so any other
+  // route there fails closed.
+  { method: "GET", pattern: /^\/api\/base-backups\/[^/]+\/export$/, action: "bases:export-backup" },
+  // GET /api/bases/{id}/export-backup -- a live base as a base backup file.
+  // Same action as the backup export above: either file carries every item
+  // stored in the base and imports as a whole base elsewhere, so neither is a
+  // plain bases:read. Anchored ahead of the "/api/bases/" read prefix.
+  { method: "GET", pattern: /^\/api\/bases\/[^/]+\/export-backup$/, action: "bases:export-backup" },
+  // PUT /api/base-backups/{id} -- reassign and/or rename a picked-up base.
+  // Handing a player a whole base (with its stored items) is the same consent
+  // case as import, so it is its own action rather than bases:mutate.
+  { method: "PUT", pattern: /^\/api\/base-backups\/\d+$/, action: "bases:edit-backup" },
+  // DELETE /api/base-backups/{id} -- permanently deletes a picked-up base and
+  // its stored items. Its own action, like bases:delete for a live base.
+  { method: "DELETE", pattern: /^\/api\/base-backups\/\d+$/, action: "bases:delete-backup" },
   // Installing a public community Blueprint writes a Solido item and its
   // Blueprint rows for the selected player. Keep it under the existing
   // blueprint import permission, never the read-only /api/blueprints prefix.
@@ -594,6 +665,11 @@ export const REGEX_ACTIONS_BY_METHOD_PATTERN = [
   // reversible; this is not, so it gets its own action rather than folding
   // into vehicles:mutate.
   { method: "DELETE", pattern: /^\/api\/vehicles\/[^/]+$/, action: "vehicles:delete" },
+  // DELETE /api/vehicles/{vehicleId}/stored — deleting a vehicle a player can
+  // still recover. Its own action so vehicles:delete does not grant it; named
+  // "stored-delete" so no vehicles:delete... wildcard reaches it (issue #351).
+  // The route also requires vehicles:delete, and no API-key level covers it.
+  { method: "DELETE", pattern: /^\/api\/vehicles\/[^/]+\/stored$/, action: "vehicles:stored-delete" },
   // DELETE /api/vehicles/{vehicleId}/queued-delete — cancelling a queued
   // delete, which is reversible, so it stays in vehicles:mutate like every
   // other vehicle mutation. Needs its own explicit pattern for the same

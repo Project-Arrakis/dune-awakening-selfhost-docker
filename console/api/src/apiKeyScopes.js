@@ -13,7 +13,8 @@ import { allKnownActions } from "./policy.js";
 // lookup, so a hand-edited api-keys.json cannot grant them: `settings` would
 // let a key mint further keys, `database` and `setup` sidestep the scope model
 // entirely.
-export const KEY_DENIED_NAMESPACES = new Set(["settings", "database", "setup"]);
+// Community submissions are interactive Console actions, not automation scopes.
+export const KEY_DENIED_NAMESPACES = new Set(["settings", "database", "setup", "community"]);
 
 // Offered at None/Read only. `updates` because apply/fix/repair/write-config
 // self-update the console. `addons` because POST /api/addons/installed/{id}/bridge
@@ -40,10 +41,26 @@ export const KEY_WRITE_DENIED_NAMESPACES = new Set(["updates", "addons"]);
 // create-system and delete-system are not here: they neither read an archive
 // back nor write one into the host. Same line drawn for the admin tier in
 // policy.js.
+//
+// bases:import-backup creates a whole base -- actors, pieces and every stored
+// item in it -- from an uploaded file, bases:edit-backup can hand an existing
+// one to another player, bases:export-backup downloads it for import anywhere,
+// and bases:delete-backup irreversibly removes the backup and everything in it.
+// A key stored as { "bases": "write" } was granted for per-base knobs; it must
+// not gain any of these on upgrade.
+//
+// vehicles:stored-delete deletes a vehicle a player can still recover; a key
+// stored as { "vehicles": "write" } predates it.
 export const LEVEL_EXCLUDED_ACTIONS = new Set([
   "backups:download-system",
   "backups:import-system",
-  "backups:restore-system"
+  "backups:restore-system",
+  "backups:set-system-passphrase",
+  "bases:import-backup",
+  "bases:edit-backup",
+  "bases:export-backup",
+  "bases:delete-backup",
+  "vehicles:stored-delete"
 ]);
 
 // POST-shaped but read-only in effect, so reachable by a "read" grant. Keep
@@ -67,7 +84,7 @@ export const SCOPE_LEVELS = Object.freeze(["read", "write"]);
 // shows up in the UI on its own rather than silently disappearing.
 const PREFERRED_ORDER = [
   "players", "bases", "vehicles", "guilds", "storage", "blueprints",
-  "exchange", "maps", "sietches", "deepdesert", "landsraad",
+  "exchange", "maps", "realtime", "sietches", "deepdesert", "landsraad",
   "server", "logs", "backups", "updates", "carepackage", "addons",
   "admin"
 ];

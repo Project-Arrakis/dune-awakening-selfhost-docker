@@ -38,10 +38,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-RUNTIME_ENV = ROOT / "runtime" / "scripts" / "runtime-env.sh"
+PORTS_LIB = ROOT / "runtime" / "scripts" / "lib" / "ports.sh"
 USERSETTINGS = ROOT / "runtime" / "scripts" / "usersettings.py"
 SPAWN_SERVER = ROOT / "runtime" / "scripts" / "spawn-server.sh"
-RABBITMQ_START = ROOT / "runtime" / "scripts" / "start-rabbitmq.sh"
 ENV_EXAMPLE = ROOT / ".env.example"
 METRICS_COMPOSE = ROOT / "docker-compose.metrics.yml"
 ENV_PATH = ROOT / ".env"
@@ -73,8 +72,10 @@ INSTANCE_PORT_STRIDE = 1000
 SERVICE_DEFAULT_PATTERNS = {
     "postgres": ("POSTGRES_PORT", "resolve_postgres_port"),
     "rmq_admin": ("RMQ_ADMIN_PORT", "resolve_rmq_admin_port"),
+    "rmq_admin_http": ("RMQ_ADMIN_HTTP_PORT", "resolve_rmq_admin_http_port"),
     "rmq_game": ("RMQ_GAME_PORT", "resolve_rmq_game_port"),
     "rmq_game_http": ("RMQ_GAME_HTTP_PORT", "resolve_rmq_game_http_port"),
+    "rmq_game_local_http": ("RMQ_GAME_LOCAL_HTTP_PORT", "resolve_rmq_game_local_http_port"),
     "text_router": ("TEXT_ROUTER_PORT", "resolve_text_router_port"),
     "director": ("DIRECTOR_PORT", "resolve_director_port"),
 }
@@ -88,6 +89,7 @@ class Defaults:
     igw_max_offset: int
     postgres: int
     rmq_admin: int
+    rmq_admin_http: int
     rmq_game: int
     rmq_game_http: int
     rmq_game_local_http: int
@@ -106,6 +108,7 @@ class Profile:
     igw_end: int
     postgres: int
     rmq_admin: int
+    rmq_admin_http: int
     rmq_game: int
     rmq_game_http: int
     rmq_game_local_http: int
@@ -140,7 +143,7 @@ def read_text(path: Path) -> str:
 
 
 def parse_service_defaults() -> dict[str, int]:
-    text = read_text(RUNTIME_ENV)
+    text = read_text(PORTS_LIB)
     values: dict[str, int] = {}
     for field, (env_key, function_name) in SERVICE_DEFAULT_PATTERNS.items():
         pattern = (
@@ -150,7 +153,7 @@ def parse_service_defaults() -> dict[str, int]:
         match = re.search(pattern, text)
         if not match:
             raise ConfigError(
-                f"Could not derive {env_key} default from {RUNTIME_ENV}. "
+                f"Could not derive {env_key} default from {PORTS_LIB}. "
                 "The runtime source may have changed; update this helper before applying."
             )
         values[field] = int(match.group(1))
@@ -198,18 +201,6 @@ def parse_prometheus_default() -> int:
     return int(match.group(1))
 
 
-def parse_rmq_game_local_http_default() -> int:
-    text = read_text(RABBITMQ_START)
-    match = re.search(
-        r"port_env_value\s+RMQ_GAME_LOCAL_HTTP_PORT\s+([0-9]+)", text
-    )
-    if not match:
-        raise ConfigError(
-            f"Could not derive RMQ_GAME_LOCAL_HTTP_PORT from {RABBITMQ_START}."
-        )
-    return int(match.group(1))
-
-
 def load_defaults() -> Defaults:
     service = parse_service_defaults()
     client, igw = parse_engine_defaults()
@@ -221,9 +212,10 @@ def load_defaults() -> Defaults:
         igw_max_offset=igw_max_offset,
         postgres=service["postgres"],
         rmq_admin=service["rmq_admin"],
+        rmq_admin_http=service["rmq_admin_http"],
         rmq_game=service["rmq_game"],
         rmq_game_http=service["rmq_game_http"],
-        rmq_game_local_http=parse_rmq_game_local_http_default(),
+        rmq_game_local_http=service["rmq_game_local_http"],
         text_router=service["text_router"],
         director=service["director"],
         admin_web=parse_admin_default(),
@@ -243,6 +235,7 @@ def profile_for(instance: int, defaults: Defaults) -> Profile:
         igw_end=defaults.igw + offset + defaults.igw_max_offset,
         postgres=defaults.postgres + offset,
         rmq_admin=defaults.rmq_admin + offset,
+        rmq_admin_http=defaults.rmq_admin_http + offset,
         rmq_game=defaults.rmq_game + offset,
         rmq_game_http=defaults.rmq_game_http + offset,
         rmq_game_local_http=defaults.rmq_game_local_http + offset,
@@ -261,6 +254,12 @@ def allocations(profile: Profile) -> list[Allocation]:
         Allocation(profile.instance, "IGW UDP", profile.igw, profile.igw_end),
         Allocation(profile.instance, "PostgreSQL TCP", profile.postgres, profile.postgres),
         Allocation(profile.instance, "RMQ Admin TCP", profile.rmq_admin, profile.rmq_admin),
+        Allocation(
+            profile.instance,
+            "RMQ Admin HTTP TCP",
+            profile.rmq_admin_http,
+            profile.rmq_admin_http,
+        ),
         Allocation(profile.instance, "RMQ Game TCP", profile.rmq_game, profile.rmq_game),
         Allocation(profile.instance, "RMQ Game HTTP TCP", profile.rmq_game_http, profile.rmq_game_http),
         Allocation(
@@ -538,6 +537,7 @@ def profile_env(profile: Profile, public_ip: str, bind_ip: str) -> dict[str, str
         "SERVER_BIND_IP": bind_ip,
         "POSTGRES_PORT": str(profile.postgres),
         "RMQ_ADMIN_PORT": str(profile.rmq_admin),
+        "RMQ_ADMIN_HTTP_PORT": str(profile.rmq_admin_http),
         "RMQ_GAME_PORT": str(profile.rmq_game),
         "RMQ_GAME_HTTP_PORT": str(profile.rmq_game_http),
         "RMQ_GAME_LOCAL_HTTP_PORT": str(profile.rmq_game_local_http),
@@ -559,6 +559,7 @@ def print_profile(profile: Profile) -> None:
     print(f"  IGW UDP             : {profile.igw}-{profile.igw_end}")
     print(f"  PostgreSQL TCP      : {profile.postgres}")
     print(f"  RMQ Admin TCP       : {profile.rmq_admin}")
+    print(f"  RMQ Admin HTTP TCP  : {profile.rmq_admin_http}")
     print(f"  RMQ Game TCP        : {profile.rmq_game}")
     print(f"  RMQ Game HTTP       : {profile.rmq_game_http}")
     print(f"  RMQ Local HTTP TCP  : {profile.rmq_game_local_http}")
@@ -719,6 +720,7 @@ def command_verify(args: argparse.Namespace, defaults: Defaults) -> int:
     expected_env = {
         "POSTGRES_PORT": str(profile.postgres),
         "RMQ_ADMIN_PORT": str(profile.rmq_admin),
+        "RMQ_ADMIN_HTTP_PORT": str(profile.rmq_admin_http),
         "RMQ_GAME_PORT": str(profile.rmq_game),
         "RMQ_GAME_HTTP_PORT": str(profile.rmq_game_http),
         "RMQ_GAME_LOCAL_HTTP_PORT": str(profile.rmq_game_local_http),

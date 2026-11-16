@@ -30,56 +30,11 @@ fail_msg() {
   fail=1
 }
 
-docker_size_bytes() {
-  awk '
-    function multiplier(unit) {
-      if (unit == "kB" || unit == "KB") return 1000
-      if (unit == "MB") return 1000000
-      if (unit == "GB") return 1000000000
-      if (unit == "TB") return 1000000000000
-      if (unit == "KiB") return 1024
-      if (unit == "MiB") return 1048576
-      if (unit == "GiB") return 1073741824
-      if (unit == "TiB") return 1099511627776
-      return 1
-    }
-    {
-      number = $0
-      sub(/[A-Za-z].*$/, "", number)
-      unit = $0
-      sub(/^[0-9.]+/, "", unit)
-      sub(/[[:space:]].*$/, "", unit)
-      if (number ~ /^[0-9]+([.][0-9]+)?$/) {
-        printf "%.0f\n", number * multiplier(unit)
-      }
-    }
-  '
-}
-
 check_docker_storage() {
-  local rows obsolete_output obsolete_count=0 cache_reclaim="0B" cache_bytes=0
-  rows="$(docker system df --format '{{.Type}}|{{.Reclaimable}}' 2>/dev/null || true)"
-  [ -n "$rows" ] || { warn_msg "Docker storage usage could not be inspected"; return; }
-
-  obsolete_output="$(runtime/scripts/storage.sh cleanup --dry-run 2>/dev/null || true)"
-  obsolete_count="$(grep -c '^WOULD REMOVE ' <<<"$obsolete_output" || true)"
-  cache_reclaim="$(awk -F'|' '$1 == "Build Cache" { print $2; exit }' <<<"$rows")"
-  cache_bytes="$(docker_size_bytes <<<"${cache_reclaim:-0B}")"
-  obsolete_count="${obsolete_count:-0}"
-  cache_bytes="${cache_bytes:-0}"
-
-  if [ "$obsolete_count" -gt 0 ]; then
-    warn_msg "Docker has ${obsolete_count} obsolete project-owned image(s) that can be cleaned"
-    echo "     Preview project-owned cleanup: dune storage cleanup --dry-run"
-  else
-    ok "No obsolete project-owned Docker images found"
-  fi
-  if [ "$cache_bytes" -ge 10000000000 ]; then
-    warn_msg "Docker has ${cache_reclaim} of reclaimable build cache"
-    echo "     On a dedicated host: dune storage cleanup --build-cache"
-  else
-    ok "Reclaimable Docker build cache: ${cache_reclaim:-0B}"
-  fi
+  local report
+  report="$(runtime/scripts/storage.sh diagnostics 2>/dev/null)" || { warn_msg "Docker storage usage could not be inspected"; return; }
+  printf '%s\n' "$report"
+  if grep -q '^WARN ' <<<"$report"; then warn=1; fi
 }
 
 tcp_socket_listening() {
@@ -476,6 +431,85 @@ if is_running dune-postgres; then
   fi
 else
   fail_msg "Cannot check database because dune-postgres is not running"
+fi
+
+# Two containers run the publisher loops that query the database thousands of
+# times an hour, and each only takes the cheap TCP path when its image ships a
+# psql client and nothing has pinned the transport. Otherwise it falls back to a
+# docker exec per statement, which is what used to bury the container engine's
+# own state database in writes. The console image shipped without a client for
+# months and nothing reported it, which is why this is checked per container and
+# per seam rather than once.
+#
+# Ask the seams themselves rather than inferring the answer from the client's
+# presence: DUNE_PSQL_TRANSPORT can pin the exec path on an image that has a
+# client, and a check that guessed would report the opposite of what runs. Both
+# seams are asked because a container can resolve TCP in shell and exec in
+# Python -- the module reads its settings from the environment, so a publisher
+# that reads .env without exporting them leaves its python3 child blind.
+#
+# Each probe reproduces its publisher's prologue, .env and the export included,
+# because that is how the publishers are configured. docker-compose.web.yml
+# hands the console POSTGRES_PORT but not DUNE_PSQL_TRANSPORT, and the
+# orchestrator containers get both only because their launchers pass them with
+# -e; in every case the scripts themselves read the file. A probe that skipped
+# it would report the default while the loops ran on whatever was configured.
+report_seam_transport() {
+  local container="$1"
+  local label="$2"
+  local unpin_hint="$3"
+  local rebuild_hint="$4"
+  local seam transport
+
+  for seam in shell python; do
+    case "$seam" in
+      shell)
+        transport="$(docker exec "$container" bash -c \
+          '[ -f .env ] && . ./.env; source runtime/scripts/lib/postgres.sh && dune_psql_init && printf "%s" "$DUNE_PSQL_TRANSPORT"' \
+          2>/dev/null || true)"
+        ;;
+      python)
+        transport="$(docker exec "$container" bash -c \
+          '[ -f .env ] && . ./.env; export POSTGRES_PORT DUNE_PSQL_TRANSPORT PYTHONPATH=runtime/scripts; python3 -c "import sys, dune_psql; sys.stdout.write(dune_psql.resolved_transport())"' \
+          2>/dev/null || true)"
+        ;;
+    esac
+
+    case "$transport" in
+      tcp)
+        ok "$label reaches Postgres over TCP from $seam"
+        ;;
+      exec)
+        warn_msg "$label reaches Postgres through a container exec per query from $seam"
+        if docker exec "$container" bash -c 'type -P psql' >/dev/null 2>&1; then
+          echo "     The image has a psql client, so DUNE_PSQL_TRANSPORT is pinning this."
+          echo "     Drop it from .env and restart:"
+          echo "     $unpin_hint"
+        else
+          echo "     Rebuild the image so it ships a psql client:"
+          echo "     $rebuild_hint"
+        fi
+        ;;
+      *)
+        warn_msg "Could not determine how $label reaches Postgres from $seam"
+        ;;
+    esac
+  done
+}
+
+if is_running dune-autoscaler; then
+  report_seam_transport dune-autoscaler "Autoscaler" \
+    "dune autoscaler restart" \
+    "docker compose build orchestrator && dune autoscaler restart"
+fi
+
+# `dune console restart` rebuilds the image; `reload` only recreates the
+# container, which is all an .env change needs and takes seconds rather than
+# minutes.
+if is_running redblink-dune-docker-console; then
+  report_seam_transport redblink-dune-docker-console "Console" \
+    "dune console reload" \
+    "dune console restart"
 fi
 
 echo

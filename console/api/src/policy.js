@@ -292,10 +292,12 @@ export const DEFAULT_POLICIES = {
     version: 1,
     tier: "admin",
     statements: [
+      { Effect: "Allow", Action: "community:suggest-translation" },
       { Effect: "Allow", Action: [
         "setup:*",
         "server:*",
         "logs:*",
+        "chat:read",
         "backups:*",
         "database:read",
         "database:query",
@@ -315,6 +317,7 @@ export const DEFAULT_POLICIES = {
         "landsraad:*",
         "addons:*",
         "carepackage:*",
+        "realtime:*",
       ]},
       { Effect: "Deny", Action: [
         "settings:*",
@@ -348,6 +351,9 @@ export const DEFAULT_POLICIES = {
         "backups:download-system",
         "backups:import-system",
         "backups:restore-system",
+        // Choosing the key for every future scheduled archive is the same
+        // custody decision as the three above, even though it is never read back.
+        "backups:set-system-passphrase",
       ]}
     ]
   },
@@ -355,6 +361,7 @@ export const DEFAULT_POLICIES = {
     version: 1,
     tier: "moderator",
     statements: [
+      { Effect: "Allow", Action: "community:suggest-translation" },
       { Effect: "Allow", Action: [
         "server:read",
         "maps:read",
@@ -379,6 +386,7 @@ export const DEFAULT_POLICIES = {
     version: 1,
     tier: "player",
     statements: [
+      { Effect: "Allow", Action: "community:suggest-translation" },
       { Effect: "Allow", Action: [
         "server:read",
         "maps:read",
@@ -399,6 +407,7 @@ export const DEFAULT_POLICIES = {
     version: 1,
     tier: "observer",
     statements: [
+      { Effect: "Allow", Action: "community:suggest-translation" },
       { Effect: "Allow", Action: [
         "server:read",
         "maps:read",

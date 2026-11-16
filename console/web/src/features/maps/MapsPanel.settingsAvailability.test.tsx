@@ -73,6 +73,68 @@ beforeEach(() => {
 });
 
 describe("MapsPanel modifier availability", () => {
+  it("exposes both staking cooldowns and allows clearing a saved duration", async () => {
+    const api = mapsApi as unknown as Record<string, ReturnType<typeof vi.fn>>;
+    const fields = [
+      { id: "staking_unit_extension_default_times", key: "m_StakingUnitExtensionDefaultTimes", label: "Horizontal Staking Unit Cooldown (Seconds)" },
+      { id: "staking_unit_vertical_extension_default_times", key: "m_StakingUnitVerticalExtensionDefaultTimes", label: "Vertical Staking Unit Cooldown (Seconds)" }
+    ].map((field) => ({ ...field, scope: "game", section: "/Script/DuneSandbox.BuildingSettings", default: "", type: "number", minimum: 0.1, maximum: 604800, allowEmpty: true, clientFile: "", category: "", description: "Applies to every extension level. Leave empty to use inherited or game defaults." }));
+    api.status.mockResolvedValue({ maps: { stdout: "" }, services: { stdout: "" }, readiness: { stdout: "" } });
+    api.userSettingsSchema.mockResolvedValue({ engine: [], mapEngine: [], partitionEngine: [], game: fields, partition: fields, serverCustom: [] });
+    api.userGame.mockResolvedValue({ stdout: "staking_unit_extension_default_times\t1.000000\nstaking_unit_vertical_extension_default_times\t1.000000\n" });
+    renderMapsPanel();
+    const modifiers = await screen.findByRole("button", { name: "Expand Interactive Modifiers" });
+    await waitFor(() => expect(modifiers).toBeEnabled());
+    fireEvent.click(modifiers);
+    fireEvent.click(screen.getByRole("tab", { name: "UserGame" }));
+    fireEvent.change(screen.getByLabelText("Target"), { target: { value: "__global__::" } });
+    const horizontal = await screen.findByLabelText("Horizontal Staking Unit Cooldown (Seconds)");
+    await waitFor(() => expect(horizontal).toHaveValue(1));
+    expect(screen.getByLabelText("Vertical Staking Unit Cooldown (Seconds)")).toHaveValue(1);
+    expect(horizontal).toHaveAttribute("min", "0.1");
+    expect(horizontal).toHaveAttribute("max", "604800");
+    fireEvent.change(horizontal, { target: { value: "0" } });
+    expect(screen.getByText(/supported value within the displayed range/i)).toBeVisible();
+    expect(screen.getByRole("button", { name: /^Save$/ })).toBeDisabled();
+    fireEvent.change(horizontal, { target: { value: "" } });
+    expect(screen.queryByText(/supported value within the displayed range/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Save$/ })).toBeEnabled();
+    expect(horizontal).toHaveAttribute("placeholder", "Use inherited or game defaults");
+  });
+
+  it("shows the selected partition's saved UserGame and Custom modes on both tabs without changing them", async () => {
+    const api = mapsApi as unknown as Record<string, ReturnType<typeof vi.fn>>;
+    const previousCombat = api.combatState.getMockImplementation();
+    api.status.mockResolvedValue({ maps: { stdout: "" }, services: { stdout: "8 | DeepDesert_1 | 0 | | server1 | 33001 | 33101 | true | true" }, readiness: { stdout: "" } });
+    const pvp = { scope: "game", id: "partition_pvp_enabled", label: "Partition PvP Selection", section: null, key: null, default: "False", type: "boolean", clientFile: "", category: "Combat", description: "Selects this whole instance, not a desert zone." };
+    api.userSettingsSchema.mockResolvedValue({ engine: [], mapEngine: [], partitionEngine: [], game: [pvp], partition: [pvp], serverCustom: [{ ...pvp, scope: "serverCustom", id: "pvp_mode", label: "PvP Mode", key: "PVPMode", type: "text", default: "Limited", options: ["NoPVP", "Limited", "FullPVP"] }] });
+    api.combatState.mockImplementation((map: string) => Promise.resolve({ map, mapState: "PVP", partitions: map === "DeepDesert_1" ? [{ map, partitionId: "8", configuredState: "PVP", materializedState: "PVP", source: "partition-pvp-selector", customPvpMode: "NoPVP", customPvpModeSource: "profile", warnings: [], configurationDrift: false }] : [] }));
+    api.userGame.mockResolvedValue({ stdout: "partition_pvp_enabled\tTrue\n" });
+    api.userSettingsValues.mockResolvedValue({ stdout: "pvp_mode\tNoPVP\n" });
+    try {
+      renderMapsPanel();
+      const modifiers = await screen.findByRole("button", { name: "Expand Interactive Modifiers" });
+      await waitFor(() => expect(modifiers).toBeEnabled());
+      fireEvent.click(modifiers);
+      fireEvent.click(screen.getByRole("tab", { name: "UserGame" }));
+      fireEvent.change(screen.getByLabelText("Target"), { target: { value: "DeepDesert_1::8" } });
+      let summary = await screen.findByRole("complementary", { name: "Combat Configuration" });
+      expect(await within(summary).findByText("NoPVP")).toBeVisible();
+      expect(within(summary).getByText("PvP")).toBeVisible();
+      fireEvent.change(await screen.findByLabelText("Partition PvP Selection"), { target: { value: "False" } });
+      expect(await within(summary).findByText(/excludes your unsaved edits/)).toBeVisible();
+      expect(within(summary).getByText("PvP")).toBeVisible();
+      fireEvent.click(screen.getByRole("tab", { name: "Custom Settings" }));
+      summary = await screen.findByRole("complementary", { name: "Combat Configuration" });
+      expect(within(summary).getByText("PvP")).toBeVisible();
+      expect(within(summary).getByText("NoPVP")).toBeVisible();
+      expect(api.saveUserSettings).not.toHaveBeenCalled();
+    } finally {
+      if (previousCombat) api.combatState.mockImplementation(previousCombat);
+      else api.combatState.mockReset();
+    }
+  });
+
   it("keeps credits story maps dynamic and explains their fresh-process lifecycle", async () => {
     const api = mapsApi as unknown as Record<string, ReturnType<typeof vi.fn>>;
     api.status.mockResolvedValue({

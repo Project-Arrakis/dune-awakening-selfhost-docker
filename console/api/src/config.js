@@ -9,7 +9,7 @@ export const APP_NAME = "Dune Docker Console";
 // Single source of truth for every host-facing port this console cares
 // about. Stock (Instance 1) values are the fallback defaults only --
 // multi-server / single-public-IP deployments override these via .env.
-// These values MUST stay in sync with runtime/scripts/runtime-env.sh's
+// These values MUST stay in sync with runtime/scripts/lib/ports.sh's
 // resolve_*_port() functions -- that file is the shell-side equivalent
 // used by non-Node scripts, and the two must never drift (found 6
 // places across the codebase that hardcoded these stock values directly
@@ -232,11 +232,37 @@ export function loadConfig() {
     sessionSecret: getOrCreateSecret(resolve(secretsDir, "admin-web-session-secret.txt"), 48),
     adminPassword: process.env.ADMIN_PASSWORD || getOrCreateSecret(adminPasswordFile, 18),
     adminPasswordFile,
+    // Tier 3 password + mandatory TOTP (RFC docs/rfc-console-auth.md §2.3/§4).
+    // Off by default (Requirement 0): with the flag unset, password login is
+    // byte-identical to today (single factor), and the Settings UI doesn't
+    // even offer the feature. When set, TOTP is available but opt-in --
+    // enrollment is owner-initiated via POST /api/auth/2fa/enable (Settings ->
+    // Two-Factor Authentication), never forced on login (issue #665).
+    consoleTotpEnabled: process.env.CONSOLE_TOTP_ENABLED === "1",
+    // Real-client-IP rate-limit key. Empty by default -- every operator who
+    // never sets this sees byte-identical behavior (the raw socket address).
+    // Only exact IPs, not CIDRs.
+    trustedProxyIps: String(process.env.CONSOLE_TRUSTED_PROXY_IPS || "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean),
+    secondFactorFile: resolve(generatedDir, "console-second-factor.json"),
+    // #690: the STATIC fallback only. The real, live issuer (SERVER_TITLE
+    // when an operator has set one) is computed per-request in the
+    // /api/auth/2fa/setup route handler (server.js) via
+    // readSetupConfigValues(), which reads .env directly -- baking it in
+    // here via process.env silently never worked, since
+    // docker-compose.web.yml's environment: passthrough doesn't (and
+    // shouldn't) carry every operator-set game-server value.
+    totpIssuer: APP_NAME,
+    enrollmentSessionTtlMs: 10 * 60 * 1000, // §4: short-lived, non-renewable enrollment session
     adminPasswordEnvManaged,
     generatedDir,
     secretsDir,
+    sessionStoreFile: resolve(generatedDir, "sessions.json"),
     apiKeysFile: resolve(secretsDir, "api-keys.json"),
     auditLog: resolve(generatedDir, "web-admin-audit.jsonl"),
+    restartHistoryFile: resolve(generatedDir, "restart-history.jsonl"),
     spicefieldOverridesFile: resolve(generatedDir, "spicefield-overrides.json"),
     // Committed data, not runtime state: Large-spice coordinates are a
     // permanent lookup keyed by Coriolis seed (0-11) -- the same seed
@@ -267,6 +293,8 @@ export function loadConfig() {
     commandTimeoutMs: Number(process.env.ADMIN_COMMAND_TIMEOUT_MS || 120000),
     updateCheckCacheMs: Number(process.env.ADMIN_UPDATE_CHECK_CACHE_MS || 30 * 60 * 1000),
     updateCheckCacheFile: resolve(generatedDir, "game-update-check.json"),
+    // How long a status/readiness snapshot counts as fresh; 0 disables the cache.
+    statusCacheMs: clampInt(process.env.ADMIN_STATUS_CACHE_MS, 5000, 0, 120000),
     staticDir: process.env.ADMIN_STATIC_DIR || resolve(repoRoot, "console/web/dist"),
     allowedIps: parseAllowedIps(process.env.ADMIN_ALLOWED_IPS)
   };
@@ -327,6 +355,7 @@ function repairRootOwnedHostState(repoRoot) {
     resolve(repoRoot, "runtime/generated/restart-queue-state.json"),
     resolve(repoRoot, "runtime/generated/restart-schedule.env"),
     resolve(repoRoot, "runtime/generated/shutdown-protection.env"),
+    resolve(repoRoot, "runtime/generated/sessions.json"),
     resolve(repoRoot, "runtime/generated/sietch-config.json"),
     resolve(repoRoot, "runtime/generated/spicefield-overrides.json"),
     resolve(repoRoot, "runtime/generated/learned-spice-locations.json"),
@@ -402,7 +431,7 @@ export function readConsoleBuildId(staticDir, fallback = "dev") {
   }
 }
 
-function resolveAdminBindHost(value) {
+export function resolveAdminBindHost(value) {
   const raw = String(value || "0.0.0.0").trim();
   if (raw && raw !== "auto") return raw;
   return detectPrivateIpv4() || "127.0.0.1";
@@ -462,6 +491,8 @@ export function publicConfig(config) {
     adminPasswordEnvManaged: config.adminPasswordEnvManaged,
     secureCookies: config.secureCookies,
     allowHostBootstrap: config.allowHostBootstrap,
-    mockMode: config.mockMode
+    mockMode: config.mockMode,
+    consoleAccessReviewRequired: Boolean(config.consoleAccessReviewRequired),
+    consoleTotpEnabled: config.consoleTotpEnabled
   };
 }

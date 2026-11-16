@@ -1,0 +1,34 @@
+{
+  "oldBuild": "2160922-0-shipping",
+  "newBuild": "2162777-0-shipping",
+  "cleanSha256": "9d1921e585fd3d02d5ae17f7db79a346dff7c3f0a9c6187a77d7542bb7d5d30a",
+  "moduleIdSites": [
+    "0xf396490",
+    "0xf79042e",
+    "0xf795d84"
+  ],
+  "initializationBranches": [
+    {
+      "address": "0xf3a8730",
+      "target": "0xf3a8848",
+      "vehicleField": "0xed0"
+    },
+    {
+      "address": "0xf78fdf1",
+      "target": "0xf78ff94"
+    }
+  ],
+  "overlayLoaderRegistration": "0xd79301a",
+  "overlayLoaderCallback": "0xd78c2e0",
+  "fnameDecoder": "0xfa71594",
+  "fnameDecoderBytes": "4489f0c1e810488d0d1f952707488b44c168410fb7ce0fb73c48",
+  "fnamePool": "0x16ceaac0",
+  "fnamePoolReady": "0x16ceaa91",
+  "executablePadding": {
+    "address": "0x14497819",
+    "size": 231,
+    "precededByReturn": true
+  },
+  "instructionGeneratorUnchanged": true,
+  "review": "Independent old/new native disassembly confirms module-record registers, initialization field and branch targets, overlay callback and FName layout at the reviewed new addresses. Module/initialization/loader/decoder code moved by 0x1c60; FName globals moved by 0x1100; executable padding moved by 0x1000. Detours and RIP-relative helper references are regenerated, not copied from the previous payload."
+}

@@ -215,6 +215,44 @@ test("the vehicle cargo actions share no prefix a -* wildcard could bridge", () 
   assert.equal(matchAction("vehicles:*", "vehicles:bulk-delete-items"), true);
 });
 
+test("vehicles:stored-delete is not reachable from any vehicles:delete wildcard", () => {
+  for (const pattern of ["vehicles:delete", "vehicles:delete*", "vehicles:delete-*", "vehicles:delete-item*"]) {
+    assert.equal(matchAction(pattern, "vehicles:stored-delete"), false, pattern);
+  }
+  assert.equal(matchAction("vehicles:stored-delete", "vehicles:delete"), false);
+  assert.equal(matchAction("vehicles:*", "vehicles:stored-delete"), true);
+  // An infix wildcard names every delete on purpose, and does reach it. No
+  // action name could prevent that; it is documented in vehicle-deletion.md.
+  for (const pattern of ["vehicles:*delete*", "vehicles:*delete", "vehicles:*-delete"]) {
+    assert.equal(matchAction(pattern, "vehicles:stored-delete"), true, pattern);
+  }
+});
+
+// Denying vehicles:delete does not deny vehicles:stored-delete under a
+// vehicles:* allow, which is why the stored route requires both.
+test("a tier denied vehicles:delete cannot pass the stored route's two-action requirement", () => {
+  const policies = {
+    admin: {
+      version: 1,
+      tier: "admin",
+      statements: [
+        { Effect: "Deny", Action: ["vehicles:delete"] },
+        { Effect: "Allow", Action: ["vehicles:*"] }
+      ]
+    }
+  };
+  const session = { tier: "admin" };
+  assert.equal(evaluate(session, "vehicles:delete", policies), false);
+  const mayDeleteStored = ["vehicles:stored-delete", "vehicles:delete"].every((action) => evaluate(session, action, policies));
+  assert.equal(mayDeleteStored, false);
+  // And denying only the stored delete leaves ordinary deletes alone.
+  const narrower = { admin: { version: 1, tier: "admin", statements: [
+    { Effect: "Deny", Action: ["vehicles:stored-delete"] }, { Effect: "Allow", Action: ["vehicles:*"] }
+  ] } };
+  assert.equal(evaluate(session, "vehicles:delete", narrower), true);
+  assert.equal(evaluate(session, "vehicles:stored-delete", narrower), false);
+});
+
 test("a vehicles:read-only policy denies vehicles:mutate", () => {
   const policies = {
     observer: {
@@ -355,7 +393,7 @@ test("policy updates validate documents and preserve owner recovery access", () 
 // its own policy.
 test("the admin tier cannot read back or write in a system backup archive", () => {
   const admin = { tier: "admin" };
-  for (const action of ["backups:download-system", "backups:import-system", "backups:restore-system"]) {
+  for (const action of ["backups:download-system", "backups:import-system", "backups:restore-system", "backups:set-system-passphrase"]) {
     assert.equal(evaluate(admin, action, DEFAULT_POLICIES), false, `admin must not hold ${action}`);
   }
   // The denial is specific, not a retreat from backups generally: taking and
@@ -368,7 +406,7 @@ test("the admin tier cannot read back or write in a system backup archive", () =
 
 test("the owner tier still holds every system backup action", () => {
   const owner = { tier: "owner" };
-  for (const action of ["backups:create-system", "backups:download-system", "backups:import-system", "backups:restore-system", "backups:delete-system"]) {
+  for (const action of ["backups:create-system", "backups:download-system", "backups:import-system", "backups:restore-system", "backups:delete-system", "backups:set-system-passphrase"]) {
     assert.equal(evaluate(owner, action, DEFAULT_POLICIES), true, `owner must hold ${action}`);
   }
 });

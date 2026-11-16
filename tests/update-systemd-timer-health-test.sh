@@ -17,6 +17,7 @@ cp "$repo_root/runtime/scripts/steamcmd-signals.sh" "$test_root/project/runtime/
 cp "$repo_root/runtime/scripts/fls-signals.sh" "$test_root/project/runtime/scripts/fls-signals.sh"
 # runtime-env.sh sources this as of the age-based secrets library
 # Stage 2 rollout
+cp "$repo_root/runtime/scripts/lib/ports.sh" "$test_root/project/runtime/scripts/lib/ports.sh"
 cp "$repo_root/runtime/scripts/lib/secrets.sh" "$test_root/project/runtime/scripts/lib/secrets.sh"
 cp "$repo_root/runtime/scripts/lib/secrets_aead.py" "$test_root/project/runtime/scripts/lib/secrets_aead.py"
 
@@ -34,6 +35,8 @@ case "$command_name" in
     done
     case "$property" in
       LoadState) echo loaded ;;
+      SubState) echo "${MOCK_TIMER_SUB_STATE:-waiting}" ;;
+      ActiveState) echo "${MOCK_SERVICE_ACTIVE_STATE:-inactive}" ;;
       WorkingDirectory) echo "${MOCK_WORKDIR:?}" ;;
       ExecStart)
         case "${MOCK_EXEC_STYLE:-current}" in
@@ -126,6 +129,20 @@ if grep -q '^WARN ' <<<"$output"; then
   printf 'Healthy timer unexpectedly reported a warning:\n%s\n' "$output" >&2
   exit 1
 fi
+
+# An enabled timer with no future trigger is unhealthy only when its job has
+# finished; elapsed is normal while a countdown/install is still running.
+output="$(MOCK_TIMER_SUB_STATE=elapsed run_status "$test_root/project")"
+grep -Fq "WARN Auto-update timer has no future check scheduled." <<<"$output"
+output="$(MOCK_TIMER_SUB_STATE=elapsed MOCK_SERVICE_ACTIVE_STATE=failed run_status "$test_root/project")"
+grep -Fq "WARN Auto-update timer has no future check scheduled." <<<"$output"
+for service_state in active activating deactivating; do
+  output="$(MOCK_TIMER_SUB_STATE=elapsed MOCK_SERVICE_ACTIVE_STATE="$service_state" run_status "$test_root/project")"
+  if grep -Fq "no future check scheduled" <<<"$output"; then
+    echo "Running auto-update job was incorrectly reported as a stalled timer." >&2
+    exit 1
+  fi
+done
 
 chmod u-w "$test_root/state"
 repair_output="$(

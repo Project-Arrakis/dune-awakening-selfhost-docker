@@ -72,6 +72,9 @@ except Exception:
     raise SystemExit(0)
 if obj.get("PlayerId") and obj.get("PlayerId") != "*":
     obj["PlayerId"] = "<redacted>"
+for key in ("X", "Y", "Z", "Rotation", "Yaw"):
+    if key in obj:
+        obj[key] = "<redacted>"
 print(json.dumps(obj, separators=(",", ":")))
 PY
 }
@@ -497,10 +500,12 @@ PY
 vehicle_list_command() {
   local query="${1:-}"
   require_catalog_file "$VEHICLES_FILE" "vehicle"
-  python3 - "$VEHICLES_FILE" "$query" <<'PY'
+  local catalog
+  catalog="$(runtime/scripts/experimental-tanks.sh catalog "$VEHICLES_FILE")"
+  python3 - "$catalog" "$query" <<'PY'
 import json, sys
 path, query = sys.argv[1], sys.argv[2].casefold()
-vehicles = json.load(open(path, encoding="utf-8"))
+vehicles = json.loads(path)
 for vehicle in vehicles:
     vid = str(vehicle.get("id") or "")
     actor = str(vehicle.get("actor_class") or "")
@@ -517,10 +522,12 @@ PY
 resolve_vehicle() {
   local vehicle_id="$1" template_name="${2:-}"
   require_catalog_file "$VEHICLES_FILE" "vehicle"
-  python3 - "$VEHICLES_FILE" "$vehicle_id" "$template_name" <<'PY'
+  local catalog
+  catalog="$(runtime/scripts/experimental-tanks.sh catalog "$VEHICLES_FILE")"
+  python3 - "$catalog" "$vehicle_id" "$template_name" <<'PY'
 import json, sys
 path, vehicle_id, template_name = sys.argv[1], sys.argv[2], sys.argv[3]
-vehicles = json.load(open(path, encoding="utf-8"))
+vehicles = json.loads(path)
 for vehicle in vehicles:
     if str(vehicle.get("id") or "").casefold() != vehicle_id.casefold():
         continue
@@ -1064,7 +1071,9 @@ publish_inner_json() {
   fi
 
   printf '%s\n' "$output" | redact_sensitive_output
-  if ! printf '%s\n' "$output" | grep -q 'publish=ok'; then
+  # grep -q may close the pipe early, causing printf to fail with SIGPIPE
+  # under pipefail even though RabbitMQ accepted the command. Consume all output.
+  if ! printf '%s\n' "$output" | grep -F 'publish=ok' >/dev/null; then
     echo "RabbitMQ publish did not report publish=ok." >&2
     exit 1
   fi
@@ -1140,17 +1149,18 @@ login_queue_player_id() {
 
 rmq_login_queues() {
   require_rmq_game_running
-  docker exec "$RMQ_CONTAINER" rabbitmqctl -q list_queues name consumers messages state 2>/dev/null \
+  docker exec "$RMQ_CONTAINER" rabbitmqctl -q list_queues name consumers messages state owner_pid \
     | awk -F '\t' '$1 ~ /_queue$/ { print }'
 }
 
 rmq_login_queue_row() {
-  local queue="$1"
-  rmq_login_queues | awk -F '\t' -v queue="$queue" '$1 == queue { print; found = 1 } END { exit found ? 0 : 1 }'
+  local queue="$1" rows
+  rows="$(rmq_login_queues)" || return 2
+  printf '%s\n' "$rows" | awk -F '\t' -v queue="$queue" '$1 == queue { print; found = 1 } END { exit found ? 0 : 1 }'
 }
 
 login_queues_command() {
-  local show_all=0 rows row queue consumers messages state player status_row online_status map shown=0
+  local show_all=0 rows row queue consumers messages state owner player status_row online_status map shown=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --all) show_all=1 ;;
@@ -1166,7 +1176,7 @@ login_queues_command() {
   fi
 
   printf '%-24s %-9s %-9s %-10s %-12s %s\n' "Player" "Consumers" "Messages" "State" "DB Status" "Map"
-  while IFS=$'\t' read -r queue consumers messages state; do
+  while IFS=$'\t' read -r queue consumers messages state owner; do
     [ -n "${queue:-}" ] || continue
     player="$(login_queue_player_id "$queue")"
     status_row="$(player_status_for_fls "$player" || true)"
@@ -1188,7 +1198,7 @@ login_queues_command() {
 }
 
 repair_login_queue_command() {
-  local target="${1:-}" yes=0 force=0 queue player row consumers messages state status_row online_status map answer payload output rc
+  local target="${1:-}" yes=0 force=0 queue player row consumers messages state owner status_row online_status map answer payload output rc
   [ -n "$target" ] || { echo "Usage: dune admin repair-login-queue <player-fls-id|queue-name> [--yes] [--force]" >&2; exit 2; }
   shift || true
   while [ "$#" -gt 0 ]; do
@@ -1202,13 +1212,19 @@ repair_login_queue_command() {
 
   queue="$(normalize_login_queue_name "$target")"
   player="$(login_queue_player_id "$queue")"
-  row="$(rmq_login_queue_row "$queue" || true)"
-  if [ -z "$row" ]; then
-    echo "No RabbitMQ login queue exists for $(redact_fls "$player")."
-    return 0
+  if row="$(rmq_login_queue_row "$queue")"; then
+    :
+  else
+    rc=$?
+    if [ "$rc" -eq 1 ]; then
+      echo "No RabbitMQ login queue exists for $(redact_fls "$player"). Nothing needs to be deleted."
+      return 0
+    fi
+    echo "Could not inspect the login queue. Nothing was deleted. Check RabbitMQ and try again." >&2
+    return 1
   fi
 
-  IFS=$'\t' read -r queue consumers messages state <<< "$row"
+  IFS=$'\t' read -r queue consumers messages state owner <<< "$row"
   status_row="$(player_status_for_fls "$player" || true)"
   IFS='|' read -r online_status map <<< "$status_row"
   online_status="${online_status:-Unknown}"
@@ -1217,7 +1233,17 @@ repair_login_queue_command() {
   echo "Target queue: $queue"
   echo "Player:       $(redact_fls "$player")"
   echo "Queue state:  consumers=${consumers:-0} messages=${messages:-0} state=${state:-unknown}"
+  echo "Client connection: $([ -n "${owner:-}" ] && printf 'Connected' || printf 'No exclusive owner')"
   echo "DB status:    $online_status${map:+ on $map}"
+
+  if ! [[ "${consumers:-}" =~ ^[0-9]+$ ]] || [ "${state:-}" != running ]; then
+    echo "The queue is not in a verified idle state. Nothing was deleted." >&2
+    return 1
+  fi
+  if [ "$consumers" -gt 0 ] || [ -n "${owner:-}" ]; then
+    echo "The login queue is still in use. Nothing was deleted. Close the game, wait for the client to disconnect, then try again." >&2
+    return 1
+  fi
 
   if printf '%s' "$online_status" | grep -Eiq '^online$' && [ "$force" != "1" ]; then
     echo "Refusing to delete the login queue because the player still appears Online." >&2
@@ -1236,11 +1262,22 @@ repair_login_queue_command() {
 
   payload="{\"Queue\":\"$queue\",\"PlayerId\":\"$player\",\"Consumers\":\"${consumers:-0}\",\"Messages\":\"${messages:-0}\",\"State\":\"${state:-unknown}\",\"DbStatus\":\"$online_status\"}"
   set +e
-  output="$(docker exec "$RMQ_CONTAINER" rabbitmqctl -q delete_queue "$queue" 2>&1)"
+  # The broker checks consumers atomically as well: a client can reconnect
+  # between inspection and deletion. --force bypasses stale DB status only.
+  output="$(docker exec "$RMQ_CONTAINER" rabbitmqctl -q delete_queue "$queue" --if-unused 2>&1)"
   rc=$?
   set -e
   if [ "$rc" -ne 0 ]; then
+    if row="$(rmq_login_queue_row "$queue")"; then
+      :
+    else
+      if [ "$?" -eq 1 ]; then
+        echo "The login queue is already gone. Nothing else was deleted."
+        return 0
+      fi
+    fi
     printf '%s\n' "$output" >&2
+    echo "The queue was not repaired. Close the game, wait for the client to disconnect, then try again. Active queues are never forcibly deleted." >&2
     audit_admin_action "RepairLoginQueue" "$(redact_fls "$player")" "$queue" "$payload" "rabbitmq-game" "failed" "$output"
     exit "$rc"
   fi
@@ -1334,7 +1371,9 @@ player_position_for_fls() {
       ((a.transform).rotation).z::float8,
       ((a.transform).rotation).w::float8,
       coalesce(a.dimension_index::text, ''),
-      coalesce(a.class, '')
+      coalesce(a.class, ''),
+      a.id::text,
+      a.serial::text
     from matched_accounts m
     join dune.player_state ps on ps.account_id = m.id
     join dune.actors a on a.id = ps.player_pawn_id
@@ -1344,11 +1383,48 @@ player_position_for_fls() {
   " 2>/dev/null | tr -d '\r' || true
 }
 
+fresh_player_position_for_fls() {
+  local player="$1" baseline="$2" row deadline
+  local -a first current
+  IFS='|' read -r -a first <<< "$baseline"
+  if [ "${first[0]:-}" != "Online" ] || [ -z "${first[3]:-}" ] ||
+     ! [[ "${first[13]:-}" =~ ^[0-9]+$ && "${first[14]:-}" =~ ^[0-9]+$ ]]; then
+    echo "Cannot verify a fresh position for this online character. Nothing was spawned." >&2
+    return 1
+  fi
+  echo "Waiting for a fresh player position. Please stand still on clear ground." >&2
+  deadline=$((SECONDS + 120))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    sleep 2
+    row="$(player_position_for_fls "$player")"
+    IFS='|' read -r -a current <<< "$row"
+    # A logout, pawn replacement or travel invalidates the original request.
+    if [ "${current[0]:-}" != "Online" ] ||
+       [ "${current[1]:-}" != "${first[1]}" ] ||
+       [ "${current[2]:-}" != "${first[2]}" ] ||
+       [ "${current[3]:-}" != "${first[3]}" ] ||
+       [ "${current[13]:-}" != "${first[13]}" ]; then
+      echo "The character moved to another session or went offline. Nothing was spawned; try again after loading in." >&2
+      return 1
+    fi
+    # A new serial proves the game saved a new position after this request.
+    # Repeated reads of an unchanged row cannot establish freshness.
+    if [[ "${current[14]:-}" =~ ^[0-9]+$ ]] && [ "${current[14]}" != "${first[14]}" ]; then
+      printf '%s\n' "$row"
+      return 0
+    fi
+  done
+  echo "The game did not save a fresh player position in time. Nothing was spawned; stand still and try again." >&2
+  return 1
+}
+
 compute_spawn_in_front() {
   local x="$1" y="$2" z="$3" qx="$4" qy="$5" qz="$6" qw="$7" offset="$8" z_offset="${9:-0}"
   python3 - "$x" "$y" "$z" "$qx" "$qy" "$qz" "$qw" "$offset" "$z_offset" <<'PY'
 import json, math, sys
 x, y, z, qx, qy, qz, qw, offset, z_offset = map(float, sys.argv[1:])
+if not all(math.isfinite(v) for v in (x, y, z, qx, qy, qz, qw, offset, z_offset)):
+    raise SystemExit("The saved position is invalid. Nothing was spawned.")
 # Unreal uses X/Y as horizontal axes and Z as up. Use the pawn's +X forward vector,
 # projected onto the ground plane, so pitch/roll do not skew the spawn point.
 fx = 1.0 - 2.0 * (qy * qy + qz * qz)
@@ -1756,6 +1832,9 @@ import json, sys
 payload = json.loads(sys.argv[1])
 if payload.get("PlayerId") != "*":
     payload["PlayerId"] = "<redacted>"
+for key in ("X", "Y", "Z", "Rotation", "Yaw"):
+    if key in payload:
+        payload[key] = "<redacted>"
 print(json.dumps(payload, separators=(",", ":")))
 PY
     echo "Dry run: not publishing."
@@ -1799,6 +1878,9 @@ import json, sys
 payload = json.loads(sys.argv[1])
 if payload.get("PlayerId") != "*":
     payload["PlayerId"] = "<redacted>"
+for key in ("X", "Y", "Z", "Rotation", "Yaw"):
+    if key in payload:
+        payload[key] = "<redacted>"
 print(json.dumps(payload, separators=(",", ":")))
 PY
 
@@ -1904,7 +1986,7 @@ player_location_command() {
   target="$(resolve_player_id "$target")"
   row="$(player_position_for_fls "$target" || true)"
   [ -n "$row" ] || { echo "No player location found for $(redact_fls "$target")." >&2; exit 1; }
-  IFS='|' read -r status map partition server x y z qx qy qz qw dimension actor_class <<< "$row"
+  IFS='|' read -r status map partition server x y z qx qy qz qw dimension actor_class _ _ <<< "$row"
   echo "Player: $(redact_fls "$target")"
   echo "Status: ${status:-Unknown}"
   echo "Map: ${map:-unknown}"
@@ -1986,6 +2068,18 @@ teleport_command() {
   publish_player_command "TeleportTo" "$player" 0 "${args[@]}"
 }
 
+guard_tank_spawn() {
+  local player="$1" row status map partition server dimension container
+  row="$(player_position_for_fls "$player")"
+  IFS='|' read -r status map partition server _ _ _ _ _ _ _ dimension _ <<< "$row"
+  if [ "$status" != "Online" ] || [ "$map" != "Survival_1" ] || ! [[ "$partition" =~ ^[0-9]+$ ]]; then
+    echo "Tank spawning requires an online player in a patched Hagga Sietch." >&2; return 1
+  fi
+  container="dune-server-survival-1"
+  [ "$dimension" = "0" ] || container="dune-server-survival-1-$partition"
+  runtime/scripts/experimental-tanks.sh guard "$map" "$container" "$partition" "$server"
+}
+
 spawn_vehicle_at_command() {
   local player="${1:-}" class_name="${2:-}" template="${3:-}" x="${4:-}" y="${5:-}" z="${6:-}" rotation="${7:-0}"
   local resolved_player vehicle_json vehicle_id actor_class before_vehicle_id
@@ -2000,6 +2094,7 @@ spawn_vehicle_at_command() {
   vehicle_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["id"])' "$vehicle_json")"
   actor_class="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["actor_class"])' "$vehicle_json")"
   template="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["template"])' "$vehicle_json")"
+  if [ "$vehicle_id" = "Tank" ]; then guard_tank_spawn "$resolved_player"; fi
   echo "Vehicle: $vehicle_id"
   echo "Actor class: $actor_class"
   echo "Template: $template"
@@ -2048,7 +2143,8 @@ PY
     echo "Vehicle spawn-in-front requires the player to be online with player_state.player_pawn_id and actors.transform available." >&2
     exit 1
   fi
-  IFS='|' read -r status map partition server x y z qx qy qz qw dimension actor_class <<< "$row"
+  row="$(fresh_player_position_for_fls "$resolved_player" "$row")" || return 1
+  IFS='|' read -r status map partition server x y z qx qy qz qw dimension actor_class _ _ <<< "$row"
   if ! printf '%s' "${status:-Offline}" | grep -Eiq '^online$'; then
     echo "Player is ${status:-Offline}. Vehicle spawn requires the player to be online." >&2
     exit 1
@@ -2061,11 +2157,11 @@ PY
   sy="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["y"])' "$spawn_json")"
   sz="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["z"])' "$spawn_json")"
   rotation="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["rotation"])' "$spawn_json")"
-  echo "Player location: map=${map:-unknown} partition=${partition:-unknown} X=$x Y=$y Z=$z"
+  echo "Fresh player position confirmed: map=${map:-unknown} partition=${partition:-unknown}"
   if [ "$z_offset" != "0" ] || [ "$offset" != "$original_offset" ]; then
     echo "Flying vehicle adjustment: offset=$offset units, Z lift=$z_offset units"
   fi
-  echo "Computed spawn point $offset units in front: X=$sx Y=$sy Z=$sz Rotation=$rotation"
+  echo "Spawning $offset units in front of the character."
   spawn_vehicle_at_command "$resolved_player" "$vehicle_id" "$template" "$sx" "$sy" "$sz" "$rotation"
 }
 

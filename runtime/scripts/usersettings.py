@@ -8,6 +8,7 @@ import re
 import sys
 import tempfile
 from base64 import b64decode
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 
 
@@ -68,8 +69,11 @@ BUILDING_SETTINGS_SECTION = "/Script/DuneSandbox.BuildingSettings"
 SERVER_CUSTOM_SETTINGS_SECTION = "/Script/DuneSandbox.UserServerCustomSettings"
 CORIOLIS_SUBSYSTEM_SECTION = "/Script/DuneSandbox.CoriolisSubsystem"
 LANDSRAAD_SETTINGS_SECTION = "/Script/DuneSandbox.LandsraadSettings"
-LANDSRAAD_DATA_KEY = "Data"
-LANDSRAAD_DATA_TEMPLATE = '(m_NumberOfWeeksTermRetention=4,m_NumberOfDecreesToNominate=3,m_NumberOfGuildsInHighscoreList=5,m_TermStartedMessage=(Name="LandsraadTermStarted"),m_VotingStartedMessage=(Name="LandsraadVotingStarted"),m_TaskProgressedMessage=(Name="LandsraadProgressNotification"),m_DecreeActivatedMessage=(Name="LandsraadDecreeActivated"),m_bIsPlayerVotingEnabled=True,m_bIsTerritoryControlEnabled=True,m_BoardLayouts=(/Script/DuneSandbox.BoardLayoutDataAsset\'"/Game/Dune/Systems/Landsraad/BoardLayouts/DefaultLandsraadBoardLayout.DefaultLandsraadBoardLayout"\'),m_LandsraadVotingPeriodDurationInSec=118500,m_LandsraadCycleDurationInSeconds=604800,m_LandsraadSuspendedPeriodDurationInSeconds=300,m_FirstTaskRevealDelayFromCompetitionStartInSeconds=0.000000,m_LandsraadRevealedTaskTimestampMinuteDifference=1,m_LandsraadTaskProgressUpdateFrequency=15.000000,m_LandsraadTaskDailyRevealFrequency=25.000000,m_LandsraadProgressFactionBalanceCurve=/Script/Engine.CurveFloat\'"/Game/Dune/Systems/Landsraad/Curve_LandsraadProgressFactionBalanceCurve.Curve_LandsraadProgressFactionBalanceCurve"\',m_LandsraadContractsPerVotingBlock=3,m_LandsraadContractsRepeatCooldownSeconds=14400,m_LandsraadContractsMaxActiveAmount=3,m_LandsraadContractsAbandonCooldownSeconds=2,m_LandsraadContractsDailyBonusPerDay=35,m_LandsraadContractsDailyBonusMax=35,m_LandsraadContractsDailyBonusReferenceTimestamp=1760572800,m_LandsraadContractsDailyBonusRefreshCycleLength=7200,m_LandsraadContractsTimeToShowRewardInteractiveNotification=30.000000,m_LandsraadContractsTimeToShowErrorNotification=70.000000,m_LandsraadContractsTimeToShowPendingClaimRewardTutorial=300,m_LandsraadTaskRewardsData="/Game/Dune/Systems/Landsraad/DA_TaskRewardsDataAsset.DA_TaskRewardsDataAsset",m_LandsraadHouseSelectContractDialogContentWidget="/Game/Dune/GUI/Widgets/Menus/Gameplay/PlayerMenu/Landsraad/W_LandsraadHouseSelectContractDialog.W_LandsraadHouseSelectContractDialog_C",m_LandsraadContractReportDialogContentWidget="/Game/Dune/GUI/Widgets/Menus/Gameplay/PlayerMenu/Landsraad/W_LandsraadContractReportDialog.W_LandsraadContractReportDialog_C",m_LandsraadClaimHouseRewardDialogWidget="/Game/Dune/GUI/Widgets/Menus/Gameplay/PlayerMenu/Landsraad/W_LandsraadHouseRewardClaimDialog.W_LandsraadHouseRewardClaimDialog_C",m_TaskGoalAmount=56000,m_ControlPointsPerCycle=2,m_LandsraadContractsUnlockGameplayTag=(TagName="Journey.LandsraadContractsUnlocked"),m_LandsraadContractsNewMarkerGameplayTags=(GameplayTags=((TagName="DialogueFlags.Factions.LandsraadOnboardingActive"))),m_ControlPointAreaMaterial="/Game/Dune/Systems/Landsraad/Materials/M_LandsRaadControlPointCapsule.M_LandsRaadControlPointCapsule")'
+LANDSRAAD_DATA_KEY = "DedicatedServerData"
+LEGACY_LANDSRAAD_DATA_KEY = "Data"
+# Packaged dedicated-server defaults from game build 2156652. Existing saved
+# structs are edited in place; this template is only used for a new override.
+LANDSRAAD_DATA_TEMPLATE = '(m_NumberOfWeeksTermRetention=4,m_NumberOfDecreesToNominate=3,m_bDecreeRerollingEnabled=True,m_DecreeRerollCost=1000,m_MaxRerollAttemptsPerTerm=5,m_NumberOfGuildsInHighscoreList=5,m_TermStartedMessage=(Name="LandsraadTermStarted"),m_VotingStartedMessage=(Name="LandsraadVotingStarted"),m_TaskProgressedMessage=(Name="LandsraadProgressNotification"),m_DecreeActivatedMessage=(Name="LandsraadDecreeActivated"),LandsraadBoardLimitedAccessMessage=LOCTABLE("/Game/Dune/Localization/ST_Localization_UI.ST_Localization_UI", "UI/Landsraad_BoardMenu_LimitedAccessMessage"),LandsraadVotingWarningMessage=LOCTABLE("/Game/Dune/Localization/ST_Localization_UI.ST_Localization_UI", "UI/Landsraad_DecreeMenu_VotingWarningMessage"),m_bIsPlayerVotingEnabled=True,m_bIsTerritoryControlEnabled=True,m_BoardLayouts=(/Script/DuneSandbox.BoardLayoutDataAsset\'"/Game/Dune/Systems/Landsraad/BoardLayouts/DefaultLandsraadBoardLayout.DefaultLandsraadBoardLayout"\'),m_LandsraadVotingPeriodDurationInSec=118500,m_LandsraadSuspendedPeriodDurationInSeconds=300,m_FirstTaskRevealDelayFromCompetitionStartInSeconds=0.000000,m_LandsraadRevealedTaskTimestampMinuteDifference=1,m_LandsraadTaskProgressUpdateFrequency=15.000000,m_LandsraadTaskDailyRevealFrequency=25.000000,m_LandsraadProgressFactionBalanceCurve=/Script/Engine.CurveFloat\'"/Game/Dune/Systems/Landsraad/Curve_LandsraadProgressFactionBalanceCurve.Curve_LandsraadProgressFactionBalanceCurve"\',m_LandsraadContractsPerVotingBlock=3,m_LandsraadContractsRepeatCooldownSeconds=57600,m_LandsraadContractsMaxActiveAmount=3,m_LandsraadContractsAbandonCooldownSeconds=3600,m_bLandsraadContractsShouldLimitDailyBonus=True,m_LandsraadContractsDailyBonusPerDay=5,m_LandsraadContractsDailyBonusMax=35,m_LandsraadContractsDailyBonusRefreshCycleLength=86400,m_LandsraadContractsTimeToShowRewardInteractiveNotification=30.000000,m_LandsraadContractsTimeToShowErrorNotification=70.000000,m_LandsraadContractsTimeToShowPendingClaimRewardTutorial=300,m_LandsraadTaskRewardsData="/Game/Dune/Systems/Landsraad/DA_TaskRewardsDataAsset.DA_TaskRewardsDataAsset",m_LandsraadHouseSelectContractDialogContentWidget="/Game/Dune/GUI/Widgets/Menus/Gameplay/PlayerMenu/Landsraad/W_LandsraadHouseSelectContractDialog.W_LandsraadHouseSelectContractDialog_C",m_LandsraadContractReportDialogContentWidget="/Game/Dune/GUI/Widgets/Menus/Gameplay/PlayerMenu/Landsraad/W_LandsraadContractReportDialog.W_LandsraadContractReportDialog_C",m_LandsraadClaimHouseRewardDialogWidget="/Game/Dune/GUI/Widgets/Menus/Gameplay/PlayerMenu/Landsraad/W_LandsraadHouseRewardClaimDialog.W_LandsraadHouseRewardClaimDialog_C",m_TaskGoalAmount=70000,m_ControlPointsPerCycle=2,m_LandsraadContractsUnlockGameplayTag=(TagName="Journey.LandsraadContractsUnlocked"),m_LandsraadContractsNewMarkerGameplayTags=(GameplayTags=((TagName="DialogueFlags.Factions.LandsraadOnboardingActive"))),m_ControlPointAreaMaterial="/Game/Dune/Systems/Landsraad/Materials/M_LandsRaadControlPointCapsule.M_LandsRaadControlPointCapsule",bIsLandsraadEnabled=True,m_LandsraadContractsDailyBonusReferenceTimestamp=1760572800,LandsraadMinimumTermDurationInSeconds=172800,LandsraadStartYear=2026,LandsraadStartMonth=3,LandsraadStartDay=3,LandsraadStartHour=4,LandsraadStartMinute=55,bUseCoriolisReferenceDate=True,m_LandsraadControlPointClassForCheats="/Game/Dune/Systems/Landsraad/BP_LandsraadControlPoint.BP_LandsraadControlPoint_C",m_LandsraadCycleDurationInSeconds=604800)'
 LANDSRAAD_DATA_TEMPLATE = LANDSRAAD_DATA_TEMPLATE.replace(
     "m_LandsraadVotingPeriodDurationInSec=118500,",
     "m_LandsraadVotingPeriodDurationInSec=118500,m_VotingPeriodStartBeforeCoriolisCycleInSec=118800,",
@@ -89,13 +93,13 @@ LANDSRAAD_DATA_FIELDS = {
     "landsraad_task_progress_update_seconds": ("m_LandsraadTaskProgressUpdateFrequency", "15", "number", 1, 3600),
     "landsraad_task_daily_reveal_frequency": ("m_LandsraadTaskDailyRevealFrequency", "25", "number", 1, 10080),
     "landsraad_contracts_per_voting_block": ("m_LandsraadContractsPerVotingBlock", "3", "integer", 1, 100),
-    "landsraad_contract_repeat_cooldown_seconds": ("m_LandsraadContractsRepeatCooldownSeconds", "14400", "integer", 0, 2592000),
+    "landsraad_contract_repeat_cooldown_seconds": ("m_LandsraadContractsRepeatCooldownSeconds", "57600", "integer", 0, 2592000),
     "landsraad_max_active_contracts": ("m_LandsraadContractsMaxActiveAmount", "3", "integer", 1, 100),
-    "landsraad_contract_abandon_cooldown_seconds": ("m_LandsraadContractsAbandonCooldownSeconds", "2", "integer", 0, 604800),
-    "landsraad_daily_contract_bonus": ("m_LandsraadContractsDailyBonusPerDay", "35", "integer", 0, 1000000),
+    "landsraad_contract_abandon_cooldown_seconds": ("m_LandsraadContractsAbandonCooldownSeconds", "3600", "integer", 0, 604800),
+    "landsraad_daily_contract_bonus": ("m_LandsraadContractsDailyBonusPerDay", "5", "integer", 0, 1000000),
     "landsraad_max_daily_contract_bonus": ("m_LandsraadContractsDailyBonusMax", "35", "integer", 0, 1000000),
-    "landsraad_daily_bonus_refresh_seconds": ("m_LandsraadContractsDailyBonusRefreshCycleLength", "7200", "integer", 60, 2592000),
-    "landsraad_task_goal_amount": ("m_TaskGoalAmount", "56000", "integer", 1, 2147483647),
+    "landsraad_daily_bonus_refresh_seconds": ("m_LandsraadContractsDailyBonusRefreshCycleLength", "86400", "integer", 60, 2592000),
+    "landsraad_task_goal_amount": ("m_TaskGoalAmount", "70000", "integer", 1, 2147483647),
     "landsraad_control_points_per_cycle": ("m_ControlPointsPerCycle", "2", "integer", 0, 1000000),
 }
 STAKING_EXTENSION_ARRAY_LENGTH = 10
@@ -310,6 +314,7 @@ SERVER_CUSTOM_FIELD_CATEGORIES = {
 }
 
 ENGINE_FIELDS = {
+    "battleye_enabled": ("ConsoleVariables", "BattlEye.Enabled", "False"),
     "port": ("URL", "Port", "7777"),
     "igw_port": ("URL", "IGWPort", "7888"),
     "server_display_name": ("ConsoleVariables", "Bgd.ServerDisplayName", None),
@@ -425,6 +430,7 @@ def schema_comment_lines_by_section(comments: dict[str, tuple[str, ...]], fields
 # generic section-derived category logic the console uses for UserGame fields
 # can't distinguish them. This gives each one an explicit, functional grouping.
 ENGINE_FIELD_CATEGORIES = {
+    "battleye_enabled": "Server Security",
     "sandstorm_enabled": "Sandstorm",
     "sandstorm_treasure_enabled": "Sandstorm",
     "sandworm_enabled": "Sandworm",
@@ -464,8 +470,14 @@ ENGINE_FIELD_CATEGORIES = {
 # Free-text field descriptions shown in the console UI. Only populated for
 # fields as they're documented; metadata() falls back to "" for the rest.
 FIELD_DESCRIPTIONS = {
-    "staking_unit_vertical_extension_default_times": "Seconds required for every vertical Staking Unit extension level (0.1-604800). Leave empty to use Funcom's progressively longer defaults.",
-    "staking_unit_extension_default_times": "Seconds required for every horizontal Staking Unit extension level (0.1-604800). Leave empty to use Funcom's progressively longer defaults.",
+    "partition_pvp_enabled": "Adds this selected partition to UserGame's PvP list. This selects a whole server instance, not the northern Deep Desert zones. Do not also select the same partition in the PvE list. Zone boundaries are separate from this selector; Custom Settings also has PVPMode.",
+    "partition_pve_enabled": "Adds this selected partition to UserGame's PvE list. This is not the southern safe-zone switch. Selecting both lists produces a Console configuration warning; it does not confirm how the game resolves the overlap.",
+    "legacy_pvp_enabled": "Legacy UserGame game-mode flag (bPvPEnabled). The Console uses this only as a fallback when partition selectors are absent. It does not establish whether PvP is active in game or override Custom Settings by itself.",
+    "server_pve": "Legacy UserGame game-mode flag (bServerPVE). True alone is not proof that this instance is PvE: partition selectors and Custom Settings' PVPMode are separate controls. The Console does not verify their priority inside the game.",
+    "pvp_mode": "Custom Settings' PvP policy: NoPVP, Limited or FullPVP. UserGame has separate partition and legacy controls. Their priority is not verified across game builds; avoid contradictory settings and verify the result in game. The map badge describes UserGame configuration only.",
+    "battleye_enabled": "Controls the native server BattlEye anti-cheat setting. Apply globally and restart the Battlegroup after saving. The current Docker game image defaults to disabled. A BattlEye launch argument takes precedence over this setting.",
+    "staking_unit_vertical_extension_default_times": "Cooldown in seconds for each of the ten vertical Staking Unit extension levels. Leave empty to inherit a broader scope or use the game's progressive defaults. Server-only; applies after the affected maps restart.",
+    "staking_unit_extension_default_times": "Cooldown in seconds for each of the ten horizontal Staking Unit extension levels. Leave empty to inherit a broader scope or use the game's progressive defaults. Server-only; applies after the affected maps restart.",
     "server_display_name": "Display name shown for this server instance. Used as the Dimension name when the server is a Dimension server.",
     "server_login_password": "Password players must enter to join. Leave empty for no password.",
     "mining_output_multiplier": "Multiplier applied to personal mining output for all players.",
@@ -502,8 +514,8 @@ FIELD_DESCRIPTIONS = {
     "base_backup_max_extensions": "Maximum number of times a Base Backup can be extended.",
     "building_restriction_limits_enabled": "Enforces building restriction limits (e.g. disallowing construction inside dungeons/restricted areas).",
     "building_piece_limit_multiplier": "Scales building-piece limits, including lights. Values above Funcom's recommended range are supported, but may increase server and client load.",
-    "force_pvp_all_partitions": "If enabled, forces PvP on for every map partition regardless of each partition's individual PvP/PvE setting.",
-    "security_zones_enabled": "Master toggle for Security Zones. Disable to allow PvP and combat abilities everywhere on the map (no safe zones).",
+    "force_pvp_all_partitions": "UserGame force-PvP flag for all partitions within the selected scope. The Console flags an overlap with an explicit PvE selector. This is separate from Custom Settings' PVPMode; priority between the two systems is not verified.",
+    "security_zones_enabled": "Controls the Security Zones subsystem, which manages safe/restricted areas within a map. This does not select a PvP or PvE instance. Disabling zones may allow combat in previously protected areas; exact boundaries depend on the game build.",
     "coriolis_auto_spawn_enabled": "Whether Coriolis storms spawn automatically on their normal cycle.",
     "coriolis_cycle_start_year": "Base year shipped in the Coriolis configuration. Normally leave this unchanged when matching a regional schedule.",
     "coriolis_cycle_start_month": "Base month (1-12) shipped in the Coriolis configuration. Normally leave this unchanged when matching a regional schedule.",
@@ -523,6 +535,14 @@ FIELD_DESCRIPTIONS = {
 }
 
 FIELD_LABELS = {
+    "staking_unit_extension_default_times": "Horizontal Staking Unit Cooldown (Seconds)",
+    "staking_unit_vertical_extension_default_times": "Vertical Staking Unit Cooldown (Seconds)",
+    "partition_pvp_enabled": "Partition PvP Selection",
+    "partition_pve_enabled": "Partition PvE Selection",
+    "legacy_pvp_enabled": "Legacy PvP Flag",
+    "server_pve": "Legacy Server PvE Flag",
+    "pvp_mode": "PvP Mode",
+    "battleye_enabled": "BattlEye Anti-Cheat",
     "restart_server_on_coriolis_cycle_end": "Restart Game Farm At Coriolis Cycle End",
     "coriolis_cycle_start_year": "Cycle Start Year",
     "coriolis_cycle_start_month": "Cycle Start Month",
@@ -551,6 +571,7 @@ CLIENT_FILE_REQUIRED = {
     # building values to match on every player's client.
     "max_landclaim_segments": "Game.ini",
     "building_restriction_limits_enabled": "Game.ini",
+    "base_backup_tool_time_restriction": "Game.ini",
     "hydration_enabled": "Game.ini",
     "water_consumption_rate": "Game.ini",
     "player_starting_water": "Game.ini",
@@ -1436,19 +1457,19 @@ def normalize_augment_jackpot_roll_percentage(value: str) -> str:
     return raw
 
 
+def landsraad_data_override(profile: dict, scope: str, map_name: str = "", partition_id: str = "") -> str | None:
+    # A native Advanced override wins over the old, ineffective Console key.
+    # Do not fill an existing struct with template values: preserve every
+    # supplied member, including newer game fields and custom schedules.
+    for key in (LANDSRAAD_DATA_KEY, LEGACY_LANDSRAAD_DATA_KEY):
+        value = profile_get_key(profile, scope, LANDSRAAD_SETTINGS_SECTION, key, map_name, partition_id)
+        if value:
+            return value
+    return None
+
+
 def landsraad_data_for_scope(profile: dict, scope: str, map_name: str = "", partition_id: str = "") -> str:
-    value = profile_get_key(profile, scope, LANDSRAAD_SETTINGS_SECTION, LANDSRAAD_DATA_KEY, map_name, partition_id)
-    if not value:
-        return LANDSRAAD_DATA_TEMPLATE
-    current_parts = split_unreal_struct(value)
-    current_members = unreal_struct_values(value)
-    for part in split_unreal_struct(LANDSRAAD_DATA_TEMPLATE):
-        if "=" not in part:
-            continue
-        member = part.split("=", 1)[0].strip()
-        if member not in current_members:
-            current_parts.append(part)
-    return f"({','.join(current_parts)})"
+    return landsraad_data_override(profile, scope, map_name, partition_id) or LANDSRAAD_DATA_TEMPLATE
 
 
 def landsraad_virtual_values(data: str) -> dict[str, str]:
@@ -2043,6 +2064,7 @@ def set_profile_field(profile: dict, scope: str, map_name: str, partition_id: st
         member = LANDSRAAD_DATA_FIELDS[field_id][0]
         normalized = normalize_landsraad_data_value(field_id, value)
         current = landsraad_data_for_scope(profile, "global")
+        profile_remove_key(profile, "global", LANDSRAAD_SETTINGS_SECTION, LEGACY_LANDSRAAD_DATA_KEY)
         profile_set_key(
             profile,
             "global",
@@ -2204,7 +2226,7 @@ def profile_map_values(profile: dict, map_name: str) -> dict[str, str]:
         map_value = profile_get_key(profile, "map", section, ini_key, target_map)
         if map_value is not None:
             values[key] = map_value
-    global_data = profile_get_key(profile, "global", LANDSRAAD_SETTINGS_SECTION, LANDSRAAD_DATA_KEY)
+    global_data = landsraad_data_override(profile, "global")
     values.update(landsraad_virtual_values(global_data or LANDSRAAD_DATA_TEMPLATE))
     return sync_legacy_values(profile, values, "map", target_map)
 
@@ -2218,7 +2240,7 @@ def profile_global_values(profile: dict) -> dict[str, str]:
         global_value = profile_get_key(profile, "global", section, ini_key)
         if global_value is not None:
             values[key] = global_value
-    global_data = profile_get_key(profile, "global", LANDSRAAD_SETTINGS_SECTION, LANDSRAAD_DATA_KEY)
+    global_data = landsraad_data_override(profile, "global")
     values.update(landsraad_virtual_values(global_data or LANDSRAAD_DATA_TEMPLATE))
     return sync_legacy_values(profile, values, "global")
 
@@ -2318,6 +2340,38 @@ def server_custom_profile_value(profile: dict, field_id: str, map_name: str, par
             value = found
             configured = True
     return value, configured
+
+
+def configured_base_backup_cooldown_seconds(profile: dict, map_name: str = "", partition_id: str = "") -> int | None:
+    """Mirror an explicit native cooldown into the game's legacy seconds gate.
+
+    The native hours setting is still emitted to ServerCustomSettings.ini. The
+    older BuildingSettings property remains present in the shipped game and is
+    also used by clients for the Reconstruction Tool's repeat-pickup gate.
+    Omit both legacy overrides when the operator has not configured this field.
+    """
+    section, key, _default = SERVER_CUSTOM_FIELDS["base_backup_tool_time_restriction"]
+    value = profile_get_key(profile, "server_custom_global", section, key)
+    if map_name:
+        target_map = canonical_map(map_name)
+        map_value = profile_get_key(profile, "server_custom_map", section, key, target_map)
+        if map_value is not None:
+            value = map_value
+        if partition_id:
+            partition_value = profile_get_key(
+                profile, "server_custom_partition", section, key, target_map, str(partition_id)
+            )
+            if partition_value is not None:
+                value = partition_value
+    if value is None:
+        return None
+    try:
+        hours = Decimal(str(value).strip())
+    except InvalidOperation as error:
+        raise ValueError(f"Invalid base reconstruction cooldown: {value}") from error
+    if not hours.is_finite() or hours < Decimal("0.2"):
+        raise ValueError(f"Invalid base reconstruction cooldown: {value}")
+    return int((hours * 3600).to_integral_value(rounding=ROUND_HALF_UP))
 
 
 def legacy_building_restriction_value(profile: dict, map_name: str, partition_id: str = "") -> tuple[str | None, bool]:
@@ -2438,6 +2492,8 @@ def metadata() -> int:
         recommended_minimum, recommended_maximum = (None, None)
         if field_id == "augment_jackpot_roll_percentage":
             minimum, maximum = AUGMENT_JACKPOT_ROLL_BOUNDS
+        if field_id in STAKING_EXTENSION_FIELDS:
+            minimum, maximum = 0.1, 604800
         if scope == "serverCustom":
             minimum, maximum = SERVER_CUSTOM_NUMERIC_BOUNDS.get(field_id, (None, None))
             recommended_minimum, recommended_maximum = SERVER_CUSTOM_RECOMMENDED_NUMERIC_BOUNDS.get(field_id, (None, None))
@@ -2454,6 +2510,7 @@ def metadata() -> int:
             "label": FIELD_LABELS.get(field_id, ""),
             "minimum": minimum,
             "maximum": maximum,
+            "allowEmpty": field_id in STAKING_EXTENSION_FIELDS,
             "recommendedMinimum": recommended_minimum,
             "recommendedMaximum": recommended_maximum,
             "options": list(SERVER_CUSTOM_ENUM_VALUES.get(field_id, ())) if scope == "serverCustom" else [],
@@ -2847,6 +2904,11 @@ def compiled_usergame_ini(profile: dict, map_name: str, partition_id: str | None
                 section_lines.setdefault(section, []).append(f"+m_PvpEnabledPartitions={target_partition}")
             if truthy(values.get("partition_pve_enabled", "False")):
                 section_lines.setdefault(section, []).append(f"+m_PveEnabledPartitions={target_partition}")
+    cooldown_seconds = configured_base_backup_cooldown_seconds(profile, target_map, target_partition)
+    if cooldown_seconds is not None:
+        section_lines.setdefault(BUILDING_SETTINGS_SECTION, []).append(
+            f"m_BaseBackupToolTimeRestrictionInSeconds={cooldown_seconds}"
+        )
     scopes = [("global", "", ""), ("map", target_map, "")]
     if target_partition:
         scopes.append(("partition", target_map, target_partition))
@@ -2854,8 +2916,18 @@ def compiled_usergame_ini(profile: dict, map_name: str, partition_id: str | None
     # lines from profiles written by older releases without allowing unrelated
     # custom Advanced-editor values to be dropped.
     known = known_keys_by_section({**MAP_FIELDS, **RETIRED_USERGAME_FIELDS})
+    known.setdefault(LANDSRAAD_SETTINGS_SECTION, set()).update({LANDSRAAD_DATA_KEY, LEGACY_LANDSRAAD_DATA_KEY})
     known.setdefault("/Script/DuneSandbox.PvpPveSettings", set()).update({"m_PvpEnabledPartitions", "m_PveEnabledPartitions"})
     append_profile_unknown_lines(section_lines, profile, scopes, known)
+    for scope, scope_map, scope_partition in scopes:
+        data = landsraad_data_override(profile, scope, scope_map, scope_partition)
+        if data:
+            # Emit the most specific saved struct once, preserving its members.
+            # Never emit the obsolete Console Data key into game configuration.
+            section_lines[LANDSRAAD_SETTINGS_SECTION] = [
+                line for line in section_lines.get(LANDSRAAD_SETTINGS_SECTION, [])
+                if not line.startswith(f"{LANDSRAAD_DATA_KEY}=")
+            ] + [f"{LANDSRAAD_DATA_KEY}={data}"]
     pvp_pve_section = "/Script/DuneSandbox.PvpPveSettings"
     if pvp_pve_section in section_lines:
         # A Global-scoped array line can now duplicate the same value emitted
@@ -2904,8 +2976,14 @@ def client_game_ini(profile: dict, map_name: str, partition_id: str | None = Non
             continue
         section_lines.setdefault(section, []).append(f"{key}={value}")
 
-    # The server-side control moved to ServerCustomSettings.ini in Patch 1.5,
-    # while clients still consume the matching legacy Game.ini property.
+    # The native server control uses hours, but the Reconstruction Tool's
+    # repeat-pickup gate still needs the matching legacy seconds value on both
+    # the server and each client. Only export an explicit operator override.
+    cooldown_seconds = configured_base_backup_cooldown_seconds(profile, target_map, target_partition)
+    if cooldown_seconds is not None:
+        section_lines.setdefault(BUILDING_SETTINGS_SECTION, []).append(
+            f"m_BaseBackupToolTimeRestrictionInSeconds={cooldown_seconds}"
+        )
     custom_values = server_custom_values(profile, target_map or "Survival_1", target_partition, include_materialized=bool(target_map))
     restriction_value = custom_values["building_restriction_limits_enabled"]
     restriction_default = SERVER_CUSTOM_FIELDS["building_restriction_limits_enabled"][2]
@@ -3669,10 +3747,10 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
     migrate_legacy_base_backup_cooldown(reparsed)
     if server_custom_values(reparsed, "Survival_1", include_materialized=False)["base_backup_tool_time_restriction"] != "2":
         raise SystemExit("Legacy base backup cooldown did not migrate from seconds to native hours.")
-    if "m_BaseBackupToolTimeRestrictionInSeconds" in compiled_usergame_ini(reparsed, "Survival_1", "3"):
-        raise SystemExit("Legacy base backup cooldown leaked into compiled UserGame.ini.")
-    if "m_BaseBackupToolTimeRestrictionInSeconds" in client_game_ini(reparsed, "Survival_1", "3"):
-        raise SystemExit("Legacy base backup cooldown leaked into the client Game.ini export.")
+    if "m_BaseBackupToolTimeRestrictionInSeconds=7200" not in compiled_usergame_ini(reparsed, "Survival_1", "3"):
+        raise SystemExit("Native base backup cooldown was not mirrored into compiled UserGame.ini.")
+    if "m_BaseBackupToolTimeRestrictionInSeconds=7200" not in client_game_ini(reparsed, "Survival_1", "3"):
+        raise SystemExit("Native base backup cooldown was not mirrored into the client Game.ini export.")
     if server_custom_values(reparsed, "Survival_1", include_materialized=False)["building_restriction_limits_enabled"] != "True":
         raise SystemExit("Building restriction limits did not default to enabled when unset.")
     profile_set_key(reparsed, "server_custom_global", SERVER_CUSTOM_SETTINGS_SECTION, "bIsBuildingRestrictionsEnabled", "False")
@@ -4051,7 +4129,7 @@ def resolve_partition_combat_state(values: dict) -> dict:
     Returns a dict with keys: state, source, securityZonesEnabled, warnings,
     unresolvedFields. `state` is one of PARTITION_COMBAT_STATES.
 
-    Precedence (highest to lowest):
+    Console selection precedence (not a live check of game-side priority):
       1. partition_pvp_enabled AND partition_pve_enabled       -> CONFLICT
       2. force_pvp_all_partitions AND partition_pve_enabled    -> CONFLICT
       3. force_pvp_all_partitions                              -> PVP
@@ -4269,8 +4347,20 @@ def partition_combat_state_payload(map_name: str, partition_id: str, profile: di
     target_map = canonical_map(map_name)
     target_partition = str(partition_id)
 
-    configured_values = profile_partition_values(profile if profile is not None else read_profile(), target_map, target_partition)
+    profile = profile if profile is not None else read_profile()
+    configured_values = profile_partition_values(profile, target_map, target_partition)
     configured_result = resolve_partition_combat_state(configured_values)
+
+    # Report Custom Settings alongside UserGame, without inventing precedence
+    # between Funcom's two systems or changing the partition-selection contract.
+    custom_section, custom_key, custom_default = SERVER_CUSTOM_FIELDS["pvp_mode"]
+    custom_path = saved_dir_for(target_map, target_partition) / "Config" / "LinuxServer" / "ServerCustomSettings.ini"
+    written_custom_mode = read_ini_value(custom_path, custom_section, custom_key)
+    profile_custom_mode, custom_configured = server_custom_profile_value(profile, "pvp_mode", target_map, target_partition)
+    custom_mode = str(profile_custom_mode if custom_configured else written_custom_mode if written_custom_mode is not None else custom_default)
+    warnings = list(configured_result["warnings"])
+    if (configured_result["state"], custom_mode) in (("PVP", "NoPVP"), ("PVE", "FullPVP")):
+        warnings.append(f"UserGame selects {configured_result['state']} while Custom Settings specifies {custom_mode}. The game priority between these controls is not verified; check the result in game.")
 
     materialized_values = materialized_partition_combat_values(target_map, target_partition)
     materialized_result = resolve_partition_combat_state(materialized_values) if materialized_values is not None else None
@@ -4287,10 +4377,13 @@ def partition_combat_state_payload(map_name: str, partition_id: str, profile: di
         "configuredSource": configured_result["source"],
         "materializedState": materialized_result["state"] if materialized_result else None,
         "materializedSource": materialized_result["source"] if materialized_result else None,
+        "customPvpMode": custom_mode,
+        "customPvpModeSource": "profile" if custom_configured else "runtime-file" if written_custom_mode is not None else "default",
+        "materializedCustomPvpMode": written_custom_mode,
         "securityZonesEnabled": configured_result["securityZonesEnabled"],
         "restartRequired": configuration_drift,
         "configurationDrift": configuration_drift,
-        "warnings": configured_result["warnings"],
+        "warnings": warnings,
         "unresolvedFields": configured_result["unresolvedFields"],
     }
 

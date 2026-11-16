@@ -40,6 +40,64 @@ const integerKeys = new Set([
 const transferKeys = Object.keys(characterTransferDefaults);
 const transferKeySet = new Set(transferKeys);
 const incomingPolicyValues = new Set(incomingCharacterTransferPolicies.map((entry) => entry.value));
+const pendingSaves = new Set();
+
+async function directorTransferRequest(config, endpoint, settings, options) {
+  const port = config.ports?.director;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Director port is unavailable.");
+  const response = await (options.fetchImpl || fetch)(`http://127.0.0.1:${port}/v0/${endpoint}`, {
+    method: settings ? "POST" : "GET",
+    headers: settings ? { "Content-Type": "application/json" } : undefined,
+    body: settings ? JSON.stringify(settings) : undefined,
+    redirect: "error",
+    signal: AbortSignal.timeout(5000)
+  });
+  if (!response.ok) throw new Error("Director rejected the request.");
+  if (settings) return;
+  const body = await response.json();
+  const normalized = {};
+  for (const key of transferKeys) {
+    const camel = key[0].toLowerCase() + key.slice(1);
+    if (!body.config || (!Object.hasOwn(body.config, camel) && !Object.hasOwn(body.config, key))) throw new Error("Director returned incomplete settings.");
+    normalized[key] = body.config?.[camel] ?? body.config?.[key];
+  }
+  return validateCharacterTransferSettings(normalized);
+}
+
+export async function readCharacterTransferSettingsStatus(config, options = {}) {
+  const result = readCharacterTransferSettings(config);
+  try {
+    const effective = await directorTransferRequest(config, "BattlegroupFetchCharacterTransferRules", null, options);
+    return { ...result, applied: transferKeys.every((key) => effective[key] === result.settings[key]) };
+  } catch {
+    return { ...result, applied: null };
+  }
+}
+
+export async function saveAndApplyCharacterTransferSettings(config, payload, options = {}) {
+  const lock = characterTransferSettingsPath(config);
+  if (pendingSaves.has(lock)) {
+    const error = new Error("Character transfer settings are already being saved. Please retry shortly.");
+    error.statusCode = 409;
+    throw error;
+  }
+  pendingSaves.add(lock);
+  try {
+    const result = saveCharacterTransferSettings(config, payload, options);
+    try {
+      await directorTransferRequest(config, "BattlegroupUpdateCharacterTransferSettings", result.settings, options);
+      const effective = await directorTransferRequest(config, "BattlegroupFetchCharacterTransferRules", null, options);
+      if (!transferKeys.every((key) => effective[key] === result.settings[key])) throw new Error("Settings differ.");
+      return { ...result, applied: true };
+    } catch {
+      const error = new Error("Settings were saved, but Director did not confirm live application. No services were restarted. Retry Save when Director is available.");
+      error.statusCode = 503;
+      throw error;
+    }
+  } finally {
+    pendingSaves.delete(lock);
+  }
+}
 
 export function characterTransferSettingsPath(config) {
   return resolve(config.repoRoot, "runtime/generated/director-character-transfer.ini");

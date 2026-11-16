@@ -12,6 +12,8 @@ export function createUpdateCheckCache(config, options = {}) {
   let inFlight = null;
   let generation = 0;
   let diskLoaded = false;
+  let failure = null;
+  const errorCacheMs = Math.max(0, Number(options.errorCacheMs || 0));
 
   function loadDiskCache() {
     if (diskLoaded) return;
@@ -38,6 +40,7 @@ export function createUpdateCheckCache(config, options = {}) {
   async function read(readOptions = {}) {
     loadDiskCache();
     const currentTime = now();
+    if (failure && currentTime < failure.until) throw failure.error;
     if (!readOptions.fresh && cached && currentTime - cached.sampledAtMs < cacheMs) {
       return { ...cached, fromCache: true };
     }
@@ -49,10 +52,14 @@ export function createUpdateCheckCache(config, options = {}) {
       const sampledAtMs = now();
       const entry = { ...result, sampledAtMs, sampledAt: new Date(sampledAtMs).toISOString() };
       if (collectionGeneration === generation) {
+        failure = null;
         cached = entry;
         persist(entry);
       }
       return entry;
+    }).catch((error) => {
+      if (collectionGeneration === generation && errorCacheMs > 0) failure = { error, until: now() + errorCacheMs };
+      throw error;
     }).finally(() => {
       if (inFlight?.promise === pending) inFlight = null;
     });
@@ -72,6 +79,7 @@ export function createUpdateCheckCache(config, options = {}) {
   function invalidate() {
     generation += 1;
     cached = null;
+    failure = null;
     diskLoaded = true;
     if (cacheFile) {
       try { rmSync(cacheFile, { force: true }); } catch { /* best effort */ }

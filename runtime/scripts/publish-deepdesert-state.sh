@@ -6,6 +6,13 @@ export PYTHONDONTWRITEBYTECODE="${PYTHONDONTWRITEBYTECODE:-1}"
 
 cd "$(dirname "$0")/../.."
 
+# POSTGRES_PORT and DUNE_PSQL_TRANSPORT from here configure the Postgres seam.
+# Exported because this script's queries run in embedded Python, which reads
+# them from its environment; a bare `. ./.env` would keep them invisible to any
+# child process.
+[ -f .env ] && . ./.env
+export POSTGRES_PORT DUNE_PSQL_TRANSPORT
+
 TEXT_ROUTER_LOG="runtime/text-router/director-current.log"
 CONFIG_FILE="runtime/generated/sietch-config.json"
 RMQ_TIMEOUT_SECONDS="${DUNE_DEEPDESERT_STATE_RMQ_TIMEOUT_SECONDS:-8}"
@@ -83,6 +90,7 @@ from pathlib import Path
 
 sys.path.insert(0, "runtime/scripts")
 import usersettings  # noqa: E402
+import dune_psql  # noqa: E402
 
 config_path = Path("runtime/generated/sietch-config.json")
 config = json.loads(config_path.read_text()) if config_path.exists() else {"partitions": {}}
@@ -103,16 +111,7 @@ where wp.map = 'DeepDesert_1'
 order by wp.dimension_index, wp.partition_id;
 """
 
-result = subprocess.run(
-    [
-        "docker", "exec", "dune-postgres",
-        "psql", "-U", "postgres", "-d", "dune",
-        "-At", "-F", "\t", "-c", query,
-    ],
-    check=True,
-    text=True,
-    capture_output=True,
-)
+rows_raw = dune_psql.query_tsv(query)
 
 usersettings_config = usersettings.load_config()
 
@@ -146,7 +145,7 @@ def combat_settings_for_partition(partition_id: str) -> dict:
     return settings
 
 
-for line in result.stdout.splitlines():
+for line in rows_raw.splitlines():
     if not line.strip():
         continue
     partition_id, server_id, game_addr, game_port, ready, alive, label = line.split("\t")

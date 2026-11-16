@@ -1,9 +1,16 @@
 import type { Task } from "../../api/setup";
-import { summarizeCommandText } from "../../lib/display";
+import { stripAnsi, summarizeCommandText } from "../../lib/display";
 
 export const GAME_UPDATE_TASK_KEY = "arrakis.gameUpdateTask";
 export const STACK_UPDATE_TASK_KEY = "arrakis.stackUpdateTask";
 export const UPDATE_RESULT_DISMISS_MS = 10000;
+
+export function gameUpdateBlockReason(task: Task) {
+  if (task.status !== "failed" || !["updateApply", "updateInstallAssets"].includes(task.operation)) return null;
+  const text = stripAnsi([task.errorMessage || "", ...task.logLines.map(line => line.line)].join("\n"));
+  if (!/Disable Experimental Tanks in Settings before updating game-server files\./i.test(text)) return null;
+  return "Disable Regis Tanks in Settings → Experimental Features, then apply the game update again.";
+}
 
 export function parseUpdateTask(task: Task) {
   const text = task.logLines.map((line) => line.line).join("\n");
@@ -12,7 +19,8 @@ export function parseUpdateTask(task: Task) {
   const repository = firstVersionMatch(text, [/github repo\s*[:=]\s*([^\n]+)/i]);
   const versions = { current, latest, repository };
   if (task.status === "failed") return { status: "Check Failed", ...versions, reason: updateCheckFailureReason(task.errorMessage || "", text) };
-  if (task.status !== "succeeded") return { status: "Checking...", ...versions, reason: task.progressMessage || "" };
+  // Still running here means the caller's polling gave up; nothing re-checks.
+  if (task.status !== "succeeded") return { status: "Check Failed", ...versions, reason: "The check did not finish in time. Try again in a few minutes." };
   const updateAvailable = /update available|newer|can update|available update/i.test(text);
   const latestStatus = /up to date|already latest|no update|latest/i.test(text) && !updateAvailable;
   if (sameUpdateVersion(current, latest)) return { status: "Latest", ...versions, reason: summarizeCommandText(text) };
@@ -36,6 +44,10 @@ export function loadPersistedUpdateTask(key: string) {
     const raw = window.localStorage.getItem(key);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Task;
+    if (key === GAME_UPDATE_TASK_KEY && parsed?.id && gameUpdateBlockReason(parsed)) {
+      window.localStorage.removeItem(key);
+      return null;
+    }
     return parsed?.id ? parsed : null;
   } catch {
     return null;
@@ -45,8 +57,11 @@ export function loadPersistedUpdateTask(key: string) {
 export function persistUpdateTask(key: string, task: Task | null) {
   if (typeof window === "undefined") return;
   try {
-    if (task && !isTerminalTaskStatus(task.status)) {
-      window.localStorage.setItem(key, JSON.stringify(task));
+    if (task && task.status !== "succeeded" && !(key === GAME_UPDATE_TASK_KEY && gameUpdateBlockReason(task))) {
+      // Preserve failed diagnostics across navigation/reloads, without keeping
+      // an unbounded Steam download log in browser storage.
+      const snapshot = { ...task, logLines: task.logLines.slice(-160).map((line) => ({ ...line, line: line.line.slice(-4096) })) };
+      window.localStorage.setItem(key, JSON.stringify(snapshot));
     } else {
       window.localStorage.removeItem(key);
     }
@@ -68,6 +83,18 @@ export function stackVersionButtonLabel(status: Record<string, string>) {
   if (/checking/i.test(String(status.status || ""))) return "Checking";
   if (current && latest && !sameUpdateVersion(current, latest)) return `${formatStackVersionLabel(current)} > ${formatStackVersionLabel(latest)}`;
   return formatStackVersionLabel(current || latest) || "Version";
+}
+
+// A check that learned nothing still leaves the installed version known.
+export function withInstalledVersion(status: Record<string, string>, installed: string) {
+  if (status.current || !installed || /updating/i.test(status.status)) return status;
+  return { ...status, current: installed };
+}
+
+// The sidebar and the Updates page check independently and can finish in either order.
+export function preferKnownVersions(previous: Record<string, string>, next: Record<string, string>) {
+  const known = (status: Record<string, string>) => Boolean(status.current || status.latest);
+  return known(previous) && !known(next) ? previous : next;
 }
 
 export function stackVersionButtonTitle(status: Record<string, string>) {
@@ -137,8 +164,4 @@ export function firstVersionMatch(text: string, patterns: RegExp[]) {
     }
   }
   return "";
-}
-
-function isTerminalTaskStatus(status: string) {
-  return ["succeeded", "failed", "cancelled"].includes(status);
 }
