@@ -90,11 +90,11 @@ test("a tampered or truncated session cookie is refused", async () => {
   });
 });
 
-// OPEN FINDING (pentest 2026-11-23): the tier is a snapshot taken at sign-in and the session
+// RESIDUAL OF #1355 (pentest 2026-11-23): the absolute session cap bounds the lag but does not remove it. The tier is a snapshot taken at sign-in and the session
 // slides on every request, so removing a Discord role, or the user leaving the guild, does
 // not demote or end a live session. Kept as an executable `todo` so it fails visibly until
 // fixed without breaking the suite; flip to a plain test() when the console re-validates.
-test("a live session stops working after the Discord role is removed", { todo: "finding: tier is not re-validated against Discord after sign-in" }, async () => {
+test("a live session stops working after the Discord role is removed", { todo: "#1355 residual: revocation is bounded by DISCORD_SESSION_MAX_AGE_MINUTES (default 60), not immediate; live re-validation is paused (patch PAUSED-1355-live-revalidation.patch)" }, async () => {
   await withConsole(async ({ base, discordState, signIn }) => {
     const s = await signIn();
     assert.equal((await (await fetch(`${base}/api/auth/me`, { headers: { cookie: s.cookie } })).json()).user.tier, "admin");
