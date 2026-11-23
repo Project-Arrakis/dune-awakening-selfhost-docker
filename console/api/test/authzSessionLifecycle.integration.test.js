@@ -105,3 +105,20 @@ test("a live session stops working after the Discord role is removed", { todo: "
     assert.ok(me.status === 401 || body.user?.tier !== "admin", `session is still ${body.user?.tier} after the role was removed and the user left the guild`);
   });
 });
+
+test("login rate limit cannot be dodged by spoofing X-Forwarded-For / X-Real-IP", async () => {
+  await withConsole(async ({ base }) => {
+    const attempt = (i) => fetch(`${base}/api/auth/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-forwarded-for": `203.0.113.${i % 250}`, "x-real-ip": `198.51.100.${i % 250}`, forwarded: `for=192.0.2.${i % 250}` },
+      body: JSON.stringify({ password: `wrong-${i}` })
+    }).then(async (r) => { await r.text(); return r.status; });
+    const statuses = [];
+    for (let i = 0; i < 25; i += 1) statuses.push(await attempt(i));
+    assert.ok(statuses.includes(429), `25 failed logins with rotating spoofed client-IP headers were never rate limited: ${[...new Set(statuses)]}`);
+    // and a correct password from yet another spoofed address is still locked out
+    const ok = await fetch(`${base}/api/auth/login`, { method: "POST", headers: { "content-type": "application/json", "x-forwarded-for": "198.18.0.77" }, body: JSON.stringify({ password: "correct-password" }) });
+    await ok.text();
+    assert.equal(ok.status, 429, "lockout must key on the real peer, not a client-supplied header");
+  });
+});
