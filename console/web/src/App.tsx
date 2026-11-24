@@ -1,5 +1,5 @@
 import { Fragment, lazy, useCallback, useEffect, useRef, useState } from "react";
-import { Archive, Bug, Building2, Car, CircleArrowUp, CircleHelp, Database, Download, ExternalLink, FileText, Gift, Globe, Heart, Home, Landmark, Map as MapIcon, Menu, MessageCircle, PackagePlus, Palette, RefreshCw, Server, Settings, Shield, Sparkles, Store, Users, X } from "lucide-react";
+import { Archive, Bug, Building2, Car, CircleArrowUp, CircleHelp, Database, Download, ExternalLink, FileText, Gift, Globe, Heart, Home, Landmark, Map as MapIcon, Menu, MessageCircle, PackagePlus, RefreshCw, Server, Settings, Shield, Sparkles, Store, Users, X } from "lucide-react";
 import { api, AUTH_SESSION_EXPIRED_EVENT, AUTH_SESSION_EXPIRED_MESSAGE, loginRequest, post, setCsrfToken } from "./api/client";
 import { TotpSetupScreen } from "./features/auth/TotpSetupScreen";
 import { setServerPorts, setAdminPort, type ServerPorts } from "./api/serverPorts";
@@ -15,6 +15,7 @@ import { SetupWizard } from "./components/SetupWizard";
 import { TaskProgress } from "./components/TaskProgress";
 import { ConfirmDialog, type ConfirmDialogDetail, type ConfirmDialogOutcome, type ConfirmDialogRequest } from "./components/common/ConfirmDialog";
 import { LazyTabBoundary } from "./components/common/LazyTabBoundary";
+import { ThemeLauncher } from "./themes/ThemeLauncher";
 import type { RestartGateChoice } from "./features/server/restartQueueGuard";
 import { loadPinnedAddons, savePinnedAddons, type PinnedAddon } from "./features/addons/pinnedAddons";
 import { hasAddonUpdates } from "./features/addons/addonVersions";
@@ -48,7 +49,7 @@ import { ConsoleLanguageObserver } from "./features/language/ConsoleLanguageObse
 // current list at runtime instead of a hand-duplicated copy that could drift.
 // "Access Control" is a fork-only addition (the IAM policy editor tab) with
 // no upstream equivalent.
-export const ALL_TABS = ["Home", "Server Control", "Services", "Players", "Guilds", "Bases", "Vehicles", "Exchange", "Landsraad", "Admin Tools", "Live Map", "Maps", "Care Package", "Addons", "Language", "Database", "Storage", "Backups", "Logs", "Updates", "Settings", "Access Control"] as const;
+export const ALL_TABS = ["Home", "Server Control", "Services", "Players", "Guilds", "Bases", "Vehicles", "Exchange", "Landsraad", "Admin Tools", "Live Map", "Maps", "Care Package", "Addons", "Language", "Database", "Storage", "Backups", "Logs", "Chat", "Updates", "Settings", "Access Control"] as const;
 // Exported so a panel routing to another tab types its destination against the
 // real list rather than `string`. Type-only, so a panel importing it back does
 // not create a runtime cycle.
@@ -107,6 +108,7 @@ const Action = {
   SERVER_RESTART_SERVICE: "server:restart-service",
   SERVER_CONTROL: "server:*",
   LOGS_READ: "logs:read",
+  CHAT_READ: "chat:read",
   BACKUPS_READ: "backups:read",
   BACKUPS_CREATE: "backups:create",
   BACKUPS_RESTORE: "backups:restore",
@@ -164,7 +166,6 @@ type PublicDirectoryStatus = {
 let openConfirmDialog: ((request: ConfirmDialogRequest) => void) | null = null;
 
 const AddonsPanel = lazy(() => import("./features/addons/AddonsPanel").then((module) => ({ default: module.AddonsPanel })));
-const ThemePanel = lazy(() => import("./themes/ThemePanel").then((module) => ({ default: module.ThemePanel })));
 const LanguagePanel = lazy(() => import("./features/language/LanguagePanel").then((module) => ({ default: module.LanguagePanel })));
 const AdminToolsPanel = lazy(() => import("./features/adminTools/AdminToolsPanel").then((module) => ({ default: module.AdminToolsPanel })));
 const BasesPage = lazy(() => import("./features/bases/BasesPage").then((module) => ({ default: module.BasesPage })));
@@ -173,6 +174,7 @@ const CarePackagePanel = lazy(() => import("./features/carePackage/CarePackagePa
 const DatabasePanel = lazy(() => import("./features/database/DatabasePanel").then((module) => ({ default: module.DatabasePanel })));
 const GuildsPanel = lazy(() => import("./features/guilds/GuildsPanel").then((module) => ({ default: module.GuildsPanel })));
 const LogsPanel = lazy(() => import("./features/logs/LogsPanel").then((module) => ({ default: module.LogsPanel })));
+const ChatPanel = lazy(() => import("./features/chat/ChatPanel").then((module) => ({ default: module.ChatPanel })));
 const LiveMapPanel = lazy(() => import("./features/liveMap/LiveMapPanel").then((module) => ({ default: module.LiveMapPanel })));
 const LandsraadPanel = lazy(() => import("./features/landsraad/LandsraadPanel").then((module) => ({ default: module.LandsraadPanel })));
 const MapsPanel = lazy(() => import("./features/maps/MapsPanel").then((module) => ({ default: module.MapsPanel })));
@@ -405,6 +407,7 @@ const navGroups: { title: string; items: { tab: Tab; icon: React.ReactNode; requ
       { tab: "Database", icon: <Database size={18} />, requiredAction: Action.DATABASE_READ },
       { tab: "Updates", icon: <RefreshCw size={18} />, requiredAction: Action.UPDATES_READ },
       { tab: "Logs", icon: <FileText size={18} />, requiredAction: Action.LOGS_READ },
+      { tab: "Chat", icon: <MessageCircle size={18} />, requiredAction: Action.CHAT_READ },
       { tab: "Settings", icon: <Settings size={18} />, requiredAction: Action.SETTINGS_WRITE }
     ]
   },
@@ -539,7 +542,6 @@ export function App() {
   const [installGameFilesRequest, setInstallGameFilesRequest] = useState(0);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [languagePickerOpen, setLanguagePickerOpen] = useState(false);
-  const [themePickerOpen, setThemePickerOpen] = useState(false);
   const [pinnedAddons, setPinnedAddons] = useState<PinnedAddon[]>(() => loadPinnedAddons());
   const [selectedPinnedAddonId, setSelectedPinnedAddonId] = useState("");
   const [addonUpdatesAvailable, setAddonUpdatesAvailable] = useState(false);
@@ -1180,18 +1182,7 @@ export function App() {
                 closeMobileNav();
               }}
             ><Globe size={19} aria-hidden="true" /></button>
-            <button
-              className="community-button language-shortcut"
-              type="button"
-              title="Console Theme"
-              aria-label="Console Theme"
-              aria-haspopup="dialog"
-              aria-expanded={themePickerOpen}
-              onClick={() => {
-                setThemePickerOpen(true);
-                closeMobileNav();
-              }}
-            ><Palette size={19} aria-hidden="true" /></button>
+            <ThemeLauncher onOpen={closeMobileNav} />
             <a className="community-button discord" href={REDBLINK_DISCORD_URL} target="_blank" rel="noreferrer" title="Join Discord"><span>Join Discord</span><DiscordLogo size={19} /></a>
             <a className="community-button support" href={REDBLINK_KOFI_URL} target="_blank" rel="noreferrer" title="Support Project"><span>Support Project</span><KofiLogo size={19} /></a>
           </div>
@@ -1220,7 +1211,6 @@ export function App() {
         {!redeploySetupOpen && tab === "Maps" && <LazyTabBoundary label="Loading Maps"><MapsPanel onError={setError} confirmAction={confirmDialog} restartGate={restartGateChoice} confirmSettingsRestart={confirmSettingsRestart} waitForTaskWithUpdates={waitForTaskWithUpdates} taskTechnicalDetails={taskTechnicalDetails} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Care Package" && <LazyTabBoundary label="Loading Care Package"><CarePackagePanel onError={setError} confirmAction={confirmDialog} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Addons" && <LazyTabBoundary label="Loading Addons"><AddonsPanel pinnedAddons={pinnedAddons} setPinnedAddons={setPinnedAddons} selectedAddonId={selectedPinnedAddonId} clearSelectedAddon={() => setSelectedPinnedAddonId("")} setAddonUpdateAvailable={setAddonUpdatesAvailable} confirmAction={confirmDialog} /></LazyTabBoundary>}
-        {themePickerOpen && <LazyTabBoundary label="Loading Themes"><ThemePanel onClose={() => setThemePickerOpen(false)} /></LazyTabBoundary>}
         {(languagePickerOpen || tab === "Language") && <LazyTabBoundary label="Loading Language"><LanguagePanel onClose={() => {setLanguagePickerOpen(false);if(tab === "Language")setTab("Home");}} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Database" && <LazyTabBoundary label="Loading Database"><DatabasePanel /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Storage" && isPlayerTier && <PlayerAssetsPage kind="storage" />}
@@ -1245,6 +1235,7 @@ export function App() {
             isTerminalTask={isTerminalTask}
           /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Logs" && <LazyTabBoundary label="Loading Logs"><LogsPanel selectedService={selectedLogService} setSelectedService={setSelectedLogService} text={logs} setText={setLogs} onError={setError} /></LazyTabBoundary>}
+        {!redeploySetupOpen && tab === "Chat" && <LazyTabBoundary label="Loading Chat"><ChatPanel onError={setError} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Updates" && <LazyTabBoundary label="Loading Updates"><UpdatesPanel
             installGameFilesRequest={installGameFilesRequest}
             onInstallGameFilesHandled={() => setInstallGameFilesRequest(0)}

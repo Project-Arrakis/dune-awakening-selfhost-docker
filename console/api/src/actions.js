@@ -33,6 +33,7 @@ export const NAMESPACES = {
   SETUP:       "setup",
   SERVER:      "server",
   LOGS:        "logs",
+  CHAT:        "chat",
   BACKUPS:     "backups",
   DATABASE:    "database",
   UPDATES:     "updates",
@@ -62,6 +63,9 @@ export const NAMESPACES = {
 // against the normalized path.
 
 export const ROUTE_ACTIONS = {
+  "GET /api/chat/history":                     "chat:read",
+  "POST /api/chat/settings":                   "chat:configure",
+  "DELETE /api/chat/history":                  "chat:configure",
   // --- Setup ---
   "GET /api/setup/state":                      "setup:read",
   "GET /api/setup/tasks":                      "setup:read",
@@ -313,6 +317,8 @@ export const ROUTE_ACTIONS = {
   "GET /api/players/online":                   "players:read",
   "GET /api/players/search":                   "players:read",
   "GET /api/players/deleted-characters":       "players:read",
+  "GET /api/dungeons/runs":                    "players:read",
+  "GET /api/dungeons/leaderboard":             "players:read",
   "POST /api/players/list-settings":           "players:configure-list",
 
   // --- Vehicles ---

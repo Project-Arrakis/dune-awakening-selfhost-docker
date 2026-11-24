@@ -1,13 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_THEME_ID, getThemes, THEME_STORAGE_KEY, applyTheme, buildThemeTokens, contrast, ensureContrast, initTheme, loadSelectedTheme, parseHex, parseJsonc, saveSelectedTheme } from "./themeEngine";
+import { THEME_CACHE_KEY, THEME_TOKEN_NAMES } from "./themeBoot";
+import { ROLE_TOKENS } from "./themeRoles";
+import type { Rgb } from "./themeEngine";
+import { DEFAULT_THEME_ID, getThemes, THEME_STORAGE_KEY, applyTheme, buildThemeTokens, contrast, ensureContrast, loadSelectedTheme, parseHex, saveSelectedTheme } from "./themeEngine";
+import { CONSOLE_PALETTES } from "./consolePalettes";
 
 const THEMES = getThemes();
-
-describe("parseJsonc", () => {
-  it("strips line comments but keeps // inside strings", () => {
-    expect(parseJsonc('{ "a": "http://x", // note\n "b": 1 }')).toEqual({ a: "http://x", b: 1 });
-  });
-});
 
 // Independent WCAG 2.x implementation so the check does not grade ensureContrast with its own yardstick.
 function wcag(a: string, b: string): number {
@@ -20,19 +18,23 @@ function wcag(a: string, b: string): number {
 }
 
 describe("palette catalogue", () => {
-  it("offers the 16 dark Fedaykin palettes and 3 dark Tabr looks with unique ids", () => {
-    expect(THEMES).toHaveLength(19);
-    expect(new Set(THEMES.map((t) => t.id)).size).toBe(19);
+  it("offers the project's 23 palettes plus every House swatch theme with unique ids and colour combinations", () => {
+    expect(THEMES).toHaveLength(65);
+    expect(new Set(THEMES.map((t) => t.id)).size).toBe(65);
     expect(THEMES.every((t) => t.appearance === "dark")).toBe(true);
-    expect(THEMES.map((t) => t.id)).toEqual(expect.arrayContaining(["tabr-fremen", "tabr-awakening", "tabr-sietch"]));
+    expect(THEMES.map((t) => t.id)).toEqual(expect.arrayContaining(CONSOLE_PALETTES.map((p) => p.id)));
+    expect(CONSOLE_PALETTES.map((p) => p.name)).toEqual([...CONSOLE_PALETTES.map((p) => p.name)].sort((a, b) => a.localeCompare(b)));
+    for (const id of ["dd-amber-dunes", "dune-harkonnen", "dune-house-atreides", "dune-sardaukar-imperial", "tabr-fremen", "house-kenola", "swatch-sunset-dye"]) expect(THEMES.map((t) => t.id), id).toContain(id);
+    expect(new Set(THEMES.map((t) => [t.tokens["--bg"], t.tokens["--panel"], t.tokens["--accent"]].join())).size).toBe(65);
   });
 
   it("emits a full, valid token set for every palette", () => {
     const keys = Object.keys(THEMES[0].tokens).sort();
+    expect(keys).toEqual([...THEME_TOKEN_NAMES, ...ROLE_TOKENS.map((role) => role.name)].sort());
     for (const theme of THEMES) {
       expect(Object.keys(theme.tokens).sort(), theme.id).toEqual(keys);
       for (const [name, value] of Object.entries(theme.tokens)) {
-        if (name !== "--bg-glow") expect(parseHex(value), `${theme.id} ${name}`).not.toBeNull();
+        if (name !== "--bg-glow" && !value.startsWith("rgba(")) expect(parseHex(value), `${theme.id} ${name}`).not.toBeNull();
       }
     }
   });
@@ -41,7 +43,7 @@ describe("palette catalogue", () => {
     for (const theme of THEMES) {
       for (const token of ["--text", "--text-strong", "--muted", "--text-faint", "--text-subtle", "--title", "--success-text", "--danger-text", "--state-motion"]) {
         const fg = theme.tokens[token];
-        expect(Math.min(wcag(fg, theme.tokens["--bg"]), wcag(fg, theme.tokens["--panel"])), `${theme.id} ${token}`).toBeGreaterThanOrEqual(4.49);
+        expect(Math.min(wcag(fg, theme.tokens["--bg"]), wcag(fg, theme.tokens["--panel"])), `${theme.id} ${token}`).toBeGreaterThanOrEqual(4.5);
       }
       for (const token of ["--accent", "--warning"]) {
         expect(wcag(theme.tokens[token], theme.tokens["--panel"]), `${theme.id} ${token}`).toBeGreaterThanOrEqual(2.99);
@@ -65,7 +67,7 @@ describe("ensureContrast", () => {
 
 describe("buildThemeTokens", () => {
   it("derives a light-palette token set that still meets AA (kept for when light themes are offered)", () => {
-    const tokens = buildThemeTokens({ color_01: "#fafafa", color_02: "#f4f4f4", color_09: "#1a1a1a", color_10: "#999999" });
+    const tokens = buildThemeTokens({ background: "#fafafa", panel: "#f4f4f4" });
     expect(contrast(parseHex(tokens["--muted"])!, parseHex(tokens["--bg"])!)).toBeGreaterThanOrEqual(4.49);
   });
 
@@ -80,19 +82,13 @@ describe("apply and persistence", () => {
     applyTheme(DEFAULT_THEME_ID);
   });
 
-  it("default sets no overrides", () => {
-    initTheme();
-    expect(document.documentElement.style.getPropertyValue("--bg")).toBe("");
-    expect(document.documentElement.dataset.theme).toBeUndefined();
-  });
-
   it("saves, applies, restores and then resets cleanly", () => {
-    const theme = THEMES.find((t) => t.id === "tabr-fremen")!;
-    saveSelectedTheme("tabr-fremen");
-    expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBe("tabr-fremen");
+    const theme = THEMES.find((t) => t.id === "dd-amber-dunes")!;
+    saveSelectedTheme("dd-amber-dunes");
+    expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBe("dd-amber-dunes");
     expect(document.documentElement.style.getPropertyValue("--bg")).toBe(theme.tokens["--bg"]);
     expect(document.documentElement.style.getPropertyValue("color-scheme")).toBe("dark");
-    expect(loadSelectedTheme()).toBe("tabr-fremen");
+    expect(loadSelectedTheme()).toBe("dd-amber-dunes");
     saveSelectedTheme(DEFAULT_THEME_ID);
     expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBeNull();
     expect(document.documentElement.style.getPropertyValue("--bg")).toBe("");
@@ -101,22 +97,25 @@ describe("apply and persistence", () => {
     expect(document.documentElement.dataset.theme).toBeUndefined();
   });
 
-  it("switching from one theme to another leaves nothing of the first behind", () => {
-    saveSelectedTheme("tabr-fremen");
-    saveSelectedTheme("tabr-sietch");
-    const sietch = THEMES.find((t) => t.id === "tabr-sietch")!;
-    for (const [name, value] of Object.entries(sietch.tokens)) expect(document.documentElement.style.getPropertyValue(name), name).toBe(value);
-    expect(document.documentElement.dataset.theme).toBe("tabr-sietch");
+  it("keeps the boot cache in step with the choice", () => {
+    saveSelectedTheme("dd-amber-dunes");
+    const cached = JSON.parse(window.localStorage.getItem(THEME_CACHE_KEY)!);
+    expect(cached.id).toBe("dd-amber-dunes");
+    expect(cached.tokens).toEqual(THEMES.find((t) => t.id === "dd-amber-dunes")!.tokens);
+    saveSelectedTheme(DEFAULT_THEME_ID);
+    expect(window.localStorage.getItem(THEME_CACHE_KEY)).toBeNull();
   });
 
-  it("restores the saved theme at boot", () => {
-    window.localStorage.setItem(THEME_STORAGE_KEY, "tabr-awakening");
-    initTheme();
-    expect(document.documentElement.dataset.theme).toBe("tabr-awakening");
+  it("switching from one theme to another leaves nothing of the first behind", () => {
+    saveSelectedTheme("dd-amber-dunes");
+    saveSelectedTheme("dd-oasis");
+    const oasis = THEMES.find((t) => t.id === "dd-oasis")!;
+    for (const [name, value] of Object.entries(oasis.tokens)) expect(document.documentElement.style.getPropertyValue(name), name).toBe(value);
+    expect(document.documentElement.dataset.theme).toBe("dd-oasis");
   });
 
   it("applyTheme with an unknown id clears any theme", () => {
-    saveSelectedTheme("tabr-fremen");
+    saveSelectedTheme("dd-amber-dunes");
     applyTheme("nope");
     expect(document.documentElement.dataset.theme).toBeUndefined();
     expect(document.documentElement.getAttribute("style") ?? "").toBe("");
@@ -127,31 +126,37 @@ describe("apply and persistence", () => {
     const set = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("blocked"); });
     try {
       expect(loadSelectedTheme()).toBe(DEFAULT_THEME_ID);
-      expect(() => saveSelectedTheme("tabr-fremen")).not.toThrow();
-      expect(document.documentElement.dataset.theme).toBe("tabr-fremen");
+      expect(() => saveSelectedTheme("dd-amber-dunes")).not.toThrow();
+      expect(document.documentElement.dataset.theme).toBe("dd-amber-dunes");
+      expect(loadSelectedTheme()).toBe("dd-amber-dunes");
     } finally { get.mockRestore(); set.mockRestore(); }
-  });
-
-  it("follows a theme chosen in another tab", () => {
-    initTheme();
-    window.localStorage.setItem(THEME_STORAGE_KEY, "tabr-sietch");
-    window.dispatchEvent(new StorageEvent("storage", { key: THEME_STORAGE_KEY }));
-    expect(document.documentElement.dataset.theme).toBe("tabr-sietch");
-    window.localStorage.removeItem(THEME_STORAGE_KEY);
-    window.dispatchEvent(new StorageEvent("storage", { key: THEME_STORAGE_KEY }));
-    expect(document.documentElement.dataset.theme).toBeUndefined();
-  });
-
-  it("follows another tab clearing storage entirely", () => {
-    initTheme();
-    saveSelectedTheme("tabr-fremen");
-    window.localStorage.clear();
-    window.dispatchEvent(new StorageEvent("storage", { key: null }));
-    expect(document.documentElement.dataset.theme).toBeUndefined();
   });
 
   it("ignores a stored id that no longer exists", () => {
     window.localStorage.setItem(THEME_STORAGE_KEY, "gone");
     expect(loadSelectedTheme()).toBe(DEFAULT_THEME_ID);
+    // Reading never deletes the stored id: a tab on an older bundle must not wipe a newer tab's choice.
+    expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBe("gone");
   });
+
+describe("ensureContrast", () => {
+  it("meets the ratio in the usual direction when it can", () => {
+    const fg = ensureContrast([60, 60, 60], [[20, 20, 20]], 4.5);
+    expect(contrast(fg, [20, 20, 20])).toBeGreaterThanOrEqual(4.5);
+    expect(fg[0]).toBeGreaterThan(60);
+  });
+
+  it("tries the other end for a mid-tone surface the usual end cannot reach", () => {
+    const accent: Rgb = [135, 112, 62];
+    const fg = ensureContrast([200, 180, 150], [accent], 4.7);
+    expect(contrast(fg, accent)).toBeGreaterThanOrEqual(4.7);
+  });
+
+  it("returns the better of black and white when the ratio is out of reach", () => {
+    const surface: Rgb = [119, 119, 119];
+    const fg = ensureContrast([119, 119, 119], [surface], 20);
+    expect([0, 255]).toContain(fg[0]);
+    expect(contrast(fg, surface)).toBeGreaterThan(4);
+  });
+});
 });
