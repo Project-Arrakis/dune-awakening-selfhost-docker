@@ -4536,7 +4536,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1250,
+        "line": 1348,
         "nearby": [
           "Filter Crafting Schematics",
           "Clear",
@@ -4546,7 +4546,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1277,
+        "line": 1377,
         "nearby": [
           "Filter Research Schematics",
           "Clear",
@@ -4744,7 +4744,7 @@
     "% threshold using the": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 759,
+        "line": 768,
         "nearby": [
           "Read-only probe for exchange",
           "at the",
@@ -4860,7 +4860,7 @@
     "100–200. Blank keeps each item's own durability. Applies at the next reseed; listings already on the market are unchanged until then.": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 803,
+        "line": 810,
         "nearby": [
           "Seed Listing Durability",
           "per item",
@@ -5146,7 +5146,7 @@
     "A relog is required to see the change.": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1236,
+        "line": 1334,
         "nearby": [
           "Loadout",
           "Unique schematics",
@@ -5288,7 +5288,7 @@
     "About Exchange Selection": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 685,
+        "line": 694,
         "nearby": [
           "Upload CSV",
           "Exchange",
@@ -5299,7 +5299,7 @@
     "About Faction Reputation": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1228,
+        "line": 1326,
         "nearby": [
           "Adds available Intel while the player is offline and never exceeds the game's spendable cap. It does not purchase or unlock Research entries. The player should join after the grant before spending it.",
           "Give Faction Reputation",
@@ -5311,7 +5311,7 @@
     "About Give Intel": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1227,
+        "line": 1325,
         "nearby": [
           "Refill Container",
           "Give Intel",
@@ -5346,7 +5346,7 @@
     "About Market Bot": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 631,
+        "line": 640,
         "nearby": [
           "Market Bot Settings",
           "Market Bot",
@@ -5394,7 +5394,7 @@
     "About Repair Vehicle Durability": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1366,
+        "line": 1470,
         "nearby": [
           "Repair Gear",
           "Repair Vehicle Durability",
@@ -5453,7 +5453,7 @@
     "Above Price Threshold": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 765,
+        "line": 774,
         "nearby": [
           "Eligible to Buy",
           "Waiting Beyond Sweep Limit",
@@ -5533,7 +5533,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1135,
+        "line": 1233,
         "nearby": [
           "Tags",
           "Result",
@@ -5635,7 +5635,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1231,
+        "line": 1329,
         "nearby": [
           "Augments",
           "Aug. Grade",
@@ -5913,7 +5913,7 @@
     "Activity": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 709,
+        "line": 718,
         "nearby": [
           "Buyback",
           "Reseed",
@@ -6129,7 +6129,7 @@
     "Add Item": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1230,
+        "line": 1328,
         "nearby": [
           "Give Package",
           "Give Item",
@@ -6536,7 +6536,7 @@
     "Adds available Intel while the player is offline and never exceeds the game's spendable cap. It does not purchase or unlock Research entries. The player should join after the grant before spending it.": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1227,
+        "line": 1325,
         "nearby": [
           "Give Intel",
           "About Give Intel",
@@ -6748,7 +6748,7 @@
     "Advanced manual override": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1451,
+        "line": 1555,
         "nearby": [
           "Manual Template",
           "Spawn",
@@ -7107,7 +7107,7 @@
     "All Product Groups": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1280,
+        "line": 1380,
         "nearby": [
           "ies",
           "Detected",
@@ -8198,7 +8198,7 @@
     "at the": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 759,
+        "line": 768,
         "nearby": [
           "Why Listings Were Not Bought",
           "Read-only probe for exchange",
@@ -8254,7 +8254,7 @@
     "Aug. Grade": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1230,
+        "line": 1328,
         "nearby": [
           "Grade",
           "Augments",
@@ -8264,7 +8264,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1231,
+        "line": 1329,
         "nearby": [
           "Grade",
           "Augments",
@@ -8316,7 +8316,7 @@
     "Augment Pricing": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 793,
+        "line": 802,
         "nearby": [
           "Price Multiplier",
           "Seed Price Multiplier",
@@ -8325,7 +8325,7 @@
       },
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 794,
+        "line": 803,
         "nearby": [
           "Seed Price Multiplier",
           "Cheaper Than Patterns",
@@ -8348,7 +8348,7 @@
     "Augments": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1230,
+        "line": 1328,
         "nearby": [
           "Quantity",
           "Grade",
@@ -8358,7 +8358,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1231,
+        "line": 1329,
         "nearby": [
           "Quantity",
           "Grade",
@@ -9086,7 +9086,7 @@
     "Back Up Before Every Write": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 700,
+        "line": 709,
         "nearby": [
           "When on, the console takes a full database backup before every Market Bot write: buyback sweeps, reseeds, and NPC listing removals, scheduled or manual. Only the newest Market Bot backups are kept (DUNE_MARKET_BOT_BACKUP_KEEP, default 5). Turning this off skips those backups; existing backups are kept.",
           "Back Up the Database Before Every Write",
@@ -9098,7 +9098,7 @@
     "Back Up the Database Before Every Write": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 699,
+        "line": 708,
         "nearby": [
           "Safety Backups Off",
           "When on, the console takes a full database backup before every Market Bot write: buyback sweeps, reseeds, and NPC listing removals, scheduled or manual. Only the newest Market Bot backups are kept (DUNE_MARKET_BOT_BACKUP_KEEP, default 5). Turning this off skips those backups; existing backups are kept.",
@@ -9154,7 +9154,7 @@
     "Backpack": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1236,
+        "line": 1334,
         "nearby": [
           "Remove",
           "Inventory type",
@@ -9470,7 +9470,7 @@
     "Ban Player": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1424,
+        "line": 1528,
         "nearby": [
           "Unban Player",
           "Player"
@@ -9478,7 +9478,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1425,
+        "line": 1529,
         "nearby": [
           "Player",
           "Enforcement"
@@ -9486,7 +9486,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1433,
+        "line": 1537,
         "nearby": [
           "Enforcement",
           "Unban Player",
@@ -10267,7 +10267,7 @@
     "Bene Gesserit starter skills": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 998,
+        "line": 1039,
         "nearby": [
           "Mentat starter skills",
           "Planetologist starter skills",
@@ -10567,7 +10567,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1350,
+        "line": 1454,
         "nearby": [
           "Detected",
           "Combat history is not available for this character.",
@@ -10991,7 +10991,7 @@
     "Buyback": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 707,
+        "line": 716,
         "nearby": [
           "Market Bot writes run without a restore point. Scheduled and manual runs are affected.",
           "Market Bot Sections",
@@ -11003,7 +11003,7 @@
     "Buyback Diagnostics": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 757,
+        "line": 766,
         "nearby": [
           "Running…",
           "Run Sweep Now",
@@ -11015,7 +11015,7 @@
     "Buyback Interval Minutes": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 720,
+        "line": 729,
         "nearby": [
           "Schedule",
           "Interval (Minutes)",
@@ -11027,7 +11027,7 @@
     "Buyback Percent": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 734,
+        "line": 743,
         "nearby": [
           "Price Multiplier",
           "Buyback Price Multiplier",
@@ -11036,7 +11036,7 @@
       },
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 735,
+        "line": 744,
         "nearby": [
           "Buyback Price Multiplier",
           "Price Basis",
@@ -11047,7 +11047,7 @@
     "Buyback Price Basis": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 738,
+        "line": 747,
         "nearby": [
           "Buyback Percent",
           "Price Basis",
@@ -11059,7 +11059,7 @@
     "Buyback Price Multiplier": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 732,
+        "line": 741,
         "nearby": [
           "Pricing and Limits",
           "Price Multiplier",
@@ -11070,7 +11070,7 @@
     "Buyback schedule saved (disabled).": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 432,
+        "line": 436,
         "nearby": [
           "No additional detail was recorded.",
           "No player sell listings on this exchange.",
@@ -11104,7 +11104,7 @@
     "Buyback sweep log cleared.": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 506,
+        "line": 515,
         "nearby": [
           "Run Sweep",
           "Nothing eligible; no backup was taken.",
@@ -11116,7 +11116,7 @@
     "Buyback Sweeps": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 715,
+        "line": 724,
         "nearby": [
           "Reseed",
           "Activity",
@@ -11128,7 +11128,7 @@
     "Buys complete player-listed stacks when the per-unit ask is within the configured percentage of the selected price basis. A sweep checks eligibility first and, with Safety Backups on, creates a backup only when something qualifies. Seeded pricing follows the reseed augment-pricing choice; category multipliers may be tuned independently.": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 715,
+        "line": 724,
         "nearby": [
           "Activity",
           "Buyback Sweeps",
@@ -11192,7 +11192,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1233,
+        "line": 1331,
         "nearby": [
           "Actions",
           "Save",
@@ -11737,7 +11737,7 @@
     "Category Price Tuning": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 749,
+        "line": 758,
         "nearby": [
           "Max Buys Per Sweep",
           "Saving…",
@@ -11746,7 +11746,7 @@
       },
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 801,
+        "line": 814,
         "nearby": [
           "per item",
           "100–200. Blank keeps each item's own durability. Applies at the next reseed; listings already on the market are unchanged until then.",
@@ -12034,7 +12034,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1236,
+        "line": 1334,
         "nearby": [
           "Inventory type",
           "Backpack",
@@ -12268,7 +12268,7 @@
     "Cheaper Than Patterns": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 795,
+        "line": 804,
         "nearby": [
           "Augment Pricing",
           "Original Plan Prices",
@@ -12513,7 +12513,7 @@
     "Checking deleted character history...": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1353,
+        "line": 1457,
         "nearby": [
           "Recover Deleted Character",
           "The player must be offline.",
@@ -13231,7 +13231,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1236,
+        "line": 1334,
         "nearby": [
           "Filter by name, item ID, or template",
           "Filter Inventory",
@@ -13241,7 +13241,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1237,
+        "line": 1335,
         "nearby": [
           "No inventory items match this filter.",
           "No inventory items were found.",
@@ -13251,7 +13251,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1249,
+        "line": 1347,
         "nearby": [
           "Filter by name, recipe ID, source, or category",
           "Filter Crafting Schematics",
@@ -13261,7 +13261,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1276,
+        "line": 1376,
         "nearby": [
           "Filter by name, item key, type, or product group",
           "Filter Research Schematics",
@@ -13271,7 +13271,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1348,
+        "line": 1452,
         "nearby": [
           "Filter by name, ID, status, or dependency",
           "Filter Journey Browser",
@@ -13281,7 +13281,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1451,
+        "line": 1555,
         "nearby": [
           "Manual Template",
           "T1_ExtraSeat",
@@ -13524,7 +13524,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1208,
+        "line": 1306,
         "nearby": [
           "Player admin layout",
           "Player Summary",
@@ -13544,7 +13544,7 @@
       },
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 632,
+        "line": 641,
         "nearby": [
           "Market Bot",
           "About Market Bot",
@@ -13554,7 +13554,7 @@
       },
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 820,
+        "line": 833,
         "nearby": [
           "Removing…",
           "Remove NPC Listings"
@@ -13810,7 +13810,7 @@
     "Collapse": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1143,
+        "line": 1241,
         "nearby": [
           "Result",
           "Action",
@@ -14241,7 +14241,7 @@
     "Combat history is not available for this character.": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1349,
+        "line": 1453,
         "nearby": [
           "ies",
           "Detected",
@@ -14384,7 +14384,7 @@
     "Commodity Stack Quantities": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 802,
+        "line": 815,
         "nearby": [
           "100–200. Blank keeps each item's own durability. Applies at the next reseed; listings already on the market are unchanged until then.",
           "Category Price Tuning",
@@ -14499,7 +14499,7 @@
     "Complete": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 723,
+        "line": 764,
         "nearby": [
           "Continue",
           "Complete Journey Node",
@@ -14509,7 +14509,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1153,
+        "line": 1251,
         "nearby": [
           "Expand",
           "Unknown",
@@ -14521,7 +14521,7 @@
     "Complete Journey Node": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 722,
+        "line": 763,
         "nearby": [
           "Unverified Game Build",
           "Continue",
@@ -15411,12 +15411,56 @@
     "Continue": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 712,
+        "line": 753,
         "nearby": [
           "Give Multiple Items",
           "Unverified Game Build",
           "Complete Journey Node",
           "Complete"
+        ]
+      },
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1756,
+        "nearby": [
+          "Still uses the same hosted bot (Sahir Venn) above -- this is only a different way to prove you own the Discord server, using your own Discord Application's OAuth credentials instead of the one-click screen. It does not run a separate bot. Only use this if \"Add & Connect Bot\" above doesn't work for you.",
+          "I've invited the bot to this Discord server",
+          "Continue unlocks once the bot is connected above.",
+          "Continue unlocks once you confirm you've invited the bot."
+        ]
+      },
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1795,
+        "nearby": [
+          "Comma-separated Discord role IDs",
+          "Back",
+          "Save roles",
+          "Your adapter and Discord connection were already set up in step 1 -- this just saves your role mappings."
+        ]
+      }
+    ],
+    "Continue unlocks once the bot is connected above.": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1757,
+        "nearby": [
+          "I've invited the bot to this Discord server",
+          "Continue",
+          "Continue unlocks once you confirm you've invited the bot.",
+          "Configure roles"
+        ]
+      }
+    ],
+    "Continue unlocks once you confirm you've invited the bot.": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1758,
+        "nearby": [
+          "Continue",
+          "Continue unlocks once the bot is connected above.",
+          "Configure roles",
+          "Map Discord roles to console permission tiers (optional). You can skip this now and set it up later from this same page."
         ]
       }
     ],
@@ -15916,7 +15960,7 @@
     "Crafting Schematics": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1242,
+        "line": 1340,
         "nearby": [
           "Clear",
           "No character actions have been recorded in this layout yet.",
@@ -16719,7 +16763,7 @@
     "Danger Zone": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1401,
+        "line": 1505,
         "nearby": [
           "Map Servers",
           "Repair Vehicles",
@@ -18001,7 +18045,7 @@
     "Deleted character to recover": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1353,
+        "line": 1457,
         "nearby": [
           "Restores the selected character's saved data while preserving the current Funcom identity. A safety backup and Sietch restart are included.",
           "No recoverable deleted character was detected.",
@@ -18195,7 +18239,7 @@
     "Depends On": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1108,
+        "line": 1206,
         "nearby": [
           "Name",
           "Type",
@@ -18482,7 +18526,7 @@
     "Detected": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1250,
+        "line": 1348,
         "nearby": [
           "{count0} of {count1}",
           "Schematic",
@@ -18492,7 +18536,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1277,
+        "line": 1377,
         "nearby": [
           "Research Entr",
           "ies",
@@ -18502,7 +18546,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1348,
+        "line": 1452,
         "nearby": [
           "Journey Entr",
           "ies",
@@ -18591,6 +18635,18 @@
           "Clean Build Cache removes unused build cache. Docker protects active builds, containers, images, volumes, databases, game files, and backups.",
           "Open the relevant service logs for recent context.",
           "Token Mismatch Detected"
+        ]
+      }
+    ],
+    "Didn't hear back in time. Check Discord directly, or click Start over to try again.": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 1471,
+        "nearby": [
+          "This server's ownership changed on Discord since the request was sent. Click Start over to try again.",
+          "The server owner didn't respond in time. Click Start over to try again.",
+          "Start over",
+          "This server was previously connected to a different console — that connection has been replaced, and role configuration was reset. Please reconfigure roles in the next step."
         ]
       }
     ],
@@ -18702,7 +18758,7 @@
     "Disable Backups": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 469,
+        "line": 478,
         "nearby": [
           "Reseed schedule saved (disabled).",
           "Disable Safety Backups",
@@ -18825,7 +18881,7 @@
     "Disable Safety Backups": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 469,
+        "line": 478,
         "nearby": [
           "Buyback schedule saved (disabled).",
           "Reseed schedule saved (disabled).",
@@ -19029,7 +19085,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1328,
+        "line": 1432,
         "nearby": [
           "Leave empty for now.",
           "Save",
@@ -19886,7 +19942,7 @@
     "Download CSV": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 669,
+        "line": 678,
         "nearby": [
           "Save Plan Name",
           "Downloading…",
@@ -20045,7 +20101,7 @@
     "Downloading…": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 669,
+        "line": 678,
         "nearby": [
           "Saving…",
           "Save Plan Name",
@@ -20208,6 +20264,18 @@
           "Game Server Connections",
           "RabbitMQ Admin",
           "RabbitMQ Game"
+        ]
+      }
+    ],
+    "Dune processes them on the next login.": [
+      {
+        "file": "console/web/src/features/players/BuildingUnlocksTab.tsx",
+        "line": 145,
+        "nearby": [
+          "Grant All",
+          "Player",
+          "Building Sets",
+          "Delivers the patent token for Dune to process. Token delivery cannot grant or verify DLC and other account entitlements. Research entries remain in the Research tab."
         ]
       }
     ],
@@ -20478,7 +20546,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1233,
+        "line": 1331,
         "nearby": [
           "Save",
           "Cancel",
@@ -20754,7 +20822,7 @@
     "Eligible to Buy": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 763,
+        "line": 772,
         "nearby": [
           "Player Listings Checked",
           "Recognized in Seed Plan",
@@ -21257,7 +21325,7 @@
     "Enforcement": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1429,
+        "line": 1533,
         "nearby": [
           "Ban Player",
           "Player",
@@ -21469,7 +21537,7 @@
     "Equipped and carried gear durability. Relog required.": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1353,
+        "line": 1457,
         "nearby": [
           "Repair Gear",
           "The player must be offline.",
@@ -21712,7 +21780,7 @@
       },
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 685,
+        "line": 694,
         "nearby": [
           "Upload CSV",
           "About Exchange Selection",
@@ -21721,7 +21789,7 @@
       },
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 686,
+        "line": 695,
         "nearby": [
           "About Exchange Selection",
           "Exchanges with access points appear first because players can reach them in game. Saving a schedule binds it to the exchange selected here.",
@@ -21785,7 +21853,7 @@
     "Exchanges with access points appear first because players can reach them in game. Saving a schedule binds it to the exchange selected here.": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 685,
+        "line": 694,
         "nearby": [
           "Exchange",
           "About Exchange Selection",
@@ -21830,7 +21898,7 @@
     "Expand": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1143,
+        "line": 1241,
         "nearby": [
           "Action",
           "Collapse",
@@ -22393,7 +22461,7 @@
     "Faction Reputation affects rank, but Ranks 1–5 also require faction story progression. The player must be offline so the reputation used by vendors can be updated safely.": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1228,
+        "line": 1326,
         "nearby": [
           "Give Faction Reputation",
           "About Faction Reputation",
@@ -22844,7 +22912,7 @@
     "Filter by name, ID, status, or dependency": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1348,
+        "line": 1452,
         "nearby": [
           "Journey Browser",
           "Journey changes require the player to be fully offline and take effect on the next login. Reset keeps rewards already granted and cannot recreate a consumed Contract item.",
@@ -22868,7 +22936,7 @@
     "Filter by name, item ID, or template": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1236,
+        "line": 1334,
         "nearby": [
           "A relog is required to see the change.",
           "of",
@@ -22892,7 +22960,7 @@
     "Filter by name, item key, type, or product group": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1275,
+        "line": 1375,
         "nearby": [
           "Research Schematics",
           "Research unlocks require the player to be offline and add the linked build recipe. Existing incomplete unlocks show Repair Unlock. Group markers are informational; unlock their individual Recipe or Building entries.",
@@ -22904,7 +22972,7 @@
     "Filter by name, recipe ID, source, or category": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1248,
+        "line": 1346,
         "nearby": [
           "Crafting Schematics",
           "Recipe unlocks require the player to be offline. The Grade shown is the recipe grade found in the game database.",
@@ -22928,7 +22996,7 @@
     "Filter Crafting Schematics": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1248,
+        "line": 1346,
         "nearby": [
           "Recipe unlocks require the player to be offline. The Grade shown is the recipe grade found in the game database.",
           "Filter by name, recipe ID, source, or category",
@@ -22976,7 +23044,7 @@
     "Filter Inventory": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1236,
+        "line": 1334,
         "nearby": [
           "of",
           "Filter by name, item ID, or template",
@@ -23012,7 +23080,7 @@
     "Filter Journey Browser": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1348,
+        "line": 1452,
         "nearby": [
           "Journey changes require the player to be fully offline and take effect on the next login. Reset keeps rewards already granted and cannot recreate a consumed Contract item.",
           "Filter by name, ID, status, or dependency",
@@ -23099,7 +23167,7 @@
     "Filter Research Schematics": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1275,
+        "line": 1375,
         "nearby": [
           "Research unlocks require the player to be offline and add the linked build recipe. Existing incomplete unlocks show Repair Unlock. Group markers are informational; unlock their individual Recipe or Building entries.",
           "Filter by name, item key, type, or product group",
@@ -23854,7 +23922,7 @@
     "Friendly name": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 658,
+        "line": 667,
         "nearby": [
           "Seed Plan Name",
           "Name for a new imported plan",
@@ -24681,7 +24749,7 @@
     "Give Faction Reputation": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1228,
+        "line": 1326,
         "nearby": [
           "About Give Intel",
           "Adds available Intel while the player is offline and never exceeds the game's spendable cap. It does not purchase or unlock Research entries. The player should join after the grant before spending it.",
@@ -24693,7 +24761,7 @@
     "Give Intel": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1227,
+        "line": 1325,
         "nearby": [
           "Give Water",
           "Refill Container",
@@ -24715,7 +24783,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1230,
+        "line": 1328,
         "nearby": [
           "Aug. Grade",
           "Give Package",
@@ -24757,7 +24825,7 @@
     "Give Items": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1230,
+        "line": 1328,
         "nearby": [
           "About Faction Reputation",
           "Faction Reputation affects rank, but Ranks 1–5 also require faction story progression. The player must be offline so the reputation used by vendors can be updated safely.",
@@ -24792,7 +24860,7 @@
     "Give Package": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1230,
+        "line": 1328,
         "nearby": [
           "Augments",
           "Aug. Grade",
@@ -24804,7 +24872,7 @@
     "Give Water": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1217,
+        "line": 1315,
         "nearby": [
           "Close",
           "Player admin sections",
@@ -24933,7 +25001,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1230,
+        "line": 1328,
         "nearby": [
           "Selected Item",
           "Quantity",
@@ -24943,7 +25011,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1231,
+        "line": 1329,
         "nearby": [
           "Item ID",
           "Quantity",
@@ -25034,7 +25102,7 @@
     "Grade 0 items and Grade 0 physical schematics use the live grant path and require the player to be online. Item Grades 1-5, ranked schematics, standalone augments, and pre-augmented items use database grants; relog after granting to an online player.": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1230,
+        "line": 1328,
         "nearby": [
           "Give Item",
           "Add Item",
@@ -25106,7 +25174,7 @@
     "Grant All": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1062,
+        "line": 1088,
         "nearby": [
           "Swordmaster starter skills",
           "Grant All Skills",
@@ -25116,7 +25184,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1370,
+        "line": 1415,
         "nearby": [
           "Loading...",
           "Reload",
@@ -25211,7 +25279,7 @@
     "Grant All Skills": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1061,
+        "line": 1087,
         "nearby": [
           "Bene Gesserit starter skills",
           "Swordmaster starter skills",
@@ -25560,7 +25628,7 @@
     "Group Entry": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1085,
+        "line": 1183,
         "nearby": [
           "Researching...",
           "Researched",
@@ -25572,7 +25640,7 @@
     "Group markers cannot be safely unlocked as one entry. Unlock the individual Recipe or Building entries.": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1085,
+        "line": 1183,
         "nearby": [
           "Loading research...",
           "No research entries found for this filter.",
@@ -25793,6 +25861,18 @@
           "Banned",
           "Never",
           "Weeks"
+        ]
+      }
+    ],
+    "Hide password sign-in": [
+      {
+        "file": "console/web/src/App.tsx",
+        "line": 1022,
+        "nearby": [
+          "Beyond the Dunes, Every Choice Shapes the Future",
+          "Sign in with Discord",
+          "Sign in with password instead",
+          "Your browser login session expired."
         ]
       }
     ],
@@ -26245,6 +26325,16 @@
         ]
       }
     ],
+    "idle": [
+      {
+        "file": "console/web/src/features/settings/DiscordBotSection.tsx",
+        "line": 429,
+        "nearby": [
+          "You cancelled on Discord's consent screen — try again whenever you're ready.",
+          "Discord says you don't own this server — only the server owner can connect it."
+        ]
+      }
+    ],
     "Idle · Monitoring": [
       {
         "file": "console/web/src/features/adminTools/AdminToolsPanel.tsx",
@@ -26260,7 +26350,7 @@
     "ies": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1277,
+        "line": 1377,
         "nearby": [
           "{count0} of {count1}",
           "Research Entr",
@@ -26270,7 +26360,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1348,
+        "line": 1452,
         "nearby": [
           "Clear",
           "Journey Entr",
@@ -27283,7 +27373,7 @@
     "Interval (Minutes)": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 719,
+        "line": 728,
         "nearby": [
           "Buys complete player-listed stacks when the per-unit ask is within the configured percentage of the selected price basis. A sweep checks eligibility first and, with Safety Backups on, creates a backup only when something qualifies. Seeded pricing follows the reseed augment-pricing choice; category multipliers may be tuned independently.",
           "Schedule",
@@ -27293,7 +27383,7 @@
       },
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 778,
+        "line": 787,
         "nearby": [
           "Replaces only the bot's NPC sell listings from the active seed plan. Each write run creates a backup (when Safety Backups are on), clears the bot listings on the selected exchange, and seeds fresh stock; player listings are never touched. Augments use bottom-of-range rolls, with either discounted or original plan pricing.",
           "Schedule",
@@ -27305,7 +27395,7 @@
     "Invalid Price or Empty Stack": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 767,
+        "line": 776,
         "nearby": [
           "Above Price Threshold",
           "Unknown Template",
@@ -27353,7 +27443,7 @@
     "Inventory type": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1236,
+        "line": 1334,
         "nearby": [
           "Edit",
           "Remove",
@@ -27649,7 +27739,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1231,
+        "line": 1329,
         "nearby": [
           "Preview",
           "Item Name",
@@ -27749,7 +27839,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1231,
+        "line": 1329,
         "nearby": [
           "Grade 0 items and Grade 0 physical schematics use the live grant path and require the player to be online. Item Grades 1-5, ranked schematics, standalone augments, and pre-augmented items use database grants; relog after granting to an online player.",
           "Preview",
@@ -27909,7 +27999,7 @@
     "Items ·": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1353,
+        "line": 1457,
         "nearby": [
           "No recoverable deleted character was detected.",
           "Deleted character to recover",
@@ -28001,7 +28091,7 @@
     "Journey Browser": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1348,
+        "line": 1452,
         "nearby": [
           "Save",
           "Discard",
@@ -28013,7 +28103,7 @@
     "Journey changes require the player to be fully offline and take effect on the next login. Reset keeps rewards already granted and cannot recreate a consumed Contract item.": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1348,
+        "line": 1452,
         "nearby": [
           "Discard",
           "Journey Browser",
@@ -28025,7 +28115,7 @@
     "Journey Entr": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1348,
+        "line": 1452,
         "nearby": [
           "Filter Journey Browser",
           "Clear",
@@ -28294,7 +28384,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1202,
+        "line": 1300,
         "nearby": [
           "Loading journey data...",
           "Teleport",
@@ -28304,7 +28394,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1412,
+        "line": 1516,
         "nearby": [
           "Queue",
           "Repair Login Queue",
@@ -28865,7 +28955,7 @@
     "Leave empty for now.": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1328,
+        "line": 1432,
         "nearby": [
           "Grant All",
           "Select Skill School",
@@ -29113,7 +29203,7 @@
     "Listing Durability %": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 801,
+        "line": 808,
         "nearby": [
           "Cheaper Than Patterns",
           "Original Plan Prices",
@@ -29159,7 +29249,7 @@
     "Live Market Average": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 740,
+        "line": 749,
         "nearby": [
           "Buyback Price Basis",
           "Seeded NPC Price",
@@ -29171,7 +29261,7 @@
     "Live Market Lowest": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 741,
+        "line": 750,
         "nearby": [
           "Seeded NPC Price",
           "Live Market Average",
@@ -29405,7 +29495,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1351,
+        "line": 1455,
         "nearby": [
           "Combat history is not available for this character.",
           "Blueprints",
@@ -29692,7 +29782,7 @@
     "Loading journey data...": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1160,
+        "line": 1258,
         "nearby": [
           "The game manages related rewards, schematics, and tags.",
           "Read-only",
@@ -29947,7 +30037,7 @@
     "Loading recipes...": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1048,
+        "line": 1146,
         "nearby": [
           "Restore",
           "Modules",
@@ -29959,7 +30049,7 @@
     "Loading research...": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1073,
+        "line": 1171,
         "nearby": [
           "Unlocked",
           "Unlock",
@@ -30219,7 +30309,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1253,
+        "line": 1351,
         "nearby": [
           "Schematic",
           "Detected",
@@ -30229,7 +30319,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1281,
+        "line": 1381,
         "nearby": [
           "Detected",
           "All Product Groups",
@@ -30239,7 +30329,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1312,
+        "line": 1414,
         "nearby": [
           "Unsaved Change",
           "Restore Starter Skills",
@@ -30320,7 +30410,7 @@
     "Loading…": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 634,
+        "line": 643,
         "nearby": [
           "About Market Bot",
           "Close",
@@ -30392,7 +30482,7 @@
     "Loadout": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1236,
+        "line": 1334,
         "nearby": [
           "Backpack",
           "Character",
@@ -30719,7 +30809,7 @@
     "Manual Template": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1439,
+        "line": 1543,
         "nearby": [
           "Spawn Vehicle",
           "Manual Vehicle ID",
@@ -30729,7 +30819,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1451,
+        "line": 1555,
         "nearby": [
           "Manual Vehicle ID",
           "Sandbike",
@@ -30750,7 +30840,7 @@
     "Manual Vehicle ID": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1439,
+        "line": 1543,
         "nearby": [
           "Movement / Vehicles",
           "Spawn Vehicle",
@@ -30760,7 +30850,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1451,
+        "line": 1555,
         "nearby": [
           "Spawn",
           "Advanced manual override",
@@ -31009,7 +31099,7 @@
     "Map Servers": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1377,
+        "line": 1481,
         "nearby": [
           "Repair Vehicles",
           "Threshold",
@@ -31156,7 +31246,7 @@
     "Market Bot": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 631,
+        "line": 640,
         "nearby": [
           "No NPC listings to remove; no backup was taken.",
           "Market Bot Settings",
@@ -31179,7 +31269,7 @@
     "Market Bot Sections": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 706,
+        "line": 715,
         "nearby": [
           "Back Up Before Every Write",
           "Market Bot writes run without a restore point. Scheduled and manual runs are affected.",
@@ -31203,7 +31293,7 @@
     "Market Bot Settings": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 628,
+        "line": 637,
         "nearby": [
           "The reseed schedule is enabled: the next scheduled run will repopulate this market. Disable the schedule to keep it unseeded.",
           "No NPC listings to remove; no backup was taken.",
@@ -31215,7 +31305,7 @@
     "Market Bot writes run without a restore point. Scheduled and manual runs are affected.": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 703,
+        "line": 712,
         "nearby": [
           "Back Up the Database Before Every Write",
           "Back Up Before Every Write",
@@ -31250,7 +31340,7 @@
     "Market Reseed": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 774,
+        "line": 783,
         "nearby": [
           "Unknown Template",
           "Invalid Price or Empty Stack",
@@ -31286,7 +31376,7 @@
     "Max Buys Per Sweep": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 744,
+        "line": 753,
         "nearby": [
           "Live Market Average",
           "Live Market Lowest",
@@ -31295,7 +31385,7 @@
       },
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 745,
+        "line": 754,
         "nearby": [
           "Live Market Lowest",
           "Category Price Tuning",
@@ -31634,7 +31724,7 @@
     "Mentat starter skills": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 984,
+        "line": 1025,
         "nearby": [
           "Type:",
           "Trooper starter skills",
@@ -32069,7 +32159,7 @@
     "Modules": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1022,
+        "line": 1120,
         "nearby": [
           "Restore Starter Skills",
           "Restore",
@@ -32141,7 +32231,7 @@
     "Movement / Vehicles": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1439,
+        "line": 1543,
         "nearby": [
           "Wipe Inventory",
           "Reset Progression",
@@ -32197,7 +32287,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1105,
+        "line": 1203,
         "nearby": [
           "Repair Unlock",
           "Research",
@@ -32267,7 +32357,7 @@
     "Name for a new imported plan": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 658,
+        "line": 667,
         "nearby": [
           "Plan Name",
           "Seed Plan Name",
@@ -32347,7 +32437,7 @@
     "Named seed plans are CSV-backed lists the Market Bot can stock. The bundled catalog stays read-only. Set one plan as active to use it for reseeds and buyback price caps. Download CSV exports the selected plan; Upload CSV imports a UTF-8 CSV of names and numbers only (no extra columns, SQL, JSON, or formulas).": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 642,
+        "line": 651,
         "nearby": [
           "The active seed plan could not be read. Choose another plan or upload a CSV.",
           "Seed Plans",
@@ -32946,7 +33036,7 @@
     "No admin actions have been recorded in this layout yet.": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1451,
+        "line": 1555,
         "nearby": [
           "T1_ExtraSeat",
           "Clear"
@@ -33146,7 +33236,7 @@
     "No character actions have been recorded in this layout yet.": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1237,
+        "line": 1335,
         "nearby": [
           "No inventory items were found.",
           "Clear",
@@ -33264,7 +33354,7 @@
     "No crafting recipes found for this category.": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1048,
+        "line": 1146,
         "nearby": [
           "Modules",
           "Loading recipes...",
@@ -33380,7 +33470,7 @@
     "No Exchanges Found": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 687,
+        "line": 696,
         "nearby": [
           "Exchanges with access points appear first because players can reach them in game. Saving a schedule binds it to the exchange selected here.",
           "Exchange",
@@ -33452,7 +33542,7 @@
     "No inventory items match this filter.": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1236,
+        "line": 1334,
         "nearby": [
           "Filter Inventory",
           "Clear",
@@ -33463,7 +33553,7 @@
     "No inventory items were found.": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1236,
+        "line": 1334,
         "nearby": [
           "Clear",
           "No inventory items match this filter.",
@@ -33720,7 +33810,7 @@
     "No NPC listings to remove; no backup was taken.": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 535,
+        "line": 544,
         "nearby": [
           "Remove Listings",
           "The reseed schedule is enabled: the next scheduled run will repopulate this market. Disable the schedule to keep it unseeded.",
@@ -34058,7 +34148,7 @@
     "No recoverable deleted character was detected.": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1353,
+        "line": 1457,
         "nearby": [
           "Checking deleted character history...",
           "Restores the selected character's saved data while preserving the current Funcom identity. A safety backup and Sietch restart are included.",
@@ -34070,7 +34160,7 @@
     "No research entries found for this filter.": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1073,
+        "line": 1171,
         "nearby": [
           "Unlock",
           "Loading research...",
@@ -34139,7 +34229,7 @@
     "No seed plan selected.": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 663,
+        "line": 672,
         "nearby": [
           "Name for a new imported plan",
           "Friendly name",
@@ -34151,7 +34241,7 @@
     "No Seed Plans": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 646,
+        "line": 655,
         "nearby": [
           "Seed Plan",
           "Plan Name",
@@ -34347,7 +34437,7 @@
     "Node": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 724,
+        "line": 765,
         "nearby": [
           "Complete",
           "Player",
@@ -34357,7 +34447,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 749,
+        "line": 790,
         "nearby": [
           "Reset",
           "Player",
@@ -34740,7 +34830,7 @@
     "Nothing eligible; no backup was taken.": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 490,
+        "line": 499,
         "nearby": [
           "Run Buyback Sweep",
           "Run Sweep",
@@ -34876,7 +34966,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1236,
+        "line": 1334,
         "nearby": [
           "Unique schematics",
           "A relog is required to see the change.",
@@ -35803,7 +35893,7 @@
     "Original Plan Prices": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 796,
+        "line": 805,
         "nearby": [
           "Augment Pricing",
           "Cheaper Than Patterns",
@@ -37185,7 +37275,7 @@
     "per item": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 802,
+        "line": 809,
         "nearby": [
           "Listing Durability %",
           "Seed Listing Durability",
@@ -37476,7 +37566,7 @@
     "Plan Name": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 652,
+        "line": 661,
         "nearby": [
           "Seed Plan",
           "No Seed Plans",
@@ -37499,7 +37589,7 @@
     "Planetologist starter skills": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 991,
+        "line": 1032,
         "nearby": [
           "Trooper starter skills",
           "Mentat starter skills",
@@ -37552,7 +37642,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 724,
+        "line": 765,
         "nearby": [
           "Complete Journey Node",
           "Complete",
@@ -37562,7 +37652,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 749,
+        "line": 790,
         "nearby": [
           "Reset Journey Node",
           "Reset",
@@ -37572,7 +37662,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1407,
+        "line": 1511,
         "nearby": [
           "Repair Login Queue",
           "Repair Queue",
@@ -37581,7 +37671,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1418,
+        "line": 1522,
         "nearby": [
           "Unban Player",
           "Ban Player"
@@ -37589,7 +37679,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1428,
+        "line": 1532,
         "nearby": [
           "Ban Player",
           "Enforcement",
@@ -37650,7 +37740,7 @@
     "Player Admin Actions": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1353,
+        "line": 1457,
         "nearby": [
           "Blueprints",
           "Loading Bases",
@@ -37662,7 +37752,7 @@
     "Player admin layout": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1207,
+        "line": 1305,
         "nearby": [
           "Teleport",
           "Kick Player",
@@ -37674,7 +37764,7 @@
     "Player admin sections": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1210,
+        "line": 1308,
         "nearby": [
           "Player Summary",
           "Close",
@@ -37781,7 +37871,7 @@
     "Player Listings Checked": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 761,
+        "line": 770,
         "nearby": [
           "% threshold using the",
           "price basis.",
@@ -37912,7 +38002,7 @@
     "Player Summary": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1208,
+        "line": 1306,
         "nearby": [
           "Kick Player",
           "Player admin layout",
@@ -38542,7 +38632,7 @@
     "Preview": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1231,
+        "line": 1329,
         "nearby": [
           "Add Item",
           "Grade 0 items and Grade 0 physical schematics use the live grant path and require the player to be online. Item Grades 1-5, ranked schematics, standalone augments, and pre-augmented items use database grants; relog after granting to an online player.",
@@ -38764,7 +38854,7 @@
     "Price Basis": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 737,
+        "line": 746,
         "nearby": [
           "Buyback Percent",
           "Buyback Price Basis",
@@ -38775,7 +38865,7 @@
     "price basis.": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 759,
+        "line": 768,
         "nearby": [
           "at the",
           "% threshold using the",
@@ -38787,7 +38877,7 @@
     "Price Multiplier": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 731,
+        "line": 740,
         "nearby": [
           "Run Automatically",
           "Pricing and Limits",
@@ -38797,7 +38887,7 @@
       },
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 790,
+        "line": 799,
         "nearby": [
           "Run Automatically",
           "Pricing",
@@ -38809,7 +38899,7 @@
     "Pricing": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 788,
+        "line": 797,
         "nearby": [
           "Run Reseed on a Schedule",
           "Run Automatically",
@@ -38821,7 +38911,7 @@
     "Pricing and Limits": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 729,
+        "line": 738,
         "nearby": [
           "Run Buyback on a Schedule",
           "Run Automatically",
@@ -38833,7 +38923,7 @@
     "Probe Eligibility": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 753,
+        "line": 762,
         "nearby": [
           "Save Buyback Schedule",
           "Probing…",
@@ -38845,7 +38935,7 @@
     "Probing…": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 753,
+        "line": 762,
         "nearby": [
           "Saving…",
           "Save Buyback Schedule",
@@ -39348,7 +39438,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1230,
+        "line": 1328,
         "nearby": [
           "Give Items",
           "Selected Item",
@@ -39358,7 +39448,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1231,
+        "line": 1329,
         "nearby": [
           "Item Name",
           "Item ID",
@@ -39446,7 +39536,7 @@
     "Queue": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1408,
+        "line": 1512,
         "nearby": [
           "Repair Queue",
           "Player",
@@ -39858,7 +39948,7 @@
     "Read-only": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1155,
+        "line": 1253,
         "nearby": [
           "Reset",
           "The game manages related rewards, schematics, and tags.",
@@ -39870,7 +39960,7 @@
     "Read-only probe for exchange": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 759,
+        "line": 768,
         "nearby": [
           "Buyback Diagnostics",
           "Why Listings Were Not Bought",
@@ -40200,7 +40290,7 @@
     "Recipe unlocks require the player to be offline. The Grade shown is the recipe grade found in the game database.": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1244,
+        "line": 1342,
         "nearby": [
           "No character actions have been recorded in this layout yet.",
           "Crafting Schematics",
@@ -40212,7 +40302,7 @@
     "Recognized in Seed Plan": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 762,
+        "line": 771,
         "nearby": [
           "price basis.",
           "Player Listings Checked",
@@ -40338,7 +40428,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1353,
+        "line": 1457,
         "nearby": [
           "Items ·",
           "Unknown Date",
@@ -40360,7 +40450,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1353,
+        "line": 1457,
         "nearby": [
           "Use this area for player maintenance and high-impact admin actions. Some actions require the player to be online, while database repairs require the player to be offline.",
           "Repair",
@@ -40608,7 +40698,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1218,
+        "line": 1316,
         "nearby": [
           "Player admin sections",
           "Give Water",
@@ -41485,7 +41575,7 @@
     "Reload": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1253,
+        "line": 1351,
         "nearby": [
           "Detected",
           "Loading...",
@@ -41495,7 +41585,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1281,
+        "line": 1381,
         "nearby": [
           "All Product Groups",
           "Loading...",
@@ -41505,7 +41595,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1312,
+        "line": 1414,
         "nearby": [
           "Restore Starter Skills",
           "Loading...",
@@ -41608,7 +41698,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1233,
+        "line": 1331,
         "nearby": [
           "Cancel",
           "Edit",
@@ -41754,7 +41844,7 @@
     "Remove Listings": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 527,
+        "line": 536,
         "nearby": [
           "Run Reseed",
           "Remove NPC Listings",
@@ -41778,7 +41868,7 @@
     "Remove NPC Listings": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 526,
+        "line": 535,
         "nearby": [
           "Run Market Reseed",
           "Run Reseed",
@@ -41788,7 +41878,7 @@
       },
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 807,
+        "line": 820,
         "nearby": [
           "Run Reseed Now",
           "Removing…",
@@ -41924,7 +42014,7 @@
     "Removing…": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 807,
+        "line": 820,
         "nearby": [
           "Running…",
           "Run Reseed Now",
@@ -41948,7 +42038,7 @@
     "Repair": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1353,
+        "line": 1457,
         "nearby": [
           "Player Admin Actions",
           "Use this area for player maintenance and high-impact admin actions. Some actions require the player to be online, while database repairs require the player to be offline.",
@@ -41960,7 +42050,7 @@
     "Repair Below": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1366,
+        "line": 1470,
         "nearby": [
           "About Repair Vehicle Durability",
           "Repairs owned vehicle modules whose current durability is below the selected percentage of a trustworthy stored or inferred maximum. Modules without usable current durability or a trustworthy maximum are skipped. Affected running map servers restart so their in-memory vehicle state cannot overwrite the repair.",
@@ -41972,7 +42062,7 @@
     "Repair Faction": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1353,
+        "line": 1457,
         "nearby": [
           "Unknown Date",
           "Recover Character",
@@ -41994,7 +42084,7 @@
     "Repair Gear": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1353,
+        "line": 1457,
         "nearby": [
           "Repairs recognized stuck Landsraad quest states. A safety backup is created when needed.",
           "Repair Quests",
@@ -42004,7 +42094,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1366,
+        "line": 1470,
         "nearby": [
           "The player must be offline.",
           "Equipped and carried gear durability. Relog required.",
@@ -42026,7 +42116,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1353,
+        "line": 1457,
         "nearby": [
           "Restores earned story progression and synchronizes reputation. Relog required.",
           "Repair Faction",
@@ -42038,7 +42128,7 @@
     "Repair Login Queue": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1403,
+        "line": 1507,
         "nearby": [
           "Repair Vehicles",
           "Danger Zone",
@@ -42048,7 +42138,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1412,
+        "line": 1516,
         "nearby": [
           "Player",
           "Queue",
@@ -42070,7 +42160,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1353,
+        "line": 1457,
         "nearby": [
           "The player must be offline.",
           "Repairs recognized stuck Landsraad quest states. A safety backup is created when needed.",
@@ -42081,7 +42171,7 @@
     "Repair Queue": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1404,
+        "line": 1508,
         "nearby": [
           "Danger Zone",
           "Repair Login Queue",
@@ -42093,7 +42183,7 @@
     "Repair Unlock": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1085,
+        "line": 1183,
         "nearby": [
           "Researched",
           "Group Entry",
@@ -42105,7 +42195,7 @@
     "Repair Vehicle Durability": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1366,
+        "line": 1470,
         "nearby": [
           "Equipped and carried gear durability. Relog required.",
           "Repair Gear",
@@ -42115,7 +42205,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1373,
+        "line": 1477,
         "nearby": [
           "The player must be offline.",
           "Repairs eligible modules and restarts only their affected running maps.",
@@ -42127,7 +42217,7 @@
     "Repair Vehicles": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1374,
+        "line": 1478,
         "nearby": [
           "Repairs eligible modules and restarts only their affected running maps.",
           "Repair Vehicle Durability",
@@ -42137,7 +42227,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1401,
+        "line": 1505,
         "nearby": [
           "Threshold",
           "Map Servers",
@@ -42149,7 +42239,7 @@
     "Repairing...": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1085,
+        "line": 1183,
         "nearby": [
           "No research entries found for this filter.",
           "Group markers cannot be safely unlocked as one entry. Unlock the individual Recipe or Building entries.",
@@ -42173,7 +42263,7 @@
     "Repairs eligible modules and restarts only their affected running maps.": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1366,
+        "line": 1470,
         "nearby": [
           "Vehicle durability repair threshold percent",
           "The player must be offline.",
@@ -42185,7 +42275,7 @@
     "Repairs owned vehicle modules whose current durability is below the selected percentage of a trustworthy stored or inferred maximum. Modules without usable current durability or a trustworthy maximum are skipped. Affected running map servers restart so their in-memory vehicle state cannot overwrite the repair.": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1366,
+        "line": 1470,
         "nearby": [
           "Repair Vehicle Durability",
           "About Repair Vehicle Durability",
@@ -42197,7 +42287,7 @@
     "Repairs recognized stuck Landsraad quest states. A safety backup is created when needed.": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1353,
+        "line": 1457,
         "nearby": [
           "Repair Landsraad Quests",
           "The player must be offline.",
@@ -42255,7 +42345,7 @@
     "Replaces only the bot's NPC sell listings from the active seed plan. Each write run creates a backup (when Safety Backups are on), clears the bot listings on the selected exchange, and seeds fresh stock; player listings are never touched. Augments use bottom-of-range rolls, with either discounted or original plan pricing.": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 774,
+        "line": 783,
         "nearby": [
           "Invalid Price or Empty Stack",
           "Market Reseed",
@@ -42417,7 +42507,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1085,
+        "line": 1183,
         "nearby": [
           "Group Entry",
           "Repair Unlock",
@@ -42429,7 +42519,7 @@
     "Research Entr": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1277,
+        "line": 1377,
         "nearby": [
           "Clear",
           "{count0} of {count1}",
@@ -42441,7 +42531,7 @@
     "Research Schematics": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1269,
+        "line": 1369,
         "nearby": [
           "Unlocking...",
           "Unlock All",
@@ -42453,7 +42543,7 @@
     "Research unlocks require the player to be offline and add the linked build recipe. Existing incomplete unlocks show Repair Unlock. Group markers are informational; unlock their individual Recipe or Building entries.": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1271,
+        "line": 1371,
         "nearby": [
           "Unlock All",
           "Research Schematics",
@@ -42465,7 +42555,7 @@
     "Researched": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1085,
+        "line": 1183,
         "nearby": [
           "Repairing...",
           "Researching...",
@@ -42477,7 +42567,7 @@
     "Researching...": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1085,
+        "line": 1183,
         "nearby": [
           "Group markers cannot be safely unlocked as one entry. Unlock the individual Recipe or Building entries.",
           "Repairing...",
@@ -42489,7 +42579,7 @@
     "Reseed": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 708,
+        "line": 717,
         "nearby": [
           "Market Bot Sections",
           "Buyback",
@@ -42501,7 +42591,7 @@
     "Reseed schedule saved (disabled).": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 449,
+        "line": 458,
         "nearby": [
           "No player sell listings on this exchange.",
           "Buyback schedule saved (disabled).",
@@ -42535,7 +42625,7 @@
     "Reset": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 747,
+        "line": 788,
         "nearby": [
           "Node",
           "Reset Journey Node",
@@ -42544,7 +42634,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1154,
+        "line": 1252,
         "nearby": [
           "Unknown",
           "Complete",
@@ -42624,7 +42714,7 @@
     "Reset Journey Node": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 746,
+        "line": 787,
         "nearby": [
           "Player",
           "Node",
@@ -42657,7 +42747,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1439,
+        "line": 1543,
         "nearby": [
           "Ban Player",
           "Wipe Inventory",
@@ -43538,7 +43628,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1020,
+        "line": 1118,
         "nearby": [
           "Skills to raise",
           "Restore Starter Skills",
@@ -43862,7 +43952,7 @@
     "Restore Starter Skills": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1019,
+        "line": 1117,
         "nearby": [
           "Grant All",
           "Skills to raise",
@@ -43872,7 +43962,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1311,
+        "line": 1413,
         "nearby": [
           "The player must be online to change skills or restore starter skills.",
           "Unsaved Change",
@@ -43942,7 +44032,7 @@
     "Restores earned story progression and synchronizes reputation. Relog required.": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1353,
+        "line": 1457,
         "nearby": [
           "Repair Faction",
           "The player must be offline.",
@@ -43953,7 +44043,7 @@
     "Restores the selected character's saved data while preserving the current Funcom identity. A safety backup and Sietch restart are included.": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1353,
+        "line": 1457,
         "nearby": [
           "The player must be offline.",
           "Checking deleted character history...",
@@ -44086,7 +44176,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1135,
+        "line": 1233,
         "nearby": [
           "Status",
           "Tags",
@@ -44865,7 +44955,7 @@
     "Run Automatically": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 724,
+        "line": 733,
         "nearby": [
           "Buyback Interval Minutes",
           "Run Buyback on a Schedule",
@@ -44875,7 +44965,7 @@
       },
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 783,
+        "line": 792,
         "nearby": [
           "Seed Interval Minutes",
           "Run Reseed on a Schedule",
@@ -44887,7 +44977,7 @@
     "Run Buyback on a Schedule": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 723,
+        "line": 732,
         "nearby": [
           "Interval (Minutes)",
           "Buyback Interval Minutes",
@@ -44899,7 +44989,7 @@
     "Run Buyback Sweep": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 482,
+        "line": 491,
         "nearby": [
           "Safety backups are on.",
           "Safety backups are off.",
@@ -44923,7 +45013,7 @@
     "Run Market Reseed": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 513,
+        "line": 522,
         "nearby": [
           "Nothing eligible; no backup was taken.",
           "Buyback sweep log cleared.",
@@ -44958,7 +45048,7 @@
     "Run Reseed": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 513,
+        "line": 522,
         "nearby": [
           "Buyback sweep log cleared.",
           "Run Market Reseed",
@@ -44970,7 +45060,7 @@
     "Run Reseed Now": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 806,
+        "line": 819,
         "nearby": [
           "Save Reseed Schedule",
           "Running…",
@@ -44982,7 +45072,7 @@
     "Run Reseed on a Schedule": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 782,
+        "line": 791,
         "nearby": [
           "Interval (Minutes)",
           "Seed Interval Minutes",
@@ -44994,7 +45084,7 @@
     "Run Sweep": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 482,
+        "line": 491,
         "nearby": [
           "Safety backups are off.",
           "Run Buyback Sweep",
@@ -45006,7 +45096,7 @@
     "Run Sweep Now": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 754,
+        "line": 763,
         "nearby": [
           "Probe Eligibility",
           "Running…",
@@ -45112,7 +45202,7 @@
     "Running…": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 754,
+        "line": 763,
         "nearby": [
           "Probing…",
           "Probe Eligibility",
@@ -45122,7 +45212,7 @@
       },
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 806,
+        "line": 819,
         "nearby": [
           "Saving…",
           "Save Reseed Schedule",
@@ -45237,7 +45327,7 @@
     "Safety Backups": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 697,
+        "line": 706,
         "nearby": [
           "Exchange",
           "No Exchanges Found",
@@ -45249,7 +45339,7 @@
     "Safety backups are off.": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 475,
+        "line": 484,
         "nearby": [
           "Disable Backups",
           "Safety backups are on.",
@@ -45261,7 +45351,7 @@
     "Safety backups are on.": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 475,
+        "line": 484,
         "nearby": [
           "Disable Safety Backups",
           "Disable Backups",
@@ -45273,7 +45363,7 @@
     "Safety Backups Off": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 697,
+        "line": 706,
         "nearby": [
           "No Exchanges Found",
           "Safety Backups",
@@ -45285,7 +45375,7 @@
     "Sandbike": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1451,
+        "line": 1555,
         "nearby": [
           "Advanced manual override",
           "Manual Vehicle ID",
@@ -45379,7 +45469,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1233,
+        "line": 1331,
         "nearby": [
           "Aug. Grade",
           "Actions",
@@ -45389,7 +45479,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1328,
+        "line": 1432,
         "nearby": [
           "Select Skill School",
           "Leave empty for now.",
@@ -45574,7 +45664,7 @@
     "Save Buyback Schedule": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 752,
+        "line": 761,
         "nearby": [
           "Category Price Tuning",
           "Saving…",
@@ -45854,7 +45944,7 @@
     "Save Plan Name": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 668,
+        "line": 677,
         "nearby": [
           "Set as Active Plan",
           "Saving…",
@@ -45902,7 +45992,7 @@
     "Save Reseed Schedule": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 805,
+        "line": 818,
         "nearby": [
           "Commodity Stack Quantities",
           "Saving…",
@@ -46581,7 +46671,7 @@
     "Saving…": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 668,
+        "line": 677,
         "nearby": [
           "Setting…",
           "Set as Active Plan",
@@ -46591,7 +46681,7 @@
       },
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 752,
+        "line": 761,
         "nearby": [
           "Max Buys Per Sweep",
           "Category Price Tuning",
@@ -46601,7 +46691,7 @@
       },
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 805,
+        "line": 818,
         "nearby": [
           "Category Price Tuning",
           "Commodity Stack Quantities",
@@ -46691,7 +46781,7 @@
       },
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 717,
+        "line": 726,
         "nearby": [
           "Buyback Sweeps",
           "Buys complete player-listed stacks when the per-unit ask is within the configured percentage of the selected price basis. A sweep checks eligibility first and, with Safety Backups on, creates a backup only when something qualifies. Seeded pricing follows the reseed augment-pricing choice; category multipliers may be tuned independently.",
@@ -46701,7 +46791,7 @@
       },
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 776,
+        "line": 785,
         "nearby": [
           "Market Reseed",
           "Replaces only the bot's NPC sell listings from the active seed plan. Each write run creates a backup (when Safety Backups are on), clears the bot listings on the selected exchange, and seeds fresh stock; player listings are never touched. Augments use bottom-of-range rolls, with either discounted or original plan pricing.",
@@ -46899,7 +46989,7 @@
     "Schematic": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1250,
+        "line": 1348,
         "nearby": [
           "Clear",
           "{count0} of {count1}",
@@ -47470,7 +47560,7 @@
     "Seed Interval Minutes": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 779,
+        "line": 788,
         "nearby": [
           "Schedule",
           "Interval (Minutes)",
@@ -47482,7 +47572,7 @@
     "Seed Listing Durability": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 802,
+        "line": 809,
         "nearby": [
           "Original Plan Prices",
           "Listing Durability %",
@@ -47494,7 +47584,7 @@
     "Seed Plan": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 644,
+        "line": 653,
         "nearby": [
           "Seed Plans",
           "Named seed plans are CSV-backed lists the Market Bot can stock. The bundled catalog stays read-only. Set one plan as active to use it for reseeds and buyback price caps. Download CSV exports the selected plan; Upload CSV imports a UTF-8 CSV of names and numbers only (no extra columns, SQL, JSON, or formulas).",
@@ -47503,7 +47593,7 @@
       },
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 645,
+        "line": 654,
         "nearby": [
           "Named seed plans are CSV-backed lists the Market Bot can stock. The bundled catalog stays read-only. Set one plan as active to use it for reseeds and buyback price caps. Download CSV exports the selected plan; Upload CSV imports a UTF-8 CSV of names and numbers only (no extra columns, SQL, JSON, or formulas).",
           "No Seed Plans",
@@ -47514,7 +47604,7 @@
     "Seed Plan Name": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 654,
+        "line": 663,
         "nearby": [
           "No Seed Plans",
           "Plan Name",
@@ -47536,7 +47626,7 @@
     "Seed Plans": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 642,
+        "line": 651,
         "nearby": [
           "The bundled market seed plan is missing. Repair or reinstall the console release.",
           "The active seed plan could not be read. Choose another plan or upload a CSV.",
@@ -47548,7 +47638,7 @@
     "Seed Price Multiplier": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 791,
+        "line": 800,
         "nearby": [
           "Pricing",
           "Price Multiplier",
@@ -47559,7 +47649,7 @@
     "Seeded NPC Price": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 739,
+        "line": 748,
         "nearby": [
           "Price Basis",
           "Buyback Price Basis",
@@ -47863,7 +47953,7 @@
     "Select Skill School": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1323,
+        "line": 1427,
         "nearby": [
           "Reload",
           "Grant All",
@@ -47917,7 +48007,7 @@
     "Selected Item": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1230,
+        "line": 1328,
         "nearby": [
           "Faction Reputation affects rank, but Ranks 1–5 also require faction story progression. The player must be offline so the reputation used by vendors can be updated safely.",
           "Give Items",
@@ -48635,7 +48725,7 @@
     "Set as Active Plan": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 667,
+        "line": 676,
         "nearby": [
           "The bot cannot seed until an available plan is active.",
           "Setting…",
@@ -48884,7 +48974,7 @@
     "Setting…": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 667,
+        "line": 676,
         "nearby": [
           "No seed plan selected.",
           "The bot cannot seed until an available plan is active.",
@@ -49830,7 +49920,7 @@
     "Skill Browser": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1306,
+        "line": 1408,
         "nearby": [
           "Unlock All",
           "Skill Point Controls",
@@ -49854,7 +49944,7 @@
     "Skill Point Controls": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1302,
+        "line": 1404,
         "nearby": [
           "Unlocking...",
           "Unlock All",
@@ -49890,7 +49980,7 @@
     "Skills to raise": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1063,
+        "line": 1089,
         "nearby": [
           "Grant All Skills",
           "Grant All",
@@ -50216,7 +50306,7 @@
     "Spawn": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1451,
+        "line": 1555,
         "nearby": [
           "Manual Vehicle ID",
           "Manual Template",
@@ -50237,7 +50327,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1439,
+        "line": 1543,
         "nearby": [
           "Reset Progression",
           "Movement / Vehicles",
@@ -50816,7 +50906,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1109,
+        "line": 1207,
         "nearby": [
           "Type",
           "Depends On",
@@ -51654,7 +51744,7 @@
     "Swordmaster starter skills": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1005,
+        "line": 1046,
         "nearby": [
           "Planetologist starter skills",
           "Bene Gesserit starter skills",
@@ -51816,7 +51906,7 @@
     "T1_ExtraSeat": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1451,
+        "line": 1555,
         "nearby": [
           "Sandbike",
           "Manual Template",
@@ -51873,7 +51963,7 @@
     "Tags": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1110,
+        "line": 1208,
         "nearby": [
           "Depends On",
           "Status",
@@ -52077,7 +52167,7 @@
     "Teleport": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1201,
+        "line": 1299,
         "nearby": [
           "Read-only",
           "Loading journey data...",
@@ -52645,7 +52735,7 @@
     "The active seed plan could not be read. Choose another plan or upload a CSV.": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 637,
+        "line": 646,
         "nearby": [
           "The Market Bot is unsupported by the detected database schema.",
           "The bundled market seed plan is missing. Repair or reinstall the console release.",
@@ -52764,7 +52854,7 @@
     "The bot cannot seed until an available plan is active.": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 664,
+        "line": 673,
         "nearby": [
           "Friendly name",
           "No seed plan selected.",
@@ -52788,7 +52878,7 @@
     "The bundled market seed plan is missing. Repair or reinstall the console release.": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 636,
+        "line": 645,
         "nearby": [
           "Loading…",
           "The Market Bot is unsupported by the detected database schema.",
@@ -53067,7 +53157,7 @@
     "The game manages related rewards, schematics, and tags.": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1155,
+        "line": 1253,
         "nearby": [
           "Complete",
           "Reset",
@@ -53269,7 +53359,7 @@
     "The Market Bot is unsupported by the detected database schema.": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 635,
+        "line": 644,
         "nearby": [
           "Close",
           "Loading…",
@@ -53440,7 +53530,7 @@
     "The player must be offline.": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1353,
+        "line": 1457,
         "nearby": [
           "Repair",
           "Recover Deleted Character",
@@ -53450,7 +53540,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1366,
+        "line": 1470,
         "nearby": [
           "Repair Below",
           "Vehicle durability repair threshold percent",
@@ -53462,7 +53552,7 @@
     "The player must be online to change skills or restore starter skills.": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1308,
+        "line": 1410,
         "nearby": [
           "Skill Browser",
           "Use Restore Starter Skills after a progression reset leaves the starting tree locked.",
@@ -53484,7 +53574,7 @@
     "The reseed schedule is enabled: the next scheduled run will repopulate this market. Disable the schedule to keep it unseeded.": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 529,
+        "line": 538,
         "nearby": [
           "Remove NPC Listings",
           "Remove Listings",
@@ -54568,7 +54658,7 @@
     "Threshold": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1376,
+        "line": 1480,
         "nearby": [
           "Repair Vehicle Durability",
           "Repair Vehicles",
@@ -55286,7 +55376,7 @@
     "Trooper starter skills": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 977,
+        "line": 1018,
         "nearby": [
           "Node",
           "Type:",
@@ -55459,7 +55549,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1106,
+        "line": 1204,
         "nearby": [
           "Research",
           "Name",
@@ -55544,7 +55634,7 @@
     "Type:": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 867,
+        "line": 908,
         "nearby": [
           "Player",
           "Node",
@@ -55688,7 +55778,7 @@
     "Unban Player": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1415,
+        "line": 1519,
         "nearby": [
           "Repair Login Queue",
           "Kick Player",
@@ -55697,7 +55787,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1416,
+        "line": 1520,
         "nearby": [
           "Kick Player",
           "Player",
@@ -55706,7 +55796,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1433,
+        "line": 1537,
         "nearby": [
           "Player",
           "Enforcement",
@@ -55798,7 +55888,7 @@
     "Unique schematics": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1236,
+        "line": 1334,
         "nearby": [
           "Character",
           "Loadout",
@@ -55967,7 +56057,7 @@
     "Unknown Date": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1353,
+        "line": 1457,
         "nearby": [
           "Deleted character to recover",
           "Items ·",
@@ -56049,7 +56139,7 @@
     "Unknown Template": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 766,
+        "line": 775,
         "nearby": [
           "Waiting Beyond Sweep Limit",
           "Above Price Threshold",
@@ -56073,7 +56163,7 @@
     "Unlock": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1064,
+        "line": 1162,
         "nearby": [
           "Unlocking...",
           "Unlocked",
@@ -56085,7 +56175,7 @@
     "Unlock All": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1307,
+        "line": 1352,
         "nearby": [
           "Reload",
           "Unlocking...",
@@ -56095,7 +56185,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1337,
+        "line": 1382,
         "nearby": [
           "Reload",
           "Unlocking...",
@@ -56107,7 +56197,7 @@
     "Unlocked": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1064,
+        "line": 1162,
         "nearby": [
           "No crafting recipes found for this category.",
           "Unlocking...",
@@ -56128,7 +56218,7 @@
     "Unlocking...": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1064,
+        "line": 1162,
         "nearby": [
           "Loading recipes...",
           "No crafting recipes found for this category.",
@@ -56138,7 +56228,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1307,
+        "line": 1352,
         "nearby": [
           "Loading...",
           "Reload",
@@ -56148,7 +56238,7 @@
       },
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1337,
+        "line": 1382,
         "nearby": [
           "Loading...",
           "Reload",
@@ -56230,7 +56320,7 @@
     "Unsaved Change": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1310,
+        "line": 1412,
         "nearby": [
           "Use Restore Starter Skills after a progression reset leaves the starting tree locked.",
           "The player must be online to change skills or restore starter skills.",
@@ -56409,7 +56499,7 @@
     "Unverified Game Build": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 712,
+        "line": 753,
         "nearby": [
           "Give Item",
           "Give Multiple Items",
@@ -56855,7 +56945,7 @@
     "Upload CSV": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 671,
+        "line": 680,
         "nearby": [
           "Download CSV",
           "Uploading…",
@@ -56864,7 +56954,7 @@
       },
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 677,
+        "line": 686,
         "nearby": [
           "Uploading…",
           "Exchange",
@@ -56911,7 +57001,7 @@
     "Uploading…": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 671,
+        "line": 680,
         "nearby": [
           "Downloading…",
           "Download CSV",
@@ -57047,7 +57137,7 @@
     "Use Restore Starter Skills after a progression reset leaves the starting tree locked.": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1308,
+        "line": 1410,
         "nearby": [
           "Skill Point Controls",
           "Skill Browser",
@@ -57083,7 +57173,7 @@
     "Use this area for player maintenance and high-impact admin actions. Some actions require the player to be online, while database repairs require the player to be offline.": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1353,
+        "line": 1457,
         "nearby": [
           "Loading Bases",
           "Player Admin Actions",
@@ -57388,7 +57478,7 @@
     "Vehicle durability repair threshold percent": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1366,
+        "line": 1470,
         "nearby": [
           "Repairs owned vehicle modules whose current durability is below the selected percentage of a trustworthy stored or inferred maximum. Modules without usable current durability or a trustworthy maximum are skipped. Affected running map servers restart so their in-memory vehicle state cannot overwrite the repair.",
           "Repair Below",
@@ -57921,7 +58011,7 @@
     "Waiting Beyond Sweep Limit": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 764,
+        "line": 773,
         "nearby": [
           "Recognized in Seed Plan",
           "Eligible to Buy",
@@ -58439,7 +58529,7 @@
     "When on, the console takes a full database backup before every Market Bot write: buyback sweeps, reseeds, and NPC listing removals, scheduled or manual. Only the newest Market Bot backups are kept (DUNE_MARKET_BOT_BACKUP_KEEP, default 5). Turning this off skips those backups; existing backups are kept.": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 697,
+        "line": 706,
         "nearby": [
           "Safety Backups",
           "Safety Backups Off",
@@ -58507,7 +58597,7 @@
     "Why Listings Were Not Bought": [
       {
         "file": "console/web/src/features/exchange/MarketBotOverlay.tsx",
-        "line": 758,
+        "line": 767,
         "nearby": [
           "Run Sweep Now",
           "Buyback Diagnostics",
@@ -58552,7 +58642,7 @@
     "Wipe Inventory": [
       {
         "file": "console/web/src/features/players/CharacterAdminUI.tsx",
-        "line": 1436,
+        "line": 1540,
         "nearby": [
           "Unban Player",
           "Ban Player",
