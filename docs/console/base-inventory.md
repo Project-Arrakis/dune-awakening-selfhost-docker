@@ -777,9 +777,10 @@ On the Storage tab only:
   the item list, so they cannot be chosen. The old text field accepted them, and the route still does, by id or
   name.
 
-The Storage page is in the menu for every role holding `storage:read`. It does not hide controls by permission:
-without `storage:mutate` the API refuses a give or fill, and the item search needs `admin:items:read`. With the
-default policies a moderator can browse containers and export them, and cannot change them.
+The Storage page is in the menu for every role holding `storage:read`. It shows the item search, Give
+Item and Fill Container only to a role holding `storage:mutate`, and Apply Fills only to one holding
+`server:restart-service`. With the default policies a moderator can browse containers and export them, and
+cannot change them.
 
 ## Why Give/Fill do not require a stopped map
 

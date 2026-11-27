@@ -78,9 +78,10 @@ player Give including Care Package and add-on database grants, Container Add) an
 - Menu: `canOpenTab` no longer excludes Storage for operator tiers; the nav entry's `storage:read` rule decides,
   for the built-in menu and a custom one. No dashboard widget is cataloged for the page. Players and observers keep
   their own read-only storage page.
-- The page does not narrow its controls by permission. With the default policies a moderator sees Give Item, Fill
-  Container and Apply Fills; the API refuses them (`storage:mutate`, `server:restart-service`), and the item
-  search does not load (`admin:items:read`).
+- The page narrows its write controls by permission: the item search, quantity, Give Item and Fill Container need
+  `storage:mutate`, and Apply Fills needs `server:restart-service`. With the default policies a moderator can view
+  and export containers only. The API enforces access either way. A custom role holding `storage:mutate` without
+  `admin:items:read` still sees a search that cannot load.
 
 No route, permission, audit record or schema changes.
 

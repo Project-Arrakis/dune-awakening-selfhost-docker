@@ -1537,7 +1537,7 @@ export function App() {
         {(languagePickerOpen || (!activeCustomDashboard && tab === "Language")) && <LazyTabBoundary label="Loading Language"><LanguagePanel onClose={() => {setLanguagePickerOpen(false);if(tab === "Language")setTab("Home");}} /></LazyTabBoundary>}
         {!redeploySetupOpen && !activeCustomDashboard && tab === "Database" && <LazyTabBoundary label="Loading Database"><DatabasePanel /></LazyTabBoundary>}
         {!redeploySetupOpen && !activeCustomDashboard && tab === "Storage" && isPlayerTier && <PlayerAssetsPage kind="storage" />}
-        {!redeploySetupOpen && !activeCustomDashboard && tab === "Storage" && !isPlayerTier && <LazyTabBoundary label="Loading Storage"><StoragePanel onError={setError} confirmAction={confirmDialog} formatMutationResult={formatMutationResult} waitForTask={waitForTaskSilently} /></LazyTabBoundary>}
+        {!redeploySetupOpen && !activeCustomDashboard && tab === "Storage" && !isPlayerTier && <LazyTabBoundary label="Loading Storage"><StoragePanel onError={setError} confirmAction={confirmDialog} formatMutationResult={formatMutationResult} waitForTask={waitForTaskSilently} canChangeItems={allowedActions.includes("storage:mutate")} canRestartServer={allowedActions.includes("server:restart-service")} /></LazyTabBoundary>}
         {!redeploySetupOpen && !activeCustomDashboard && tab === "Backups" && <LazyTabBoundary label="Loading Backups"><BackupsPanel
             backupRestoreTask={backupRestoreTask}
             setBackupRestoreTask={setBackupRestoreTask}

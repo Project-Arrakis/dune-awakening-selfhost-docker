@@ -38,6 +38,7 @@ function stubSession(tier: string, allowedActions: string[]) {
     if (path.includes("/api/setup/state")) return jsonResponse({ files: { complete: true } });
     if (path.includes("/api/server/status")) return jsonResponse({ ok: true, stdout: "", data: { summary: { overall: "READY", title: "Test Server" }, gameServers: [] } });
     if (path.includes("/api/players/online")) return jsonResponse({ rows: [] });
+    if (//api/storage(?|$)/.test(path)) return jsonResponse({ rows: [{ id: 105 }], capabilities: { storageGiveItem: true, storageFillItem: true } });
     return jsonResponse({ rows: [], totalCount: 0, stdout: "", capabilities: {} });
   }));
   return calls;
@@ -74,17 +75,22 @@ function storeCustomSkin() {
 
 describe("the Storage menu entry for operator tiers", () => {
   it.each([
-    ["owner", ["server:read", "server:control", "storage:read", "storage:mutate"]],
-    ["moderator", ["server:read", "server:control", "storage:read"]]
-  ])("is offered to %s holding storage:read and opens the container page", async (tier, actions) => {
+    ["owner", ["server:read", "server:control", "storage:read", "storage:mutate", "server:restart-service"], true],
+    ["moderator", ["server:read", "server:control", "storage:read"], false]
+  ])("is offered to %s holding storage:read and opens the container page", async (tier, actions, canWrite) => {
     const calls = stubSession(tier, actions);
     render(<App />);
     const nav = await loadedMenu();
 
     fireEvent.click(within(nav).getByRole("button", { name: "Storage" }));
 
-    expect(await screen.findByRole("button", { name: APPLY_FILLS })).toBeInTheDocument();
-    await waitFor(() => expect(storageCalls(calls).length).toBeGreaterThan(0));
+    fireEvent.click(await screen.findByText("105"));
+    expect(await screen.findByRole("link", { name: "Export JSON" })).toBeInTheDocument();
+    expect(storageCalls(calls).length).toBeGreaterThan(0);
+    // The controls follow the session's write grants.
+    for (const name of [APPLY_FILLS, "Give Item", "Fill Container"]) {
+      expect(screen.queryByRole("button", { name }) !== null).toBe(canWrite);
+    }
   });
 
   it("is listed in a custom menu for an operator holding storage:read", async () => {
@@ -96,7 +102,7 @@ describe("the Storage menu entry for operator tiers", () => {
 
     fireEvent.click(within(nav).getByRole("button", { name: "Storage" }));
 
-    expect(await screen.findByRole("button", { name: APPLY_FILLS })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Refresh Storage" })).toBeInTheDocument();
   });
 
   it.each([["the built-in menu", false], ["a custom menu", true]])("is absent from %s without storage:read", async (_name, custom) => {

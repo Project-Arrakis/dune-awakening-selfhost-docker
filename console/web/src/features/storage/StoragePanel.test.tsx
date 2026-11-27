@@ -52,7 +52,9 @@ const defaultProps = {
   onError: mockOnError,
   confirmAction: mockConfirmAction,
   formatMutationResult: (result: unknown) => String(result),
-  waitForTask: async (task: { status: string }) => task as never
+  waitForTask: async (task: { status: string }) => task as never,
+  canChangeItems: true,
+  canRestartServer: true
 };
 
 beforeEach(() => {
@@ -159,6 +161,47 @@ describe("StoragePanel", () => {
     await waitFor(() => {
       expect(screen.getByText(/Restart is still running/i)).toBeInTheDocument();
     });
+  });
+});
+
+describe("StoragePanel write access", () => {
+  async function openBox(grants: { canChangeItems: boolean; canRestartServer: boolean }) {
+    render(<StoragePanel {...defaultProps} {...grants} />);
+    fireEvent.click(await screen.findByText("105"));
+    await screen.findByText("Storage 105");
+  }
+  const button = (name: string) => screen.queryByRole("button", { name });
+  const fillNote = () => screen.queryByText(/Fills become visible in-game after the Survival server restarts/i);
+
+  it("offers no item or restart controls to a read-only session", async () => {
+    await openBox({ canChangeItems: false, canRestartServer: false });
+
+    expect(screen.getByRole("link", { name: "Export JSON" })).toBeInTheDocument();
+    expect(button("Refresh Storage")).toBeInTheDocument();
+    expect(screen.queryByRole("combobox")).toBeNull();
+    expect(screen.queryByRole("spinbutton", { name: "Quantity" })).toBeNull();
+    for (const name of ["Give Item", "Fill Container", "Apply Fills (Restart Survival)"]) expect(button(name)).toBeNull();
+    expect(fillNote()).toBeNull();
+    expect(screen.queryByText(/Fill Container accepts refined resources/i)).toBeNull();
+    // The item search needs its own permission, so it is not even loaded.
+    expect(adminApi.itemCatalog).not.toHaveBeenCalled();
+  });
+
+  it("offers Give and Fill without the restart to a session that cannot restart services", async () => {
+    await openBox({ canChangeItems: true, canRestartServer: false });
+
+    expect(button("Give Item")).toBeInTheDocument();
+    expect(button("Fill Container")).toBeInTheDocument();
+    expect(fillNote()).toBeInTheDocument();
+    expect(button("Apply Fills (Restart Survival)")).toBeNull();
+  });
+
+  it("offers the restart alone to a session that cannot change items", async () => {
+    await openBox({ canChangeItems: false, canRestartServer: true });
+
+    expect(button("Apply Fills (Restart Survival)")).toBeInTheDocument();
+    expect(button("Give Item")).toBeNull();
+    expect(button("Fill Container")).toBeNull();
   });
 });
 
