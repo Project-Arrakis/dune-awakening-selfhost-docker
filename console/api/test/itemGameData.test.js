@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadItemGameData, withItemGameData } from "../src/itemGameData.js";
-import { listCatalogItems, resolveItemStackSize, resolveItemVolume } from "../src/adminCatalog.js";
+import { curatedItemVolume, isFillableItem, listCatalogItems, resolveItemStackSize, resolveItemVolume } from "../src/adminCatalog.js";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const dataDir = join(repoRoot, "runtime/data");
@@ -62,6 +62,24 @@ test("the game data fills the gaps the catalog leaves", () => {
   const row = listCatalogItems(repoRoot, { q: "HealthPackSchematic", limit: 10 }).find((item) => item.itemId === "HealthPackSchematic");
   assert.equal(row.volume, 0);
   assert.equal(row.stackSize, 1);
+});
+
+// Storage give stores this value in volume_override, so it must never come from
+// the game data.
+test("the volume to store is the catalog's own, never the game data's", () => {
+  assert.equal(curatedItemVolume(repoRoot, "AzuriteOre"), 0.2);
+  assert.equal(curatedItemVolume(repoRoot, "T2MuaddibComponent"), 1);
+  assert.equal(curatedItemVolume(repoRoot, "Combat_Light_Unique_BeneGeserit_Top"), 0);
+  assert.equal(curatedItemVolume(repoRoot, "D_AccessCard_Vehicle_Atre"), 0);
+});
+
+// Fill and the Bases routes store the volume they resolve, so every item they
+// accept needs a curated one.
+test("every fillable catalog item has a curated volume", () => {
+  const catalog = JSON.parse(readFileSync(join(dataDir, "admin-items.json"), "utf8"));
+  const fillable = catalog.filter(isFillableItem);
+  assert.ok(fillable.length > 0);
+  assert.deepEqual(fillable.filter((item) => !(curatedItemVolume(repoRoot, item.id) > 0)).map((item) => item.id), []);
 });
 
 test("an item neither file knows keeps no volume and no stack limit", () => {

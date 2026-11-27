@@ -32,7 +32,7 @@ import { duneDbDomains } from "./duneDb/domains.js";
 import { API_ROUTE_DOMAINS, createExactRouteIndex } from "./http/routeTable.js";
 import { audit, installAuditShutdownHooks, recordAdminHistory } from "./audit.js";
 import { redact } from "./redact.js";
-import { buildingUnlockStatus, customizationGrantGroups, customizationGrantStatus, isBuildingUnlockItem, isCustomizationGrantItem, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, planBulkBuildingUnlockGrant, listCatalogItems, listCustomizationGrantItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemVolume } from "./adminCatalog.js";
+import { buildingUnlockStatus, customizationGrantGroups, customizationGrantStatus, isBuildingUnlockItem, isCustomizationGrantItem, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, planBulkBuildingUnlockGrant, listCatalogItems, listCustomizationGrantItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemVolume, curatedItemVolume } from "./adminCatalog.js";
 import { buildBroadcastCommand, buildShutdownBroadcastCommand, publishCarePackageWhisper, publishServerCommand } from "./rmq.js";
 import { clearCarePackageHistory, enableCarePackage, ensureCarePackageServerPersona, grantEligibleCarePackages, grantCarePackage, retryCarePackageGrant, runCarePackageAutoScan, maintainCarePackageHistory, saveCarePackageConfig, carePackageCapabilities, carePackageConfig, carePackageEligiblePlayers, carePackageHistory } from "./carePackage.js";
 import { readJsonBody, readMultipartForm, streamRequestToFile } from "./httpSafety.js";
@@ -6543,10 +6543,11 @@ async function storageGiveItemRoute(req, res, path) {
   const storageId = decodeURIComponent(path.split("/")[3]);
   return directDbMutation(req, res, "storage.give-item", "GIVE ITEM TO STORAGE", async (body) => {
     const resolved = resolveCatalogItem(config.repoRoot, body);
-    // The volume comes from admin-items.json, or from the game data for the items
-    // it does not carry (itemGameData.js). An item neither knows has volume 0,
-    // which giveItemToStorage treats as "skip the volume check".
-    const itemVolume = resolved.volume || resolveItemVolume(config.repoRoot, resolved.itemId);
+    // Only a volume curated in admin-items.json is passed on, because it is also
+    // stored on the new rows. For every other item giveItemToStorage resolves the
+    // volume itself, as the volume totals do, for the capacity check only. An
+    // item with no known volume is not held to the volume limit.
+    const itemVolume = curatedItemVolume(config.repoRoot, resolved.itemId);
     return duneDb.giveItemToStorage(db, storageId, { ...body, templateId: resolved.itemId, itemVolume });
   }, { storageId });
 }

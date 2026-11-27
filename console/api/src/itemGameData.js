@@ -9,16 +9,42 @@ import { dirname, resolve } from "node:path";
 export const ITEM_GAME_DATA_FILE = "item-game-data.json";
 
 const cache = new Map();
+const catalogCache = new Map();
+
+// admin-items.json with the game data filled in. adminCatalog (the routes) and
+// duneDb (stack limits and volume totals) both read through this cache, which is
+// checked against both files on every call, so a changed, deleted or restored
+// file reaches the two at the same time. Throws when admin-items.json cannot be
+// read or is not a list.
+export function loadItemCatalog(adminItemsFile) {
+  const file = resolve(adminItemsFile);
+  const gameData = loadItemGameData(file);
+  const fileStamp = stampOf(file);
+  const stamp = fileStamp && `${fileStamp}|${gameData.stamp}`;
+  const cached = catalogCache.get(file);
+  if (stamp && cached?.stamp === stamp) return cached;
+  const rows = JSON.parse(readFileSync(file, "utf8"));
+  if (!Array.isArray(rows)) throw new Error("expected a list of items");
+  const items = rows.map((row) => withItemGameData(row, gameData));
+  // An id listed twice resolves to its first row.
+  const byId = new Map();
+  const curatedById = new Map();
+  items.forEach((item, index) => {
+    const id = String(item?.id || "");
+    if (!id || byId.has(id)) return;
+    byId.set(id, item);
+    curatedById.set(id, rows[index]);
+  });
+  const entry = { stamp, items, byId, curatedById, gameData };
+  if (catalogCache.size > 16) catalogCache.clear();
+  catalogCache.set(file, entry);
+  return entry;
+}
 
 export function loadItemGameData(adminItemsFile) {
   const file = resolve(dirname(adminItemsFile), ITEM_GAME_DATA_FILE);
-  let stamp = "missing";
-  try {
-    const stat = statSync(file, { bigint: true });
-    stamp = `${stat.ino}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.size}`;
-  } catch {
-    // Reported by the read below, once.
-  }
+  // A missing file is reported by the read below, once.
+  const stamp = stampOf(file) || "missing";
   const cached = cache.get(file);
   if (cached && cached.stamp === stamp) return cached;
   let entry;
@@ -58,6 +84,15 @@ function buildLookup(data, stamp) {
     byLowerId.set(lower, byLowerId.has(lower) ? null : row);
   }
   return { stamp, get: (id) => byId.get(id) || byLowerId.get(String(id).toLowerCase()) || null };
+}
+
+function stampOf(file) {
+  try {
+    const stat = statSync(file, { bigint: true });
+    return `${stat.ino}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.size}`;
+  } catch {
+    return "";
+  }
 }
 
 function isObject(value) {
