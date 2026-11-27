@@ -24,6 +24,8 @@ width rule, so the global `input { width: 100% }` took the row (operator report 
    the earlier plan (open up Bases Give behind `bases:grant-any-item-type`).
 2. Add a search box to the Storage tab.
 3. Keep the slot and volume limits, and supply every item's volume and stack size.
+4. Added after the code audit: operator tiers get a **Storage** menu entry when their role holds `storage:read`.
+   The page existed, but no operator menu led to it.
 
 ## 3. Design
 
@@ -61,6 +63,12 @@ contract items, armor packs and an emote. It returns `other` for the categories 
   and prefix matches first, a line when results are cut off, one row per id, the id shown when name and category
   are shared, a failed load reported and retried, typed text kept when it replaces a selection.
 - Layout: the search box has its own row on both tabs; quantity has a fixed width.
+- Menu: `canOpenTab` no longer excludes Storage for operator tiers; the nav entry's `storage:read` rule decides,
+  for the built-in menu and a custom one. No dashboard widget is cataloged for the page. Players and observers keep
+  their own read-only storage page.
+- The page does not narrow its controls by permission. With the default policies a moderator sees Give Item, Fill
+  Container and Apply Fills; the API refuses them (`storage:mutate`, `server:restart-service`), and the item
+  search does not load (`admin:items:read`).
 
 No route, permission, audit record or schema changes.
 
@@ -68,6 +76,7 @@ No route, permission, audit record or schema changes.
 
 | Path | Change |
 |---|---|
+| Menu | operator roles holding `storage:read` see **Storage** |
 | Storage tab Give | gear now has a volume: the container's volume limit applies, one slot per unit, and a container holding an item of unknown volume rejects it |
 | Player Give (database path), Care Package and add-on database grants | a quantity above 1 of a non-stackable item becomes one row per unit, limited by free slots; a short delivery is reported |
 | Container Add | quantity of a non-stackable item is clamped to 1 |

@@ -5588,7 +5588,7 @@
     "Action completed after creating a database backup.": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1703,
+        "line": 1701,
         "nearby": [
           "Unset",
           "Action completed.",
@@ -5599,7 +5599,7 @@
     "Action completed.": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1695,
+        "line": 1693,
         "nearby": [
           "Loading Settings",
           "Unset",
@@ -5608,7 +5608,7 @@
       },
       {
         "file": "console/web/src/App.tsx",
-        "line": 1704,
+        "line": 1702,
         "nearby": [
           "Action completed after creating a database backup.",
           "Not Installed"
@@ -13186,7 +13186,7 @@
     "Claimed Listing": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1479,
+        "line": 1477,
         "nearby": [
           "Community links",
           "Open Public Server Listing",
@@ -13897,7 +13897,7 @@
     "Close navigation": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1409,
+        "line": 1407,
         "nearby": [
           "Loading Updates",
           "Open Home",
@@ -14663,7 +14663,7 @@
     "Community links": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1471,
+        "line": 1469,
         "nearby": [
           "Report Issues",
           "Get Help",
@@ -15190,7 +15190,7 @@
     "Console Language": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1483,
+        "line": 1481,
         "nearby": [
           "Claimed Listing",
           "Unclaimed Listing",
@@ -15199,7 +15199,7 @@
       },
       {
         "file": "console/web/src/App.tsx",
-        "line": 1484,
+        "line": 1482,
         "nearby": [
           "Unclaimed Listing",
           "Join Discord"
@@ -20397,7 +20397,7 @@
       },
       {
         "file": "console/web/src/App.tsx",
-        "line": 1131,
+        "line": 1129,
         "nearby": [
           "Update setup values and redeploy your Dune server.",
           "Run and manage your self-hosted Dune server from the browser.",
@@ -24886,7 +24886,7 @@
     "Get Help": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1452,
+        "line": 1450,
         "nearby": [
           "Requests",
           "Report Issues",
@@ -28300,7 +28300,7 @@
     "Join Discord": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1494,
+        "line": 1492,
         "nearby": [
           "Console Language",
           "Support Project"
@@ -29664,7 +29664,7 @@
     "Loading Addons": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1364,
+        "line": 1362,
         "nearby": [
           "Loading Maps",
           "Loading Care Package",
@@ -29674,7 +29674,7 @@
       },
       {
         "file": "console/web/src/App.tsx",
-        "line": 1538,
+        "line": 1536,
         "nearby": [
           "Loading Maps",
           "Loading Care Package",
@@ -29686,7 +29686,7 @@
     "Loading Admin Tools": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1247,
+        "line": 1245,
         "nearby": [
           "Dune Docker Console",
           "Loading Settings",
@@ -29696,7 +29696,7 @@
       },
       {
         "file": "console/web/src/App.tsx",
-        "line": 1534,
+        "line": 1532,
         "nearby": [
           "Loading Market Board",
           "Loading Landsraad",
@@ -29720,7 +29720,7 @@
     "Loading Backups": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1256,
+        "line": 1254,
         "nearby": [
           "Loading Settings",
           "Loading Admin Tools",
@@ -29730,7 +29730,7 @@
       },
       {
         "file": "console/web/src/App.tsx",
-        "line": 1543,
+        "line": 1541,
         "nearby": [
           "Loading Database",
           "Loading Storage",
@@ -29790,7 +29790,7 @@
     "Loading Bases": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1324,
+        "line": 1322,
         "nearby": [
           "Loading Player Details",
           "Loading Guilds",
@@ -29800,7 +29800,7 @@
       },
       {
         "file": "console/web/src/App.tsx",
-        "line": 1529,
+        "line": 1527,
         "nearby": [
           "Loading Player Details",
           "Loading Guilds",
@@ -29866,7 +29866,7 @@
     "Loading Care Package": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1361,
+        "line": 1359,
         "nearby": [
           "Loading Live Map",
           "Loading Maps",
@@ -29876,7 +29876,7 @@
       },
       {
         "file": "console/web/src/App.tsx",
-        "line": 1537,
+        "line": 1535,
         "nearby": [
           "Loading Live Map",
           "Loading Maps",
@@ -29888,7 +29888,7 @@
     "Loading Chat": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1370,
+        "line": 1368,
         "nearby": [
           "Loading Addons",
           "Loading Logs",
@@ -29898,7 +29898,7 @@
       },
       {
         "file": "console/web/src/App.tsx",
-        "line": 1563,
+        "line": 1561,
         "nearby": [
           "Loading Backups",
           "Loading Logs",
@@ -30004,7 +30004,7 @@
     "Loading Database": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1287,
+        "line": 1285,
         "nearby": [
           "Loading Admin Tools",
           "Loading Backups",
@@ -30014,7 +30014,7 @@
       },
       {
         "file": "console/web/src/App.tsx",
-        "line": 1540,
+        "line": 1538,
         "nearby": [
           "Loading Addons",
           "Loading Language",
@@ -30112,7 +30112,7 @@
     "Loading Guilds": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1321,
+        "line": 1319,
         "nearby": [
           "Loading Players",
           "Loading Player Details",
@@ -30122,7 +30122,7 @@
       },
       {
         "file": "console/web/src/App.tsx",
-        "line": 1527,
+        "line": 1525,
         "nearby": [
           "Loading Players",
           "Loading Player Details",
@@ -30169,7 +30169,7 @@
     "Loading Landsraad": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1333,
+        "line": 1331,
         "nearby": [
           "Loading Vehicles",
           "Loading Market Board",
@@ -30179,7 +30179,7 @@
       },
       {
         "file": "console/web/src/App.tsx",
-        "line": 1533,
+        "line": 1531,
         "nearby": [
           "Loading Vehicles",
           "Loading Market Board",
@@ -30203,7 +30203,7 @@
     "Loading Language": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1539,
+        "line": 1537,
         "nearby": [
           "Loading Care Package",
           "Loading Addons",
@@ -30237,7 +30237,7 @@
     "Loading Live Map": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1337,
+        "line": 1335,
         "nearby": [
           "Loading Market Board",
           "Loading Landsraad",
@@ -30247,7 +30247,7 @@
       },
       {
         "file": "console/web/src/App.tsx",
-        "line": 1535,
+        "line": 1533,
         "nearby": [
           "Loading Landsraad",
           "Loading Admin Tools",
@@ -30259,7 +30259,7 @@
     "Loading Logs": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1367,
+        "line": 1365,
         "nearby": [
           "Loading Care Package",
           "Loading Addons",
@@ -30269,7 +30269,7 @@
       },
       {
         "file": "console/web/src/App.tsx",
-        "line": 1562,
+        "line": 1560,
         "nearby": [
           "Loading Storage",
           "Loading Backups",
@@ -30305,7 +30305,7 @@
     "Loading Maps": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1358,
+        "line": 1356,
         "nearby": [
           "Loading Landsraad",
           "Loading Live Map",
@@ -30315,7 +30315,7 @@
       },
       {
         "file": "console/web/src/App.tsx",
-        "line": 1536,
+        "line": 1534,
         "nearby": [
           "Loading Admin Tools",
           "Loading Live Map",
@@ -30337,7 +30337,7 @@
     "Loading Market Board": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1330,
+        "line": 1328,
         "nearby": [
           "Loading Bases",
           "Loading Vehicles",
@@ -30347,7 +30347,7 @@
       },
       {
         "file": "console/web/src/App.tsx",
-        "line": 1532,
+        "line": 1530,
         "nearby": [
           "Loading Bases",
           "Loading Vehicles",
@@ -30414,7 +30414,7 @@
     "Loading Player Details": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1305,
+        "line": 1303,
         "nearby": [
           "Loading Database",
           "Loading Players",
@@ -30424,7 +30424,7 @@
       },
       {
         "file": "console/web/src/App.tsx",
-        "line": 1526,
+        "line": 1524,
         "nearby": [
           "Loading Services",
           "Loading Players",
@@ -30436,7 +30436,7 @@
     "Loading Players": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1295,
+        "line": 1293,
         "nearby": [
           "Loading Backups",
           "Loading Database",
@@ -30446,7 +30446,7 @@
       },
       {
         "file": "console/web/src/App.tsx",
-        "line": 1526,
+        "line": 1524,
         "nearby": [
           "Support Project",
           "Loading Services",
@@ -30518,7 +30518,7 @@
     "Loading Services": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1525,
+        "line": 1523,
         "nearby": [
           "Support Project",
           "Loading Players",
@@ -30529,7 +30529,7 @@
     "Loading Settings": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1234,
+        "line": 1232,
         "nearby": [
           "Run and manage your self-hosted Dune server from the browser.",
           "Dune Docker Console",
@@ -30539,7 +30539,7 @@
       },
       {
         "file": "console/web/src/App.tsx",
-        "line": 1578,
+        "line": 1576,
         "nearby": [
           "Loading Chat",
           "Loading Updates",
@@ -30597,7 +30597,7 @@
     "Loading Storage": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1542,
+        "line": 1540,
         "nearby": [
           "Loading Language",
           "Loading Database",
@@ -30678,7 +30678,7 @@
     "Loading Updates": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1374,
+        "line": 1372,
         "nearby": [
           "Loading Logs",
           "Loading Chat",
@@ -30688,7 +30688,7 @@
       },
       {
         "file": "console/web/src/App.tsx",
-        "line": 1564,
+        "line": 1562,
         "nearby": [
           "Loading Logs",
           "Loading Chat",
@@ -30700,7 +30700,7 @@
     "Loading Vehicles": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1327,
+        "line": 1325,
         "nearby": [
           "Loading Guilds",
           "Loading Bases",
@@ -30710,7 +30710,7 @@
       },
       {
         "file": "console/web/src/App.tsx",
-        "line": 1531,
+        "line": 1529,
         "nearby": [
           "Loading Guilds",
           "Loading Bases",
@@ -35136,7 +35136,7 @@
     "Not Installed": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1710,
+        "line": 1708,
         "nearby": [
           "Action completed after creating a database backup.",
           "Action completed."
@@ -36152,7 +36152,7 @@
     "Open Home": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1400,
+        "line": 1398,
         "nearby": [
           "Loading Chat",
           "Loading Updates",
@@ -36200,7 +36200,7 @@
     "Open navigation": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1409,
+        "line": 1407,
         "nearby": [
           "Open Home",
           "Close navigation",
@@ -36212,7 +36212,7 @@
     "Open Public Server Listing": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1478,
+        "line": 1476,
         "nearby": [
           "Get Help",
           "Community links",
@@ -41087,7 +41087,7 @@
     "Redeploy": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1125,
+        "line": 1123,
         "nearby": [
           "Setup",
           "Finish the first-time setup to unlock the console.",
@@ -42947,7 +42947,7 @@
     "Report Issues": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1451,
+        "line": 1449,
         "nearby": [
           "Open navigation",
           "Requests",
@@ -42977,7 +42977,7 @@
     "Requests": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1450,
+        "line": 1448,
         "nearby": [
           "Close navigation",
           "Open navigation",
@@ -45509,7 +45509,7 @@
     "Run and manage your self-hosted Dune server from the browser.": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1130,
+        "line": 1128,
         "nearby": [
           "Redeploy",
           "Update setup values and redeploy your Dune server.",
@@ -52233,7 +52233,7 @@
     "Support Project": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1495,
+        "line": 1493,
         "nearby": [
           "Join Discord",
           "Loading Services"
@@ -56485,7 +56485,7 @@
     "Unclaimed Listing": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1479,
+        "line": 1477,
         "nearby": [
           "Open Public Server Listing",
           "Claimed Listing",
@@ -57075,7 +57075,7 @@
     "Unset": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1659,
+        "line": 1657,
         "nearby": [
           "Loading Updates",
           "Loading Settings",
@@ -57375,7 +57375,7 @@
     "Update setup values and redeploy your Dune server.": [
       {
         "file": "console/web/src/App.tsx",
-        "line": 1127,
+        "line": 1125,
         "nearby": [
           "Finish the first-time setup to unlock the console.",
           "Redeploy",

@@ -440,8 +440,8 @@ const navGroups: { title: string; items: { tab: Tab; icon: React.ReactNode; requ
   }
 ];
 
-// The tabs the sidebar actually lists. Language is opened from the header;
-// "Services" and "Storage" render but have no nav entry, so Home routes must
+// The tabs the sidebar can list. Language is opened from the header;
+// "Services" renders but has no nav entry, so Home routes must
 // check against this, not ALL_TABS -- landing on a tab
 // with no highlighted nav item and no way back reads as a broken jump.
 export const NAV_TABS: readonly Tab[] = navGroups.flatMap((group) => group.items.map((item) => item.tab));
@@ -1106,8 +1106,6 @@ export function App() {
   const canOpenTab = (name: string) => {
     if (!me) return false;
     if (!tabAllowedForTier(name, me.tier)) return false;
-    // Storage has never had a nav entry for operators; only players get one.
-    if (name === "Storage" && !isPlayerTier) return false;
     const requiredAction = NAV_ACTION_BY_TAB.get(name);
     if (!requiredAction) return true;
     if (allowedActions.includes(requiredAction)) return true;

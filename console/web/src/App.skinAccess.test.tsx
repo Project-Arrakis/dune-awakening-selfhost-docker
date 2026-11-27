@@ -91,8 +91,9 @@ describe("custom skins and page access", () => {
 
     await waitFor(() => expect(within(nav).getByText("Access Control")).toBeInTheDocument());
     for (const shown of ["Cockpit", "Ops Cockpit", "Server Control", "Bases"]) expect(within(nav).getByText(shown)).toBeInTheDocument();
-    // Listed by the skin, but not allowed (or, for Storage, never in an operator's menu).
-    for (const hidden of ["Backups", "Settings", "Database", "Storage"]) expect(within(nav).queryByText(hidden)).not.toBeInTheDocument();
+    expect(within(nav).getByText("Storage")).toBeInTheDocument();
+    // Listed by the skin, but not allowed.
+    for (const hidden of ["Backups", "Settings", "Database"]) expect(within(nav).queryByText(hidden)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Skin & Layout Studio" })).toBeInTheDocument();
   });
 
