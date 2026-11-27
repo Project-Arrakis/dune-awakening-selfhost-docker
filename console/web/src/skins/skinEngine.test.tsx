@@ -60,6 +60,14 @@ describe("Skin & Layout Engine", () => {
     expect(document.documentElement.style.getPropertyValue("--bg")).toBe("");
   });
 
+  it("files Storage and Access Control with their neighbours in every built-in preset menu", () => {
+    for (const skin of BUILTIN_SKIN_PRESETS) {
+      const groupOf = (tab: string) => skin.navigation.find((group) => group.items.some((item) => item.tab === tab))?.id;
+      expect(groupOf("Storage"), skin.id).toBe(groupOf("Vehicles"));
+      expect(groupOf("Access Control"), skin.id).toBe(groupOf("Server Control"));
+    }
+  });
+
   it("applies custom macro shell layout, custom colors, and typography", () => {
     const commandSkin = BUILTIN_SKIN_PRESETS.find((s) => s.id === "arrakis-command-top")!;
     saveAndApplySkin(commandSkin);

@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -503,6 +503,45 @@ export function LayoutZone({
           ))}
       </section>
     </LayoutZoneContext.Provider>
+  );
+}
+
+/**
+ * Content that belongs beside a widget but must not be one, so no layout can hide it. In a custom
+ * skin's grid it takes that widget's place in the order (a plain child sorts to the top of the grid);
+ * with the default appearance it is an ordinary element. `reveal` scrolls it into view when it
+ * appears in the grid.
+ */
+export function LayoutCompanion({
+  widgetId,
+  as: Tag = "div",
+  className = "",
+  reveal = false,
+  children,
+}: {
+  widgetId: string;
+  as?: "div" | "p";
+  className?: string;
+  reveal?: boolean;
+  children: ReactNode;
+}) {
+  const ctx = useContext(LayoutZoneContext);
+  const inGrid = Boolean(ctx && (ctx.isCustomSkin || ctx.editMode));
+  const ref = useRef<HTMLDivElement & HTMLParagraphElement>(null);
+  const revealHere = reveal && inGrid;
+
+  useEffect(() => {
+    if (revealHere) ref.current?.scrollIntoView?.({ block: "nearest" });
+  }, [revealHere]);
+
+  return (
+    <Tag
+      ref={ref}
+      className={inGrid ? `${className} skin-widget-companion`.trim() : className}
+      style={inGrid ? { order: (ctx?.orderIndexById.get(widgetId) ?? 0) * 10 } : undefined}
+    >
+      {children}
+    </Tag>
   );
 }
 

@@ -10,7 +10,7 @@ import { ApiKeysSection } from "./ApiKeysSection";
 import { ExperimentalFeatures } from "./ExperimentalFeatures";
 import { EncryptedApiSection } from "./EncryptedApiSection";
 import { ConsoleAccessNotice, type ConsoleAccessStatus } from "./ConsoleAccessNotice";
-import { LayoutWidget, LayoutZone } from "../../skins/LayoutZone";
+import { LayoutCompanion, LayoutWidget, LayoutZone } from "../../skins/LayoutZone";
 
 // Authenticator apps display codes as "123 456" and the server strips whitespace
 // (auth/totp.js) precisely so a paste of that form validates. The inputs used to
@@ -553,8 +553,8 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
           sheet is already invalidated server-side and only digests persist. Gating
           them on a flag that any /api/auth/me re-read can flip to false meant the
           panel's own Refresh button, sitting a few rows above, destroyed them. For the same reason a custom skin must not be able to
-          hide them, so they sit outside every LayoutWidget. */}
-      {regeneratedCodes && <div className="wide playerAdmin_toggle open">
+          hide them, so they sit outside every LayoutWidget; LayoutCompanion keeps them where the two-factor card was. */}
+      {regeneratedCodes && <LayoutCompanion widgetId="settings.twoFactor" className="wide playerAdmin_toggle open" reveal>
         <div className="playerAdmin_toggleBody">
           <div className="settings-recovery-codes">
             <RecoveryCodesPanel
@@ -569,13 +569,13 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
             />
           </div>
         </div>
-      </div>}
-      {secondFactorUnavailable && <p className="wide attention-text">
+      </LayoutCompanion>}
+      {secondFactorUnavailable && <LayoutCompanion widgetId="settings.twoFactor" as="p" className="wide attention-text">
         This console&apos;s two-factor state could not be read, so password changes and
         recovery-code regeneration are unavailable right now. Do not delete
         <code> runtime/generated/console-second-factor.json</code> &mdash; see the sign-in
         page&apos;s error for recovery guidance.
-      </p>}
+      </LayoutCompanion>}
       {secondFactorEnrolled && !regeneratedCodes && <LayoutWidget id="settings.twoFactor" widgetTitle="Two-Factor Authentication">
         <div className={`playerAdmin_toggle ${twoFactorOpen ? "open" : ""}`}>
           <button className="playerAdmin_toggleHeader" aria-label={twoFactorOpen ? "Collapse Two-Factor Authentication" : "Expand Two-Factor Authentication"} onClick={() => setTwoFactorOpen(!twoFactorOpen)}>{twoFactorOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Two-Factor Authentication</span></button>

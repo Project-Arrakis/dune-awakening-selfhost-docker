@@ -5507,6 +5507,16 @@
           "Backups",
           "Database"
         ]
+      },
+      {
+        "file": "console/web/src/skins/skinDefaults.ts",
+        "line": 451,
+        "nearby": [
+          "Home",
+          "Server Control",
+          "Logs",
+          "Database"
+        ]
       }
     ],
     "Account": [
@@ -6527,7 +6537,7 @@
       },
       {
         "file": "console/web/src/skins/skinDefaults.ts",
-        "line": 462,
+        "line": 464,
         "nearby": [
           "Chat",
           "Settings"
@@ -6739,7 +6749,7 @@
       },
       {
         "file": "console/web/src/skins/skinDefaults.ts",
-        "line": 440,
+        "line": 441,
         "nearby": [
           "Landsraad",
           "Exchange",
@@ -9519,7 +9529,7 @@
       },
       {
         "file": "console/web/src/skins/skinDefaults.ts",
-        "line": 452,
+        "line": 454,
         "nearby": [
           "Logs",
           "Database",
@@ -9995,7 +10005,7 @@
           "Maps",
           "Live Map",
           "Vehicles",
-          "Guilds"
+          "Storage"
         ]
       },
       {
@@ -11652,7 +11662,7 @@
       },
       {
         "file": "console/web/src/skins/skinDefaults.ts",
-        "line": 441,
+        "line": 442,
         "nearby": [
           "Exchange",
           "Admin Tools",
@@ -12341,7 +12351,7 @@
       },
       {
         "file": "console/web/src/skins/skinDefaults.ts",
-        "line": 454,
+        "line": 456,
         "nearby": [
           "Backups",
           "Updates",
@@ -17020,9 +17030,9 @@
       },
       {
         "file": "console/web/src/skins/skinDefaults.ts",
-        "line": 451,
+        "line": 453,
         "nearby": [
-          "Server Control",
+          "Access Control",
           "Logs",
           "Backups",
           "Updates"
@@ -21934,7 +21944,7 @@
       },
       {
         "file": "console/web/src/skins/skinDefaults.ts",
-        "line": 439,
+        "line": 440,
         "nearby": [
           "Guilds",
           "Landsraad",
@@ -25920,10 +25930,10 @@
       },
       {
         "file": "console/web/src/skins/skinDefaults.ts",
-        "line": 437,
+        "line": 438,
         "nearby": [
-          "Bases",
           "Vehicles",
+          "Storage",
           "Landsraad",
           "Exchange"
         ]
@@ -26178,12 +26188,12 @@
       },
       {
         "file": "console/web/src/skins/skinDefaults.ts",
-        "line": 448,
+        "line": 449,
         "nearby": [
           "Admin Tools",
           "Care Package",
           "Server Control",
-          "Logs"
+          "Access Control"
         ]
       }
     ],
@@ -28760,9 +28770,9 @@
       },
       {
         "file": "console/web/src/skins/skinDefaults.ts",
-        "line": 438,
+        "line": 439,
         "nearby": [
-          "Vehicles",
+          "Storage",
           "Guilds",
           "Exchange",
           "Admin Tools"
@@ -31113,10 +31123,10 @@
       },
       {
         "file": "console/web/src/skins/skinDefaults.ts",
-        "line": 450,
+        "line": 452,
         "nearby": [
-          "Home",
           "Server Control",
+          "Access Control",
           "Database",
           "Backups"
         ]
@@ -48832,12 +48842,12 @@
       },
       {
         "file": "console/web/src/skins/skinDefaults.ts",
-        "line": 449,
+        "line": 450,
         "nearby": [
           "Care Package",
           "Home",
-          "Logs",
-          "Database"
+          "Access Control",
+          "Logs"
         ]
       }
     ],
@@ -49581,7 +49591,7 @@
       },
       {
         "file": "console/web/src/skins/skinDefaults.ts",
-        "line": 455,
+        "line": 457,
         "nearby": [
           "Updates",
           "Chat",
@@ -51870,6 +51880,16 @@
           "Vehicles",
           "Exchange",
           "Live Map"
+        ]
+      },
+      {
+        "file": "console/web/src/skins/skinDefaults.ts",
+        "line": 437,
+        "nearby": [
+          "Bases",
+          "Vehicles",
+          "Guilds",
+          "Landsraad"
         ]
       },
       {
@@ -57422,7 +57442,7 @@
       },
       {
         "file": "console/web/src/skins/skinDefaults.ts",
-        "line": 453,
+        "line": 455,
         "nearby": [
           "Database",
           "Backups",
@@ -58157,8 +58177,8 @@
         "nearby": [
           "Live Map",
           "Bases",
-          "Guilds",
-          "Landsraad"
+          "Storage",
+          "Guilds"
         ]
       },
       {

@@ -434,6 +434,7 @@ export const BUILTIN_SKIN_PRESETS: DuneSkinProfile[] = [
           { tab: "Live Map" },
           { tab: "Bases" },
           { tab: "Vehicles" },
+          { tab: "Storage" },
           { tab: "Guilds" },
           { tab: "Landsraad" },
           { tab: "Exchange" },
@@ -447,6 +448,7 @@ export const BUILTIN_SKIN_PRESETS: DuneSkinProfile[] = [
         items: [
           { tab: "Home" },
           { tab: "Server Control" },
+          { tab: "Access Control" },
           { tab: "Logs" },
           { tab: "Database" },
           { tab: "Backups" },

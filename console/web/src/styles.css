@@ -8749,6 +8749,11 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
   grid-column: 1 / -1;
 }
 
+/* Scrolled into view below a sticky top bar, not under it. */
+.skin-widget-companion {
+  scroll-margin-top: 110px;
+}
+
 .skin-widget-slot {
   min-width: 0;
   display: grid;
