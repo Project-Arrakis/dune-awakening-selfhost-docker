@@ -530,14 +530,16 @@ export function LayoutCompanion({
   const ref = useRef<HTMLDivElement & HTMLParagraphElement>(null);
   const revealHere = reveal && inGrid;
 
+  // Bottom-aligned when it fits, which stays clear of a sticky bar of any height at the top.
   useEffect(() => {
-    if (revealHere) ref.current?.scrollIntoView?.({ block: "nearest" });
+    const node = ref.current;
+    if (revealHere && node) node.scrollIntoView?.({ block: node.offsetHeight < window.innerHeight ? "end" : "start" });
   }, [revealHere]);
 
   return (
     <Tag
       ref={ref}
-      className={inGrid ? `${className} skin-widget-companion`.trim() : className}
+      className={className}
       style={inGrid ? { order: (ctx?.orderIndexById.get(widgetId) ?? 0) * 10 } : undefined}
     >
       {children}
