@@ -8,6 +8,8 @@ HOST_ROOT_DIR="${DUNE_HOST_REPO_ROOT:-$ROOT_DIR}"
 [ -f .env ] && . ./.env
 [ -r runtime/generated/battlegroup.env ] && . runtime/generated/battlegroup.env
 source runtime/scripts/runtime-env.sh
+# shellcheck source=runtime/scripts/lib/postgres.sh
+source runtime/scripts/lib/postgres.sh
 source runtime/scripts/host-file-ownership.sh
 
 IFS=: read -r HOST_SERVICE_UID HOST_SERVICE_GID <<< "$(dune_resolve_host_owner)"
@@ -512,7 +514,7 @@ show_status() {
 }
 
 run_now() {
-  local public_ip_fallback lifecycle_lock_file rc
+  local public_ip_fallback lifecycle_lock_file rc history_started history_started_epoch history_finished
 
   lifecycle_lock_file="${DUNE_BATTLEGROUP_LIFECYCLE_LOCK_FILE:-runtime/generated/battlegroup-lifecycle.lock}"
   mkdir -p "$(dirname "$lifecycle_lock_file")"
@@ -530,6 +532,10 @@ run_now() {
   fi
 
   echo "=== Scheduled battlegroup restart ==="
+  if [ -f runtime/generated/manual-stop.env ] && dune_manual_stop_applies_to_boot runtime/generated/manual-stop.env; then
+    echo "Skipping scheduled restart: the battlegroup was manually stopped."
+    return 0
+  fi
   echo "Validating persisted Sietch and gameplay settings..."
   runtime/scripts/sietches.sh preflight
   python3 runtime/scripts/usersettings.py preflight
@@ -547,10 +553,24 @@ run_now() {
   fi
 
   echo "Stopping battlegroup..."
-  runtime/scripts/stop-all.sh
+  history_started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  history_started_epoch="$(date +%s)"
+  runtime/scripts/stop-all.sh || {
+    rc=$?
+    history_finished="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    runtime/scripts/restart-history.sh record battlegroup Battlegroup Scheduled "Scheduled restart failed during shutdown (exit $rc)" Failed "$history_started" "$history_finished" "$(( $(date +%s) - history_started_epoch ))" || true
+    return 1
+  }
   echo
   echo "Starting battlegroup..."
-  DUNE_START_FOREGROUND_DEFERRED_RECONCILE=1 runtime/scripts/start-all.sh
+  DUNE_START_FOREGROUND_DEFERRED_RECONCILE=1 runtime/scripts/start-all.sh || {
+    rc=$?
+    history_finished="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    runtime/scripts/restart-history.sh record battlegroup Battlegroup Scheduled "Scheduled restart failed during startup (exit $rc)" Failed "$history_started" "$history_finished" "$(( $(date +%s) - history_started_epoch ))" || true
+    return 1
+  }
+  history_finished="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  runtime/scripts/restart-history.sh record battlegroup Battlegroup Scheduled "Scheduled restart" Succeeded "$history_started" "$history_finished" "$(( $(date +%s) - history_started_epoch ))" || true
   replay_spicefield_overrides_after_scheduled_restart
 }
 
@@ -619,7 +639,7 @@ scheduled_restart_public_ip_fallback() {
   [ "$mode" = "public" ] || return 0
 
   if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx dune-postgres; then
-    ip="$(docker exec dune-postgres psql -U postgres -d dune -Atc "
+    ip="$(psql_value "
       select value
       from dune.network_address_config
       where key = 'game_addr_ip'

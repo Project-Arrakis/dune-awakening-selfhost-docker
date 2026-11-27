@@ -4,17 +4,30 @@ import { playersApi } from "../../api/players";
 import { mapsApi } from "../../api/maps";
 import { invalidateInstanceNames } from "../maps/instanceNames";
 import { PlayersPanel } from "./PlayersPanel";
+import { combatApi } from "../../api/combat";
+vi.mock("../../api/combat", () => ({ combatApi: { history: vi.fn().mockResolvedValue({ supported: true, status: "recording", leaderboard: [], recentKills: [] }) } }));
 
 vi.mock("../../api/maps", () => ({ mapsApi: { sietchDimensions: vi.fn() } }));
 
 vi.mock("../../api/players", () => ({
   playersApi: {
     list: vi.fn(),
+    listSettings: vi.fn(),
+    saveListSettings: vi.fn(),
     profile: vi.fn(),
     deletedCharacters: vi.fn()
   }
 }));
 vi.mock("../../api/vehicles", () => ({ vehiclesApi: { deleteVehicle: vi.fn(), pendingDeletes: vi.fn().mockResolvedValue({ supported: true, total: 0, pending: [], byTarget: [] }) } }));
+vi.mock("../../api/dungeons", () => ({
+  dungeonsApi: {
+    runs: vi.fn().mockResolvedValue({ capabilities: { dungeons: true }, totalCount: 0, totalRuns: 0, runs: [] }),
+    leaderboard: vi.fn().mockResolvedValue({
+      capabilities: { dungeons: true },
+      entries: [{ runCount: 1, best: { completionId: 1, dungeonId: "DA_Dgn_136_Fire", difficulty: 2, durationMs: 872671, playerCount: 1, party: [{ controllerId: 84, actorId: 82, characterName: "Vixen" }] } }]
+    })
+  }
+}));
 
 const bannedPlayer = {
   actor_id: "82",
@@ -30,6 +43,33 @@ const bannedPlayer = {
   total_playtime_seconds: 3665
 };
 
+it('hides PvP on a confirmed PvE-only server in both Players views', async () => {
+  vi.mocked(playersApi.listSettings).mockResolvedValue({
+    settings: { inactiveWeeks: null }, defaults: { inactiveWeeks: null },
+    limits: { inactiveWeeks: { min: 1, max: 8 } }, source: 'default', pvpVisible: false
+  });
+  render(<PlayersPanel onError={vi.fn()} renderCharacterAdmin={() => null} />);
+  expect(await screen.findByText('Vixen')).toBeInTheDocument();
+  await waitFor(() => expect(playersApi.listSettings).toHaveBeenCalled());
+  expect(screen.queryByRole('radio', { name: 'PvP' })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('radio', { name: 'Deleted Characters' }));
+  expect(screen.queryByRole('radio', { name: 'PvP' })).not.toBeInTheDocument();
+});
+
+it('removes an open PvP view after modes change without resetting the player filter', async () => {
+  vi.useFakeTimers();
+  render(<PlayersPanel onError={vi.fn()} renderCharacterAdmin={() => null} />);
+  await act(async () => { await Promise.resolve(); });
+  fireEvent.click(screen.getByRole('radio', { name: 'PvP' }));
+  vi.mocked(playersApi.listSettings).mockResolvedValue({
+    settings: { inactiveWeeks: null }, defaults: { inactiveWeeks: null },
+    limits: { inactiveWeeks: { min: 1, max: 8 } }, source: 'default', pvpVisible: false
+  });
+  await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+  expect(screen.queryByRole('radio', { name: 'PvP' })).not.toBeInTheDocument();
+  expect(screen.getByRole('radio', { name: 'Active Players' })).toBeChecked();
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
   invalidateInstanceNames();
@@ -39,6 +79,20 @@ beforeEach(() => {
     totalCount: 1,
     totalPlayers: 1,
     capabilities: { statusFilterApplied: true }
+  });
+  vi.mocked(playersApi.listSettings).mockResolvedValue({
+    settings: { inactiveWeeks: null },
+    defaults: { inactiveWeeks: null },
+    limits: { inactiveWeeks: { min: 1, max: 8 } },
+    source: "default",
+    canConfigure: true
+  });
+  vi.mocked(playersApi.saveListSettings).mockResolvedValue({
+    settings: { inactiveWeeks: null },
+    defaults: { inactiveWeeks: null },
+    limits: { inactiveWeeks: { min: 1, max: 8 } },
+    source: "console",
+    canConfigure: true
   });
   vi.mocked(playersApi.profile).mockResolvedValue({ player: bannedPlayer });
   vi.mocked(playersApi.deletedCharacters).mockResolvedValue({
@@ -60,11 +114,94 @@ beforeEach(() => {
   });
 });
 
+it("opens PvP inside Players without continuing the hidden roster poll", async () => {
+  vi.mocked(combatApi.history).mockResolvedValue({ supported: true, status: "recording", reason: "", selfOnly: false, recordingStartedAt: null, recordedSince: null, lastCapturedAt: null, leaderboard: [], recentKills: [] });
+  render(<PlayersPanel onError={vi.fn()} renderCharacterAdmin={() => null} />);
+  await screen.findByText("Vixen");
+  fireEvent.click(screen.getByRole("radio", { name: "PvP" }));
+  expect(await screen.findByText("No PvP kills have been recorded yet.")).toBeVisible();
+  expect(screen.queryByText("Vixen")).toBeNull();
+  expect(combatApi.history).toHaveBeenCalledWith(undefined, { leaderboardLimit: 10, killsLimit: 10 });
+});
+
 afterEach(() => {
   vi.useRealTimers();
 });
 
+describe("PlayersPanel profile loading", () => {
+  it("reports a failed profile load and never shows the previous player's profile", async () => {
+    const onError = vi.fn();
+    const other = { ...bannedPlayer, actor_id: "90", character_name: "Other" };
+    vi.mocked(playersApi.list).mockResolvedValue({ rows: [bannedPlayer, other], totalCount: 2, totalPlayers: 2, capabilities: { statusFilterApplied: true } });
+    vi.mocked(playersApi.profile).mockResolvedValueOnce({ player: bannedPlayer }).mockRejectedValueOnce(new Error("db down"));
+    const seen: Array<{ id: string; detail: unknown }> = [];
+    render(<PlayersPanel onError={onError} renderCharacterAdmin={(props) => { seen.push({ id: props.dbPlayerId, detail: props.detail }); return null; }} />);
+
+    fireEvent.click(await screen.findByText("Vixen"));
+    await waitFor(() => expect(seen.some((entry) => entry.id === "82" && entry.detail)).toBe(true));
+    fireEvent.click(await screen.findByText("Other"));
+    await waitFor(() => expect(onError).toHaveBeenCalledWith(expect.stringContaining("db down")));
+    expect(seen.filter((entry) => entry.id === "90").every((entry) => entry.detail === null)).toBe(true);
+  });
+});
+
 describe("PlayersPanel persistent bans", () => {
+  it("shows inactive players by default", async () => {
+    render(<PlayersPanel onError={vi.fn()} renderCharacterAdmin={() => null} />);
+
+    await waitFor(() => expect(playersApi.list).toHaveBeenLastCalledWith(expect.objectContaining({ recentOnly: false })));
+    expect(screen.getByLabelText("Hide Inactive Players After")).toHaveValue("never");
+    expect(screen.getByRole("option", { name: "3 Weeks" })).toHaveValue("3");
+  });
+
+  it("applies a new inactive-player threshold immediately", async () => {
+    vi.mocked(playersApi.saveListSettings).mockResolvedValueOnce({
+      settings: { inactiveWeeks: 4 },
+      defaults: { inactiveWeeks: null },
+      limits: { inactiveWeeks: { min: 1, max: 8 } },
+      source: "console",
+      canConfigure: true
+    });
+    render(<PlayersPanel onError={vi.fn()} renderCharacterAdmin={() => null} />);
+
+    const filter = await screen.findByLabelText("Hide Inactive Players After");
+    await waitFor(() => expect(filter).toBeEnabled());
+    fireEvent.change(filter, { target: { value: "4" } });
+    await waitFor(() => expect(playersApi.saveListSettings).toHaveBeenCalledWith(4));
+    await waitFor(() => expect(playersApi.list).toHaveBeenLastCalledWith(expect.objectContaining({ page: 0, recentOnly: true })));
+    expect(screen.getByLabelText("Hide Inactive Players After")).toHaveValue("4");
+  });
+
+  it("refreshes the player list when changing between inactive thresholds", async () => {
+    vi.mocked(playersApi.listSettings).mockResolvedValueOnce({
+      settings: { inactiveWeeks: 4 },
+      defaults: { inactiveWeeks: null },
+      limits: { inactiveWeeks: { min: 1, max: 8 } },
+      source: "console",
+      canConfigure: true
+    });
+    vi.mocked(playersApi.saveListSettings).mockResolvedValueOnce({
+      settings: { inactiveWeeks: 8 },
+      defaults: { inactiveWeeks: null },
+      limits: { inactiveWeeks: { min: 1, max: 8 } },
+      source: "console",
+      canConfigure: true
+    });
+    render(<PlayersPanel onError={vi.fn()} renderCharacterAdmin={() => null} />);
+
+    const filter = await screen.findByLabelText("Hide Inactive Players After");
+    await waitFor(() => expect(filter).toHaveValue("4"));
+    await waitFor(() => expect(filter).toBeEnabled());
+    await waitFor(() => expect(playersApi.list).toHaveBeenLastCalledWith(expect.objectContaining({ recentOnly: true })));
+    vi.mocked(playersApi.list).mockClear();
+
+    fireEvent.change(filter, { target: { value: "8" } });
+
+    await waitFor(() => expect(playersApi.saveListSettings).toHaveBeenCalledWith(8));
+    await waitFor(() => expect(playersApi.list).toHaveBeenCalledWith(expect.objectContaining({ page: 0, recentOnly: true })));
+    expect(filter).toHaveValue("8");
+  });
+
   it("shows the configured Sietch name next to the player's game map", async () => {
     vi.mocked(mapsApi.sietchDimensions).mockImplementation((_map?: string, wantIds?: boolean) => Promise.resolve({
       stdout: wantIds
@@ -179,5 +316,29 @@ describe("PlayersPanel view mode", () => {
     fireEvent.click(screen.getByRole("radio", { name: "Active Players" }));
     expect(await screen.findByText("Vixen")).toBeInTheDocument();
     expect(screen.queryByTestId("player-detail")).not.toBeInTheDocument();
+  });
+});
+
+describe("PlayersPanel Dungeon Runs view", () => {
+  it("opens a party member in Active Players and scrolls to them once their profile has loaded", async () => {
+    const scrolled: string[] = [];
+    // jsdom has no scrollIntoView; define one that records its target.
+    const originalScroll = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (this: Element) { scrolled.push(this.className); };
+    const frameSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => { callback(0); return 1; });
+    let resolveProfile: (value: unknown) => void = () => {};
+    vi.mocked(playersApi.profile).mockImplementation(() => new Promise((resolve) => { resolveProfile = resolve; }) as never);
+    render(<PlayersPanel onError={vi.fn()} renderCharacterAdmin={() => null} />);
+    await screen.findByText("Vixen");
+    fireEvent.click(screen.getByRole("radio", { name: "Dungeon Runs" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Vixen" }));
+    expect(screen.getByRole("radio", { name: "Active Players" })).toBeChecked();
+    expect(playersApi.profile).toHaveBeenCalledWith("82");
+    const beforeProfile = scrolled.length;
+    await act(async () => { resolveProfile({ player: bannedPlayer }); });
+    await waitFor(() => expect(scrolled.length).toBeGreaterThan(beforeProfile));
+    expect(scrolled.slice(beforeProfile)).toContain("players-detail-anchor");
+    Element.prototype.scrollIntoView = originalScroll;
+    frameSpy.mockRestore();
   });
 });

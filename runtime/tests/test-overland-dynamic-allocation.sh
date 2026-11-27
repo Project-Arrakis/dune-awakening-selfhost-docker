@@ -39,6 +39,7 @@ def function(name, next_name):
     return source[start:end].rstrip() + "\n"
 
 selected = [
+    function("director_logs", "director_logs_available"),
     function("director_map_max_parties", "map_requires_isolated_party_dimension"),
     function("map_requires_isolated_party_dimension", "map_exists"),
     function("max_dimensions_for_map", "ensure_dynamic_instance_partitions"),
@@ -59,6 +60,7 @@ SPAWN_LOG="$test_root/spawns" POOL_LOG="$test_root/pools" TEST_ROOT="$test_root"
 set -euo pipefail
 cd "$TEST_ROOT"
 source "$TEST_ROOT/functions.sh"
+unset DIRECTOR_LOG_CACHE_FILE
 
 mkdir -p runtime/generated
 printf '{"maps":{}}\n' >runtime/generated/sietch-config.json
@@ -139,6 +141,18 @@ OCCUPIED=1
 handle_demand CB_Overland_S_04 1 unrelated-request request
 [ ! -s "$SPAWN_LOG" ]
 
+# The supplemental event map has no server-catalog entry (dedicatedScaling=0).
+# A cold registered instance must still spawn through the ordinary demand path.
+ASSIGNED=0
+RUNNING=0
+DEDICATED=0
+handle_demand CB_Halloween_Event_Shipwreck_01 1 event-request request ClassicalInstancing
+[ "$(cat "$SPAWN_LOG")" = "CB_Halloween_Event_Shipwreck_01" ]
+: >"$SPAWN_LOG"
+ASSIGNED=1
+RUNNING=1
+DEDICATED=1
+
 # Director-classified party instances scale even when the local Director
 # configuration does not carry a map-specific MaxParties override. This
 # covers the difficulty-selectable Testing Stations, Old Quarry, and story
@@ -150,7 +164,15 @@ for map in \
   CB_Ecolab_Bronze_Green_152 \
   CB_Ecolab_Bronze_Green_195 \
   CB_Dungeon_ThePit \
-  CB_Story_BanditFortress01; do
+  CB_Story_BanditFortress01 \
+  CB_Story_Hephaestus \
+  CB_Story_Ecolab_Carthag \
+  CB_Story_WaterFatManor \
+  CB_Arrakis_Generic_Sietch_Room \
+  CB_Arrakis_Story_Paranoid_PrayerRoom \
+  CB_Arrakis_Story_Glutton_DiningRoom \
+  CB_Story_DestroyedZanovar \
+  CB_Story_OrbitalMonitor; do
   : >"$SPAWN_LOG"
   : >"$POOL_LOG"
   handle_demand "$map" 1 "classical-$map" request ClassicalInstancing
@@ -190,7 +212,7 @@ diff -u <(printf '%s\n' \
   'CB_Dungeon_ThePit|1|request|ClassicalInstancing' \
   'DeepDesert_1|1|request|Dimension') "$SPAWN_LOG"
 
-grep -q 'docker logs --timestamps --since "$SINCE" dune-director' "$TEST_ROOT/functions.sh"
+grep -q 'director_logs --timestamps --since "$SINCE"' "$TEST_ROOT/functions.sh"
 SH
 
 python3 - <<'PY'

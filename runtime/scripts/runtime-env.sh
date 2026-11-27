@@ -9,6 +9,8 @@ source runtime/scripts/env-file.sh
 source runtime/scripts/host-file-ownership.sh
 # shellcheck source=runtime/scripts/lib/secrets.sh
 source runtime/scripts/lib/secrets.sh
+# shellcheck source=runtime/scripts/lib/ports.sh
+source runtime/scripts/lib/ports.sh
 
 # shellcheck disable=SC1091
 source runtime/scripts/compose-project.sh
@@ -42,6 +44,14 @@ value_is_known() {
   [ -n "$value" ] && [ "$value" != "unknown" ]
 }
 
+# A missing boot ID (including a legacy marker) is treated as an active stop.
+dune_manual_stop_applies_to_boot() {
+  local marker_boot_id current_boot_id
+  marker_boot_id="$(awk -F= '$1 == "DUNE_MANUAL_STOP_BOOT_ID" { print substr($0, length($1) + 2); exit }' "$1" 2>/dev/null || true)"
+  current_boot_id="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)"
+  [[ -z "$marker_boot_id" || -z "$current_boot_id" || "$marker_boot_id" = "$current_boot_id" ]]
+}
+
 is_ipv4() {
   printf '%s' "$1" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'
 }
@@ -71,27 +81,6 @@ config_value() {
     }
   ' "$file"
 }
-
-port_env_value() {
-  local key="$1"
-  local default_value="$2"
-  local value="${!key:-$default_value}"
-
-  if printf '%s' "$value" | grep -Eq '^[0-9]+$' && [ "$value" -ge 1 ] && [ "$value" -le 65535 ]; then
-    printf '%s' "$value"
-    return 0
-  fi
-
-  printf '%s\n' "Invalid $key=$value; expected TCP/UDP port 1-65535." >&2
-  return 1
-}
-
-resolve_postgres_port() { port_env_value POSTGRES_PORT 15432; }
-resolve_rmq_admin_port() { port_env_value RMQ_ADMIN_PORT 32573; }
-resolve_rmq_game_port() { port_env_value RMQ_GAME_PORT 31982; }
-resolve_rmq_game_http_port() { port_env_value RMQ_GAME_HTTP_PORT 31983; }
-resolve_text_router_port() { port_env_value TEXT_ROUTER_PORT 5059; }
-resolve_director_port() { port_env_value DIRECTOR_PORT 11717; }
 
 normalize_generated_env_permissions() {
   local file

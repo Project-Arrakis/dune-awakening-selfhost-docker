@@ -54,6 +54,7 @@ const MAX_BODY_LENGTH = 500;
 // concurrently for distinct maps. See plans/server/restart-queue.md.
 const RESTART_OPERATIONS = new Set([
   "restartAll",
+  "experimentalTanksApply",
   "restartService",
   "mapsRespawn",
   "sietchesRestart",
@@ -221,6 +222,9 @@ function normalizeEntry(entry) {
 // no-op restartMode ("none"), which the gate treats as "proceed unchanged".
 export function classifyRestart(operation, payload = {}) {
   if (!RESTART_OPERATIONS.has(operation)) return null;
+  if (operation === "experimentalTanksApply") {
+    return { target: "map", mapKey: "survival_1", mapLabel: "All Hagga Sietches", partitionId: 0, map: "Survival_1" };
+  }
   const restartMode = String(payload?.restartMode || "").trim();
   if (restartMode === "none") return null;
 

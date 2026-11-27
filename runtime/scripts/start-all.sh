@@ -55,15 +55,12 @@ run_timed_step() {
 MANUAL_STOP_FILE="runtime/generated/manual-stop.env"
 
 if [ -f "$MANUAL_STOP_FILE" ] && [ "${DUNE_IGNORE_MANUAL_STOP:-0}" != "1" ]; then
-  marker_boot_id="$(awk -F= '$1 == "DUNE_MANUAL_STOP_BOOT_ID" { print substr($0, length($1) + 2); exit }' "$MANUAL_STOP_FILE" 2>/dev/null || true)"
-  current_boot_id="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)"
-  if [ -n "$marker_boot_id" ] && [ -n "$current_boot_id" ] && [ "$marker_boot_id" != "$current_boot_id" ]; then
-    rm -f "$MANUAL_STOP_FILE"
-  else
+  if dune_manual_stop_applies_to_boot "$MANUAL_STOP_FILE"; then
     echo "Manual stop is active for this Linux boot. Refusing to start the Dune stack automatically."
     echo "To start intentionally, run: runtime/scripts/dune start"
     exit 2
   fi
+  rm -f "$MANUAL_STOP_FILE"
 fi
 
 if [ "${DUNE_START_KEEP_INFRA:-0}" = "1" ]; then
@@ -98,8 +95,14 @@ else
 fi
 
 run_timed_step "Refreshing Map Catalogs" bash -c '
-runtime/scripts/extract-server-catalog.sh
-runtime/scripts/extract-partition-catalog.sh
+runtime/scripts/extract-server-catalog.sh &
+pid_server=$!
+runtime/scripts/extract-partition-catalog.sh &
+pid_partition=$!
+catalog_status=0
+wait "$pid_server" || catalog_status=$?
+wait "$pid_partition" || catalog_status=$?
+exit "$catalog_status"
 '
 
 run_timed_step "Reconciling Official World Partitions" runtime/scripts/reconcile-world-partitions.sh
@@ -139,9 +142,22 @@ fi
 
 run_timed_step "Starting Director" runtime/scripts/start-director.sh
 
-run_timed_step "Starting Survival_1" runtime/scripts/start-server-survival-1.sh
-
-run_timed_step "Starting Overmap" runtime/scripts/start-server-overmap.sh
+if [ "${DUNE_PARALLEL_CORE_MAP_STARTUP:-0}" = "1" ]; then
+  echo
+  echo "=== Starting Core Maps (Survival_1 + Overmap in parallel) ==="
+  core_start="$(date +%s)"
+  runtime/scripts/start-server-survival-1.sh &
+  survival_pid=$!
+  runtime/scripts/start-server-overmap.sh &
+  overmap_pid=$!
+  wait "$survival_pid"
+  wait "$overmap_pid"
+  core_end="$(date +%s)"
+  echo "Finished: Starting Core Maps ($((core_end - core_start))s)"
+else
+  run_timed_step "Starting Survival_1" runtime/scripts/start-server-survival-1.sh
+  run_timed_step "Starting Overmap" runtime/scripts/start-server-overmap.sh
+fi
 
 run_timed_step "Reapplying Spice Field Overrides After Core Startup" runtime/scripts/spicefield-overrides.sh apply
 

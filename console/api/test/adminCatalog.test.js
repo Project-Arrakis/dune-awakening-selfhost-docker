@@ -49,6 +49,7 @@ test("customization grants use the four curated sets and report pending tokens",
   const items = listCustomizationGrantItems(root);
   assert.equal(items.length, 7);
   assert.deepEqual(customizationGrantGroups(root), [
+    { id: "halloween-2026", name: "Halloween 2026", count: 0 },
     { id: "atreides", name: "Atreides", count: 1 },
     { id: "harkonnen", name: "Harkonnen", count: 1 },
     { id: "smuggler", name: "Smuggler", count: 1 },
@@ -57,6 +58,18 @@ test("customization grants use the four curated sets and report pending tokens",
   ]);
   assert.equal(customizationGrantStatus("B1C3_Atre_Maula_Pistol", { pending: ["B1C3_Atre_Maula_Pistol"] }), "Pending");
   assert.equal(customizationGrantStatus("B1C3_Atre_Maula_Pistol", { pending: [] }), "Available");
+});
+
+test("Halloween cosmetics are direct unlocks and never appear as inventory templates", () => {
+  const event = listCustomizationGrantItems(REAL_REPO_ROOT).filter((item) => item.groupId === "halloween-2026");
+  assert.deepEqual(event.map((item) => item.itemId).sort(), [
+    "Halloween2026_PlagueDoctorMask_Hood", "Halloween2026_PlagueDoctorMask_NoHood",
+    "Halloween2026_Radsuit_Variant", "Swatch_Halloween2026"
+  ]);
+  assert.ok(event.every((item) => item.directUnlock));
+  const inventory = listCatalogItems(REAL_REPO_ROOT, { q: "Halloween", limit: 10000 });
+  assert.ok(!inventory.some((item) => event.some((cosmetic) => cosmetic.itemId === item.itemId)));
+  assert.equal(customizationGrantStatus(event[0].itemId, { owned: [event[0].itemId] }), "Unlocked");
 });
 
 test("catalog preserves DLC ownership metadata for grant warnings", () => {
@@ -112,6 +125,98 @@ test("real catalog exposes only verified Filmic Archive grant tokens through the
 
   for (const entitlementOnlyId of ["Atreides_Light_Set_Torso", "Harkonnen_Heavy_Set_Torso", "Sardaukar_Broadsword", "Sardaukar_Disruptor"]) {
     assert.equal(JSON.parse(readFileSync(join(REAL_REPO_ROOT, "runtime/data/admin-items.json"), "utf8")).some((item) => item.id === entitlementOnlyId), false);
+  }
+});
+
+test("mission placeables are searchable and resolve to their native building patent for grants", () => {
+  const rewards = [
+    ["Suspensor Light of the Tyrant Worm", "MTX_MaasKharet_Glowglobe_Patent"],
+    ["Ruddy Glowglobe of Slaughter", "MTX_TheGluttonRedLight_Glowglobe_Patent"],
+    ["Poisoned Citadel Solido", "MTX_WaterFatManorProjection_Patent"],
+    ["Rug of the Desert Flyers", "MTX_ArakeenAlleyway_Carpet_Patent"],
+    ["Ascendant Throne of the Reverend Mother", "MTX_RevMotherFloatingChair_Patent"],
+    ["Mounted Minotaur Mask", "MTX_MinotaurMaskWall_Patent"],
+    ["Twin Blades of the Arena", "MTX_DualBladesDeco_Patent"],
+    ["Zanovar Arboretum Tree Solido", "MTX_DestroyedZanovar_Hologram_Patent"],
+    ["Glossu Rabban Solido", "MTX_BeastRabbanProjection_Patent"],
+    ["Duke Leto Atreides Solido", "MTX_DukeLetoProjection_Patent"],
+    ["Recovered Portrait from Old Carthag", "MTX_PhaedraPortrait_Patent"],
+    ["Maw of the Worm Wall Relief", "MTX_WormMouthWall_Patent"],
+  ];
+  const unlocks = listBuildingUnlockItems(REAL_REPO_ROOT);
+  const inventoryIds = new Set(listCatalogItems(REAL_REPO_ROOT, { limit: 10000 }).map((row) => row.itemId));
+  for (const [name, itemId] of rewards) {
+    const matches = unlocks.filter((row) => row.name === name);
+    assert.deepEqual(matches.map((row) => row.itemId), [itemId]);
+    assert.equal(resolveCatalogItem(REAL_REPO_ROOT, { itemId }).source, "BuildingSets");
+    assert.equal(resolveCatalogItem(REAL_REPO_ROOT, { itemName: name }).itemId, itemId);
+    assert.equal(matches[0].experimental, false);
+    assert.equal(inventoryIds.has(itemId), false);
+  }
+});
+
+test("Call to Adventure appears once in Building Sets and resolves by name and patent ID", () => {
+  const name = "Mural: Call to Adventure";
+  const itemId = "MTX_Neut_MuralPainting_03_Patent";
+  const matches = listBuildingUnlockItems(REAL_REPO_ROOT).filter((row) => row.name === name);
+  assert.deepEqual(matches.map((row) => row.itemId), [itemId]);
+  assert.equal(resolveCatalogItem(REAL_REPO_ROOT, { itemName: name }).itemId, itemId);
+  assert.equal(resolveCatalogItem(REAL_REPO_ROOT, { itemId }).name, name);
+  assert.equal(matches[0].entitlementControlled, true);
+});
+
+test("real catalog exposes the verified Ixian Icon patent through building unlocks", () => {
+  // The exact token is present in build 2160922's CDT_BaseItems. The item
+  // listing names it Ixian Icon and links it to A Sign from Above:
+  // https://dune.gaming.tools/items/mtx_ixiantotem_patent
+  const id = "MTX_IxianTotem_Patent";
+  const matches = listBuildingUnlockItems(REAL_REPO_ROOT).filter((item) => item.itemId === id);
+  assert.equal(matches.length, 1);
+  const item = matches[0];
+  assert.equal(item.name, "Ixian Icon");
+  assert.equal(item.category, "buildings");
+  assert.equal(item.source, "BuildingSets");
+  assert.equal(item.group, "Special & Promotional");
+  assert.equal(item.experimental, false);
+  assert.equal(item.entitlementControlled, true); // Preserve the existing MTX handling.
+  assert.equal(item.requiredDlc, undefined);
+  assert.equal(item.requiredSteamDlc, undefined);
+  assert.equal(resolveCatalogItem(REAL_REPO_ROOT, { itemName: "Ixian Icon" }).itemId, id);
+  assert.equal(listCatalogItems(REAL_REPO_ROOT, { q: "Ixian Icon" }).some((row) => row.itemId === id), false);
+  assert.equal(buildingUnlockStatus(id, { owned: ["MTX_IxianTotem"] }), "Owned");
+  assert.equal(buildingUnlockStatus(id, { pending: [id] }), "Pending");
+});
+
+test("real catalog exposes all seven native Halloween event building unlocks", () => {
+  // Verified against build 2162777 CDT_BaseItems/DT_ItemTableBuildables
+  // and ST_Localization_Buildings. Keep the native VacumBodies spelling.
+  const expected = {
+    MTX_HalloweenEvent_Crucifixion_Patent: "Decussate Cross",
+    MTX_HalloweenEvent_Fleshtube_Patent: "Flesh Sculpting Displays",
+    MTX_HalloweenEvent_LightPole_Patent: "Jury-Rigged Light Stand",
+    MTX_HalloweenEvent_RadiationCrate_Patent: "Sealed Radiation Containment Chest",
+    MTX_HalloweenEvent_RottingCorpse_Patent: "Cadaverous Decorations",
+    MTX_HalloweenEvent_Skeleton_Patent: "Osseous Decorations",
+    MTX_HalloweenEvent_VacumBodies_Patent: "Vacuum-Sealed Body Display"
+  };
+  const raw = JSON.parse(readFileSync(join(REAL_REPO_ROOT, "runtime/data/admin-items.json"), "utf8"));
+  const unlocks = listBuildingUnlockItems(REAL_REPO_ROOT);
+  for (const [id, name] of Object.entries(expected)) {
+    assert.equal(raw.filter((item) => item.id === id).length, 1, id);
+    const item = unlocks.find((row) => row.itemId === id);
+    assert.ok(item, id);
+    assert.equal(item.name, name);
+    assert.equal(item.category, "buildings");
+    assert.equal(item.source, "BuildingSets");
+    assert.equal(item.group, "Special & Promotional");
+    assert.equal(item.experimental, false);
+    assert.equal(item.entitlementControlled, true);
+    assert.equal(item.requiredDlc, undefined);
+    assert.equal(item.requiredSteamDlc, undefined);
+    assert.equal(resolveCatalogItem(REAL_REPO_ROOT, { itemName: name }).itemId, id);
+    assert.equal(listCatalogItems(REAL_REPO_ROOT, { q: id }).length, 0);
+    assert.equal(buildingUnlockStatus(id, { owned: [id.replace(/_Patent$/, "")] }), "Owned");
+    assert.equal(buildingUnlockStatus(id, { pending: [id] }), "Pending");
   }
 });
 

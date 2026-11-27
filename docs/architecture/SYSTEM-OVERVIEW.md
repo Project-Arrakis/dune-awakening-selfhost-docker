@@ -1,6 +1,6 @@
 # System Architecture Overview
 
-**Status:** Current | **Last Updated:** August 2026
+**Status:** Current | **Last Updated:** November 2026
 
 This document is the whole-system engineering reference for
 `dune-awakening-selfhost-docker`. It exists because the repository's
@@ -34,8 +34,10 @@ by shell scripts under `runtime/scripts/`:
                     │        │                      │
                     │        ├─► docker-compose.yml           → orchestrator (SteamCMD)
                     │        ├─► docker-compose.web.yml        → console API + web (Web UI)
-                    │        ├─► docker-compose.metrics.yml     → Prometheus/Grafana/etc (opt-in)
+                    │        ├─► docker-compose.metrics.yml     → Prometheus + exporters (opt-in)
                     │        ├─► docker-compose.public-probe*.yml → public-probe (opt-in)
+                    │        ├─► docker-compose.tls-front.yml   → encrypted API front (opt-in)
+                    │        ├─► docker-compose.socket-proxy.yml → web-console overlay (opt-in)
                     │        └─► raw `docker run` for: Postgres, RabbitMQ, TextRouter,
                     │             BattlegroupDirector, the always-on world servers
                     │             (Survival_1, Overmap), ServerGateway, and each
@@ -98,6 +100,17 @@ native Linux it confines direct ICE candidates to UDP `32000-32015`; when that
 range is not permitted through the host and upstream network, the website's
 relay path remains available.
 
+### 1.4.1 Other opt-in Compose files
+
+`docker-compose.tls-front.yml` runs `dune-tls-front`, the optional HTTPS front
+door for the Console API (default port `8797`, managed by
+`runtime/scripts/tls-front.sh` and Settings → Encrypted API Access; see
+[`docs/console/encrypted-api.md`](../console/encrypted-api.md)).
+`docker-compose.socket-proxy.yml` is an overlay used together with
+`docker-compose.web.yml`: it adds a `dune-docker-socket-proxy` container
+(`tecnativa/docker-socket-proxy`, bound to `127.0.0.1:2375`) and points the
+console at it instead of mounting the Docker socket directly.
+
 ### 1.5 The gameplay containers (raw `docker run`, not Compose)
 
 Started/stopped/restarted by `runtime/scripts/start-all.sh` /
@@ -108,7 +121,21 @@ TextRouter → BattlegroupDirector → the always-on world servers
 map partitions (via `dune spawn` / `dune despawn`). An Autoscaler process
 (`runtime/scripts/autoscaler.sh`) runs continuously to spawn/despawn
 dynamic maps based on demand signals it tracks under
-`runtime/generated/autoscaler-*`.
+`runtime/generated/autoscaler-*`. Its two loop intervals are tunable
+(`DUNE_AUTOSCALER_INTERVAL`, `DUNE_AUTOSCALER_DEMAND_INTERVAL`), and its
+database queries go through the transport seam described in
+[DATABASE.md §2.1](DATABASE.md#21-how-runtime-scripts-connect) — relevant
+because this is the one process that queries Postgres continuously.
+
+Director log-based scans share one reconnecting, timestamped log follower.
+Its private, indexed cache retains the configured scan windows; replacing
+Director clears evidence from the previous container. Travel checks retain
+their two-second cadence, and unavailable log evidence defers recovery.
+Chat repair snapshots existing bindings and repairs only missing bindings in
+batches of at most 200. The optional `.env` values
+`DUNE_AUTOSCALER_CHAT_EXCHANGE_REPAIR_SECONDS` (default 300) and
+`DUNE_AUTOSCALER_CHAT_EXCHANGE_REPAIR_TIMEOUT_SECONDS` (default 60) are
+forwarded when the Autoscaler is recreated.
 
 ---
 
@@ -218,23 +245,22 @@ for the exact, current full list). An optional
 the catalog index/manifest fetch only — it is never sent with the addon
 archive download and never reaches installed-addon runtime code. An addon's
 manifest (`addon.json`, `schemaVersion: 1`, `type: "ui"` only) declares
-the permissions it wants; **installing an addon does not grant those
-permissions** — an operator must explicitly approve each permission
-before an addon can use it (`requireApprovedPermissions()`), and updates
-require re-approval of any newly-requested permission. See
+the permissions it wants; **installing an addon does not by itself grant those
+permissions** — the permission list must be approved when the operator confirms
+the install or enable, and `requireApprovedPermissions()` refuses an install or
+enable whose requested permissions are not all approved. Updates require
+confirmation of any newly-requested permission. Catalog entries also carry a
+lifecycle state (`active`, `deprecated`, `unsupported`, `removed`, `blocked`);
+the last three block installation. See
 [`docs/addons/addon-item-grants.md`](../addons/addon-item-grants.md),
 [`docs/addons/addon-scheduled-jobs.md`](../addons/addon-scheduled-jobs.md),
 [`docs/addons/hardware-status.md`](../addons/hardware-status.md), and
 [`docs/security/addon-provenance.md`](../security/addon-provenance.md)
 for the developer-facing contract in full.
 
-**Known documentation gap:** there is no document describing the
-operator-facing click-path for browsing, installing, enabling, or
-approving permissions for an addon in the Web UI (the UI exists at
-`console/web/src/features/addons/`, but its actual navigation flow is not
-written down anywhere in `docs/`). Do not assume a specific UI flow when
-answering operator questions about this — verify against the running
-`console/web` UI, or file a documentation issue.
+The operator-facing click path (the sidebar **Addons** page, implemented in
+`console/web/src/features/addons/AddonsPanel.tsx`) is described in
+[`docs/operator-guide.md`](../operator-guide.md) §6.
 
 ---
 
@@ -302,7 +328,8 @@ reads/writes them. All are relative to the repo root.
 |---|---|---|
 | `runtime/secrets/` | Yes | Operator credentials: Funcom Self-Host Service Token, FLS API key, RabbitMQ HTTP token-auth secret, command-auth token, the console's own auto-generated admin password. Created empty by `dune init`. |
 | `runtime/generated/` | Yes | Ephemeral/derived state written by running scripts: battlegroup identity, image-tag resolution, per-partition port reservations, map/sietch/Deep-Desert config, systemd-timer state (auto-update, restart-schedule, IP-change-restart, shutdown-protection), the IAM policy store (`iam-policies.json`), the admin command audit log. Created empty by `dune init`. |
-| `runtime/backups/` | Yes | `db/` (database backups), `self-update/` (both the CLI's own Git-state-repair tarballs and `self-update.sh`'s own backups), `system/` (encrypted full-system archives, mode `0600`, each with a non-secret `.yaml` sidecar), `restore-<timestamp>/` (what a system restore replaced, written before it applies). |
+| `runtime/backups/` | Yes | `db/` (database backups), `self-update/` (both the CLI's own Git-state-repair tarballs and `self-update.sh`'s own backups), `system/` (encrypted full-system archives, mode `0600`, each with a non-secret `.yaml` sidecar), `restore-<timestamp>/` (what a system restore replaced, written before it applies), `.system-backup.lock` (held by whichever system backup or restore is running). |
+| `runtime/system-backup/` | Yes | The passphrase scheduled system backups encrypt with (`passphrase`, `0600`) and when it was saved (`passphrase.json`), in a `0700` directory. Deliberately outside `runtime/secrets/`, so it is never inside an archive and a restore never overwrites it. Included in the host permission repair. |
 | `runtime/data/` | No (shipped in the repo) | Static reference/lookup JSON shipped with the repo for `dune admin` item/vehicle/skill-module/XP-event-tag lookups — not operator-generated. |
 | `runtime/defaults/` | No (shipped in the repo) | `UserEngine.ini`, `UserGame.ini` — default engine config templates referenced by the multi-server documentation and `usersettings.py`. Patch-1.5 native difficulty controls are materialized into each server's `Saved/Config/LinuxServer/ServerCustomSettings.ini`. |
 
@@ -314,22 +341,35 @@ commented list of every supported variable, grouped by feature area).
 
 `runtime/backups/system/` is the one runtime directory whose contents are
 *more* sensitive than the tree they came from: each archive bundles a database
-dump together with `.env`, all of `runtime/generated/` and all of
-`runtime/secrets/`. Nothing is redacted or excluded on the grounds of being a
-secret — confidentiality comes entirely from GPG AES-256-OCB (AEAD)
+dump together with `.env`, `runtime/generated/` (minus caches rebuilt on start
+and half-written temp files) and all of `runtime/secrets/`. Nothing is
+redacted or excluded on the grounds of being a secret — confidentiality comes entirely from GPG AES-256-OCB (AEAD)
 encryption under an operator-supplied passphrase, and there is no recovery
 without it.
 
-Three structural points, each load-bearing:
+Four structural points, each load-bearing:
 
 - **Shell-owned.** `backup_system` and `restore_system` live in
   `runtime/scripts/db.sh`, not the console, because they have to work on a host
   whose console is not configured yet — which is the migration case the
   feature exists for. The console invokes them like any other operation.
-- **The passphrase never enters argv, the payload, or the audit log.** It
-  travels in the task's environment (`tasks.create`'s `options.env`, kept in
-  the run closure only, since the task object itself is retained and
-  serialized). The audit call and the secret are on different arguments.
+- **The passphrase never enters argv, the payload, or the audit log.** A typed
+  one travels in the task's environment (`tasks.create`'s `options.env`, kept
+  in the run closure only, since the task object itself is retained and
+  serialized). The audit call and the secret are on different arguments. A
+  saved one (scheduled backups, or "Use Saved Passphrase") is not passed at
+  all: the task gets `DUNE_SYSTEM_BACKUP_PASSPHRASE_FILE`, a path, and db.sh
+  reads the file itself.
+- **Scheduled runs happen one at a time, normally in the console image.** The
+  `dune-awakening-system-backup` timer starts a short-lived container from the
+  console image (it has GnuPG 2.4; many hosts' gpg cannot write the archive
+  format) that runs `dune db auto-system run`. Only when that image is missing
+  and the host's own gpg is 2.3+ does the unit run host `dune` instead, as the
+  checkout owner. `backup_system` and `restore_system` (apply only) take
+  `runtime/backups/.system-backup.lock`, so a scheduled run never overlaps a
+  restore. It skips instead, and prunes only archives whose sidecar says
+  `automatic`. A restore keeps this host's schedule state files rather than the
+  archive's, like the Battlegroup rollback point.
 - **The non-secret `.yaml` sidecar is the console's read path.** Listing,
   and the decisions the restore flow has to make before spending a passphrase
   (Battlegroup identity, whether the archive carries an admin audit log), are
@@ -338,38 +378,35 @@ Three structural points, each load-bearing:
 Restore copies everything it is about to replace into
 `runtime/backups/restore-<timestamp>/` first, restores the database before
 swapping `.env` (the credentials the running process is using), and never
-restarts the stack — restoring `.env` can change the admin password and the
-database credentials, so that is left to the operator. See
+restarts the game stack — restoring `.env` can change the admin password and
+the database credentials, so that is left to the operator. The Console only
+recreates its own container, after a cancellable five-second countdown
+(equivalent to `dune console reload`), so it picks up the restored `.env`. See
 [`docs/console/database-backups.md`](../console/database-backups.md).
 
 ---
 
-## 5. Discord integration — two distinct components
-
-**Do not conflate these two.** [`docs/README.md`](../README.md) documents
-this split explicitly, and it matters architecturally:
+## 5. Discord integration
 
 1. **The Discord adapter** (`console/api/src/integrations/discord/`) — a
-   built-in, disabled-by-default, bearer-token-protected
-   HTTP surface the console exposes for a companion Discord bot to read
-   server status/population/etc., and, if `DUNE_DISCORD_WRITES_ENABLED=1`
-   is set, to perform a narrow set of gated write actions (see
-   `broadcastProvider.js`). This is the **operator-facing, current**
-   integration — see
+   built-in, disabled-by-default, bearer-token-protected, role-gated
+   HTTP surface the console exposes for a companion Discord bot. It is
+   read-mostly: routes return server status, population and similar data, and
+   its only writes are player-link bookkeeping in the console's own
+   `dune.discord_player_links` / `dune.discord_pending_links` tables and the
+   opt-in `/broadcast` (`broadcastProvider.js`), which requires
+   `DUNE_DISCORD_WRITES_ENABLED` and an admin or owner role. The stock
+   `docker-compose.web.yml` does not forward that variable, so `/broadcast`
+   stays disabled there. This is the operator-facing integration — see
    [`docs/integrations/discord-integration/README.md`](../integrations/discord-integration/README.md)
    for the full route list and RBAC config.
-2. **The `discord-control-bot`** — a separate, explicitly **experimental,
-   internal, read-only** companion bot project. Its own admin guide states
-   plainly that it "is not the authority" and cannot mount the Docker
-   socket, write to Postgres, mutate players/maps/addons, or send
-   broadcasts. See
-   [`docs/integrations/discord-control-bot/admin-guide.md`](../integrations/discord-control-bot/admin-guide.md).
+2. **The `discord-control-bot` prototype docs** under
+   `docs/integrations/discord-control-bot/` are a **Historical record** of an
+   early prototype and are not maintained; use the adapter docs above.
 
-A separate design document,
-[`docs/rw-architecture.md`](../rw-architecture.md), describes a
-write-command architecture for Discord (two-phase preview/execute with
-nonces) — check that document's own status line for whether it describes
-shipped behavior or a still-open design at the time you're reading it.
+[`docs/rw-architecture.md`](../rw-architecture.md) describes a proposed
+two-phase (preview/execute with nonces) Discord write-command architecture.
+It was never built; the adapter above is what ships.
 
 ---
 

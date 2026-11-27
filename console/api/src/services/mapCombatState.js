@@ -1,4 +1,6 @@
-// Canonical, read-only resolver for map/partition PvP-PvE combat state.
+// Read-only report of map/partition PvP-PvE configuration, not a live combat check.
+// UserGame selection and Custom Settings' PVPMode are reported separately;
+// their precedence inside the game is not established by this resolver.
 //
 // This module is the Console/API adapter for the canonical resolver in
 // runtime/scripts/usersettings.py. Runtime publishers call those same Python
@@ -236,6 +238,9 @@ export async function resolveMapCombatState(config, mapName, partitionRows) {
         ...base,
         configuredState: resolved.configuredState,
         materializedState: resolved.materializedState,
+        customPvpMode: resolved.customPvpMode ?? null,
+        customPvpModeSource: resolved.customPvpModeSource ?? null,
+        materializedCustomPvpMode: resolved.materializedCustomPvpMode ?? null,
         source: resolved.configuredSource,
         securityZonesEnabled: resolved.securityZonesEnabled,
         restartRequired: resolved.restartRequired,

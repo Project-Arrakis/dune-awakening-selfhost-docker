@@ -1,6 +1,6 @@
 # Database Reference
 
-**Status:** Observed — verified against game build 2117304-0-shipping (September 2026). Re-verify after a game update.
+**Status:** Observed — verified against game build 2168446-0-shipping (November 2026). Re-verify after a game update.
 
 The dedicated server keeps all world state in one PostgreSQL 17.4 database,
 `dune`. The console reads and writes the same database. Almost none of that
@@ -60,7 +60,7 @@ Two independent writers share this database:
 | Writer | Connection | Owns |
 |---|---|---|
 | The dedicated server (closed source) | its own, not visible to us | virtually the entire schema |
-| This project (Console and runtime scripts) | the Console's `pg` pool or `psql` from runtime scripts | the project-owned objects in [§9](#9-project-authored-objects) |
+| This project (Console and runtime scripts) | the Console's `pg` pool, or `dune_psql` from runtime scripts ([§2.1](#21-how-runtime-scripts-connect)) | the project-owned objects in [§9](#9-project-authored-objects) |
 
 They are separate OS processes. The console's pool object is not shared with
 the game server in any way; the two simply agree on a database.
@@ -73,6 +73,125 @@ user and password. **Port is the exception** — it always delegates to
 port the console connects on can never disagree with the port
 status/preflight reports. The source comment explains the misconfiguration
 this prevents; don't reimplement the precedence chain anywhere else.
+
+### 2.1 How runtime scripts connect
+
+Runtime scripts do not open a pool. They query through a seam that exists in
+two languages, because the publishers are written in two:
+
+| Caller | Entry point | File |
+|---|---|---|
+| shell, as the superuser | `dune_psql`, `psql_value` | [`runtime/scripts/lib/postgres.sh`](../../runtime/scripts/lib/postgres.sh) |
+| shell, as the `dune` role | `dune_psql_app`, `psql_app_value` | [`runtime/scripts/lib/postgres.sh`](../../runtime/scripts/lib/postgres.sh) |
+| an embedded `python3 - <<PY` block | `dune_psql.query_tsv` | [`runtime/scripts/dune_psql.py`](../../runtime/scripts/dune_psql.py) |
+
+They read the same `DUNE_PSQL_TRANSPORT` and `POSTGRES_PORT`, and pick one of
+two transports:
+
+| Transport | Used when | How |
+|---|---|---|
+| `tcp` | a real `psql` client is on `PATH` | `psql -h 127.0.0.1 -p $POSTGRES_PORT` |
+| `exec` | it is not | `docker exec dune-postgres psql` |
+
+**The seam does not change which role a query runs as.** Most of these
+queries were already `-U postgres` before the conversion, and they use
+`dune_psql`. Nine across `deferred-reconcile.sh`, `farm-readiness.sh` and
+`repair-chat-exchanges.sh` were `-U dune`, and they use `dune_psql_app`, which
+connects as the application role: owner of the `dune` database, authenticated
+with `DUNE_DB_PASSWORD`, and not a superuser. Only the TCP leg sends a
+password at all — the exec leg reaches the server over its Unix socket, which
+the image trusts, which is how every one of these queries authenticated before
+the seam existed. `tests/psql-transport-test.sh` names those three scripts and
+fails if one of them reaches for a superuser entry point, because a promotion
+is invisible in a diff that only shows the exec disappearing.
+
+`auto` (the default) chooses between them on the first query of each process;
+set `DUNE_PSQL_TRANSPORT` in `.env` to pin one. Neither the transport nor the
+port is settled when the library is *sourced* or *imported*, deliberately:
+several callers (`spawn-server.sh`, `start-all.sh`) read `.env` well after
+their `source` lines, and resolving eagerly would pin the default port for
+them no matter what the operator configured. The detection is a `type -P` /
+`shutil.which` probe, deliberately not `command -v`, because `command -v`
+would also be satisfied by a *shell function* named `psql` — and this
+repository used to define one whose whole body was a container exec.
+
+The duplication is the point and it is fenced: `tests/psql-transport-test.sh`
+diffs the Python constants against the shell ones, so a changed superuser,
+database, container name or default port fails there rather than in
+production.
+
+Both legs reach the same database, so this is purely a question of cost. A
+container exec is not a connection: it forks a new process pair per
+statement, and the autoscaler issues them continuously, several per scan
+tick, for as long as the stack is up. On Podman each exec also rewrites the
+ExecIDs array in the container database, which turned a mostly idle server
+into a sustained tens-of-MB/s write load. The TCP leg reuses the published
+loopback port the stack already exposes and costs one short-lived
+connection instead.
+
+#### Which callers are on the seam
+
+The dividing line is *how often a caller runs*, not what it queries:
+
+- **Unattended loops, timers and publishers go through the seam** — the
+  autoscaler and its publishers, `publish-deepdesert-overrides.sh` (which
+  re-queries every ten seconds and fans out over every partition),
+  `publish-deepdesert-state.sh`, `publish-sietch-overrides.sh`,
+  `validate-sietch-state.sh`, `farm-readiness.sh` (reached from both publisher
+  hot paths), `restart-schedule.sh`, `deferred-reconcile.sh`,
+  `spicefield-overrides.sh` and `repair-chat-exchanges.sh`.
+- **Operator-invoked one-shots may keep a raw `docker exec`** — `db.sh`,
+  `doctor.sh`, `status.sh`, the `patch-*` and `probe-*` scripts,
+  `init-database.sh`, `update-db.sh`. One exec costs nothing when a human
+  typed the command, several pipe a `.sql` file in on stdin, and
+  `start-postgres.sh` has to work *before* any port is published.
+
+That boundary is an allowlist in `tests/psql-transport-test.sh`, diffed
+against what the tree actually contains, so a **new** raw-exec caller fails
+the test until someone adds it on purpose. The same test rejects a
+`["docker", "exec", ...]` argv list built anywhere but `dune_psql.py`, which
+is how four publishers evaded an earlier, grep-for-the-shell-string version of
+this guard and kept exec'ing at ~1.8 statements a second.
+
+`coriolis-data-cleanup.sh` stays on a direct `docker exec`: it pipes a heredoc
+on stdin, which the seam does not cover because both legs read from
+`/dev/null`. Its `dune` role is no longer a reason — `dune_psql_app` connects
+as that role — so if it ever stops needing stdin it can move onto the seam
+like the rest.
+
+#### Where the client lives, and how the configuration reaches it
+
+- **Both images that run publisher loops ship `postgresql-client`** — the
+  orchestrator image and the console image. The console's did not, so every
+  query from the web admin took the exec leg however correctly the script was
+  written; CI now runs `psql --version` against the built console image so a
+  dropped package fails the build rather than quietly doubling the exec rate.
+  `dune doctor` asks *both* seams inside *both* running containers which leg
+  they took, and names the two reasons an answer of `exec` has — a stale image
+  with no client, or a pinned `DUNE_PSQL_TRANSPORT`. The fallback is silent
+  and correct, just expensive, so nothing else would surface it.
+- **The exec leg is load-bearing, not vestigial.** The same scripts run
+  directly on the host, from the `dune` CLI and `start-all.sh`, where a
+  `psql` client usually is not installed.
+
+The operator's configuration has to reach both halves, by different routes.
+Addressing the container by name meant the published port never mattered, so
+every host script that queries the database now reads `.env` itself — without
+that, a stack whose `POSTGRES_PORT` was remapped (see
+[`MULTI-SERVER-SINGLE-PUBLIC-IP.md`](../runtime/MULTI-SERVER-SINGLE-PUBLIC-IP.md))
+would dial the default port as soon as a `psql` client was installed. Scripts
+whose queries run in embedded Python follow `. ./.env` with a targeted
+`export POSTGRES_PORT DUNE_PSQL_TRANSPORT`, because a child interpreter reads
+them from its environment — targeted rather than `set -a`, which would hand
+every other secret in `.env` to every child process as well.
+
+Inside a container the same route works: both the autoscaler and the console
+bind-mount the repo root, so a script that sources `.env` finds it. The
+exception is `autoscaler.sh`, which is written to be configured entirely by its
+environment and never reads the file — which is why `start-autoscaler.sh` and
+`start-coriolis-coordinator.sh` pass `POSTGRES_PORT` and `DUNE_PSQL_TRANSPORT`
+in with `-e`, and why `dune autoscaler` exports `.env` before running it in the
+foreground.
 
 ---
 
@@ -129,16 +248,16 @@ not configuration — a configured-but-down map does not appear.
 
 | Subsystem | Tables | Deep-dive doc |
 |---|---|---|
-| Actors & world | `actors`, `actor_audit`, `actor_fgl_entities`, `actor_spawner_actors`, `actor_spawners`, `actor_state`, `fgl_entities`, `building_instances`, `placeables`, `totems`, `encounters_static`, `farm_state`, `farm_variables`, `map_areas`, `map_names`, `markers`, `player_markers`, `overmap_players` | [live-map.md](../console/live-map.md) |
+| Actors & world | `actors`, `actor_audit`, `actor_fgl_entities`, `actor_spawner_actors`, `actor_spawners`, `fgl_entities`, `building_instances`, `placeables`, `totems`, `encounters_static`, `farm_state`, `farm_variables`, `map_areas`, `map_names`, `markers`, `player_markers`, `overmap_players` | [live-map.md](../console/live-map.md) |
 | Buildings & bases | `buildings`, `building_progression`, `building_favorites`, `building_blueprints`, `building_blueprint_instances`, `building_blueprint_pentashields`, `building_blueprint_placeables`, `base_backups`, `base_backup_linked_actors`, `landclaim_segments` | [blueprints.md](../console/blueprints.md), [base-backups.md](../console/base-backups.md), [base-deletion.md](../console/base-deletion.md) |
-| Inventory & items | `inventories`, `items`, `actor_inventories`, `removed_items`, `removed_recipes` | [base-inventory.md](../console/base-inventory.md) |
-| Players & accounts | `encrypted_accounts`, `account_removal_log`, `encrypted_player_state`, `character_transfer_imports`, `player_access_codes`, `player_faction`, `player_faction_reputation`, `player_tags`, `player_respawn_locations`, `player_virtual_currency_balances`, `communinet_player`, `communinet_player_channels`, `cheater_tracking` | — |
+| Inventory & items | `inventories`, `items`, `actor_inventories`, `item_operations_staging_table` | [base-inventory.md](../console/base-inventory.md) |
+| Players & accounts | `encrypted_accounts`, `account_removal_log`, `encrypted_player_state`, `character_transfer_imports`, `player_access_codes`, `player_faction`, `player_faction_reputation`, `player_tags`, `player_respawn_locations`, `player_virtual_currency_balances`, `cheater_tracking` | — |
 | Guilds & parties | `guilds`, `guild_members`, `guild_invites`, `parties`, `party_members`, `party_invites`, `platform_parties_mapping` | — |
 | Landsraad | `landsraad_decrees`, `landsraad_decree_rotation`, `landsraad_decree_term`, `landsraad_decree_votes`, `landsraad_tasks`, `landsraad_task_progress`, `landsraad_task_progress_guild`, `landsraad_task_progress_player`, `landsraad_task_progress_processed`, `landsraad_task_faction_contributions`, `landsraad_task_guild_contributions`, `landsraad_task_player_contributions`, `landsraad_task_reveal_state`, `landsraad_task_rewards`, `landsraad_house_rewards` | — |
 | Exchange | `dune_exchanges`, `dune_exchange_accesspoints`, `dune_exchange_categories_hash`, `dune_exchange_orders`, `dune_exchange_sell_orders`, `dune_exchange_fulfilled_orders`, `dune_exchange_users` | [exchange.md](../console/exchange.md) |
 | Specializations & skills | `specialization_tracks`, `specialization_keystones_map`, `purchased_specialization_keystones`, `specialization_refund_id` | — |
 | Journey & tutorial | `journey_story_node`, `journey_story_node_cooldown`, `journey_tracked_cards`, `tutorial_per_player`, `tutorials`, `consumed_per_player_lore`, `consumed_temporary_per_player_lore`, `lore_pickups`, `lore_pickups_temporary`, `dialogue_met_npcs`, `dialogue_taken_nodes`, `mnemonic_recall`, `dungeon_completion`, `dungeon_completion_players` | — |
-| Spice & resource fields | `resourcefield_state`, `spicefield_types`, `spicefield_server_availability` | — |
+| Spice & resource fields | `resourcefield_state` | — |
 | Vehicles | `vehicles`, `vehicle_modules`, `vehicle_module_inventories`, `backup_vehicles`, `recovered_vehicles` | [vehicle-deletion.md](../console/vehicle-deletion.md), [vehicle-permissions.md](../console/vehicle-permissions.md), [vehicle-storage.md](../console/vehicle-storage.md) |
 | Permissions | `permission_actor`, `permission_actor_rank` | [base-permissions.md](../console/base-permissions.md), [base-child-permissions.md](../console/base-child-permissions.md) |
 | Travel | `player_travel_state`, `travel_actor_parent`, `travel_return_info` | — |
@@ -168,8 +287,8 @@ triggers, and the event log for that partition is created as a side effect:
   which calls the procedure
   `dune.create_event_log_partition_table(table_name text, partition_id bigint)`
 
-The result is the `dune.event_log_p*` family — 58 tables on the verified
-build, which is why a raw table count (186) looks alarming next to the ~127
+The result is the `dune.event_log_p*` family — 60 tables on the verified
+build, which is why a raw table count (186) looks alarming next to the 124
 tables that actually carry distinct meaning.
 
 Practical effect: **never `insert into dune.world_partition` by hand.** A row
@@ -204,7 +323,7 @@ each has in the schema:
 
 | Channel | Call sites |
 |---|---|
-| `guild_notify_channel` | 12 |
+| `guild_notify_channel` | 13 |
 | `landsraad_notify_channel` | 11 |
 | `party_notify_channel` | 9 |
 | `permission_notify_channel` | 7 |
@@ -221,7 +340,7 @@ implying a live effect. See
 
 ### Procedures
 
-Six, on the verified build — five Landsraad plus one operational:
+Six, on the verified build — four Landsraad plus two operational:
 
 | Procedure | Purpose |
 |---|---|
@@ -279,9 +398,9 @@ machinery exists:
 
 | Object | Fate | Guard |
 |---|---|---|
-| `dune.actor_state` | folded into `dune.actors.state` by game Patch 1.5 | legacy path retained, `duneDb.js:5307` |
-| `dune.spicefield_types` | removed | `tableExists`, `duneDb.js:349` |
-| `dune.get_solaris_id()` | removed | `functionExists`, `duneDb.js:1014`, `:2836` |
+| `dune.actor_state` | folded into `dune.actors.state` by game Patch 1.5 | legacy `tableExists(db, "actor_state")` fallback retained in `duneDb.js` (vehicle lifecycle state and the vehicle-delete guard) |
+| `dune.spicefield_types` | removed | `tableExists(db, "spicefield_types")` in `duneDb.js` |
+| `dune.get_solaris_id()` | removed | `functionExists(db, "dune.get_solaris_id()")` in `duneDb.js` |
 
 ---
 
@@ -297,12 +416,12 @@ a fault**.
 
 | Table | Created in |
 |---|---|
-| `dune.console_player_playtime` | `duneDb.js:1518` |
-| `dune.discord_player_links` | `duneDb.js:14933` |
-| `dune.discord_pending_links` | `duneDb.js:14950` |
-| `dune.admin_choam_terminals` | `services/choamTerminals.js:49` |
-| `dune.admin_choam_terminal_positions` | `services/choamTerminals.js` |
-| `dune.player_death_log` (+2 indexes) | `deathPoller.js:39` |
+| `dune.console_player_playtime` | `migratePlayerPlaytimeSchema()` in `duneDb.js` |
+| `dune.discord_player_links` | `migrateDiscordAdapterSchema()` in `duneDb.js` |
+| `dune.discord_pending_links` | `migrateDiscordAdapterSchema()` in `duneDb.js` |
+| `dune.admin_choam_terminals` | `ensureTrackingTable()` in `services/choamTerminals.js` |
+| `dune.admin_choam_terminal_positions` | `ensurePositionTable()` in `services/choamTerminals.js` |
+| `dune.player_death_log` (+2 indexes) | `ensureTableSQL()` in `deathPoller.js` |
 | `dune.network_address_config` | `runtime/scripts/network-addresses.sh` |
 
 `runtime/scripts/network-addresses.sh` also creates the
@@ -384,4 +503,4 @@ A name in the drift list is **not automatically a bug.** It is one of:
    error string is reported too;
 4. an actual latent bug.
 
-On the verified build the list is eight names, and none are case 4.
+On the verified build the list is ten names, and none are case 4.

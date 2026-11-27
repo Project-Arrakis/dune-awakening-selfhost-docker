@@ -1,11 +1,11 @@
-// Game-coordinate constants for the Deep Desert's 9x9 sector grid. Columns
-// increase west-to-east; letters increase from the high-Y edge to the low-Y
-// edge, matching the labels baked into the in-game map (A at the bottom of the
-// rendered map and I at the top).
-const DEEP_DESERT_CENTRE_X = -52656;
-const DEEP_DESERT_CENTRE_Y = -52066;
-const DEEP_DESERT_GRID_HALF_SIZE = 1125000;
-const DEEP_DESERT_SECTOR_SIZE = 250000;
+// The Deep Desert's 9x9 sector grid, measured in game: it is larger than the
+// terrain rect and its cells are not square. Columns increase west-to-east;
+// letters increase from the high-Y edge to the low-Y edge (A at the bottom of
+// the rendered map, I at the top). Keep in step with liveMapSectorGrid.ts.
+const DEEP_DESERT_GRID_MIN_X = -1268450;
+const DEEP_DESERT_GRID_MAX_Y = 1163467;
+const DEEP_DESERT_SECTOR_WIDTH = 269650;
+const DEEP_DESERT_SECTOR_HEIGHT = 269217;
 const DEEP_DESERT_SECTOR_COUNT = 9;
 
 export function deepDesertSectorForWorldPoint(x, y) {
@@ -13,8 +13,8 @@ export function deepDesertSectorForWorldPoint(x, y) {
   const worldY = Number(y);
   if (!Number.isFinite(worldX) || !Number.isFinite(worldY)) return null;
 
-  const column = Math.floor((worldX - (DEEP_DESERT_CENTRE_X - DEEP_DESERT_GRID_HALF_SIZE)) / DEEP_DESERT_SECTOR_SIZE);
-  const row = Math.floor((DEEP_DESERT_CENTRE_Y + DEEP_DESERT_GRID_HALF_SIZE - worldY) / DEEP_DESERT_SECTOR_SIZE);
+  const column = Math.floor((worldX - DEEP_DESERT_GRID_MIN_X) / DEEP_DESERT_SECTOR_WIDTH);
+  const row = Math.floor((DEEP_DESERT_GRID_MAX_Y - worldY) / DEEP_DESERT_SECTOR_HEIGHT);
   if (column < 0 || column >= DEEP_DESERT_SECTOR_COUNT || row < 0 || row >= DEEP_DESERT_SECTOR_COUNT) return null;
   return `${String.fromCharCode(65 + row)}${column + 1}`;
 }

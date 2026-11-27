@@ -8,6 +8,8 @@ import {
   characterTransferSettingsPath,
   parseCharacterTransferSettings,
   readCharacterTransferSettings,
+  readCharacterTransferSettingsStatus,
+  saveAndApplyCharacterTransferSettings,
   saveCharacterTransferSettings,
   validateCharacterTransferSettings,
   writeCharacterTransferSettingsText
@@ -17,6 +19,96 @@ function tempConfig() {
   const repoRoot = mkdtempSync(join(tmpdir(), "dune-transfer-settings-"));
   return { repoRoot };
 }
+
+function directorMock(initial = characterTransferDefaults) {
+  let effective = { ...initial };
+  const calls = [];
+  return {
+    calls,
+    fetchImpl: async (url, request) => {
+      calls.push({ url, ...request });
+      if (request.method === "POST") {
+        effective = JSON.parse(request.body);
+        return new Response(null, { status: 200 });
+      }
+      return Response.json({ config: Object.fromEntries(Object.entries(effective).map(([key, value]) => [key[0].toLowerCase() + key.slice(1), value])), webOverrideConfig: effective });
+    }
+  };
+}
+
+test("live save persists and verifies exact values without a restart task", async (t) => {
+  const config = { ...tempConfig(), ports: { director: 23456 } };
+  t.after(() => rmSync(config.repoRoot, { recursive: true, force: true }));
+  const director = directorMock();
+  for (const timeout of [1200, 1800]) {
+    const settings = { ...characterTransferDefaults, ExportCharacterTimeout: timeout, IncomingCharacterTransfers: 20, ForceIsWorldClosed: true };
+    const result = await saveAndApplyCharacterTransferSettings(config, settings, director);
+    assert.equal(result.applied, true);
+    assert.equal(result.task, undefined);
+    assert.deepEqual(result.settings, settings);
+    assert.deepEqual(readCharacterTransferSettings(config).settings, settings);
+    assert.equal((await readCharacterTransferSettingsStatus(config, director)).applied, true);
+  }
+  assert.equal(director.calls[0].url, "http://127.0.0.1:23456/v0/BattlegroupUpdateCharacterTransferSettings");
+  assert.equal(director.calls[0].redirect, "error");
+  assert.equal(director.calls[1].url, "http://127.0.0.1:23456/v0/BattlegroupFetchCharacterTransferRules");
+  await saveAndApplyCharacterTransferSettings(config, {}, { ...director, defaults: true });
+  assert.deepEqual(readCharacterTransferSettings(config).settings, characterTransferDefaults);
+  assert.equal((await readCharacterTransferSettingsStatus(config, director)).applied, true);
+});
+
+test("invalid values do not persist or contact Director", async (t) => {
+  const config = { ...tempConfig(), ports: { director: 23456 } };
+  t.after(() => rmSync(config.repoRoot, { recursive: true, force: true }));
+  const director = directorMock();
+  await assert.rejects(saveAndApplyCharacterTransferSettings(config, { ...characterTransferDefaults, ExportCharacterTimeout: 0 }, director), { statusCode: 400 });
+  assert.equal(director.calls.length, 0);
+  assert.equal(readCharacterTransferSettings(config).customized, false);
+});
+
+test("failed live updates remain saved and can be retried unchanged", async (t) => {
+  const config = { ...tempConfig(), ports: { director: 23456 } };
+  t.after(() => rmSync(config.repoRoot, { recursive: true, force: true }));
+  const settings = { ...characterTransferDefaults, ExportCharacterTimeout: 1800 };
+  for (const fetchImpl of [
+    async () => { throw new Error("connection refused"); },
+    async () => new Response(null, { status: 500 })
+  ]) {
+    await assert.rejects(saveAndApplyCharacterTransferSettings(config, settings, { fetchImpl }), (error) => error.statusCode === 503 && /were saved.*No services were restarted/.test(error.message));
+    assert.deepEqual(readCharacterTransferSettings(config).settings, settings);
+    assert.equal((await readCharacterTransferSettingsStatus(config, { fetchImpl })).applied, null);
+  }
+  const stale = directorMock();
+  const fetchImpl = (url, request) => request.method === "POST" ? Promise.resolve(new Response(null, { status: 200 })) : stale.fetchImpl(url, request);
+  await assert.rejects(saveAndApplyCharacterTransferSettings(config, settings, { fetchImpl }), { statusCode: 503 });
+  assert.equal((await readCharacterTransferSettingsStatus(config, { fetchImpl })).applied, false);
+  const director = directorMock();
+  assert.equal((await saveAndApplyCharacterTransferSettings(config, settings, director)).applied, true);
+});
+
+test("concurrent saves cannot interleave file persistence and live application", async (t) => {
+  const config = { ...tempConfig(), ports: { director: 23456 } };
+  t.after(() => rmSync(config.repoRoot, { recursive: true, force: true }));
+  const director = directorMock();
+  let release;
+  const gate = new Promise((resolveGate) => { release = resolveGate; });
+  const first = saveAndApplyCharacterTransferSettings(config, { ...characterTransferDefaults, ExportCharacterTimeout: 1200 }, {
+    fetchImpl: async (...args) => { await gate; return director.fetchImpl(...args); }
+  });
+  await assert.rejects(saveAndApplyCharacterTransferSettings(config, { ...characterTransferDefaults, ExportCharacterTimeout: 1800 }, director), { statusCode: 409 });
+  assert.equal(readCharacterTransferSettings(config).settings.ExportCharacterTimeout, 1200);
+  release();
+  await first;
+  assert.equal((await readCharacterTransferSettingsStatus(config, director)).applied, true);
+});
+
+test("incomplete native readback is never treated as confirmation", async (t) => {
+  const config = { ...tempConfig(), ports: { director: 23456 } };
+  t.after(() => rmSync(config.repoRoot, { recursive: true, force: true }));
+  const { IncomingCharacterTransfers, ...incomplete } = characterTransferDefaults;
+  const fetchImpl = async (_url, request) => request.method === "POST" ? new Response(null, { status: 200 }) : Response.json({ config: incomplete });
+  await assert.rejects(saveAndApplyCharacterTransferSettings(config, characterTransferDefaults, { fetchImpl }), { statusCode: 503 });
+});
 
 test("parses Battlegroup character transfer settings", () => {
   const parsed = parseCharacterTransferSettings(`

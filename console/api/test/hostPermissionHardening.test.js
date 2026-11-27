@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
-import { readFileSync, statSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { chownSync, copyFileSync, existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -58,4 +60,48 @@ test("latency tuning uses a unique temporary log instead of a shared root-owned 
   assert.doesNotMatch(runtimeEnv, />\/tmp\/dune-host-latency-tune\.log/);
   assert.match(runtimeEnv, /dune_set_host_path_owner "\$stamp"/);
   assert.match(runtimeEnv, /dune_set_host_path_owner "\$latency_log"/);
+});
+
+function checkOwnershipHelper(specialPaths = false) {
+  const root = mkdtempSync(join(tmpdir(), specialPaths ? "dune-host-owner ' ; $(touch injected-marker) `touch backtick-marker`-" : "dune-host-owner-"));
+  const helperPath = join(root, specialPaths ? "owner ' ; $(touch injected-marker) `touch backtick-marker`.sh" : "owner.sh");
+  const isRoot = process.getuid?.() === 0;
+  try {
+    copyFileSync(resolve(repoRoot, "runtime/scripts/host-file-ownership.sh"), helperPath);
+    writeFileSync(join(root, "snapshot.tmp"), "[Survival_1]\n");
+    writeFileSync(join(root, "victim"), "keep\n");
+    symlinkSync(join(root, "victim"), join(root, "link.tmp"));
+    // The helper takes the owner from the install folder, which is its cwd.
+    if (isRoot) chownSync(root, 12345, 12346);
+    // Keep paths out of shell command arguments; the fixed stdin script uses
+    // a quoted environment variable to source the helper as a literal path.
+    const result = spawnSync("bash", ["--noprofile", "--norc", "-s"], {
+      cwd: root,
+      input: 'set -euo pipefail\nsource "$DUNE_TEST_HOST_OWNER_HELPER"\ndune_set_host_path_owner snapshot.tmp\ndune_set_host_path_owner link.tmp\n',
+      env: { ...process.env, BASH_ENV: "", DUNE_HOST_UID: "", DUNE_HOST_GID: "", DUNE_TEST_HOST_OWNER_HELPER: helperPath },
+      encoding: "utf8"
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(existsSync(join(root, "injected-marker")), false);
+    assert.equal(existsSync(join(root, "backtick-marker")), false);
+
+    const owner = path => [lstatSync(join(root, path)).uid, lstatSync(join(root, path)).gid];
+    if (isRoot) {
+      assert.deepEqual(owner("snapshot.tmp"), [12345, 12346]);
+      assert.deepEqual(owner("link.tmp"), [12345, 12346]);
+      assert.deepEqual(owner("victim"), [0, 0], "the symlink target must keep its owner");
+    } else {
+      assert.equal(owner("snapshot.tmp")[0], process.getuid());
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test("ownership helper hands root-written files to the install owner without following symlinks", () => {
+  checkOwnershipHelper();
+});
+
+test("ownership helper treats shell characters in paths as literal filenames", () => {
+  checkOwnershipHelper(true);
 });
