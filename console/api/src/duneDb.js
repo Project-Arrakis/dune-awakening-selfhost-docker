@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { redact } from "./redact.js";
 import { itemImagePath, isDirectCustomizationUnlock } from "./adminCatalog.js";
+import { loadItemGameData, withItemGameData } from "./itemGameData.js";
 import { clampInt, writeJsonAtomic } from "./jsonStore.js";
 import { isFiefClaimPlaceable } from "./blueprintSafety.js";
 import { journeyCards, planJourneyChange } from "./duneDb/journeyProgress.js";
@@ -81,6 +82,8 @@ const MAX_TABLE_PREVIEW_ROWS = 10000;
 const INVENTORY_EDITABLE_COLUMNS = new Set(["stack_size", "quality_level", "position_index", "current_durability"]);
 let craftingRecipeCatalogCache = null;
 let adminItemMetadataCache = null;
+// Game tables for templates the catalog does not list; loaded with the catalog above.
+let adminItemGameData = null;
 let mapRegionNamesCache = null;
 let augmentCompatibilityCache = null;
 const PLAYER_TARGET_CACHE_TTL_MS = 3000;
@@ -8236,9 +8239,11 @@ export function adminItemMetadata() {
       resolve(process.cwd(), "../../runtime/data/admin-items.json")
     ].find((candidate) => existsSync(candidate)) || resolve(process.cwd(), "runtime/data/admin-items.json");
     const items = JSON.parse(readFileSync(path, "utf8"));
-    for (const item of Array.isArray(items) ? items : []) {
-      const id = String(item.id || "").trim();
+    adminItemGameData = loadItemGameData(path);
+    for (const row of Array.isArray(items) ? items : []) {
+      const id = String(row.id || "").trim();
       if (!id) continue;
+      const item = withItemGameData(row, adminItemGameData);
       metadata.set(id, {
         name: String(item.name || ""),
         category: String(item.category || ""),
@@ -10931,6 +10936,8 @@ function augmentTemplateMetadata(templateId) {
   return adminItemMetadata().get(String(templateId || "")) || {};
 }
 
+const NON_GEAR_CATEGORIES = new Set(["customizations", "contracts", "consumables", "emotes"]);
+
 function augmentItemKindForTemplate(templateId) {
   const metadata = augmentTemplateMetadata(templateId);
   const category = String(metadata.category || "").toLowerCase();
@@ -10951,6 +10958,9 @@ function augmentItemKindForTemplate(templateId) {
   // other item kind.
   if (metadata.group === "refined_resource" || metadata.group === "component") return "other";
   if (category === "schematics" || source === "schematics" || /_schematic$/i.test(String(templateId || "")) || /schematic/i.test(text)) return "schematic";
+  // Tokens and consumables are never gear, whatever their names say: a cosmetic
+  // called "... Helmet Variant" must not get weapon, clothing or durability stats.
+  if (NON_GEAR_CATEGORIES.has(category)) return "other";
   if (
     category === "clothing" ||
     source === "clothing" ||
@@ -11477,7 +11487,7 @@ function maxStackSizeForTemplate(templateId) {
       }
     }
   }
-  return stackSizeByLowerTemplateId.get(key.toLowerCase()) || 0;
+  return stackSizeByLowerTemplateId.get(key.toLowerCase()) || adminItemGameData?.get(key)?.stackSize || 0;
 }
 
 // Runaway backstop, NOT an operational limit (revised per explicit operator
@@ -11611,7 +11621,7 @@ function resolvedItemUnitVolume(templateId, volumeOverride) {
     const catalog = Number(catalogValue);
     if (Number.isFinite(catalog) && catalog >= 0) return catalog;
   }
-  return null;
+  return adminItemGameData?.get(String(templateId || ""))?.volume ?? null;
 }
 
 async function inventoryVolumeState(tx, inventoryId) {

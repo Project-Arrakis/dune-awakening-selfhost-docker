@@ -636,8 +636,27 @@ variants 500, `HeavyAmmo` and `Ammo` 1000, the `SpiceAddictionConsumable` foods 
 heat packs 20, and the Landsraad contract items 3 to 6; `T4ShieldWallComponent` and
 `ExperimentalWindTurbineComponent`, which 404ed against the earlier external source, are 500. **Items whose game
 limit is 1** (about 2,000 weapons, clothing, vehicles and schematics) were deliberately left without a
-`stackSize`: giving several of them still makes one row with the whole quantity, and giving each its own
-row would change what a give of several does, so that is a separate decision.
+`stackSize`: at the time, giving several of them made one row with the whole quantity, and giving each its own
+row was left as a separate decision. That decision has since been taken — see the next paragraph.
+
+**Game data for every item (2026-11-27).** `runtime/data/item-game-data.json` holds the unit volume and stack
+limit of all 4,227 items in the game's item tables, read from the installed game (build, method and known limits
+in [`item-game-data.PROVENANCE.md`](../../runtime/data/item-game-data.PROVENANCE.md)). It only fills gaps: a
+`volume` or `stackSize` curated in `admin-items.json` always wins. This changes behaviour:
+
+- Giving several of a non-stackable item through Storage Give, player Give (database path), Care Package or an
+  add-on database grant writes one row per unit, limited by free slots; a short delivery is reported.
+- Add Item to Container clamps a non-stackable item to a quantity of 1.
+- Storage and Bases volume totals now count gear, so Give and Fill no longer refuse a container holding it. A
+  container already over its limit reports no room.
+- Storage Give of gear is held to the container's volume limit, and a container holding an item of unknown volume
+  rejects it.
+- Cosmetic tokens, contracts, consumables and emotes never get weapon, clothing or durability stats, whatever
+  their names say.
+
+The 46 catalog ids that have no row in the game's tables keep no volume and no stack limit. While one of them is
+in a container, items with a known volume cannot be given into it. If the file is missing or invalid the console
+logs one warning and uses `admin-items.json` alone.
 
 **Stack size correlates strongly with resource type, not per-item uniqueness** — an operator hypothesis
 tested 2026-08-20 by externally resolving all 96 (of 99) `raw_resource`/`refined_resource`/`component`
@@ -725,12 +744,22 @@ row's `volume_override` from the current `runtime/data/admin-items.json` catalog
 ID" text field.** Found during manual UI review of #347: the original plain text input required already
 knowing the exact template id or exact in-game name, offered no way to discover what is actually in the
 catalog, and did not filter anything as the operator typed — typing was just raw text sent straight to the
-server on submit. Search and the results list are name-only: the catalog id (e.g. `"Oil"` for the in-game
-"Fuel Cell") is a backend concept the operator never needs to see or type, and Give/Fill both submit the
-selected item's real `itemId` under the hood regardless. Give and Fill share one combobox instance (see
-"Give and Fill share one item picker..." above), filtered to `FILLABLE_GROUPS` client-side in both modes,
-matching the server's own `resolveFillableCatalogItem()` check, so the picker never even offers an item the
-server would reject.
+server on submit. Give and Fill share one combobox instance (see "Give and Fill share one item picker..."
+above), filtered to `FILLABLE_GROUPS` client-side in both modes, matching the server's own
+`resolveFillableCatalogItem()` check, so the picker never even offers an item the server would reject. Both
+submit the selected item's `itemId`.
+
+The Storage tab uses the same picker over the whole catalog (it replaced the "Item name or ID" field there), so
+`POST /api/storage/{storageId}/give-item` now receives an `itemId` from the UI; the route accepts a name as
+before. The picker works like this on both tabs:
+
+- Search matches every typed word against name and category, exact and prefix matches first; the list says when
+  it is cut off.
+- The catalog id is not searched, and is shown only when two items share a name and category. The Storage
+  confirmation always names the id.
+- A failed catalog load says so and is retried when the field is focused again.
+- The field has a row to itself, so item names are readable (on Bases it previously shrank to the width of an
+  item picture).
 
 ## Why Give/Fill do not require a stopped map
 

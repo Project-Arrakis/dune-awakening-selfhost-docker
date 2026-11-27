@@ -6543,11 +6543,9 @@ async function storageGiveItemRoute(req, res, path) {
   const storageId = decodeURIComponent(path.split("/")[3]);
   return directDbMutation(req, res, "storage.give-item", "GIVE ITEM TO STORAGE", async (body) => {
     const resolved = resolveCatalogItem(config.repoRoot, body);
-    // itemVolume defaults to 0 for any item without catalogued volume data
-    // (most weapons/gear/schematics), which giveItemToStorage treats as
-    // "skip the volume check" -- the same as it always has for those items.
-    // Only items the catalog actually has a volume for (raw/refined
-    // resources, components) gain the new volume enforcement.
+    // The volume comes from admin-items.json, or from the game data for the items
+    // it does not carry (itemGameData.js). An item neither knows has volume 0,
+    // which giveItemToStorage treats as "skip the volume check".
     const itemVolume = resolved.volume || resolveItemVolume(config.repoRoot, resolved.itemId);
     return duneDb.giveItemToStorage(db, storageId, { ...body, templateId: resolved.itemId, itemVolume });
   }, { storageId });

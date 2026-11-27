@@ -7052,7 +7052,7 @@
     "All Categories ({count0})": [
       {
         "file": "console/web/src/components/common/ItemCatalog.tsx",
-        "line": 75,
+        "line": 87,
         "nearby": [
           "Choose Category",
           "Filter Items",
@@ -7889,7 +7889,7 @@
     "Apply Fills (Restart Survival)": [
       {
         "file": "console/web/src/features/storage/StoragePanel.tsx",
-        "line": 139,
+        "line": 140,
         "nearby": [
           "Storage",
           "Refresh Storage",
@@ -11846,7 +11846,7 @@
       },
       {
         "file": "console/web/src/components/common/ItemCatalog.tsx",
-        "line": 88,
+        "line": 100,
         "nearby": [
           "Item Name",
           "Item ID",
@@ -13071,7 +13071,7 @@
     "Choose Category": [
       {
         "file": "console/web/src/components/common/ItemCatalog.tsx",
-        "line": 73,
+        "line": 85,
         "nearby": [
           "All Categories ({count0})",
           "Filter Items"
@@ -22538,11 +22538,11 @@
     "Export JSON": [
       {
         "file": "console/web/src/features/storage/StoragePanel.tsx",
-        "line": 139,
+        "line": 140,
         "nearby": [
           "Loading storage containers...",
           "Storage",
-          "Item name or ID",
+          "Item to give or fill",
           "Qty"
         ]
       }
@@ -22952,10 +22952,11 @@
     "Fill Container": [
       {
         "file": "console/web/src/features/storage/StoragePanel.tsx",
-        "line": 139,
+        "line": 140,
         "nearby": [
           "Give Item",
           "Storage fill-item schema not detected",
+          "The console does not know this item's volume. While it is in a container, items with a known volume cannot be given into that container.",
           "Fill Container accepts refined resources and components only, respecting slot and volume limits."
         ]
       },
@@ -22972,10 +22973,10 @@
     "Fill Container accepts refined resources and components only, respecting slot and volume limits.": [
       {
         "file": "console/web/src/features/storage/StoragePanel.tsx",
-        "line": 139,
+        "line": 140,
         "nearby": [
-          "Storage fill-item schema not detected",
-          "Fill Container"
+          "Fill Container",
+          "The console does not know this item's volume. While it is in a container, items with a known volume cannot be given into that container."
         ]
       }
     ],
@@ -23014,7 +23015,7 @@
     "Fills become visible in-game after the Survival server restarts; the restart disconnects players for a few minutes.": [
       {
         "file": "console/web/src/features/storage/StoragePanel.tsx",
-        "line": 139,
+        "line": 140,
         "nearby": [
           "Refresh Storage",
           "Apply Fills (Restart Survival)",
@@ -23260,7 +23261,7 @@
     "Filter Items": [
       {
         "file": "console/web/src/components/common/ItemCatalog.tsx",
-        "line": 79,
+        "line": 91,
         "nearby": [
           "Choose Category",
           "All Categories ({count0})",
@@ -25009,9 +25010,9 @@
       },
       {
         "file": "console/web/src/features/storage/StoragePanel.tsx",
-        "line": 139,
+        "line": 140,
         "nearby": [
-          "Qty",
+          "Quantity",
           "Storage give-item schema not detected",
           "Storage fill-item schema not detected",
           "Fill Container"
@@ -25833,7 +25834,7 @@
       },
       {
         "file": "console/web/src/components/common/ItemCatalog.tsx",
-        "line": 81,
+        "line": 93,
         "nearby": [
           "Filter Items",
           "Item catalog view",
@@ -27940,7 +27941,7 @@
     "Item catalog view": [
       {
         "file": "console/web/src/components/common/ItemCatalog.tsx",
-        "line": 80,
+        "line": 92,
         "nearby": [
           "All Categories ({count0})",
           "Filter Items",
@@ -28001,7 +28002,7 @@
       },
       {
         "file": "console/web/src/components/common/ItemCatalog.tsx",
-        "line": 88,
+        "line": 100,
         "nearby": [
           "Preview",
           "Item Name",
@@ -28101,24 +28102,12 @@
       },
       {
         "file": "console/web/src/components/common/ItemCatalog.tsx",
-        "line": 88,
+        "line": 100,
         "nearby": [
           "Loading Items...",
           "Preview",
           "Item ID",
           "Category"
-        ]
-      }
-    ],
-    "Item name or ID": [
-      {
-        "file": "console/web/src/features/storage/StoragePanel.tsx",
-        "line": 139,
-        "nearby": [
-          "Storage",
-          "Export JSON",
-          "Qty",
-          "Storage give-item schema not detected"
         ]
       }
     ],
@@ -28143,6 +28132,18 @@
           "Given and filled items are not visible in-game until the Survival server restarts. Restart it from Server Control or Bases when convenient — all connected players will be disconnected for a few minutes.",
           "Item to fill",
           "Type to search items…"
+        ]
+      }
+    ],
+    "Item to give or fill": [
+      {
+        "file": "console/web/src/features/storage/StoragePanel.tsx",
+        "line": 140,
+        "nearby": [
+          "Storage",
+          "Export JSON",
+          "Qty",
+          "Quantity"
         ]
       }
     ],
@@ -29407,7 +29408,7 @@
       },
       {
         "file": "console/web/src/components/common/ItemCatalog.tsx",
-        "line": 82,
+        "line": 94,
         "nearby": [
           "Grid view",
           "Loading Items..."
@@ -30133,7 +30134,7 @@
     "Loading Items...": [
       {
         "file": "console/web/src/components/common/ItemCatalog.tsx",
-        "line": 87,
+        "line": 99,
         "nearby": [
           "List view",
           "Preview",
@@ -30608,7 +30609,7 @@
     "Loading storage containers...": [
       {
         "file": "console/web/src/features/storage/StoragePanel.tsx",
-        "line": 139,
+        "line": 140,
         "nearby": [
           "Apply Fills (Restart Survival)",
           "Fills become visible in-game after the Survival server restarts; the restart disconnects players for a few minutes.",
@@ -34078,12 +34079,12 @@
     "No items match your filters.": [
       {
         "file": "console/web/src/components/common/ItemCatalog.tsx",
-        "line": 112,
+        "line": 124,
         "nearby": [
           "Source",
           "Requires",
-          "No matching items.",
-          "Start typing to search…"
+          "The item list could not be loaded. Click the search box to try again.",
+          "No matching items."
         ]
       }
     ],
@@ -34171,10 +34172,10 @@
       },
       {
         "file": "console/web/src/components/common/ItemCatalog.tsx",
-        "line": 268,
+        "line": 339,
         "nearby": [
-          "Requires",
           "No items match your filters.",
+          "The item list could not be loaded. Click the search box to try again.",
           "Start typing to search…",
           "Unknown"
         ]
@@ -39206,7 +39207,7 @@
       },
       {
         "file": "console/web/src/components/common/ItemCatalog.tsx",
-        "line": 88,
+        "line": 100,
         "nearby": [
           "List view",
           "Loading Items...",
@@ -39880,12 +39881,12 @@
     "Qty": [
       {
         "file": "console/web/src/features/storage/StoragePanel.tsx",
-        "line": 139,
+        "line": 140,
         "nearby": [
           "Export JSON",
-          "Item name or ID",
-          "Storage give-item schema not detected",
-          "Give Item"
+          "Item to give or fill",
+          "Quantity",
+          "Storage give-item schema not detected"
         ]
       },
       {
@@ -40008,6 +40009,16 @@
           "Item ID",
           "Actions",
           "Save"
+        ]
+      },
+      {
+        "file": "console/web/src/features/storage/StoragePanel.tsx",
+        "line": 140,
+        "nearby": [
+          "Item to give or fill",
+          "Qty",
+          "Storage give-item schema not detected",
+          "Give Item"
         ]
       },
       {
@@ -41752,7 +41763,7 @@
     "Refresh Storage": [
       {
         "file": "console/web/src/features/storage/StoragePanel.tsx",
-        "line": 139,
+        "line": 140,
         "nearby": [
           "Restart Survival",
           "Storage",
@@ -43002,12 +43013,12 @@
     "Requires": [
       {
         "file": "console/web/src/components/common/ItemCatalog.tsx",
-        "line": 108,
+        "line": 120,
         "nearby": [
           "Category",
           "Source",
           "No items match your filters.",
-          "No matching items."
+          "The item list could not be loaded. Click the search box to try again."
         ]
       },
       {
@@ -43359,7 +43370,7 @@
     "Resolved on grant": [
       {
         "file": "console/web/src/components/common/ItemCatalog.tsx",
-        "line": 351,
+        "line": 422,
         "nearby": [
           "Start typing to search…",
           "Unknown"
@@ -43850,7 +43861,7 @@
     "Restart Survival": [
       {
         "file": "console/web/src/features/storage/StoragePanel.tsx",
-        "line": 98,
+        "line": 99,
         "nearby": [
           "Restart Survival Server",
           "Storage",
@@ -43861,7 +43872,7 @@
     "Restart Survival Server": [
       {
         "file": "console/web/src/features/storage/StoragePanel.tsx",
-        "line": 98,
+        "line": 99,
         "nearby": [
           "Restart Survival",
           "Storage"
@@ -50899,7 +50910,7 @@
       },
       {
         "file": "console/web/src/components/common/ItemCatalog.tsx",
-        "line": 88,
+        "line": 100,
         "nearby": [
           "Item ID",
           "Category",
@@ -51275,9 +51286,9 @@
     "Start typing to search…": [
       {
         "file": "console/web/src/components/common/ItemCatalog.tsx",
-        "line": 268,
+        "line": 339,
         "nearby": [
-          "No items match your filters.",
+          "The item list could not be loaded. Click the search box to try again.",
           "No matching items.",
           "Unknown",
           "Resolved on grant"
@@ -51914,7 +51925,7 @@
       },
       {
         "file": "console/web/src/features/storage/StoragePanel.tsx",
-        "line": 139,
+        "line": 140,
         "nearby": [
           "Restart Survival Server",
           "Restart Survival",
@@ -51926,22 +51937,22 @@
     "Storage fill-item schema not detected": [
       {
         "file": "console/web/src/features/storage/StoragePanel.tsx",
-        "line": 139,
+        "line": 140,
         "nearby": [
           "Storage give-item schema not detected",
           "Give Item",
           "Fill Container",
-          "Fill Container accepts refined resources and components only, respecting slot and volume limits."
+          "The console does not know this item's volume. While it is in a container, items with a known volume cannot be given into that container."
         ]
       }
     ],
     "Storage give-item schema not detected": [
       {
         "file": "console/web/src/features/storage/StoragePanel.tsx",
-        "line": 139,
+        "line": 140,
         "nearby": [
-          "Item name or ID",
           "Qty",
+          "Quantity",
           "Give Item",
           "Storage fill-item schema not detected"
         ]
@@ -53525,6 +53536,17 @@
         ]
       }
     ],
+    "The console does not know this item's volume. While it is in a container, items with a known volume cannot be given into that container.": [
+      {
+        "file": "console/web/src/features/storage/StoragePanel.tsx",
+        "line": 140,
+        "nearby": [
+          "Storage fill-item schema not detected",
+          "Fill Container",
+          "Fill Container accepts refined resources and components only, respecting slot and volume limits."
+        ]
+      }
+    ],
     "The console found invalid saved data for this page. Refresh the page and try again.": [
       {
         "file": "console/web/src/api/client.ts",
@@ -53873,6 +53895,18 @@
           "Docker Setup",
           "Runtime Location",
           "The backend is using the repository path configured by"
+        ]
+      }
+    ],
+    "The item list could not be loaded. Click the search box to try again.": [
+      {
+        "file": "console/web/src/components/common/ItemCatalog.tsx",
+        "line": 339,
+        "nearby": [
+          "Requires",
+          "No items match your filters.",
+          "No matching items.",
+          "Start typing to search…"
         ]
       }
     ],

@@ -1,22 +1,25 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
+import { loadItemGameData, withItemGameData } from "./itemGameData.js";
 
 const adminItemsCache = new Map();
 
 function loadAdminItemsCatalog(repoRoot) {
   const file = resolve(repoRoot, "runtime/data/admin-items.json");
+  const gameData = loadItemGameData(file);
+  const read = () => JSON.parse(readFileSync(file, "utf8")).map((item) => withItemGameData(item, gameData));
   let stat;
   try {
     stat = statSync(file, { bigint: true });
   } catch {
-    const items = JSON.parse(readFileSync(file, "utf8"));
+    const items = read();
     const byId = new Map(items.map((item) => [String(item?.id || ""), item]));
     return { items, byId };
   }
-  const stamp = `${stat.ino}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.size}`;
+  const stamp = `${stat.ino}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.size}|${gameData.stamp}`;
   const cached = adminItemsCache.get(file);
   if (cached && cached.stamp === stamp) return cached;
-  const items = JSON.parse(readFileSync(file, "utf8"));
+  const items = read();
   const byId = new Map();
   for (const item of items) {
     const id = String(item?.id || "");

@@ -12,6 +12,8 @@ export type CatalogItem = {
   source?: string;
   image?: string;
   group?: string;
+  // Inventory volume of one unit; absent when the console does not know it.
+  volume?: number;
   requiredDlc?: string;
   requiredSteamDlc?: string;
 };
@@ -24,12 +26,22 @@ export type CatalogItem = {
 let cachedCatalog: CatalogItem[] | null = null;
 let cachedCatalogPromise: Promise<CatalogItem[]> | null = null;
 
+// For tests that need a different catalog from the one already cached.
+export function clearCatalogCache() {
+  cachedCatalog = null;
+  cachedCatalogPromise = null;
+}
+
 export async function loadFullCatalog(): Promise<CatalogItem[]> {
   if (cachedCatalog) return cachedCatalog;
   if (!cachedCatalogPromise) {
     cachedCatalogPromise = adminApi.itemCatalog("", 10000).then((result) => {
       cachedCatalog = (result.rows || []).map((item) => ({ ...item, id: item.itemId || item.id }));
       return cachedCatalog;
+    }).catch((error) => {
+      // A failed load must not be remembered: the next caller tries again.
+      cachedCatalogPromise = null;
+      throw error;
     });
   }
   return cachedCatalogPromise;
@@ -130,18 +142,22 @@ export function ItemCatalogSelector({ label = "Select Item", selected, onSelect,
 // exact template id or exact in-game name, and offered no way to discover
 // what's actually in the catalog.
 //
-// Search and the results list are both name-only -- the catalog id
-// (template id, e.g. "Oil") is a database/backend concept a player never
-// sees in-game and is never typed here, so it is neither searched nor
-// displayed. Give/Fill still submit `itemId` under the hood (the exact
-// catalog id of whichever item was chosen), just never as something the
-// player types or reads.
+// Search matches names and categories, not catalog ids (template ids, e.g.
+// "Oil"): those are a database concept, shown only when two items share a name
+// and category. Callers submit the chosen item's id.
 //
-// `filterGroups`, when set, restricts results to catalog items whose
-// `group` field is in the set -- used by the Fill panel to show only
-// raw/refined resources and components, mirroring FILLABLE_GROUPS
-// (adminCatalog.js) so a player never sees an option the server would
-// reject anyway.
+// `filterGroups`, when set, offers only items of those groups; the server
+// enforces the same rule.
+//
+// Every typed word must appear in the item's name or category. Lower ranks sort
+// first: the exact name, then names that start with the text, then the rest.
+function comboboxRank(item: CatalogItem, term: string) {
+  const name = item.name.toLowerCase();
+  if (!term) return 2;
+  if (name === term) return 0;
+  return name.startsWith(term) ? 1 : 2;
+}
+
 const MAX_COMBOBOX_RESULTS = 40;
 
 export function ItemCatalogCombobox({
@@ -160,16 +176,29 @@ export function ItemCatalogCombobox({
   disabled?: boolean;
 }) {
   const [items, setItems] = useState<CatalogItem[]>([]);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [query, setQuery] = useState(value?.name || "");
   const [open, setOpen] = useState(false);
   const [highlighted, setHighlighted] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLUListElement>(null);
+  const mountedRef = useRef(true);
+  // Set when typing drops the selection, so the sync below keeps the typed text.
+  const typedOverRef = useRef(false);
   const listId = useMemo(() => `item-combobox-list-${Math.random().toString(36).slice(2)}`, []);
 
+  function load() {
+    setLoadFailed(false);
+    void loadFullCatalog().then(
+      (loaded) => { if (mountedRef.current) setItems(loaded); },
+      () => { if (mountedRef.current) setLoadFailed(true); }
+    );
+  }
+
   useEffect(() => {
-    let cancelled = false;
-    void loadFullCatalog().then((loaded) => { if (!cancelled) setItems(loaded); });
-    return () => { cancelled = true; };
+    mountedRef.current = true;
+    load();
+    return () => { mountedRef.current = false; };
   }, []);
 
   // Keeps the visible text in sync when a parent clears the selection (e.g.
@@ -177,6 +206,9 @@ export function ItemCatalogCombobox({
   // user's own typing the rest of the time -- only reacts to value becoming
   // null/changing identity from outside, not to local query edits.
   useEffect(() => {
+    const typedOver = typedOverRef.current;
+    typedOverRef.current = false;
+    if (!value && typedOver) return;
     setQuery(value?.name || "");
   }, [value]);
 
@@ -188,17 +220,48 @@ export function ItemCatalogCombobox({
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  const pool = filterGroups ? items.filter((item) => item.group && filterGroups.has(item.group)) : items;
+  // The catalog lists a few ids twice; some different items share a name and a
+  // category, and only their id tells them apart.
+  const { unique, ambiguous } = useMemo(() => {
+    const byId = new Map<string, CatalogItem>();
+    for (const item of items) if (!byId.has(item.id)) byId.set(item.id, item);
+    const seen = new Set<string>();
+    const shared = new Set<string>();
+    for (const item of byId.values()) {
+      const key = `${item.name}|${item.category || ""}`;
+      if (seen.has(key)) shared.add(key);
+      seen.add(key);
+    }
+    return { unique: [...byId.values()], ambiguous: shared };
+  }, [items]);
+
   const term = query.trim().toLowerCase();
-  const results = (term
-    ? pool.filter((item) => item.name.toLowerCase().includes(term))
-    : pool
-  ).slice(0, MAX_COMBOBOX_RESULTS);
+  const words = term.split(/\s+/).filter(Boolean);
+  const matches = unique
+    .filter((item) => {
+      if (filterGroups && !(item.group && filterGroups.has(item.group))) return false;
+      const haystack = `${item.name} ${item.category || ""}`.toLowerCase();
+      return words.every((word) => haystack.includes(word));
+    })
+    .sort((a, b) => comboboxRank(a, term) - comboboxRank(b, term));
+  const results = matches.slice(0, MAX_COMBOBOX_RESULTS);
+  const shownCount = results.length;
+  const totalCount = matches.length;
+
+  // The list opens at the bottom of a scrolling dialog: bring it into view.
+  useEffect(() => {
+    if (open) listRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [open, shownCount]);
 
   function choose(item: CatalogItem) {
     onChange(item);
     setQuery(item.name);
     setOpen(false);
+  }
+
+  function highlight(index: number) {
+    setHighlighted(index);
+    listRef.current?.children[index]?.scrollIntoView?.({ block: "nearest" });
   }
 
   function handleKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
@@ -209,14 +272,15 @@ export function ItemCatalogCombobox({
     if (!open) return;
     if (event.key === "ArrowDown") {
       event.preventDefault();
-      setHighlighted((current) => Math.min(current + 1, results.length - 1));
+      highlight(Math.max(0, Math.min(highlighted + 1, shownCount - 1)));
     } else if (event.key === "ArrowUp") {
       event.preventDefault();
-      setHighlighted((current) => Math.max(current - 1, 0));
+      highlight(Math.max(highlighted - 1, 0));
     } else if (event.key === "Enter") {
-      if (results[highlighted]) {
+      const item = results[highlighted];
+      if (item) {
         event.preventDefault();
-        choose(results[highlighted]);
+        choose(item);
       }
     } else if (event.key === "Escape") {
       setOpen(false);
@@ -242,12 +306,15 @@ export function ItemCatalogCombobox({
         // Typing after a selection un-commits it -- the previously chosen
         // item's id must never be submitted alongside now-different text,
         // which would silently give/fill the wrong item.
-        if (value) onChange(null);
+        if (value) {
+          typedOverRef.current = true;
+          onChange(null);
+        }
       }}
-      onFocus={() => setOpen(true)}
+      onFocus={() => { setOpen(true); if (loadFailed) load(); }}
       onKeyDown={handleKeyDown}
     />
-    {open && <ul className="item-combobox-list" id={listId} role="listbox">
+    {open && <ul className="item-combobox-list" id={listId} role="listbox" ref={listRef}>
       {results.map((item, index) => (
         <li
           key={item.id}
@@ -261,11 +328,15 @@ export function ItemCatalogCombobox({
           <span>
             <strong>{item.name}</strong>
             {item.category && <small>{titleCase(item.category)}</small>}
+            {ambiguous.has(`${item.name}|${item.category || ""}`) && <small data-no-translate>{item.id}</small>}
           </span>
         </li>
       ))}
+      {totalCount > shownCount && <li className="item-combobox-empty" aria-disabled="true">
+        {`Showing ${shownCount} of ${totalCount} matches. Type more to narrow the list.`}
+      </li>}
       {results.length === 0 && <li className="item-combobox-empty" aria-disabled="true">
-        {term ? "No matching items." : "Start typing to search…"}
+        {loadFailed ? "The item list could not be loaded. Click the search box to try again." : term ? "No matching items." : "Start typing to search…"}
       </li>}
     </ul>}
   </div>;

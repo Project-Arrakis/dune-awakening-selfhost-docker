@@ -3,6 +3,7 @@ import { serverApi } from "../../api/server";
 import { type Task } from "../../api/setup";
 import { worldDataApi } from "../../api/worldData";
 import { DataTable } from "../../components/common/DataTable";
+import { ItemCatalogCombobox, type CatalogItem } from "../../components/common/ItemCatalog";
 
 type ConfirmAction = (message: string, options?: { title?: string; confirmLabel?: string; cancelLabel?: string; danger?: boolean }) => Promise<boolean>;
 
@@ -18,8 +19,8 @@ export function StoragePanel({ onError, confirmAction, formatMutationResult, wai
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Record<string, unknown> | null>(null);
   const [items, setItems] = useState<Record<string, unknown>[]>([]);
-  const [itemName, setItemName] = useState("");
-  const [quantityText, setQuantityText] = useState("100");
+  const [item, setItem] = useState<CatalogItem | null>(null);
+  const [quantityText, setQuantityText] = useState("1");
   const [canGiveItem, setCanGiveItem] = useState(false);
   const [canFillItem, setCanFillItem] = useState(false);
   const [storageResult, setStorageResult] = useState("");
@@ -59,11 +60,11 @@ export function StoragePanel({ onError, confirmAction, formatMutationResult, wai
   }
 
   async function giveStorageItem() {
-    if (!selected) return;
+    if (!selected || !item) return;
     onError("");
     try {
-      if (!(await confirmAction(`Give ${quantity()} x ${itemName} to storage ${String(selected.id)}?`))) return;
-      const response = await worldDataApi.storageGiveItem(String(selected.id), { itemName, quantity: quantity(), confirmation: "GIVE ITEM TO STORAGE" });
+      if (!(await confirmAction(`Give ${quantity()} x ${item.name} (${item.id}) to storage ${String(selected.id)}?`))) return;
+      const response = await worldDataApi.storageGiveItem(String(selected.id), { itemId: item.id, quantity: quantity(), confirmation: "GIVE ITEM TO STORAGE" });
       setStorageResult(formatMutationResult(response));
       setStorageResultIsError(false);
       setItems((await worldDataApi.storageItems(String(selected.id))).rows || []);
@@ -76,11 +77,11 @@ export function StoragePanel({ onError, confirmAction, formatMutationResult, wai
   }
 
   async function fillStorageItem() {
-    if (!selected) return;
+    if (!selected || !item) return;
     onError("");
     try {
-      if (!(await confirmAction(`Fill container ${String(selected.id)} with ${quantity()} x ${itemName}? Only refined resources and components are allowed.`))) return;
-      const response = await worldDataApi.storageFillItem(String(selected.id), { itemName, quantity: quantity(), confirmation: "FILL ITEM TO STORAGE" });
+      if (!(await confirmAction(`Fill container ${String(selected.id)} with ${quantity()} x ${item.name} (${item.id})? Only refined resources and components are allowed.`))) return;
+      const response = await worldDataApi.storageFillItem(String(selected.id), { itemId: item.id, quantity: quantity(), confirmation: "FILL ITEM TO STORAGE" });
       setStorageResult(formatMutationResult(response));
       setStorageResultIsError(false);
       setItems((await worldDataApi.storageItems(String(selected.id))).rows || []);
@@ -136,5 +137,5 @@ export function StoragePanel({ onError, confirmAction, formatMutationResult, wai
     void load();
   }, []);
 
-  return <section className="panel"><div className="panel-title"><h2>Storage</h2><button onClick={() => void load()}>Refresh Storage</button><button disabled={restartRunning} onClick={() => void applyRestart()}>Apply Fills (Restart Survival)</button></div>{storageResultIsError && <p className="danger-note">{storageResult}</p>}{!storageResultIsError && storageResult && <p className="info-note">{storageResult}</p>}{restartStatus && <p className="info-note">{restartStatus}</p>}<p className="info-note">Fills become visible in-game after the Survival server restarts; the restart disconnects players for a few minutes.</p>{loading ? <p className="info-note"><span className="spinner" aria-hidden="true" /> Loading storage containers...</p> : <DataTable rows={rows} onRowClick={open} />}{selected && <section className="drawer"><h3>Storage {String(selected.id)}</h3><div className="action-row"><a className="button-link" href={worldDataApi.storageExportUrl(String(selected.id))}>Export JSON</a><input value={itemName} onChange={(event) => setItemName(event.target.value)} placeholder="Item name or ID" /><input value={quantityText} onChange={(event) => setQuantityText(event.target.value)} className="small-input" type="number" min={1} max={1000000} placeholder="Qty" /><button disabled={!canGiveItem || restartRunning} onClick={() => void giveStorageItem()} title={!canGiveItem ? "Storage give-item schema not detected" : ""}>Give Item</button><button disabled={!canFillItem || restartRunning} onClick={() => void fillStorageItem()} title={!canFillItem ? "Storage fill-item schema not detected" : ""}>Fill Container</button></div><p className="info-note">Fill Container accepts refined resources and components only, respecting slot and volume limits.</p><DataTable rows={items} /></section>}</section>;
+  return <section className="panel"><div className="panel-title"><h2>Storage</h2><button onClick={() => void load()}>Refresh Storage</button><button disabled={restartRunning} onClick={() => void applyRestart()}>Apply Fills (Restart Survival)</button></div>{storageResultIsError && <p className="danger-note">{storageResult}</p>}{!storageResultIsError && storageResult && <p className="info-note">{storageResult}</p>}{restartStatus && <p className="info-note">{restartStatus}</p>}<p className="info-note">Fills become visible in-game after the Survival server restarts; the restart disconnects players for a few minutes.</p>{loading ? <p className="info-note"><span className="spinner" aria-hidden="true" /> Loading storage containers...</p> : <DataTable rows={rows} onRowClick={open} />}{selected && <section className="drawer storage-drawer"><h3>Storage {String(selected.id)}</h3><div className="action-row storage-give-row"><a className="button-link" href={worldDataApi.storageExportUrl(String(selected.id))}>Export JSON</a><ItemCatalogCombobox value={item} onChange={setItem} ariaLabel="Item to give or fill" /><input value={quantityText} onChange={(event) => setQuantityText(event.target.value)} className="small-input" type="number" min={1} max={1000000} placeholder="Qty" aria-label="Quantity" /><button disabled={!item || !canGiveItem || restartRunning} onClick={() => void giveStorageItem()} title={!canGiveItem ? "Storage give-item schema not detected" : ""}>Give Item</button><button disabled={!item || !canFillItem || restartRunning} onClick={() => void fillStorageItem()} title={!canFillItem ? "Storage fill-item schema not detected" : ""}>Fill Container</button></div>{item && item.volume === undefined && <p className="info-note">The console does not know this item's volume. While it is in a container, items with a known volume cannot be given into that container.</p>}<p className="info-note">Fill Container accepts refined resources and components only, respecting slot and volume limits.</p><DataTable rows={items} /></section>}</section>;
 }

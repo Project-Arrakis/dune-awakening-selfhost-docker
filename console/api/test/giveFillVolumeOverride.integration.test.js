@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { resolveCatalogItem } from "../src/adminCatalog.js";
 import { giveItemToStorage } from "../src/duneDb.js";
 import { pgTransactionalDb, withIsolatedDatabase } from "../test-support/pgIntegrationDb.js";
 
@@ -84,5 +87,64 @@ test("real PostgreSQL: giving an item WITH a declared volume stores that per-uni
     assert.equal(stored.rows.length, 1);
     assert.equal(Number(stored.rows[0].volume_override), 0.2,
       "a real, declared per-unit volume must still be stored, not overridden to NULL");
+  });
+});
+
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+
+// What the Storage give route does: resolve the item, then pass its volume on.
+const giveListed = (db, itemId, quantity) => {
+  const item = resolveCatalogItem(repoRoot, { itemId });
+  return giveItemToStorage(db, 5001, { templateId: item.itemId, itemVolume: item.volume, quantity });
+};
+
+test("real PostgreSQL: Storage give writes gear one per slot, within the volume limit, and leaves the box usable", async (t) => {
+  await withIsolatedDatabase(t, {
+    namePrefix: "dune_give_gear",
+    unavailableLabel: "the storage gear give integration test",
+    createFailLabel: "the storage gear give integration test"
+  }, async (pool) => {
+    await pool.query(`
+      create schema dune;
+      create table dune.inventories (
+        id bigint primary key,
+        actor_id bigint not null,
+        max_item_count integer not null,
+        max_item_volume real not null default 0
+      );
+      create table dune.items (
+        id bigint generated always as identity primary key,
+        inventory_id bigint not null references dune.inventories(id),
+        template_id text not null,
+        stack_size integer not null,
+        quality_level integer not null,
+        position_index integer not null,
+        stats jsonb not null,
+        volume_override real
+      );
+      insert into dune.inventories (id, actor_id, max_item_count, max_item_volume) values (701, 5001, 10, 5);
+    `);
+    const db = pgTransactionalDb(pool);
+
+    // Volume 2 each: only two of the three fit a box of volume 5.
+    const gear = await giveListed(db, "Combat_Light_Unique_BeneGeserit_Top", 3);
+    assert.equal(gear.given, 2);
+    assert.equal(gear.clamped, true);
+
+    // A cosmetic token takes no volume and gets no clothing stats.
+    await giveListed(db, "LeakingStillsuit_T1_SetVariant", 1);
+    // A resource still fits what is left: the gear counts as known volume.
+    assert.equal((await giveListed(db, "AzuriteOre", 3)).given, 3);
+
+    const rows = (await pool.query("select template_id, stack_size, volume_override, stats from dune.items order by id")).rows;
+    assert.deepEqual(rows.map((row) => [row.template_id, row.stack_size]), [
+      ["Combat_Light_Unique_BeneGeserit_Top", 1],
+      ["Combat_Light_Unique_BeneGeserit_Top", 1],
+      ["LeakingStillsuit_T1_SetVariant", 1],
+      ["AzuriteOre", 3]
+    ]);
+    assert.equal(Number(rows[0].volume_override), 2);
+    assert.ok(rows[0].stats.FCustomizationStats, "clothing keeps its gear stats");
+    assert.equal(rows[2].stats.FCustomizationStats, undefined);
   });
 });

@@ -15,6 +15,7 @@ export type ItemCatalogEntry = {
   category: string;
   source: string;
   image?: string;
+  volume?: number;
 };
 
 export type CharacterTransferSettings = {
