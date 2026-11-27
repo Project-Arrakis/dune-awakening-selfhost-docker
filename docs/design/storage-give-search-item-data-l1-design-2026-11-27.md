@@ -44,24 +44,36 @@ width rule, so the global `input { width: 100% }` took the row (operator report 
   conflict on every sync. Identifiers and numbers only. Provenance, known limits and the operator's acceptance of
   the unrecorded licence position are in `item-game-data.PROVENANCE.md`; tests pin the counts.
 - **Precedence:** a value curated in `admin-items.json` always wins. The new file only fills gaps.
-- **Loader:** one module `itemGameData.js` (validate, cache by file stamp, case-insensitive). Both existing loaders
-  read the file next to the `admin-items.json` they loaded. `duneDb.js` also consults it for templates that are
-  not in the catalog. A missing or invalid file logs one warning and behaves like today.
+- **Loader:** one module, `itemGameData.js`. It validates the data file, looks ids up exactly and then without
+  regard to case, and `loadItemCatalog()` returns `admin-items.json` with the gaps filled. `adminCatalog.js` and
+  `duneDb.js` both read through it. Both files are checked on every call, so a change, deletion or restore reaches
+  the two together. `duneDb.js` also consults the data for templates that are not in the catalog. A missing or
+  invalid data file logs one warning and the catalog is used alone.
+- **Storage Give volume:** resolved by the same function as the volume totals (explicit curated value, then the
+  catalog by exact and case-insensitive id, then the game data). `volume_override` is stored only for a value
+  curated in `admin-items.json` (or passed by a caller of `giveItemToStorage`); otherwise it stays `NULL`. Fill and
+  the Bases routes store the volume they resolve; every item they accept has a curated one (pinned by a test).
 
 ### 3.2 Item stats
 
 `augmentItemKindForTemplate()` guesses weapon or clothing from name keywords and misclassifies cosmetic tokens,
 contract items, armor packs and an emote. It returns `other` for the categories `customizations`, `contracts`,
-`consumables` and `emotes`. Affects Storage Give and player Give.
+`consumables` and `emotes`. The function serves every path that builds item stats (Storage and Bases give and fill,
+player Give including Care Package and add-on database grants, Container Add) and augment validation.
 
 ### 3.3 Web
 
 - Storage tab: `ItemCatalogCombobox` over the whole catalog replaces the free-text field; the route receives
   `itemId`. Quantity starts at 1. Give and Fill are disabled until an item is chosen. The confirmation names the
   item and id. An item with no known volume shows a note saying it blocks later gives into that container.
-- Shared picker (also Bases, whose filter is unchanged): every typed word matched against name and category, exact
-  and prefix matches first, a line when results are cut off, one row per id, the id shown when name and category
-  are shared, a failed load reported and retried, typed text kept when it replaces a selection.
+- Shared picker (also Bases, whose filter is unchanged): every typed word matched against name, category and id;
+  order: exact name, name prefix, exact id, other name or category matches, id-only matches. One row per id; the id
+  shown when it was needed or when name and category are shared. A line when results are cut off; loading and
+  failed states with **Try again**; search 150 ms after typing, with Enter and arrows acting on the typed text;
+  pictures loaded lazily; closes when focus leaves; combobox ARIA with a live status line; typed text kept when it
+  replaces a selection.
+- Storage tab also: a hint while typed text has chosen nothing, a warning in the confirmation for an item of
+  unknown volume, and each result shown under the controls of its container (warning style when clamped).
 - Layout: the search box has its own row on both tabs; quantity has a fixed width.
 - Menu: `canOpenTab` no longer excludes Storage for operator tiers; the nav entry's `storage:read` rule decides,
   for the built-in menu and a custom one. No dashboard widget is cataloged for the page. Players and observers keep
@@ -80,6 +92,8 @@ No route, permission, audit record or schema changes.
 | Storage tab Give | gear now has a volume: the container's volume limit applies, one slot per unit, and a container holding an item of unknown volume rejects it |
 | Player Give (database path), Care Package and add-on database grants | a quantity above 1 of a non-stackable item becomes one row per unit, limited by free slots; a short delivery is reported |
 | Container Add | quantity of a non-stackable item is clamped to 1 |
+| `HealthPack_Channeled_2`/`_3`/`_4`, `SurveyProbe_1` (no curated stack) | split at the game's limit (20, 20, 20, 10) |
+| Slot collision with in-game moves and pickups | more likely when one operation writes many rows; see `docs/console/base-inventory.md` |
 | Storage and Bases volume totals | gear now counts; a container already over its limit reports no room |
 | Cosmetics, contracts, consumables, emotes | no weapon, clothing or durability stats |
 
@@ -87,8 +101,11 @@ No migration, no new setting. Existing rows are untouched.
 
 ## 5. Requirement 0, rollback, unverified
 
-- Update path: additive data file; if absent, volume and stack limits behave as today.
-- **Rollback:** delete the data file, or revert the change. Rows given as single units stay valid.
+- Update path: additive data file; if absent, volume and stack limits come from `admin-items.json` alone.
+- **Rollback:** revert the change or install an earlier release. Deleting the data file works at once, but
+  `dune update` restores a deleted tracked file, and deletion leaves the code changes (non-gear stats rule, picker,
+  Storage page) in place. Rows given as single units stay valid. Rows with a game-data volume store `NULL`, so
+  without the file their volume is unknown again and their volume-limited container refuses volume-tracked gives.
 - **Not verified in game.** Before merge, on dune-dev per `runbooks/dune-dev-test-builds.md`: a weapon, a garment,
   a tool, a vehicle part, a schematic and a quantity above 1, then a Survival restart. Gear gets the durability
   Storage Give already writes today.
@@ -97,8 +114,12 @@ No migration, no new setting. Existing rows are untouched.
 
 Opening up Base Inventory Give; grade and augment controls on the Storage tab; the 46 catalog ids the game does
 not define; up to 1,000 single-row inserts under one lock; Container Add skipping the volume cap and able to write
-outside the slot grid (existing); NPC and developer items not marked in pickers; `base-inventory.md` still saying
-there is no Storage fill route.
+outside the slot grid (existing); NPC and developer items not marked in pickers.
+
+**Limit of the picker:** it lists the catalog route's items, which leave out 236 that the old text field accepted:
+232 building unlock tokens (all but `Developer_Storage_Container_Patent`) and the 4 direct event cosmetics. The
+server's rules are unchanged and still accept them. Proposed follow-up: let the Storage picker opt in to the unlock
+tokens, which are inventory items, and keep the direct cosmetics out, which are not.
 
 ## 7. Audit register
 

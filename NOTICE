@@ -15,6 +15,13 @@ applicable terms, EULA, rules, and self-hosting requirements.
 Do not redistribute Funcom game files, Docker image tarballs, tokens,
 secrets, or proprietary assets with this project.
 
+runtime/data/item-game-data.json is derived from the content files of
+Dune: Awakening. It holds item identifiers, unit volumes and stack limits.
+That data belongs to Funcom and the respective rights holders. It is not
+covered by this project's license (LICENSE), and this project grants no
+rights to it. Its origin is recorded in
+runtime/data/item-game-data.PROVENANCE.md.
+
 Please keep the LICENSE and NOTICE files intact when redistributing or
 modifying this project.
 

@@ -28,12 +28,14 @@ As a check, the 4,210 ids that <https://github.com/Project-Arrakis/tabr-tau> had
 - 46 ids listed in `admin-items.json` have no row in these tables, so they have no volume or stack limit: one
   building-set patent (`MTX_Neut_DesertMechanicSet02_Patent`) and 45 clothing rows whose catalog names are
   placeholders or belong to unreleased sets.
-- Curated values in `admin-items.json` differ from the game in four places and still win: the volume of
-  `T2MuaddibComponent`, `T4ShieldWallComponent` and `ExperimentalWindTurbineComponent` (catalog 1, game 0.1) and
-  the stack limit of `T2MuaddibComponent` (catalog 1, game 500).
+- Curated values in `admin-items.json` differ from the file in five places and still win: the volume of
+  `T2MuaddibComponent`, `T4ShieldWallComponent` and `ExperimentalWindTurbineComponent` (catalog 1, game 0.1), the
+  stack limit of `T2MuaddibComponent` (catalog 1, game 500), and the volume of `FuelCanister_Medium` (catalog
+  3.3333333, file 3.3333). The last one is rounding only: the build script rounds every volume to 4 decimals.
 - A game update can change the tables. Items added later are unknown until the file is refreshed.
 - No licence or terms-of-service position on these numbers is recorded. The game and its data belong to Funcom;
-  this project is unofficial. The operator of this fork accepted using the numbers (2026-11-27).
+  this project is unofficial. The operator of this fork accepted using the numbers (2026-11-27). The file is not
+  covered by this project's licence; see [`NOTICE`](../../NOTICE).
 
 ## Refreshing
 
@@ -45,3 +47,6 @@ node console/api/scripts/build-item-game-data.mjs <dump dir> <game build> <read 
 ```
 
 Update this file and the counts pinned in `console/api/test/itemGameData.test.js` in the same pull request.
+
+The console re-reads this file and `admin-items.json` when either changes; no restart is needed. `dune update`
+replaces both with the shipped versions, so a local edit or deletion does not survive an update.

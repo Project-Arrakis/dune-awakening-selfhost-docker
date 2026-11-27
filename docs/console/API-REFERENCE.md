@@ -553,6 +553,8 @@ tab can offer a retry only where retrying could actually help.
 | GET | `/api/storage/{storageId}` | Get storage details | `storageId` |
 | GET | `/api/storage/{storageId}/items` | Get storage inventory | `storageId` |
 | POST | `/api/storage/{storageId}/give-item` | Add item to storage (a storage box or vehicle id). Takes any catalog item. An item with a known volume is limited by the container's volume, one that does not stack takes one slot per unit, and a shortfall is reported in `given`, `clamped` and `message` | `itemName`\|`itemId`, `quantity?` (1-1000000, default 1), `quality?`, `augments?`, `augmentQuality?`, `confirmation: "GIVE ITEM TO STORAGE"` |
+| POST | `/api/storage/{storageId}/fill-item` | Fill storage with a raw resource, refined resource or component; `quantity: 0` fills to capacity. Split by stack limit, clamped by volume and free slots, with a shortfall reported in `given`, `clamped` and `message` | `itemName`\|`itemId`, `quantity?` (0-1000000, default 1), `quality?`, `augments?`, `augmentQuality?`, `confirmation: "FILL ITEM TO STORAGE"` |
+| POST | `/api/storage/{storageId}/remove-items` | Delete whole item rows from a storage inventory. The Console UI does not call it | `itemIds[]`, `confirmation: "REMOVE ITEMS FROM STORAGE"` |
 | GET | `/api/storage/{storageId}/export` | Export storage as JSON | `storageId` |
 
 ---
