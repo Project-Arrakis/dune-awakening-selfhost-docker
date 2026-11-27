@@ -38,7 +38,8 @@ function stubSession(tier: string, allowedActions: string[]) {
     if (path.includes("/api/setup/state")) return jsonResponse({ files: { complete: true } });
     if (path.includes("/api/server/status")) return jsonResponse({ ok: true, stdout: "", data: { summary: { overall: "READY", title: "Test Server" }, gameServers: [] } });
     if (path.includes("/api/players/online")) return jsonResponse({ rows: [] });
-    if (//api/storage(?|$)/.test(path)) return jsonResponse({ rows: [{ id: 105 }], capabilities: { storageGiveItem: true, storageFillItem: true } });
+    // The container list.
+    if (path.split("?")[0].endsWith("/api/storage")) return jsonResponse({ rows: [{ id: 105 }], capabilities: { storageGiveItem: true, storageFillItem: true } });
     return jsonResponse({ rows: [], totalCount: 0, stdout: "", capabilities: {} });
   }));
   return calls;
