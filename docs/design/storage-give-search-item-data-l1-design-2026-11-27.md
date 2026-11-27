@@ -106,7 +106,7 @@ No migration, no new setting. Existing rows are untouched.
   `dune update` restores a deleted tracked file, and deletion leaves the code changes (non-gear stats rule, picker,
   Storage page) in place. Rows given as single units stay valid. Rows with a game-data volume store `NULL`, so
   without the file their volume is unknown again and their volume-limited container refuses volume-tracked gives.
-- **Not verified in game.** Before merge, on dune-dev per `runbooks/dune-dev-test-builds.md`: a weapon, a garment,
+- **Not verified in game.** Before merge, on dune-dev, following the organization's test-build runbook: a weapon, a garment,
   a tool, a vehicle part, a schematic and a quantity above 1, then a Survival restart. Gear gets the durability
   Storage Give already writes today.
 
