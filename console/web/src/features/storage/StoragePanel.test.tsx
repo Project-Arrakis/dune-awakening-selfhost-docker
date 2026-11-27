@@ -236,6 +236,17 @@ describe("StoragePanel item search", () => {
     expect(worldDataApi.storageGiveItem).not.toHaveBeenCalled();
   });
 
+  it("fills nothing if the confirmation is declined", async () => {
+    mockConfirmAction.mockResolvedValue(false);
+    await openBox();
+    await choose("copper");
+    fireEvent.click(button("Fill Container"));
+
+    await act(async () => {});
+    expect(mockConfirmAction).toHaveBeenCalledTimes(1);
+    expect(worldDataApi.storageFillItem).not.toHaveBeenCalled();
+  });
+
   it("says why give and fill are disabled while typed text has chosen nothing", async () => {
     await openBox();
     const reason = "Choose an item from the list first.";
