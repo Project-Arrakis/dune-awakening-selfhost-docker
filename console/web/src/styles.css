@@ -5151,23 +5151,28 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
    scrolling it into view would shift the drawer's own content out of sight. */
 .drawer.storage-drawer { overflow: visible; }
 .storage-give-row .item-combobox { flex: 1 1 100%; min-width: 0; }
-.storage-give-row input[type="number"] { flex: 0 0 110px; width: 110px; }
+.action-row.storage-give-row > input[type="number"] { flex: 0 0 110px; width: 110px; min-width: 0; }
 .item-combobox-input:disabled { opacity: .6; cursor: not-allowed; }
-.item-combobox-list {
+/* The popup is always in the page for its status line; it is drawn only while open. */
+.item-combobox-popup {
   position: absolute;
   left: 0;
   right: 0;
   top: calc(100% + 4px);
   z-index: 20;
+}
+.item-combobox-popup.open {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-muted);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .45);
+}
+.item-combobox-list {
   margin: 0;
   padding: 4px;
   list-style: none;
   max-height: min(360px, 50vh);
   overflow-y: auto;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--panel-muted);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, .45);
 }
 .item-combobox-list li {
   display: flex;
@@ -5183,8 +5188,9 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .item-combobox-list li strong, .item-combobox-list li small { overflow-wrap: anywhere; }
 .item-combobox-list li small { color: var(--muted); }
 .item-combobox-list .catalog-item-preview.small { margin-inline: 0; }
-.item-combobox-empty { color: var(--muted); cursor: default; }
-.item-combobox-empty:hover { background: transparent; }
+.item-combobox-status { padding: 10px 12px; color: var(--muted); }
+.item-combobox-status:empty { padding: 0; }
+.item-combobox-retry { width: auto; margin: 0 12px 10px; }
 .bases-inventory-add-batch {
   list-style: none;
   margin: 0 0 10px;
