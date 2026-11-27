@@ -64,14 +64,15 @@ beforeEach(() => {
   });
   vi.mocked(worldDataApi.storageItems).mockResolvedValue({ rows: [], capabilities: {} });
   clearCatalogCache();
-  vi.mocked(adminApi.itemCatalog).mockResolvedValue({
-    rows: [
-      { id: "Sword_A", itemId: "Sword_A", name: "Ranger Sword", category: "weapons", source: "Weapons", volume: 2 },
-      { id: "Sword_B", itemId: "Sword_B", name: "Ranger Sword", category: "weapons", source: "Weapons", volume: 2 },
-      { id: "Cut_Top", itemId: "Cut_Top", name: "Cut Jacket", category: "clothing", source: "Clothing" },
-      { id: "AzuriteOre", itemId: "AzuriteOre", name: "Copper Ore", category: "resources", source: "Resources", group: "raw_resource", volume: 0.2 }
-    ]
-  });
+  // A variable, because the route also returns fields (group) that
+  // ItemCatalogEntry does not declare.
+  const catalogRows = [
+    { id: "Sword_A", itemId: "Sword_A", name: "Ranger Sword", category: "weapons", source: "Weapons", volume: 2 },
+    { id: "Sword_B", itemId: "Sword_B", name: "Ranger Sword", category: "weapons", source: "Weapons", volume: 2 },
+    { id: "Cut_Top", itemId: "Cut_Top", name: "Cut Jacket", category: "clothing", source: "Clothing" },
+    { id: "AzuriteOre", itemId: "AzuriteOre", name: "Copper Ore", category: "resources", source: "Resources", group: "raw_resource", volume: 0.2 }
+  ];
+  vi.mocked(adminApi.itemCatalog).mockResolvedValue({ rows: catalogRows });
 });
 
 describe("StoragePanel", () => {
