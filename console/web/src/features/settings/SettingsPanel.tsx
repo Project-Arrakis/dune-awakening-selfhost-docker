@@ -576,8 +576,8 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
         <code> runtime/generated/console-second-factor.json</code> &mdash; see the sign-in
         page&apos;s error for recovery guidance.
       </p>}
-      <LayoutWidget id="settings.twoFactor" widgetTitle="Two-Factor Authentication">
-        {secondFactorEnrolled && !regeneratedCodes && <div className={`playerAdmin_toggle ${twoFactorOpen ? "open" : ""}`}>
+      {secondFactorEnrolled && !regeneratedCodes && <LayoutWidget id="settings.twoFactor" widgetTitle="Two-Factor Authentication">
+        <div className={`playerAdmin_toggle ${twoFactorOpen ? "open" : ""}`}>
           <button className="playerAdmin_toggleHeader" aria-label={twoFactorOpen ? "Collapse Two-Factor Authentication" : "Expand Two-Factor Authentication"} onClick={() => setTwoFactorOpen(!twoFactorOpen)}>{twoFactorOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Two-Factor Authentication</span></button>
           {twoFactorOpen && <div className="playerAdmin_toggleBody">
             <>
@@ -605,8 +605,8 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
                   </div>
             </>
           </div>}
-        </div>}
-      </LayoutWidget>
+        </div>
+      </LayoutWidget>}
       <LayoutWidget id="settings.discordOAuth" widgetTitle="Discord OAuth">
         <div className={`playerAdmin_toggle ${discordOAuthOpen ? "open" : ""}`}>
           <button className="playerAdmin_toggleHeader" aria-label={discordOAuthOpen ? "Collapse Discord OAuth" : "Expand Discord OAuth"} onClick={() => setDiscordOAuthOpen(!discordOAuthOpen)}>{discordOAuthOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Discord OAuth</span></button>
