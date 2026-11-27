@@ -7889,7 +7889,7 @@
     "Apply Fills (Restart Survival)": [
       {
         "file": "console/web/src/features/storage/StoragePanel.tsx",
-        "line": 156,
+        "line": 160,
         "nearby": [
           "Storage",
           "Refresh Storage",
@@ -13049,7 +13049,7 @@
     "Choose an item from the list first.": [
       {
         "file": "console/web/src/features/storage/StoragePanel.tsx",
-        "line": 156,
+        "line": 160,
         "nearby": [
           "Quantity",
           "Storage give-item schema not detected",
@@ -22550,7 +22550,7 @@
     "Export JSON": [
       {
         "file": "console/web/src/features/storage/StoragePanel.tsx",
-        "line": 156,
+        "line": 160,
         "nearby": [
           "Loading storage containers...",
           "Storage",
@@ -22964,7 +22964,7 @@
     "Fill Container": [
       {
         "file": "console/web/src/features/storage/StoragePanel.tsx",
-        "line": 156,
+        "line": 160,
         "nearby": [
           "Storage fill-item schema not detected",
           "Choose an item from the list first.",
@@ -22984,7 +22984,7 @@
     "Fill Container accepts refined resources and components only, respecting slot and volume limits.": [
       {
         "file": "console/web/src/features/storage/StoragePanel.tsx",
-        "line": 156,
+        "line": 160,
         "nearby": [
           "Choose an item from the list first.",
           "The console does not know this item's volume. While it is in a container, items with a known volume cannot be given into that container."
@@ -23026,7 +23026,7 @@
     "Fills become visible in-game after the Survival server restarts; the restart disconnects players for a few minutes.": [
       {
         "file": "console/web/src/features/storage/StoragePanel.tsx",
-        "line": 156,
+        "line": 160,
         "nearby": [
           "Refresh Storage",
           "Apply Fills (Restart Survival)",
@@ -25021,7 +25021,7 @@
       },
       {
         "file": "console/web/src/features/storage/StoragePanel.tsx",
-        "line": 156,
+        "line": 160,
         "nearby": [
           "Storage give-item schema not detected",
           "Choose an item from the list first.",
@@ -28148,7 +28148,7 @@
     "Item to give or fill": [
       {
         "file": "console/web/src/features/storage/StoragePanel.tsx",
-        "line": 156,
+        "line": 160,
         "nearby": [
           "Storage",
           "Export JSON",
@@ -30631,7 +30631,7 @@
     "Loading storage containers...": [
       {
         "file": "console/web/src/features/storage/StoragePanel.tsx",
-        "line": 156,
+        "line": 160,
         "nearby": [
           "Apply Fills (Restart Survival)",
           "Fills become visible in-game after the Survival server restarts; the restart disconnects players for a few minutes.",
@@ -39903,7 +39903,7 @@
     "Qty": [
       {
         "file": "console/web/src/features/storage/StoragePanel.tsx",
-        "line": 156,
+        "line": 160,
         "nearby": [
           "Export JSON",
           "Item to give or fill",
@@ -40035,7 +40035,7 @@
       },
       {
         "file": "console/web/src/features/storage/StoragePanel.tsx",
-        "line": 156,
+        "line": 160,
         "nearby": [
           "Item to give or fill",
           "Qty",
@@ -41785,7 +41785,7 @@
     "Refresh Storage": [
       {
         "file": "console/web/src/features/storage/StoragePanel.tsx",
-        "line": 156,
+        "line": 160,
         "nearby": [
           "Restart Survival",
           "Storage",
@@ -43883,7 +43883,7 @@
     "Restart Survival": [
       {
         "file": "console/web/src/features/storage/StoragePanel.tsx",
-        "line": 115,
+        "line": 119,
         "nearby": [
           "The console does not know this item's volume. While it is in a container, the console cannot give or fill items with a known volume into that container, and the Storage tab cannot remove it.",
           "Restart Survival Server",
@@ -43895,7 +43895,7 @@
     "Restart Survival Server": [
       {
         "file": "console/web/src/features/storage/StoragePanel.tsx",
-        "line": 115,
+        "line": 119,
         "nearby": [
           "The console does not know this item's volume. While it is in a container, the console cannot give or fill items with a known volume into that container, and the Storage tab cannot remove it.",
           "Restart Survival",
@@ -51961,7 +51961,7 @@
       },
       {
         "file": "console/web/src/features/storage/StoragePanel.tsx",
-        "line": 156,
+        "line": 160,
         "nearby": [
           "Restart Survival Server",
           "Restart Survival",
@@ -51973,7 +51973,7 @@
     "Storage fill-item schema not detected": [
       {
         "file": "console/web/src/features/storage/StoragePanel.tsx",
-        "line": 156,
+        "line": 160,
         "nearby": [
           "Choose an item from the list first.",
           "Give Item",
@@ -51984,7 +51984,7 @@
     "Storage give-item schema not detected": [
       {
         "file": "console/web/src/features/storage/StoragePanel.tsx",
-        "line": 156,
+        "line": 160,
         "nearby": [
           "Qty",
           "Quantity",
@@ -53574,7 +53574,7 @@
     "The console does not know this item's volume. While it is in a container, items with a known volume cannot be given into that container.": [
       {
         "file": "console/web/src/features/storage/StoragePanel.tsx",
-        "line": 156,
+        "line": 160,
         "nearby": [
           "Fill Container",
           "Choose an item from the list first.",
@@ -53585,7 +53585,7 @@
     "The console does not know this item's volume. While it is in a container, the console cannot give or fill items with a known volume into that container, and the Storage tab cannot remove it.": [
       {
         "file": "console/web/src/features/storage/StoragePanel.tsx",
-        "line": 82,
+        "line": 86,
         "nearby": [
           "Restart Survival Server",
           "Restart Survival"
