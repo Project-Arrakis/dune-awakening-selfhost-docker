@@ -72,6 +72,32 @@ describe("ItemCatalogCombobox search", () => {
     expect(shownIds).toEqual(["", "", "Sword", "", "Blade_Sword"]);
   });
 
+  it("finds an id listed twice by either name, showing one row with the first row's name and category", async () => {
+    vi.mocked(adminApi.itemCatalog).mockResolvedValue({
+      rows: [
+        ...CATALOG,
+        row("UniqueThumper_02", "Clapper Mk2", "placeables"),
+        row("UniqueThumper_02", "Wormsong Echo", "weapons"),
+        row("UniqueThumper_03", "Clapper Mk3", "placeables"),
+        row("UniqueThumper_03", "Song of Shai-Hulud", "weapons")
+      ]
+    });
+    const input = await openPicker();
+
+    await search(input, "Song of Shai-Hulud", ["Clapper Mk3"]);
+    expect(screen.getByRole("option").querySelector("small")?.textContent).toBe("Placeables");
+    await search(input, "wormsong", ["Clapper Mk2"]);
+    await search(input, "clapper", ["Clapper Mk2", "Clapper Mk3"]);
+    // The words of one search must all fit the same name.
+    await search(input, "clapper echo", []);
+
+    // Enter before the pause searches the same names.
+    vi.useFakeTimers();
+    type(input, "shai-hulud");
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ id: "UniqueThumper_03", name: "Clapper Mk3", category: "placeables" }));
+  });
+
   it("waits for a pause in typing before it searches", async () => {
     const input = await openPicker();
     vi.useFakeTimers();

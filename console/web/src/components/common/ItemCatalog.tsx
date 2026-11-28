@@ -142,7 +142,8 @@ export function ItemCatalogSelector({ label = "Select Item", selected, onSelect,
 // exact template id or exact in-game name, and offered no way to discover
 // what's actually in the catalog.
 //
-// Search matches names, categories and catalog ids (template ids, e.g. "Oil" for
+// Search matches names (every name the catalog lists for the id), categories and
+// catalog ids (template ids, e.g. "Oil" for
 // "Fuel Cell"): container contents and the console's messages name items by id.
 // An id is shown on a row it was needed to find, and when two items share a name
 // and category. Callers submit the chosen item's id.
@@ -150,9 +151,9 @@ export function ItemCatalogSelector({ label = "Select Item", selected, onSelect,
 // `filterGroups`, when set, offers only items of those groups; the server
 // enforces the same rule.
 //
-// Every typed word must appear in the item's name, category or id. Lower ranks
-// sort first: the exact name, names that start with the text, the exact id, other
-// name or category matches, then matches that needed the id.
+// Every typed word must appear in one of the item's names, its category or its id.
+// Lower ranks sort first: the exact name, names that start with the text, the exact
+// id, other name or category matches, then matches that needed the id.
 const RANK_EXACT_ID = 2;
 const RANK_NEEDED_ID = 4;
 
@@ -161,20 +162,27 @@ function containsAll(text: string, words: string[]) {
   return words.every((word) => haystack.includes(word));
 }
 
-function searchCombobox(items: CatalogItem[], text: string, filterGroups?: Set<string>) {
+// The rank of one item under one of its names, or null when that name does not match.
+function rankUnderName(item: CatalogItem, itemName: string, term: string, words: string[]) {
+  const label = `${itemName} ${item.category || ""}`;
+  if (!containsAll(`${label} ${item.id}`, words)) return null;
+  const name = itemName.toLowerCase();
+  if (term && name === term) return 0;
+  if (term && name.startsWith(term)) return 1;
+  if (item.id.toLowerCase() === term) return RANK_EXACT_ID;
+  return containsAll(label, words) ? 3 : RANK_NEEDED_ID;
+}
+
+function searchCombobox(items: CatalogItem[], otherNames: Map<string, string[]>, text: string, filterGroups?: Set<string>) {
   const term = text.trim().toLowerCase();
   const words = term.split(/\s+/).filter(Boolean);
   const found: { item: CatalogItem; rank: number }[] = [];
   for (const item of items) {
     if (filterGroups && !(item.group && filterGroups.has(item.group))) continue;
-    const label = `${item.name} ${item.category || ""}`;
-    if (!containsAll(`${label} ${item.id}`, words)) continue;
-    const name = item.name.toLowerCase();
-    let rank = containsAll(label, words) ? 3 : RANK_NEEDED_ID;
-    if (term && name === term) rank = 0;
-    else if (term && name.startsWith(term)) rank = 1;
-    else if (item.id.toLowerCase() === term) rank = RANK_EXACT_ID;
-    found.push({ item, rank });
+    const ranks = [item.name, ...(otherNames.get(item.id) || [])]
+      .map((name) => rankUnderName(item, name, term, words))
+      .filter((rank) => rank !== null);
+    if (ranks.length) found.push({ item, rank: Math.min(...ranks) });
   }
   return found.sort((a, b) => a.rank - b.rank);
 }
@@ -275,11 +283,17 @@ export function ItemCatalogCombobox({
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // The catalog lists a few ids twice; some different items share a name and a
+  // The catalog lists a few ids twice, one row per id is shown (the first) and the
+  // other rows' names still find it. Some different items share a name and a
   // category, and only their id tells them apart.
-  const { unique, ambiguous } = useMemo(() => {
+  const { unique, otherNames, ambiguous } = useMemo(() => {
     const byId = new Map<string, CatalogItem>();
-    for (const item of items) if (!byId.has(item.id)) byId.set(item.id, item);
+    const others = new Map<string, string[]>();
+    for (const item of items) {
+      const first = byId.get(item.id);
+      if (!first) byId.set(item.id, item);
+      else if (item.name !== first.name) others.set(item.id, [...(others.get(item.id) || []), item.name]);
+    }
     const seen = new Set<string>();
     const shared = new Set<string>();
     for (const item of byId.values()) {
@@ -287,10 +301,10 @@ export function ItemCatalogCombobox({
       if (seen.has(key)) shared.add(key);
       seen.add(key);
     }
-    return { unique: [...byId.values()], ambiguous: shared };
+    return { unique: [...byId.values()], otherNames: others, ambiguous: shared };
   }, [items]);
 
-  const matches = useMemo(() => searchCombobox(unique, search, filterGroups), [unique, search, filterGroups]);
+  const matches = useMemo(() => searchCombobox(unique, otherNames, search, filterGroups), [unique, otherNames, search, filterGroups]);
   const results = matches.slice(0, MAX_COMBOBOX_RESULTS);
   const count = results.length;
   const totalCount = matches.length;
@@ -329,7 +343,7 @@ export function ItemCatalogCombobox({
     }
     if (event.key !== "ArrowDown" && event.key !== "ArrowUp" && event.key !== "Enter") return;
     // These keys act on a search of the text in the box, never on an older list.
-    const current = pending ? searchCombobox(unique, query, filterGroups).slice(0, MAX_COMBOBOX_RESULTS) : results;
+    const current = pending ? searchCombobox(unique, otherNames, query, filterGroups).slice(0, MAX_COMBOBOX_RESULTS) : results;
     const from = pending ? 0 : highlighted;
     if (pending) runSearch(query);
     if (event.key === "Enter") {
