@@ -343,10 +343,6 @@ CVE-2026-118380 exp:2026-11-25  # MIT krb5 (libkrb5-3, libgssapi-krb5-2, libk5cr
 CVE-2026-119079 exp:2026-11-25  # MIT krb5 (libkrb5-3, libgssapi-krb5-2, libk5crypto3, libkrb5support0); no Debian fix yet
 CVE-2026-71199 exp:2026-11-25  # MIT krb5 (libkrb5-3, libgssapi-krb5-2, libk5crypto3, libkrb5support0); no Debian fix yet
 CVE-2026-71200 exp:2026-11-25  # MIT krb5 (libkrb5-3, libgssapi-krb5-2, libk5crypto3, libkrb5support0); no Debian fix yet
-CVE-2026-119374 exp:2026-11-25  # libsqlite3-0; no Debian fix yet
-CVE-2026-119379 exp:2026-11-25  # libsqlite3-0; no Debian fix yet
-CVE-2026-115506 exp:2026-11-25  # libexpat1 (see the libexpat1 note above: nothing in this image parses XML); no Debian fix yet
-CVE-2026-78661 exp:2026-11-25  # golang.org/x/net v0.60.0 in a prebuilt upstream binary (docker CLI / compose plugin); fixed in 0.62.0, needs an upstream Docker/Compose release
 
 # Added 2026-11-13 (sync PR #1331). Trivy flags libpq5/postgresql-client-17 17.12-0+deb13u1 (Debian
 # 13 trixie) as "affected" with no fixed version, but the Debian security tracker lists
@@ -365,3 +361,38 @@ CVE-2026-120144 exp:2027-01-07  # postgresql type-cache invalidation (PG18 only)
 # bump the base image as soon as Debian ships openssl 3.5.x with the upstream commits.
 CVE-2026-107494 exp:2026-12-08  # openssl QUIC unbounded RETIRE_CONNECTION_ID queue (DoS); no QUIC server in this image; no Debian fix yet
 CVE-2026-124709 exp:2026-12-08  # openssl QUIC rejected-stream memory leak (DoS, Low upstream); no QUIC server in this image; no Debian fix yet
+
+# --- Renewed 2026-11-27, after the 2026-11-25 expiry -------------------------
+# Accepted by the owner on 2026-11-27 until 2026-12-08 (the date of the openssl QUIC entries above, so
+# one re-triage covers all six). No fixed version was available for the Console image. Tracked in #1180
+# (standing re-triage of accepted CI risks).
+# Impact if one were exploited: the Console container holds the host Docker socket and uses host
+# networking, so treat code running inside it as control of the host.
+#
+# libsqlite3-0 3.46.1-7+deb13u2. Debian tracker 2026-11-27: trixie vulnerable, <no-dsa> (Minor issue);
+# fixed only in forky/sid (3.54.1). Packages that depend on it here: liblastlog2-2, libpython3.13-stdlib, gpg.
+# CVE-2026-119374 needs an FTS5 table in an attacker-supplied database to be deleted from with
+# secure-delete on; CVE-2026-119379 needs sqlite3changeset_apply() on attacker-supplied changesets.
+# The one SQLite user among the repository's scripts, runtime/scripts/director-log-cache.py, creates its
+# own cache (no FTS5, no sessions) and is started by autoscaler.sh, which the Console runs in the
+# orchestrator image, not in this one. gpg is used for symmetric backup encryption, and for decrypting
+# an archive on restore (which can be an uploaded one), each time in a fresh GNUPGHOME;
+# no tofu or keyboxd setting exists in the repository. Not checked: SQLite symbols imported by gpg and
+# liblastlog2, and anything an operator runs by hand inside the container.
+CVE-2026-119374 exp:2026-12-08  # libsqlite3-0 -- FTS5 secure-delete heap overflow; no trixie fix
+CVE-2026-119379 exp:2026-12-08  # libsqlite3-0 -- session changeset_apply heap overflow; no trixie fix
+
+# libexpat1 2.9.0-1~deb13u1. Debian tracker 2026-11-27: trixie and trixie-security vulnerable, <no-dsa>
+# (Minor issue); fixed in forky (2.10.0). CPU denial of service while parsing XML with nested entities.
+# Only python3.13-minimal depends on it here. No Python file or inline script in the repository imports
+# xml, pyexpat, plistlib or xmlrpc, and importing each standard-library module the shipped runtime scripts
+# use (Python 3.13.5) never loads pyexpat. The one DOMParser call is browser-side HTML parsing.
+CVE-2026-115506 exp:2026-12-08  # libexpat1 -- entity amplification detected too late (DoS); no trixie fix
+
+# golang.org/x/net v0.60.0 inside the Docker Compose v5.7.0 plugin; fixed in x/net 0.62.0. Checked
+# 2026-11-27: no Compose release up to v5.8.1 (and not main) uses 0.62.0. The advisory (GO-2026-6860)
+# covers the HTML parser in golang.org/x/net/html only. Source search found no import of that package in
+# Compose or in the dependencies of it that require x/net; the binary's package list was not inspected,
+# so this is strong evidence, not proof. The entry matches by CVE ID only, so it would also hide this CVE
+# in the docker CLI binary, which reported no finding on 2026-11-27.
+CVE-2026-78661 exp:2026-12-08  # golang.org/x/net/html quadratic parse (DoS) in docker-compose; no Compose release has the fix
