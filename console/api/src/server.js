@@ -32,7 +32,7 @@ import { duneDbDomains } from "./duneDb/domains.js";
 import { API_ROUTE_DOMAINS, createExactRouteIndex } from "./http/routeTable.js";
 import { audit, installAuditShutdownHooks, recordAdminHistory } from "./audit.js";
 import { redact } from "./redact.js";
-import { buildingUnlockStatus, customizationGrantGroups, customizationGrantStatus, isBuildingUnlockItem, isCustomizationGrantItem, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, planBulkBuildingUnlockGrant, listCatalogItems, listCustomizationGrantItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemVolume, curatedItemVolume } from "./adminCatalog.js";
+import { buildingUnlockStatus, customizationGrantGroups, customizationGrantStatus, isBuildingUnlockItem, isCustomizationGrantItem, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, planBulkBuildingUnlockGrant, listCatalogItems, listCustomizationGrantItems, resolveCatalogItem, resolveFillableCatalogItem, curatedItemVolume } from "./adminCatalog.js";
 import { buildBroadcastCommand, buildShutdownBroadcastCommand, publishCarePackageWhisper, publishServerCommand } from "./rmq.js";
 import { clearCarePackageHistory, enableCarePackage, ensureCarePackageServerPersona, grantEligibleCarePackages, grantCarePackage, retryCarePackageGrant, runCarePackageAutoScan, maintainCarePackageHistory, saveCarePackageConfig, carePackageCapabilities, carePackageConfig, carePackageEligiblePlayers, carePackageHistory } from "./carePackage.js";
 import { readJsonBody, readMultipartForm, streamRequestToFile } from "./httpSafety.js";
@@ -6556,7 +6556,7 @@ async function storageFillItemRoute(req, res, path) {
   const storageId = decodeURIComponent(path.split("/")[3]);
   return directDbMutation(req, res, "storage.fill-item", "FILL ITEM TO STORAGE", async (body) => {
     const resolved = resolveFillableCatalogItem(config.repoRoot, body);
-    const itemVolume = resolved.volume || resolveItemVolume(config.repoRoot, resolved.itemId);
+    const itemVolume = curatedItemVolume(config.repoRoot, resolved.itemId);
     return duneDb.fillItemToStorage(db, config.repoRoot, storageId, { ...body, templateId: resolved.itemId, itemVolume });
   }, { storageId });
 }
@@ -7677,7 +7677,7 @@ async function baseContainerGiveItemRoute(req, res, path) {
     // catalog item -- a separate, pre-existing feature this change does not
     // touch.
     const resolved = resolveFillableCatalogItem(config.repoRoot, body);
-    const itemVolume = resolved.volume || resolveItemVolume(config.repoRoot, resolved.itemId);
+    const itemVolume = curatedItemVolume(config.repoRoot, resolved.itemId);
     return duneDb.giveItemToBaseContainer(db, baseId, placeableId, { ...body, templateId: resolved.itemId, itemVolume });
   }, { baseId, placeableId });
 }
@@ -7706,7 +7706,7 @@ async function baseContainerGiveItemsRoute(req, res, path) {
     // baseContainerGiveItemRoute above -- see its comment for why.
     const items = body.items.map((item) => {
       const resolved = resolveFillableCatalogItem(config.repoRoot, item);
-      const itemVolume = resolved.volume || resolveItemVolume(config.repoRoot, resolved.itemId);
+      const itemVolume = curatedItemVolume(config.repoRoot, resolved.itemId);
       return { ...item, templateId: resolved.itemId, itemVolume };
     });
     return duneDb.giveMultipleItemsToBaseContainer(db, baseId, placeableId, { items });
@@ -7721,7 +7721,7 @@ async function baseContainerFillItemRoute(req, res, path) {
   if (await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
   return directDbMutation(req, res, "bases.container-fill-item", "FILL ITEM TO STORAGE", async (body) => {
     const resolved = resolveFillableCatalogItem(config.repoRoot, body);
-    const itemVolume = resolved.volume || resolveItemVolume(config.repoRoot, resolved.itemId);
+    const itemVolume = curatedItemVolume(config.repoRoot, resolved.itemId);
     return duneDb.fillItemToBaseContainer(db, config.repoRoot, baseId, placeableId, { ...body, templateId: resolved.itemId, itemVolume });
   }, { baseId, placeableId });
 }

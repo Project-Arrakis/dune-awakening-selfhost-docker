@@ -52,7 +52,8 @@ width rule, so the global `input { width: 100% }` took the row (operator report 
 - **Storage Give volume:** resolved by the same function as the volume totals (explicit curated value, then the
   catalog by exact and case-insensitive id, then the game data). `volume_override` is stored only for a value
   curated in `admin-items.json` (or passed by a caller of `giveItemToStorage`); otherwise it stays `NULL`. Fill and
-  the Bases routes store the volume they resolve; every item they accept has a curated one (pinned by a test).
+  the Bases routes use the curated volume only and refuse a fillable item that has none; every shipped fillable item
+  has one (pinned by a test).
 
 ### 3.2 Item stats
 

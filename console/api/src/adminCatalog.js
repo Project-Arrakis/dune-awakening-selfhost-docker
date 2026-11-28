@@ -84,8 +84,9 @@ export function resolveFillableCatalogItem(repoRoot, query = {}) {
   // growing, some entries' catalogued volume may not have been individually
   // confirmed in-game the way MelangeSpice's was (see
   // docs/incidents/INC-2026-08-19-VOLUME-OVERRIDE-DOUBLE-MULTIPLIED.md).
-  const volume = Number(resolved.volume) || resolveItemVolume(repoRoot, resolved.itemId);
-  if (!(volume > 0)) {
+  // Only a curated volume counts: the callers store it in volume_override, which
+  // never takes a game data value.
+  if (!(curatedItemVolume(repoRoot, resolved.itemId) > 0)) {
     throw new Error(`Item ${resolved.itemId} is missing catalogued volume data and cannot be given or filled into a volume-tracked container.`);
   }
   return resolved;

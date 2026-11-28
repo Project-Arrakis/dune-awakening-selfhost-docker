@@ -6691,8 +6691,8 @@ test("storage give-item does not check volume when itemVolume is omitted (backwa
 // PR #182 (2026-08-20): itemVolume defaults to 0 for any item with no
 // catalogued volume data (see server.js's baseContainerGiveItemRoute/
 // baseContainerFillItemRoute, which resolve itemVolume via
-// `resolved.volume || resolveItemVolume(...)`; storageGiveItemRoute passes
-// only a curated volume), but every insert site wrote that 0 straight into
+// curatedItemVolume(...); storageGiveItemRoute passes only a curated volume
+// too), but every insert site wrote that 0 straight into
 // volume_override instead of NULL.
 // NULL means "use the engine's own catalog volume" (see the 2026-08-19
 // correction comment above giveItemToStorage's insert); a stored 0 makes

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadItemGameData, withItemGameData } from "../src/itemGameData.js";
-import { curatedItemVolume, isFillableItem, listCatalogItems, resolveItemStackSize, resolveItemVolume } from "../src/adminCatalog.js";
+import { curatedItemVolume, isFillableItem, listCatalogItems, resolveFillableCatalogItem, resolveItemStackSize, resolveItemVolume } from "../src/adminCatalog.js";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const dataDir = join(repoRoot, "runtime/data");
@@ -80,6 +80,12 @@ test("every fillable catalog item has a curated volume", () => {
   const fillable = catalog.filter(isFillableItem);
   assert.ok(fillable.length > 0);
   assert.deepEqual(fillable.filter((item) => !(curatedItemVolume(repoRoot, item.id) > 0)).map((item) => item.id), []);
+});
+
+test("a fillable item without a curated volume is refused although the game data has one", (t) => {
+  const root = tempRepo(t, [{ id: "SteelBar", name: "Steel Bar", category: "resources", group: "refined_resource" }], { volume: { SteelBar: 0.5 }, maxStack: { SteelBar: 500 } });
+  assert.equal(resolveItemVolume(root, "SteelBar"), 0.5);
+  assert.throws(() => resolveFillableCatalogItem(root, { itemId: "SteelBar" }), /missing catalogued volume data/);
 });
 
 test("an item neither file knows keeps no volume and no stack limit", () => {

@@ -656,6 +656,8 @@ file reaches the two together, without a console restart. Storage Give resolves 
 volume totals do, including an id typed in another case or not listed in the catalog. It stores
 `volume_override` only for a volume curated in `admin-items.json`; for a volume that comes from the game data the
 column stays `NULL`, so the game uses its own value and a number from one game build is not written into a save.
+Storage Fill and the Bases Give, Give Multiple and Fill routes use the curated volume only, and refuse a fillable
+item that has none.
 
 **Stack size correlates strongly with resource type, not per-item uniqueness** — an operator hypothesis
 tested 2026-08-20 by externally resolving all 96 (of 99) `raw_resource`/`refined_resource`/`component`
