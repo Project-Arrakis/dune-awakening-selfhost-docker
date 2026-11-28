@@ -68,6 +68,9 @@ ENV NODE_ENV=production
 # per .trivyignore's own policy, not a suppression, so it's applied here
 # rather than added to that file. zlib1g is targeted the same way (2026-11-11,
 # trivy-image-scan on #1312: a fixed trixie-security version exists, CVE-2026-85091).
+# libzstd1 is targeted the same way (2026-11-27, trivy-image-scan: trixie-security
+# has 1.5.7+dfsg-1+deb13u1, DSA-6657-1, CVE-2026-124851; the base image still
+# carries 1.5.7+dfsg-1).
 # Deliberately NOT a blanket `apt-get
 # upgrade` (hadolint DL3005, and see .hadolint.yaml's own note on why
 # OS-package freshness is handled via targeted fixes/base-image bumps, not
@@ -76,6 +79,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends --only-upgrade \
         libpcre2-8-0 \
         zlib1g \
+        libzstd1 \
     && apt-get install -y --no-install-recommends \
         iproute2 \
         ca-certificates \
