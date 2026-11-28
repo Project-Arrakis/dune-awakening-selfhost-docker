@@ -33,6 +33,10 @@ export function StoragePanel({ onError, confirmAction, formatMutationResult, wai
   const [items, setItems] = useState<Record<string, unknown>[]>([]);
   const [item, setItem] = useState<CatalogItem | null>(null);
   const [itemQuery, setItemQuery] = useState("");
+  // While the item list cannot be loaded, the item is typed instead and the route
+  // resolves it as a name or an id.
+  const [listUnavailable, setListUnavailable] = useState(false);
+  const [typedItem, setTypedItem] = useState("");
   const [actionResult, setActionResult] = useState<ActionResult | null>(null);
   const [quantityText, setQuantityText] = useState("1");
   const [canGiveItem, setCanGiveItem] = useState(false);
@@ -75,18 +79,25 @@ export function StoragePanel({ onError, confirmAction, formatMutationResult, wai
     return Math.max(1, Math.min(1000000, Number(quantityText) || 1));
   }
 
+  // What Give and Fill act on: the fields sent for it and how a confirmation names
+  // it. The volume of a typed item is not known to the page, so nothing is said of it.
+  const typedTarget = typedItem.trim() ? { label: typedItem, fields: { itemName: typedItem }, unknownVolume: false } : null;
+  const chosenTarget = item ? { label: `${item.name} (${item.id})`, fields: { itemId: item.id }, unknownVolume: item.volume === undefined } : null;
+  const target = listUnavailable ? typedTarget : chosenTarget;
+  const needsChoice = !listUnavailable && !item;
+
   async function giveStorageItem() {
-    if (!selected || !item) return;
+    if (!selected || !target) return;
     const storageId = String(selected.id);
     onError("");
     setActionResult(null);
     try {
-      const question = `Give ${quantity()} x ${item.name} (${item.id}) to storage ${storageId}?`;
-      const confirmed = item.volume === undefined
+      const question = `Give ${quantity()} x ${target.label} to storage ${storageId}?`;
+      const confirmed = target.unknownVolume
         ? await confirmAction(question, { danger: true, warning: "The console does not know this item's volume. While it is in a container, the console cannot give or fill items with a known volume into that container, and the Storage tab cannot remove it." })
         : await confirmAction(question);
       if (!confirmed) return;
-      const response = await worldDataApi.storageGiveItem(storageId, { itemId: item.id, quantity: quantity(), confirmation: "GIVE ITEM TO STORAGE" });
+      const response = await worldDataApi.storageGiveItem(storageId, { ...target.fields, quantity: quantity(), confirmation: "GIVE ITEM TO STORAGE" });
       setActionResult({ storageId, text: formatMutationResult(response), tone: wasClamped(response) ? "partial" : "done" });
       setItems((await worldDataApi.storageItems(storageId)).rows || []);
     } catch (error) {
@@ -97,13 +108,13 @@ export function StoragePanel({ onError, confirmAction, formatMutationResult, wai
   }
 
   async function fillStorageItem() {
-    if (!selected || !item) return;
+    if (!selected || !target) return;
     const storageId = String(selected.id);
     onError("");
     setActionResult(null);
     try {
-      if (!(await confirmAction(`Fill container ${storageId} with ${quantity()} x ${item.name} (${item.id})? Only refined resources and components are allowed.`))) return;
-      const response = await worldDataApi.storageFillItem(storageId, { itemId: item.id, quantity: quantity(), confirmation: "FILL ITEM TO STORAGE" });
+      if (!(await confirmAction(`Fill container ${storageId} with ${quantity()} x ${target.label}? Only refined resources and components are allowed.`))) return;
+      const response = await worldDataApi.storageFillItem(storageId, { ...target.fields, quantity: quantity(), confirmation: "FILL ITEM TO STORAGE" });
       setActionResult({ storageId, text: formatMutationResult(response), tone: wasClamped(response) ? "partial" : "done" });
       setItems((await worldDataApi.storageItems(storageId)).rows || []);
     } catch (error) {
@@ -157,5 +168,5 @@ export function StoragePanel({ onError, confirmAction, formatMutationResult, wai
     void load();
   }, []);
 
-  return <section className="panel"><div className="panel-title"><h2>Storage</h2><button onClick={() => void load()}>Refresh Storage</button>{canRestartServer && <button disabled={restartRunning} onClick={() => void applyRestart()}>Apply Fills (Restart Survival)</button>}</div>{storageResultIsError && <p className="danger-note">{storageResult}</p>}{!storageResultIsError && storageResult && <p className="info-note">{storageResult}</p>}{restartStatus && <p className="info-note">{restartStatus}</p>}{canChangeItems && <p className="info-note">Fills become visible in-game after the Survival server restarts; the restart disconnects players for a few minutes.</p>}{loading ? <p className="info-note"><span className="spinner" aria-hidden="true" /> Loading storage containers...</p> : <DataTable rows={rows} onRowClick={open} />}{selected && <section className="drawer storage-drawer"><h3>Storage {String(selected.id)}</h3><div className="action-row storage-give-row"><a className="button-link" href={worldDataApi.storageExportUrl(String(selected.id))}>Export JSON</a>{canChangeItems && <><ItemCatalogCombobox value={item} onChange={setItem} onQueryChange={setItemQuery} ariaLabel="Item to give or fill" /><input value={quantityText} onChange={(event) => setQuantityText(event.target.value)} className="small-input" type="number" min={1} max={1000000} placeholder="Qty" aria-label="Quantity" /><button disabled={!item || !canGiveItem || restartRunning} onClick={() => void giveStorageItem()} title={!canGiveItem ? "Storage give-item schema not detected" : !item ? "Choose an item from the list first." : ""} aria-describedby={!item && itemQuery.trim() ? "storage-choose-item" : undefined}>Give Item</button><button disabled={!item || !canFillItem || restartRunning} onClick={() => void fillStorageItem()} title={!canFillItem ? "Storage fill-item schema not detected" : !item ? "Choose an item from the list first." : ""} aria-describedby={!item && itemQuery.trim() ? "storage-choose-item" : undefined}>Fill Container</button></>}</div>{canChangeItems && <>{!item && itemQuery.trim() && <p className="info-note" id="storage-choose-item">Choose an item from the list first.</p>}{actionResult && actionResult.storageId === String(selected.id) && <p className={actionResult.tone === "failed" ? "danger-note" : actionResult.tone === "partial" ? "confirm-modal-warning" : "info-note"} role={actionResult.tone === "failed" ? "alert" : "status"}>{actionResult.text}</p>}{item && item.volume === undefined && <p className="info-note">The console does not know this item's volume. While it is in a container, items with a known volume cannot be given into that container.</p>}<p className="info-note">Fill Container accepts refined resources and components only, respecting slot and volume limits.</p></>}<DataTable rows={items} /></section>}</section>;
+  return <section className="panel"><div className="panel-title"><h2>Storage</h2><button onClick={() => void load()}>Refresh Storage</button>{canRestartServer && <button disabled={restartRunning} onClick={() => void applyRestart()}>Apply Fills (Restart Survival)</button>}</div>{storageResultIsError && <p className="danger-note">{storageResult}</p>}{!storageResultIsError && storageResult && <p className="info-note">{storageResult}</p>}{restartStatus && <p className="info-note">{restartStatus}</p>}{canChangeItems && <p className="info-note">Fills become visible in-game after the Survival server restarts; the restart disconnects players for a few minutes.</p>}{loading ? <p className="info-note"><span className="spinner" aria-hidden="true" /> Loading storage containers...</p> : <DataTable rows={rows} onRowClick={open} />}{selected && <section className="drawer storage-drawer"><h3>Storage {String(selected.id)}</h3><div className="action-row storage-give-row"><a className="button-link" href={worldDataApi.storageExportUrl(String(selected.id))}>Export JSON</a>{canChangeItems && <>{listUnavailable && <input value={typedItem} onChange={(event) => setTypedItem(event.target.value)} placeholder="Item name or ID" aria-label="Item name or ID" />}<ItemCatalogCombobox value={item} onChange={setItem} onQueryChange={setItemQuery} onListUnavailableChange={setListUnavailable} ariaLabel="Item to give or fill" /><input value={quantityText} onChange={(event) => setQuantityText(event.target.value)} className="small-input" type="number" min={1} max={1000000} placeholder="Qty" aria-label="Quantity" /><button disabled={!target || !canGiveItem || restartRunning} onClick={() => void giveStorageItem()} title={!canGiveItem ? "Storage give-item schema not detected" : needsChoice ? "Choose an item from the list first." : ""} aria-describedby={needsChoice && itemQuery.trim() ? "storage-choose-item" : undefined}>Give Item</button><button disabled={!target || !canFillItem || restartRunning} onClick={() => void fillStorageItem()} title={!canFillItem ? "Storage fill-item schema not detected" : needsChoice ? "Choose an item from the list first." : ""} aria-describedby={needsChoice && itemQuery.trim() ? "storage-choose-item" : undefined}>Fill Container</button></>}</div>{canChangeItems && <>{needsChoice && itemQuery.trim() && <p className="info-note" id="storage-choose-item">Choose an item from the list first.</p>}{actionResult && actionResult.storageId === String(selected.id) && <p className={actionResult.tone === "failed" ? "danger-note" : actionResult.tone === "partial" ? "confirm-modal-warning" : "info-note"} role={actionResult.tone === "failed" ? "alert" : "status"}>{actionResult.text}</p>}{item && item.volume === undefined && <p className="info-note">The console does not know this item's volume. While it is in a container, items with a known volume cannot be given into that container.</p>}<p className="info-note">Fill Container accepts refined resources and components only, respecting slot and volume limits.</p></>}<DataTable rows={items} /></section>}</section>;
 }

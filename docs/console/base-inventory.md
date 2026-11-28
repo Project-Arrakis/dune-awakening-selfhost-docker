@@ -749,13 +749,15 @@ above), filtered to `FILLABLE_GROUPS` client-side in both modes, matching the se
 `resolveFillableCatalogItem()` check, so the picker never even offers an item the server would reject. Both
 submit the selected item's `itemId`.
 
-The Storage tab uses the same picker over the whole catalog (it replaced the "Item name or ID" field there), so
-`POST /api/storage/{storageId}/give-item` now receives an `itemId` from the UI; the route accepts a name as
-before. The picker works like this on both tabs:
+The Storage tab uses the same picker over the whole catalog (it replaced the "Item name or ID" field there, which
+returns only while the item list cannot be loaded, see below), so `POST /api/storage/{storageId}/give-item` and
+`fill-item` receive an `itemId` from the picker; the routes accept a name as before. The picker works like this on
+both tabs:
 
 - Search matches every typed word against name, category and catalog id. The exact name comes first, then names
   that start with the text, the exact id, other name or category matches, and last the matches that needed the id.
-  The list says when it is cut off.
+  The list says when it is cut off. An id the catalog lists under more than one name shows one row, under the first
+  name, and is found by any of them (the words of one search have to fit the same name).
 - A row shows its catalog id when the id was needed to find it, or when two items share a name and category. The
   Storage confirmation always names the id.
 - The list follows the typing after a short pause (150 ms), and Enter or an arrow key acts on the text already in
@@ -770,8 +772,12 @@ before. The picker works like this on both tabs:
 On the Storage tab only:
 
 - **Give Item** and **Fill Container** stay disabled until a result is chosen, and say so while the box holds text
-  that chose nothing.
-- Giving an item whose volume the console does not know asks for confirmation with a warning that it blocks later
+  that chose nothing (while the item list can be loaded).
+- While the item list cannot be loaded, an **Item name or ID** field appears above the picker. Give Item and Fill
+  Container then send its text as `itemName`, which the route resolves as a name or an id, and the confirmation shows
+  the typed text. The page does not know the item's volume then, so the confirmation says nothing about it. The field
+  goes away once the list loads.
+- Giving a chosen item whose volume the console does not know asks for confirmation with a warning that it blocks later
   gives and fills of known-volume items in that container.
 - The result of a give or fill is shown under the controls of the container it was done to: highlighted when only
   part was delivered, as an error when it failed.
@@ -782,7 +788,8 @@ On the Storage tab only:
 The Storage page is in the menu for every role holding `storage:read`. It shows the item search, Give
 Item and Fill Container only to a role holding `storage:mutate`, and Apply Fills only to one holding
 `server:restart-service`. With the default policies a moderator can browse containers and export them, and
-cannot change them.
+cannot change them. The item search itself needs `admin:items:read`; for a role without it the list cannot be
+loaded, and giving and filling use the typed field.
 
 ## Why Give/Fill do not require a stopped map
 

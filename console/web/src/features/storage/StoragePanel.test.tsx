@@ -397,3 +397,93 @@ describe("StoragePanel item search", () => {
     });
   });
 });
+
+describe("StoragePanel when the item list cannot be loaded", () => {
+  const forbidden = () => Object.assign(new Error("Forbidden"), { status: 403 });
+  const typedBox = () => screen.queryByRole("textbox", { name: "Item name or ID" }) as HTMLInputElement | null;
+  const combobox = () => screen.getByRole("combobox", { name: "Item to give or fill" });
+  const button = (name: string) => screen.getByRole("button", { name }) as HTMLButtonElement;
+
+  beforeEach(() => {
+    vi.mocked(adminApi.itemCatalog).mockRejectedValue(forbidden());
+  });
+
+  async function openBox() {
+    render(<StoragePanel {...defaultProps} />);
+    fireEvent.click(await screen.findByText("105"));
+    await screen.findByText("Storage 105");
+  }
+
+  async function typeItem(text: string) {
+    await waitFor(() => expect(typedBox()).not.toBeNull());
+    fireEvent.change(typedBox() as HTMLInputElement, { target: { value: text } });
+  }
+
+  it("takes a typed item and gives it by name, saying nothing about its volume", async () => {
+    vi.mocked(worldDataApi.storageGiveItem).mockResolvedValue({ supported: true });
+    await openBox();
+    await typeItem("Copper Ore");
+    fireEvent.click(button("Give Item"));
+
+    await waitFor(() => expect(worldDataApi.storageGiveItem).toHaveBeenCalledWith("105", { itemName: "Copper Ore", quantity: 1, confirmation: "GIVE ITEM TO STORAGE" }));
+    // One argument: no danger flag and no volume warning.
+    expect(mockConfirmAction.mock.calls).toEqual([["Give 1 x Copper Ore to storage 105?"]]);
+  });
+
+  it("fills with a typed id and quantity, showing the typed text in the confirmation", async () => {
+    vi.mocked(worldDataApi.storageFillItem).mockResolvedValue({ supported: true });
+    await openBox();
+    await typeItem("AzuriteOre");
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Quantity" }), { target: { value: "50" } });
+    fireEvent.click(button("Fill Container"));
+
+    await waitFor(() => expect(worldDataApi.storageFillItem).toHaveBeenCalledWith("105", { itemName: "AzuriteOre", quantity: 50, confirmation: "FILL ITEM TO STORAGE" }));
+    expect(mockConfirmAction.mock.calls).toEqual([["Fill container 105 with 50 x AzuriteOre? Only refined resources and components are allowed."]]);
+    expect(worldDataApi.storageGiveItem).not.toHaveBeenCalled();
+  });
+
+  it("keeps the failed message and Try again, and asks for no choice from the list", async () => {
+    await openBox();
+    await typeItem("   ");
+
+    expect(button("Give Item").disabled).toBe(true);
+    expect(button("Fill Container").disabled).toBe(true);
+
+    fireEvent.focus(combobox());
+    fireEvent.change(combobox(), { target: { value: "copper" } });
+
+    expect(await screen.findByRole("button", { name: "Try again" })).toBeInTheDocument();
+    expect(screen.getByText("The item list could not be loaded.")).toBeInTheDocument();
+    expect(screen.queryByText("Choose an item from the list first.")).toBeNull();
+    for (const name of ["Give Item", "Fill Container"]) {
+      expect(button(name).title).toBe("");
+      expect(button(name).hasAttribute("aria-describedby")).toBe(false);
+    }
+  });
+
+  it("removes the typed box once a retry loads the list", async () => {
+    await openBox();
+    await typeItem("Copper Ore");
+    fireEvent.focus(combobox());
+    const retry = await screen.findByRole("button", { name: "Try again" });
+
+    vi.mocked(adminApi.itemCatalog).mockResolvedValue({ rows: [{ id: "AzuriteOre", itemId: "AzuriteOre", name: "Copper Ore", category: "resources", source: "Resources", volume: 0.2 }] });
+    fireEvent.click(retry);
+
+    await waitFor(() => expect(typedBox()).toBeNull());
+    // The typed text no longer counts: an item is chosen from the list again.
+    expect(button("Give Item").disabled).toBe(true);
+    expect(button("Give Item").title).toBe("Choose an item from the list first.");
+  });
+
+  it("shows no typed box while the list loads or after it has loaded", async () => {
+    let arrive: (value: { rows: [] }) => void = () => {};
+    vi.mocked(adminApi.itemCatalog).mockReturnValue(new Promise((resolve) => { arrive = resolve; }));
+    await openBox();
+    expect(typedBox()).toBeNull();
+
+    await act(async () => { arrive({ rows: [] }); });
+
+    expect(typedBox()).toBeNull();
+  });
+});

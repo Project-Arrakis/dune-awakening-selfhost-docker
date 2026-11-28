@@ -67,7 +67,11 @@ player Give including Care Package and add-on database grants, Container Add) an
 - Storage tab: `ItemCatalogCombobox` over the whole catalog replaces the free-text field; the route receives
   `itemId`. Quantity starts at 1. Give and Fill are disabled until an item is chosen. The confirmation names the
   item and id. An item with no known volume shows a note saying it blocks later gives into that container.
-- Shared picker (also Bases, whose filter is unchanged): every typed word matched against name, category and id;
+- Storage tab, only while the item list cannot be loaded: a typed **Item name or ID** field appears, and Give and
+  Fill send its text as `itemName`, as the free-text field did. The confirmation shows the typed text and says
+  nothing about volume, which the page does not know then. The field is removed once the list loads.
+- Shared picker (also Bases, whose filter is unchanged): every typed word matched against name (any name the
+  catalog lists for the id), category and id;
   order: exact name, name prefix, exact id, other name or category matches, id-only matches. One row per id; the id
   shown when it was needed or when name and category are shared. A line when results are cut off; loading and
   failed states with **Try again**; search 150 ms after typing, with Enter and arrows acting on the typed text;
@@ -81,8 +85,8 @@ player Give including Care Package and add-on database grants, Container Add) an
   their own read-only storage page.
 - The page narrows its write controls by permission: the item search, quantity, Give Item and Fill Container need
   `storage:mutate`, and Apply Fills needs `server:restart-service`. With the default policies a moderator can view
-  and export containers only. The API enforces access either way. A custom role holding `storage:mutate` without
-  `admin:items:read` still sees a search that cannot load.
+  and export containers only. The API enforces access either way. The item search needs `admin:items:read`: a custom
+  role holding `storage:mutate` without it sees a search that cannot load, and gives and fills with the typed field.
 
 No route, permission, audit record or schema changes.
 

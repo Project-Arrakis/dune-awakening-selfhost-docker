@@ -151,6 +151,9 @@ export function ItemCatalogSelector({ label = "Select Item", selected, onSelect,
 // `filterGroups`, when set, offers only items of those groups; the server
 // enforces the same rule.
 //
+// `onListUnavailableChange` is told true when the item list fails to load and false
+// once it loads, so that a caller can offer another way to name the item.
+//
 // Every typed word must appear in one of the item's names, its category or its id.
 // Lower ranks sort first: the exact name, names that start with the text, the exact
 // id, other name or category matches, then matches that needed the id.
@@ -195,6 +198,7 @@ export function ItemCatalogCombobox({
   value,
   onChange,
   onQueryChange,
+  onListUnavailableChange,
   filterGroups,
   ariaLabel,
   placeholder = "Type to search items…",
@@ -204,6 +208,7 @@ export function ItemCatalogCombobox({
   onChange: (item: CatalogItem | null) => void;
   // Receives the text in the box whenever it changes.
   onQueryChange?: (query: string) => void;
+  onListUnavailableChange?: (unavailable: boolean) => void;
   filterGroups?: Set<string>;
   ariaLabel: string;
   placeholder?: string;
@@ -232,8 +237,13 @@ export function ItemCatalogCombobox({
         if (!mountedRef.current) return;
         setItems(loaded);
         setLoadState("ready");
+        onListUnavailableChange?.(false);
       },
-      () => { if (mountedRef.current) setLoadState("failed"); }
+      () => {
+        if (!mountedRef.current) return;
+        setLoadState("failed");
+        onListUnavailableChange?.(true);
+      }
     );
   }
 
