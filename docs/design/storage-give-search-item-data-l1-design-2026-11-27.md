@@ -113,14 +113,14 @@ No migration, no new setting. Existing rows are untouched.
   Storage page) in place. Rows given as single units stay valid. Rows with a game-data volume store `NULL`, so
   without the file their volume is unknown again and their volume-limited container refuses volume-tracked gives.
 - **Not verified in game.** Before merge, on dune-dev, following the organization's test-build runbook: a weapon, a garment,
-  a tool, a vehicle part, a schematic and a quantity above 1, then a Survival restart. Gear gets the durability
-  Storage Give already writes today.
+  a tool, a vehicle part, a schematic, a cosmetic token, a contract, a consumable, an emote and a quantity above 1,
+  then a Survival restart. Gear gets the durability Storage Give already writes today.
 
 ## 6. Out of scope and follow-ups
 
 Opening up Base Inventory Give; grade and augment controls on the Storage tab; the 46 catalog ids the game does
 not define; up to 1,000 single-row inserts under one lock; Container Add skipping the volume cap and able to write
-outside the slot grid (existing); NPC and developer items not marked in pickers.
+outside the slot grid (existing). NPC and developer items stay unmarked in pickers (section 7, #1368).
 
 **Limit of the picker:** it lists the catalog route's items, which leave out 236 that the old text field accepted:
 232 building unlock tokens (all but `Developer_Storage_Container_Patent`) and the 4 direct event cosmetics. The
@@ -139,7 +139,7 @@ remain:
 | HIGH | Existing tests encode today's behaviour | Tests updated in this change |
 | HIGH | Gear stats unverified in game | 5: merge gate |
 | HIGH | Result list too narrow to read | 3.3 layout |
-| HIGH | Any holder of `storage:mutate` or `bases:add-item` can create any item | Existing access, unchanged; follow-up decision |
+| HIGH | Any holder of `storage:mutate` or `bases:add-item` can create any item | Existing access, unchanged; kept by decision (2026-11-27, #1368) and documented in `docs/console-iam.md` |
 | MED | Data provenance and licence acceptance | 3.1 |
 | MED | Behaviour-change list incomplete | 4 |
 | MED | Picker search, load failure and labels | 3.3 |
