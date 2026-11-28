@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { redact } from "./redact.js";
 import { itemImagePath, isDirectCustomizationUnlock } from "./adminCatalog.js";
+import { loadItemCatalog } from "./itemGameData.js";
 import { clampInt, writeJsonAtomic } from "./jsonStore.js";
 import { isFiefClaimPlaceable } from "./blueprintSafety.js";
 import { journeyCards, planJourneyChange } from "./duneDb/journeyProgress.js";
@@ -80,7 +81,10 @@ function maxHealthForCombatLevel(combatLevel) {
 const MAX_TABLE_PREVIEW_ROWS = 10000;
 const INVENTORY_EDITABLE_COLUMNS = new Set(["stack_size", "quality_level", "position_index", "current_durability"]);
 let craftingRecipeCatalogCache = null;
-let adminItemMetadataCache = null;
+// Lookups built from each loaded item catalog; see itemCatalogSnapshot().
+const itemCatalogSnapshots = new WeakMap();
+let lastItemCatalogSnapshot = { metadata: new Map(), volumeByLowerId: new Map(), stackSizeByLowerId: new Map(), gameData: { get: () => null } };
+let itemCatalogFailure = "";
 let mapRegionNamesCache = null;
 let augmentCompatibilityCache = null;
 const PLAYER_TARGET_CACHE_TTL_MS = 3000;
@@ -8227,43 +8231,69 @@ function craftingRecipeCatalog() {
   return craftingRecipeCatalogCache;
 }
 
-export function adminItemMetadata() {
-  if (adminItemMetadataCache) return adminItemMetadataCache;
-  const metadata = new Map();
+// The item catalog as this module reads it, rebuilt whenever admin-items.json
+// or the game data beside it changes (loadItemCatalog, shared with
+// adminCatalog). A loop over many rows takes one snapshot and reuses it.
+function itemCatalogSnapshot() {
   try {
     const path = [
       resolve(process.cwd(), "runtime/data/admin-items.json"),
       resolve(process.cwd(), "../../runtime/data/admin-items.json")
     ].find((candidate) => existsSync(candidate)) || resolve(process.cwd(), "runtime/data/admin-items.json");
-    const items = JSON.parse(readFileSync(path, "utf8"));
-    for (const item of Array.isArray(items) ? items : []) {
-      const id = String(item.id || "").trim();
-      if (!id) continue;
-      metadata.set(id, {
-        name: String(item.name || ""),
-        category: String(item.category || ""),
-        source: String(item.source || ""),
-        group: item.group ? String(item.group) : "",
-        volume: item.volume !== null && item.volume !== undefined && Number.isFinite(Number(item.volume)) && Number(item.volume) >= 0
-          ? Number(item.volume)
-          : null,
-        // Strict: only a real positive-integer number counts (matches
-        // adminCatalog's isValidStackSize -- keep the two in sync).
-        stackSize: typeof item.stackSize === "number" && Number.isInteger(item.stackSize) && item.stackSize > 0
-          ? item.stackSize
-          : null
-      });
-    }
+    const catalog = loadItemCatalog(path);
+    let snapshot = itemCatalogSnapshots.get(catalog);
+    if (!snapshot) itemCatalogSnapshots.set(catalog, snapshot = buildItemCatalogSnapshot(catalog));
+    lastItemCatalogSnapshot = snapshot;
+    itemCatalogFailure = "";
   } catch (error) {
     // Inventory display still works without the optional local catalog
     // metadata -- but since issue #430 this loader also feeds per-item
-    // stack-limit ENFORCEMENT, so a load failure must be loud: it silently
-    // disables every stack limit for the process lifetime otherwise (L2
-    // audit, Cloud Security/Architect hats).
-    console.warn(`admin-items.json could not be loaded -- catalog metadata AND per-item stack limits are disabled for this process: ${error?.message || "unknown error"}`);
+    // stack-limit ENFORCEMENT, so a load failure must be loud: with nothing
+    // loaded before, it disables every stack limit (L2 audit, Cloud
+    // Security/Architect hats). Logged once per distinct failure.
+    const reason = error?.message || "unknown error";
+    if (reason !== itemCatalogFailure) {
+      const effect = lastItemCatalogSnapshot.metadata.size > 0
+        ? "keeping the catalog loaded before"
+        : "catalog metadata AND per-item stack limits are disabled until it loads";
+      console.warn(`admin-items.json could not be loaded -- ${effect}: ${reason}`);
+    }
+    itemCatalogFailure = reason;
   }
-  adminItemMetadataCache = metadata;
-  return adminItemMetadataCache;
+  return lastItemCatalogSnapshot;
+}
+
+function buildItemCatalogSnapshot({ items, gameData }) {
+  const metadata = new Map();
+  for (const item of items) {
+    const id = String(item?.id || "").trim();
+    if (!id) continue;
+    metadata.set(id, {
+      name: String(item.name || ""),
+      category: String(item.category || ""),
+      source: String(item.source || ""),
+      group: item.group ? String(item.group) : "",
+      volume: item.volume !== null && item.volume !== undefined && Number.isFinite(Number(item.volume)) && Number(item.volume) >= 0
+        ? Number(item.volume)
+        : null,
+      // Strict: only a real positive-integer number counts (matches
+      // adminCatalog's isValidStackSize -- keep the two in sync).
+      stackSize: typeof item.stackSize === "number" && Number.isInteger(item.stackSize) && item.stackSize > 0
+        ? item.stackSize
+        : null
+    });
+  }
+  const volumeByLowerId = new Map();
+  const stackSizeByLowerId = new Map();
+  for (const [id, entry] of metadata) {
+    if (entry.volume !== null) volumeByLowerId.set(id.toLowerCase(), entry.volume);
+    if (entry.stackSize !== null) stackSizeByLowerId.set(id.toLowerCase(), entry.stackSize);
+  }
+  return { metadata, volumeByLowerId, stackSizeByLowerId, gameData };
+}
+
+export function adminItemMetadata() {
+  return itemCatalogSnapshot().metadata;
 }
 
 // Display-name overrides for runtime/data/admin-vehicles.json's `id`
@@ -9860,7 +9890,8 @@ export async function vehicleStorage(db, vehicleId, { repoRoot } = {}) {
     };
   }
 
-  const itemMetadata = adminItemMetadata();
+  const catalog = itemCatalogSnapshot();
+  const itemMetadata = catalog.metadata;
   const first = result.rows[0];
   const slots = [];
   let currentVolume = 0;
@@ -9890,7 +9921,7 @@ export async function vehicleStorage(db, vehicleId, { repoRoot } = {}) {
     // volume_override is per-unit (see giveItemToStorage's correction note),
     // so this row contributes unitVolume * quantity.
     if (hasMaxItemVolume && hasVolumeOverride) {
-      const unitVolume = resolvedItemUnitVolume(templateId, row.volume_override);
+      const unitVolume = resolvedItemUnitVolume(templateId, row.volume_override, catalog);
       if (unitVolume === null) volumeComplete = false;
       else currentVolume += unitVolume * slotQuantity;
     }
@@ -10931,6 +10962,8 @@ function augmentTemplateMetadata(templateId) {
   return adminItemMetadata().get(String(templateId || "")) || {};
 }
 
+const NON_GEAR_CATEGORIES = new Set(["customizations", "contracts", "consumables", "emotes"]);
+
 function augmentItemKindForTemplate(templateId) {
   const metadata = augmentTemplateMetadata(templateId);
   const category = String(metadata.category || "").toLowerCase();
@@ -10951,6 +10984,9 @@ function augmentItemKindForTemplate(templateId) {
   // other item kind.
   if (metadata.group === "refined_resource" || metadata.group === "component") return "other";
   if (category === "schematics" || source === "schematics" || /_schematic$/i.test(String(templateId || "")) || /schematic/i.test(text)) return "schematic";
+  // Tokens and consumables are never gear, whatever their names say: a cosmetic
+  // called "... Helmet Variant" must not get weapon, clothing or durability stats.
+  if (NON_GEAR_CATEGORIES.has(category)) return "other";
   if (
     category === "clothing" ||
     source === "clothing" ||
@@ -11461,23 +11497,15 @@ export async function playerItemAugmentState(db, playerId, itemId, expectedAugme
 // Case-insensitive (L2 audit, Architect hat): the engine/DB treats
 // template ids case-insensitively (refillBaseGenerators matches fuels with
 // lower()), so a case-variant of a catalogued id must hit the same limit
-// rather than silently bypassing it. Lazily derived from adminItemMetadata,
-// so it shares that loader's process-lifetime cache semantics.
-let stackSizeByLowerTemplateId = null;
+// rather than silently bypassing it. A catalog value comes before the game
+// data's.
 function maxStackSizeForTemplate(templateId) {
-  const metadata = adminItemMetadata();
+  const catalog = itemCatalogSnapshot();
   const key = String(templateId || "");
-  const direct = metadata.get(key)?.stackSize;
-  if (Number.isInteger(direct) && direct > 0) return direct;
-  if (!stackSizeByLowerTemplateId) {
-    stackSizeByLowerTemplateId = new Map();
-    for (const [id, entry] of metadata) {
-      if (Number.isInteger(entry.stackSize) && entry.stackSize > 0) {
-        stackSizeByLowerTemplateId.set(id.toLowerCase(), entry.stackSize);
-      }
-    }
-  }
-  return stackSizeByLowerTemplateId.get(key.toLowerCase()) || 0;
+  return catalog.metadata.get(key)?.stackSize
+    || catalog.stackSizeByLowerId.get(key.toLowerCase())
+    || catalog.gameData.get(key)?.stackSize
+    || 0;
 }
 
 // Runaway backstop, NOT an operational limit (revised per explicit operator
@@ -11600,18 +11628,20 @@ async function insertPlannedStackRows(tx, itemColumns, { inventoryId, templateId
 
 // Game-created rows normally leave volume_override NULL, which means "use the
 // template's catalog volume" rather than zero. Capacity checks must therefore
-// resolve each occupied stack instead of summing only explicit overrides.
-function resolvedItemUnitVolume(templateId, volumeOverride) {
+// resolve each occupied stack instead of summing only explicit overrides. This
+// is the one unit-volume resolver: the volume totals and Storage Give's capacity
+// check both use it. A catalog value (in any letter case) comes before the game
+// data's; null means unknown.
+function resolvedItemUnitVolume(templateId, volumeOverride, catalog = itemCatalogSnapshot()) {
   if (volumeOverride !== null && volumeOverride !== undefined) {
     const explicit = Number(volumeOverride);
     if (Number.isFinite(explicit) && explicit >= 0) return explicit;
   }
-  const catalogValue = adminItemMetadata().get(String(templateId || ""))?.volume;
-  if (catalogValue !== null && catalogValue !== undefined) {
-    const catalog = Number(catalogValue);
-    if (Number.isFinite(catalog) && catalog >= 0) return catalog;
-  }
-  return null;
+  const key = String(templateId || "");
+  return catalog.metadata.get(key)?.volume
+    ?? catalog.volumeByLowerId.get(key.toLowerCase())
+    ?? catalog.gameData.get(key)?.volume
+    ?? null;
 }
 
 async function inventoryVolumeState(tx, inventoryId) {
@@ -11619,13 +11649,14 @@ async function inventoryVolumeState(tx, inventoryId) {
     "select template_id, stack_size, volume_override from dune.items where inventory_id = $1",
     [inventoryId]
   );
+  const catalog = itemCatalogSnapshot();
   let currentVolume = 0;
   const unknownTemplates = new Set();
   for (const row of result.rows) {
     const templateId = String(row.template_id || "");
     const quantity = Math.max(0, Number(row.stack_size) || 0);
     if (!templateId || quantity === 0) continue;
-    const unitVolume = resolvedItemUnitVolume(templateId, row.volume_override);
+    const unitVolume = resolvedItemUnitVolume(templateId, row.volume_override, catalog);
     if (unitVolume === null) unknownTemplates.add(templateId);
     else currentVolume += unitVolume * quantity;
   }
@@ -11687,7 +11718,13 @@ export async function giveItemToStorage(db, storageId, { itemName = "", itemId =
   // never contributed to the sum(volume_override) total in the first
   // place. Found during the 2026-08-18 raw-resource design review, not a
   // live incident -- fixed proactively before it could become one.
-  const itemVolumeNum = Number(itemVolume) || 0;
+  //
+  // A caller's itemVolume is also what gets stored (the Storage give route
+  // passes only a value curated in admin-items.json). Without one, the capacity
+  // check resolves the volume the way the totals do and the row stores NULL, so
+  // a number read from one game build is never written into a save.
+  const storedVolume = Number(itemVolume) || 0;
+  const itemVolumeNum = storedVolume || resolvedItemUnitVolume(resolvedTemplate, null) || 0;
   return db.transaction(async (tx) => {
     const itemColumns = await columnsFor(tx, "items");
     const storage = await tx.query(`
@@ -11772,7 +11809,7 @@ export async function giveItemToStorage(db, storageId, { itemName = "", itemId =
       templateId: resolvedTemplate,
       qualityLevel,
       stats,
-      itemVolumeNum,
+      itemVolumeNum: storedVolume,
       stacks: plan.stacks,
       claimPosition: await createStackPositionClaimer(tx, inventory.id, inventory.max_item_count, "high")
     });
@@ -14086,7 +14123,8 @@ export async function baseInventory(db, baseId, { repoRoot = "" } = {}) {
     left join dune.items i on i.inventory_id = c.inventory_id
     order by c.placeable_id, i.template_id`, [target, groups, buildingTypes, typeNames]);
 
-  const itemMetadata = adminItemMetadata();
+  const catalog = itemCatalogSnapshot();
+  const itemMetadata = catalog.metadata;
   const containersById = new Map();
   const itemsByTemplate = new Map();
   const countedInventories = new Set();
@@ -14136,7 +14174,7 @@ export async function baseInventory(db, baseId, { repoRoot = "" } = {}) {
     // row is volume_override * quantity, matching what the live game
     // engine itself computes for display.
     if (hasMaxItemVolume && hasVolumeOverride) {
-      const unitVolume = resolvedItemUnitVolume(templateId, row.volume_override);
+      const unitVolume = resolvedItemUnitVolume(templateId, row.volume_override, catalog);
       if (unitVolume === null) container.volumeComplete = false;
       else container.currentVolume += unitVolume * quantity;
     }
@@ -14353,7 +14391,8 @@ export async function baseContainerSlots(db, baseId, placeableId) {
     };
   }
 
-  const itemMetadata = adminItemMetadata();
+  const catalog = itemCatalogSnapshot();
+  const itemMetadata = catalog.metadata;
   const inventoriesById = new Map();
   for (const row of result.rows) {
     const inventoryId = String(row.inventory_id);
@@ -14399,7 +14438,7 @@ export async function baseContainerSlots(db, baseId, placeableId) {
     // own accumulation -- multiplied by quantity here to get this row's
     // total contribution.
     if (hasMaxItemVolume && hasVolumeOverride) {
-      const unitVolume = resolvedItemUnitVolume(templateId, row.volume_override);
+      const unitVolume = resolvedItemUnitVolume(templateId, row.volume_override, catalog);
       if (unitVolume === null) inventory.volumeComplete = false;
       else inventory.currentVolume += unitVolume * slotQuantity;
     }

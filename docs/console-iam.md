@@ -195,6 +195,21 @@ The asymmetry is the point:
 
 That way an upgrade never silently re-interprets a policy and never refuses to start, while the next edit forces migration. Aliases are not in the catalog: they cannot be granted to an API key, and `GET /api/settings/iam/policies` does not offer them.
 
+## Creating items in containers
+
+`storage:mutate` and `bases:add-item` can create any item in a container, NPC and developer items included. The routes below take any item id sent as `itemId`, even one the item catalog does not list.
+
+| Action | Route that creates the item |
+|---|---|
+| `storage:mutate` | `POST /api/storage/{storageId}/give-item` (the Storage tab's **Give Item**) |
+| `bases:add-item` | `POST /api/bases/{baseId}/containers/{placeableId}/items` |
+
+- By default only the `owner` and `admin` tiers hold them.
+- An API key holds them with Read+write on `storage` or `bases` respectively, or by naming the action in its action list.
+- The item pickers do not mark NPC or developer items.
+
+This is a deliberate decision (2026-11-27, #1368): the access is kept as it is. Grant these two actions only to people and keys you trust to create any item.
+
 ## Route maintenance
 
 When adding an authenticated API route, add its method/path mapping to `actions.js` in the same change and run:

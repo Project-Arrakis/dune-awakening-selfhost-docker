@@ -5129,35 +5129,50 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
    .bases-inventory-mode-group's own `gap`, not a margin on either child. */
 .bases-inventory-add-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   margin-bottom: 8px;
 }
-.bases-inventory-add-row input[type="text"],
-.bases-inventory-add-row input:not([type]) { flex: 1 1 auto; min-width: 0; }
+/* The search box has a row to itself: item names need the whole panel width,
+   and the result list is as wide as this box. Quantity and actions sit below.
+   The quantity needs an explicit width, or the global input width: 100% lets it
+   take the row. */
+.bases-inventory-add-row .item-combobox { flex: 1 0 100%; min-width: 0; }
+.bases-inventory-add-row input[type="number"] { flex: 0 0 110px; width: 110px; }
+.bases-inventory-add-row input[type="number"] + button { margin-left: auto; }
 .bases-inventory-add-row button { width: auto; flex: 0 0 auto; }
-.bases-inventory-add-row .item-combobox { flex: 1 1 auto; min-width: 0; }
 /* Compact type-to-search dropdown (ItemCatalogCombobox) -- positioned
    relative to its own wrapper so the results list can float over
    whatever sits below it in the contents modal (the quantity input, the
    action buttons, the batch list) without shifting layout while open. */
 .item-combobox { position: relative; }
+/* The item list hangs below its search box. A clipping drawer would hide it and
+   scrolling it into view would shift the drawer's own content out of sight. */
+.drawer.storage-drawer { overflow: visible; }
+.storage-give-row .item-combobox { flex: 1 1 100%; min-width: 0; }
+.action-row.storage-give-row > input[type="number"] { flex: 0 0 110px; width: 110px; min-width: 0; }
 .item-combobox-input:disabled { opacity: .6; cursor: not-allowed; }
-.item-combobox-list {
+/* The popup is always in the page for its status line; it is drawn only while open. */
+.item-combobox-popup {
   position: absolute;
   left: 0;
   right: 0;
   top: calc(100% + 4px);
   z-index: 20;
-  margin: 0;
-  padding: 4px;
-  list-style: none;
-  max-height: 280px;
-  overflow-y: auto;
+}
+.item-combobox-popup.open {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--panel-muted);
   box-shadow: 0 8px 24px rgba(0, 0, 0, .45);
+}
+.item-combobox-list {
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  max-height: min(360px, 50vh);
+  overflow-y: auto;
 }
 .item-combobox-list li {
   display: flex;
@@ -5169,11 +5184,13 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 }
 .item-combobox-list li:hover,
 .item-combobox-list li.highlighted { background: var(--surface-g, #211b16); }
-.item-combobox-list li span { min-width: 0; display: grid; gap: 1px; }
-.item-combobox-list li strong, .item-combobox-list li small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.item-combobox-list li span { flex: 1 1 auto; min-width: 0; display: grid; gap: 1px; text-align: left; }
+.item-combobox-list li strong, .item-combobox-list li small { overflow-wrap: anywhere; }
 .item-combobox-list li small { color: var(--muted); }
-.item-combobox-empty { color: var(--muted); cursor: default; }
-.item-combobox-empty:hover { background: transparent; }
+.item-combobox-list .catalog-item-preview.small { margin-inline: 0; }
+.item-combobox-status { padding: 10px 12px; color: var(--muted); }
+.item-combobox-status:empty { padding: 0; }
+.item-combobox-retry { width: auto; margin: 0 12px 10px; }
 .bases-inventory-add-batch {
   list-style: none;
   margin: 0 0 10px;

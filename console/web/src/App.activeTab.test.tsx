@@ -104,7 +104,7 @@ describe("useActiveTab", () => {
 });
 
 // Regression guard. Home's subsystem rows navigate the operator somewhere, and
-// ALL_TABS is wider than the sidebar: "Services" and "Storage" render but have
+// ALL_TABS is wider than the sidebar: "Services" renders but has
 // no nav entry. Routing to one of those drops the operator on a panel with
 // nothing highlighted and no way back, which is how it shipped once already.
 describe("Home subsystem routes stay reachable from the sidebar", () => {

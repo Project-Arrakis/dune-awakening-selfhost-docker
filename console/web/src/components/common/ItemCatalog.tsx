@@ -12,6 +12,8 @@ export type CatalogItem = {
   source?: string;
   image?: string;
   group?: string;
+  // Inventory volume of one unit; absent when the console does not know it.
+  volume?: number;
   requiredDlc?: string;
   requiredSteamDlc?: string;
 };
@@ -24,12 +26,22 @@ export type CatalogItem = {
 let cachedCatalog: CatalogItem[] | null = null;
 let cachedCatalogPromise: Promise<CatalogItem[]> | null = null;
 
+// For tests that need a different catalog from the one already cached.
+export function clearCatalogCache() {
+  cachedCatalog = null;
+  cachedCatalogPromise = null;
+}
+
 export async function loadFullCatalog(): Promise<CatalogItem[]> {
   if (cachedCatalog) return cachedCatalog;
   if (!cachedCatalogPromise) {
     cachedCatalogPromise = adminApi.itemCatalog("", 10000).then((result) => {
       cachedCatalog = (result.rows || []).map((item) => ({ ...item, id: item.itemId || item.id }));
       return cachedCatalog;
+    }).catch((error) => {
+      // A failed load must not be remembered: the next caller tries again.
+      cachedCatalogPromise = null;
+      throw error;
     });
   }
   return cachedCatalogPromise;
@@ -130,23 +142,63 @@ export function ItemCatalogSelector({ label = "Select Item", selected, onSelect,
 // exact template id or exact in-game name, and offered no way to discover
 // what's actually in the catalog.
 //
-// Search and the results list are both name-only -- the catalog id
-// (template id, e.g. "Oil") is a database/backend concept a player never
-// sees in-game and is never typed here, so it is neither searched nor
-// displayed. Give/Fill still submit `itemId` under the hood (the exact
-// catalog id of whichever item was chosen), just never as something the
-// player types or reads.
+// Search matches names (every name the catalog lists for the id), categories and
+// catalog ids (template ids, e.g. "Oil" for
+// "Fuel Cell"): container contents and the console's messages name items by id.
+// An id is shown on a row it was needed to find, and when two items share a name
+// and category. Callers submit the chosen item's id.
 //
-// `filterGroups`, when set, restricts results to catalog items whose
-// `group` field is in the set -- used by the Fill panel to show only
-// raw/refined resources and components, mirroring FILLABLE_GROUPS
-// (adminCatalog.js) so a player never sees an option the server would
-// reject anyway.
+// `filterGroups`, when set, offers only items of those groups; the server
+// enforces the same rule.
+//
+// `onListUnavailableChange` is told true when the item list fails to load and false
+// once it loads, so that a caller can offer another way to name the item.
+//
+// Every typed word must appear in one of the item's names, its category or its id.
+// Lower ranks sort first: the exact name, names that start with the text, the exact
+// id, other name or category matches, then matches that needed the id.
+const RANK_EXACT_ID = 2;
+const RANK_NEEDED_ID = 4;
+
+function containsAll(text: string, words: string[]) {
+  const haystack = text.toLowerCase();
+  return words.every((word) => haystack.includes(word));
+}
+
+// The rank of one item under one of its names, or null when that name does not match.
+function rankUnderName(item: CatalogItem, itemName: string, term: string, words: string[]) {
+  const label = `${itemName} ${item.category || ""}`;
+  if (!containsAll(`${label} ${item.id}`, words)) return null;
+  const name = itemName.toLowerCase();
+  if (term && name === term) return 0;
+  if (term && name.startsWith(term)) return 1;
+  if (item.id.toLowerCase() === term) return RANK_EXACT_ID;
+  return containsAll(label, words) ? 3 : RANK_NEEDED_ID;
+}
+
+function searchCombobox(items: CatalogItem[], otherNames: Map<string, string[]>, text: string, filterGroups?: Set<string>) {
+  const term = text.trim().toLowerCase();
+  const words = term.split(/\s+/).filter(Boolean);
+  const found: { item: CatalogItem; rank: number }[] = [];
+  for (const item of items) {
+    if (filterGroups && !(item.group && filterGroups.has(item.group))) continue;
+    const ranks = [item.name, ...(otherNames.get(item.id) || [])]
+      .map((name) => rankUnderName(item, name, term, words))
+      .filter((rank) => rank !== null);
+    if (ranks.length) found.push({ item, rank: Math.min(...ranks) });
+  }
+  return found.sort((a, b) => a.rank - b.rank);
+}
+
 const MAX_COMBOBOX_RESULTS = 40;
+// The list, and so the pictures it asks for, follows the typing after this pause.
+const COMBOBOX_SEARCH_DELAY_MS = 150;
 
 export function ItemCatalogCombobox({
   value,
   onChange,
+  onQueryChange,
+  onListUnavailableChange,
   filterGroups,
   ariaLabel,
   placeholder = "Type to search items…",
@@ -154,30 +206,83 @@ export function ItemCatalogCombobox({
 }: {
   value: CatalogItem | null;
   onChange: (item: CatalogItem | null) => void;
+  // Receives the text in the box whenever it changes.
+  onQueryChange?: (query: string) => void;
+  onListUnavailableChange?: (unavailable: boolean) => void;
   filterGroups?: Set<string>;
   ariaLabel: string;
   placeholder?: string;
   disabled?: boolean;
 }) {
   const [items, setItems] = useState<CatalogItem[]>([]);
+  const [loadState, setLoadState] = useState<"loading" | "ready" | "failed">("loading");
   const [query, setQuery] = useState(value?.name || "");
+  // The text the list was last searched with.
+  const [search, setSearch] = useState(query);
   const [open, setOpen] = useState(false);
   const [highlighted, setHighlighted] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const popupRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLUListElement>(null);
+  const mountedRef = useRef(true);
+  // Set when typing drops the selection, so the sync below keeps the typed text.
+  const typedOverRef = useRef(false);
   const listId = useMemo(() => `item-combobox-list-${Math.random().toString(36).slice(2)}`, []);
 
+  function load() {
+    setLoadState("loading");
+    void loadFullCatalog().then(
+      (loaded) => {
+        if (!mountedRef.current) return;
+        setItems(loaded);
+        setLoadState("ready");
+        onListUnavailableChange?.(false);
+      },
+      () => {
+        if (!mountedRef.current) return;
+        setLoadState("failed");
+        onListUnavailableChange?.(true);
+      }
+    );
+  }
+
   useEffect(() => {
-    let cancelled = false;
-    void loadFullCatalog().then((loaded) => { if (!cancelled) setItems(loaded); });
-    return () => { cancelled = true; };
+    mountedRef.current = true;
+    load();
+    return () => { mountedRef.current = false; };
   }, []);
+
+  // Text the component puts in the box itself is searched at once.
+  function showText(text: string) {
+    setQuery(text);
+    setSearch(text);
+  }
+
+  function runSearch(text: string) {
+    setSearch(text);
+    setHighlighted(0);
+  }
+
+  useEffect(() => {
+    if (query === search) return undefined;
+    const timer = setTimeout(() => runSearch(query), COMBOBOX_SEARCH_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [query, search]);
+
+  useEffect(() => {
+    onQueryChange?.(query);
+  }, [query]);
 
   // Keeps the visible text in sync when a parent clears the selection (e.g.
   // after a successful give/fill resets the form) without fighting the
   // user's own typing the rest of the time -- only reacts to value becoming
   // null/changing identity from outside, not to local query edits.
   useEffect(() => {
-    setQuery(value?.name || "");
+    const typedOver = typedOverRef.current;
+    typedOverRef.current = false;
+    if (!value && typedOver) return;
+    showText(value?.name || "");
   }, [value]);
 
   useEffect(() => {
@@ -188,17 +293,52 @@ export function ItemCatalogCombobox({
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  const pool = filterGroups ? items.filter((item) => item.group && filterGroups.has(item.group)) : items;
-  const term = query.trim().toLowerCase();
-  const results = (term
-    ? pool.filter((item) => item.name.toLowerCase().includes(term))
-    : pool
-  ).slice(0, MAX_COMBOBOX_RESULTS);
+  // The catalog lists a few ids twice, one row per id is shown (the first) and the
+  // other rows' names still find it. Some different items share a name and a
+  // category, and only their id tells them apart.
+  const { unique, otherNames, ambiguous } = useMemo(() => {
+    const byId = new Map<string, CatalogItem>();
+    const others = new Map<string, string[]>();
+    for (const item of items) {
+      const first = byId.get(item.id);
+      if (!first) byId.set(item.id, item);
+      else if (item.name !== first.name) others.set(item.id, [...(others.get(item.id) || []), item.name]);
+    }
+    const seen = new Set<string>();
+    const shared = new Set<string>();
+    for (const item of byId.values()) {
+      const key = `${item.name}|${item.category || ""}`;
+      if (seen.has(key)) shared.add(key);
+      seen.add(key);
+    }
+    return { unique: [...byId.values()], otherNames: others, ambiguous: shared };
+  }, [items]);
+
+  const matches = useMemo(() => searchCombobox(unique, otherNames, search, filterGroups), [unique, otherNames, search, filterGroups]);
+  const results = matches.slice(0, MAX_COMBOBOX_RESULTS);
+  const count = results.length;
+  const totalCount = matches.length;
+  // Typed text the list has not caught up with yet.
+  const pending = query !== search;
+  const loading = loadState === "loading";
+  const listShown = open && (loading || count > 0);
+  const optionId = (item: CatalogItem) => `${listId}-${item.id}`;
+  const active = listShown && !pending ? results[highlighted] : undefined;
+
+  // The list opens at the bottom of a scrolling dialog: bring it into view.
+  useEffect(() => {
+    if (open) popupRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [open, count, loadState]);
 
   function choose(item: CatalogItem) {
     onChange(item);
-    setQuery(item.name);
+    showText(item.name);
     setOpen(false);
+  }
+
+  function highlight(index: number) {
+    setHighlighted(index);
+    listRef.current?.children[index]?.scrollIntoView?.({ block: "nearest" });
   }
 
   function handleKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
@@ -207,28 +347,39 @@ export function ItemCatalogCombobox({
       return;
     }
     if (!open) return;
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      setHighlighted((current) => Math.min(current + 1, results.length - 1));
-    } else if (event.key === "ArrowUp") {
-      event.preventDefault();
-      setHighlighted((current) => Math.max(current - 1, 0));
-    } else if (event.key === "Enter") {
-      if (results[highlighted]) {
-        event.preventDefault();
-        choose(results[highlighted]);
-      }
-    } else if (event.key === "Escape") {
+    if (event.key === "Escape") {
       setOpen(false);
+      return;
     }
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp" && event.key !== "Enter") return;
+    // These keys act on a search of the text in the box, never on an older list.
+    const current = pending ? searchCombobox(unique, otherNames, query, filterGroups).slice(0, MAX_COMBOBOX_RESULTS) : results;
+    const from = pending ? 0 : highlighted;
+    if (pending) runSearch(query);
+    if (event.key === "Enter") {
+      const entry = current[from];
+      if (entry) {
+        event.preventDefault();
+        choose(entry.item);
+      }
+      return;
+    }
+    event.preventDefault();
+    highlight(Math.max(0, Math.min(from + (event.key === "ArrowDown" ? 1 : -1), current.length - 1)));
   }
 
-  return <div className="item-combobox" ref={containerRef}>
+  return <div
+    className="item-combobox"
+    ref={containerRef}
+    onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false); }}
+  >
     <input
+      ref={inputRef}
       type="text"
       role="combobox"
-      aria-expanded={open}
-      aria-controls={listId}
+      aria-expanded={listShown}
+      aria-controls={listShown ? listId : undefined}
+      aria-activedescendant={active ? optionId(active.item) : undefined}
       aria-autocomplete="list"
       aria-label={ariaLabel}
       className="item-combobox-input"
@@ -242,36 +393,48 @@ export function ItemCatalogCombobox({
         // Typing after a selection un-commits it -- the previously chosen
         // item's id must never be submitted alongside now-different text,
         // which would silently give/fill the wrong item.
-        if (value) onChange(null);
+        if (value) {
+          typedOverRef.current = true;
+          onChange(null);
+        }
       }}
-      onFocus={() => setOpen(true)}
+      onFocus={() => { setOpen(true); if (loadState === "failed") load(); }}
+      onClick={() => { if (loadState === "failed") { setOpen(true); load(); } }}
       onKeyDown={handleKeyDown}
     />
-    {open && <ul className="item-combobox-list" id={listId} role="listbox">
-      {results.map((item, index) => (
-        <li
-          key={item.id}
-          role="option"
-          aria-selected={index === highlighted}
-          className={index === highlighted ? "highlighted" : ""}
-          onMouseDown={(event) => { event.preventDefault(); choose(item); }}
-          onMouseEnter={() => setHighlighted(index)}
-        >
-          <CatalogItemThumb item={item} small />
-          <span>
-            <strong>{item.name}</strong>
-            {item.category && <small>{titleCase(item.category)}</small>}
-          </span>
-        </li>
-      ))}
-      {results.length === 0 && <li className="item-combobox-empty" aria-disabled="true">
-        {term ? "No matching items." : "Start typing to search…"}
-      </li>}
-    </ul>}
+    <div className={open ? "item-combobox-popup open" : "item-combobox-popup"} ref={popupRef}>
+      {listShown && <ul className="item-combobox-list" id={listId} role="listbox" tabIndex={-1} aria-busy={loading} ref={listRef}>
+        {results.map(({ item, rank }, index) => (
+          <li
+            key={item.id}
+            id={optionId(item)}
+            role="option"
+            aria-selected={index === highlighted}
+            className={index === highlighted ? "highlighted" : ""}
+            onMouseDown={(event) => { event.preventDefault(); choose(item); }}
+            onMouseEnter={() => setHighlighted(index)}
+          >
+            <CatalogItemThumb item={item} small lazy />
+            <span>
+              <strong>{item.name}</strong>
+              {item.category && <small>{titleCase(item.category)}</small>}
+              {(rank === RANK_EXACT_ID || rank === RANK_NEEDED_ID || ambiguous.has(`${item.name}|${item.category || ""}`)) && <small data-no-translate>{item.id}</small>}
+            </span>
+          </li>
+        ))}
+      </ul>}
+      <div onMouseDown={(event) => event.preventDefault()}>
+        {/* Always in the page, so that screen readers announce what appears in it. */}
+        <div className="item-combobox-status" role="status" aria-live="polite">
+          {!open ? "" : loading ? "Loading items…" : loadState === "failed" ? "The item list could not be loaded." : count === 0 ? (search.trim() ? "No matching items." : "Start typing to search…") : totalCount > count ? `Showing ${count} of ${totalCount} matches. Type more to narrow the list.` : ""}
+        </div>
+        {open && loadState === "failed" && <button type="button" className="item-combobox-retry" onClick={() => { inputRef.current?.focus(); load(); }}>Try again</button>}
+      </div>
+    </div>
   </div>;
 }
 
-export function CatalogItemThumb({ item, large = false, small = false }: { item: CatalogItem; large?: boolean; small?: boolean }) {
+export function CatalogItemThumb({ item, large = false, small = false, lazy = false }: { item: CatalogItem; large?: boolean; small?: boolean; lazy?: boolean }) {
   const fallback = "/images/items/image-unavailable.png";
   const src = item.image || `/images/items/${encodeURIComponent(item.itemId || item.id)}.png`;
   const [imageSrc, setImageSrc] = useState(src);
@@ -279,7 +442,7 @@ export function CatalogItemThumb({ item, large = false, small = false }: { item:
     setImageSrc(src);
   }, [src]);
   return <div className={large ? "catalog-item-preview large" : small ? "catalog-item-preview small" : "catalog-item-preview"}>
-    <img src={imageSrc} alt="" onError={() => { if (imageSrc !== fallback) setImageSrc(fallback); }} />
+    <img loading={lazy ? "lazy" : undefined} decoding={lazy ? "async" : undefined} src={imageSrc} alt="" onError={() => { if (imageSrc !== fallback) setImageSrc(fallback); }} />
   </div>;
 }
 

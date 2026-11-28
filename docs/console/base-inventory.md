@@ -498,24 +498,14 @@ already used — through three new, Bases-scoped functions
 (`giveItemToBaseContainer`/`fillItemToBaseContainer`/
 `giveMultipleItemsToBaseContainer`, the last renamed from
 `giveMultipleItemsToStorage`, which never had a standalone-tab caller in
-the first place). `giveItemToStorage()` is unchanged and still used by
-the standalone Storage tab's own `storageGiveItemRoute`
-(`POST /api/storage/{storageId}/give-item`), which operates on an
-operator-supplied storage id directly and has no base+placeable
-ownership chain to verify.
+the first place). The standalone Storage tab keeps its own two routes, `storageGiveItemRoute`
+(`POST /api/storage/{storageId}/give-item`, `giveItemToStorage()`) and `storageFillItemRoute`
+(`POST /api/storage/{storageId}/fill-item`, `fillItemToStorage()`). They act on an operator-supplied storage id
+directly and have no base+placeable ownership chain to verify. Storage Give takes any catalog item; Storage Fill
+accepts the same three groups as the Bases routes.
 
-**Corrected 2026-08-20** (post-merge review of upstream PR #182): the
-paragraph above previously also claimed `fillItemToStorage()` is "still
-used by the standalone Storage tab's own routes" -- verified directly
-against `server.js` (`grep -n "fillItemToStorage(" console/api/src/server.js`
-returns nothing) that this was never true: there is no
-`POST /api/storage/{storageId}/fill-item` route, and no other route
-calls `fillItemToStorage()` either. The function is fully implemented
-and unit-tested in `duneDb.js`, but unreachable via any real HTTP
-route today -- the standalone Storage tab only has a Give action, not
-a Fill action. Any operator or future contributor reading the previous
-wording would reasonably believe the Storage tab supports Fill; it
-does not.
+**Corrected 2026-11-27:** this section said from 2026-08-20 that no Storage `fill-item` route existed. The route
+was added after that note was written.
 
 **Both Give and Fill are restricted to raw resources, refined resources, and components only.**
 `baseContainerGiveItemRoute`/`baseContainerGiveItemsRoute`/`baseContainerFillItemRoute` all resolve items
@@ -636,8 +626,38 @@ variants 500, `HeavyAmmo` and `Ammo` 1000, the `SpiceAddictionConsumable` foods 
 heat packs 20, and the Landsraad contract items 3 to 6; `T4ShieldWallComponent` and
 `ExperimentalWindTurbineComponent`, which 404ed against the earlier external source, are 500. **Items whose game
 limit is 1** (about 2,000 weapons, clothing, vehicles and schematics) were deliberately left without a
-`stackSize`: giving several of them still makes one row with the whole quantity, and giving each its own
-row would change what a give of several does, so that is a separate decision.
+`stackSize`: at the time, giving several of them made one row with the whole quantity, and giving each its own
+row was left as a separate decision. That decision has since been taken — see the next paragraph.
+
+**Game data for every item (2026-11-27).** `runtime/data/item-game-data.json` holds the unit volume and stack
+limit of all 4,227 items in the game's item tables, read from the installed game (build, method and known limits
+in [`item-game-data.PROVENANCE.md`](../../runtime/data/item-game-data.PROVENANCE.md)). It only fills gaps: a
+`volume` or `stackSize` curated in `admin-items.json` always wins. This changes behaviour:
+
+- Giving several of a non-stackable item through Storage Give, player Give (database path), Care Package or an
+  add-on database grant writes one row per unit, limited by free slots; a short delivery is reported.
+- Add Item to Container clamps a non-stackable item to a quantity of 1.
+- Storage and Bases volume totals now count gear, so Give and Fill no longer refuse a container holding it. A
+  container already over its limit reports no room.
+- Storage Give of gear is held to the container's volume limit, and a container holding an item of unknown volume
+  rejects it.
+- Cosmetic tokens, contracts, consumables and emotes never get weapon, clothing or durability stats, whatever
+  their names say.
+- Four catalog items had no curated `stackSize` but stack above 1 in the game (`HealthPack_Channeled_2`, `_3` and
+  `_4` at 20, `SurveyProbe_1` at 10). A larger quantity is now split into several rows.
+
+The 46 catalog ids that have no row in the game's tables keep no volume and no stack limit. While one of them is
+in a container, items with a known volume cannot be given into it. If the file is missing or invalid the console
+logs one warning and uses `admin-items.json` alone.
+
+Both readers, the routes (`adminCatalog.js`) and the stack and volume accounting (`duneDb.js`), use one catalog
+(`loadItemCatalog` in `itemGameData.js`). It checks both files on every call, so a changed, deleted or restored
+file reaches the two together, without a console restart. Storage Give resolves an item's volume the way the
+volume totals do, including an id typed in another case or not listed in the catalog. It stores
+`volume_override` only for a volume curated in `admin-items.json`; for a volume that comes from the game data the
+column stays `NULL`, so the game uses its own value and a number from one game build is not written into a save.
+Storage Fill and the Bases Give, Give Multiple and Fill routes use the curated volume only, and refuse a fillable
+item that has none.
 
 **Stack size correlates strongly with resource type, not per-item uniqueness** — an operator hypothesis
 tested 2026-08-20 by externally resolving all 96 (of 99) `raw_resource`/`refined_resource`/`component`
@@ -699,9 +719,8 @@ see "`volume_override` is per-unit, not per-stack" immediately below for why it 
 **A real, live in-game bug, not a design choice.** `dune.items.volume_override` is stored as
 the item's PER-UNIT volume, and every volume total (the running total `giveItemToBaseContainer`/
 `fillItemToBaseContainer`/`giveMultipleItemsToBaseContainer` check against a container's `max_item_volume`
-on this tab, the standalone Storage tab's own `giveItemToStorage` checking the same thing (`fillItemToStorage`
-exists in `duneDb.js` and follows the same convention, but has no live HTTP route today -- see the Give/Fill
-route table above), and every read-side total in `baseInventory`, the standalone Storage tab's `listStorage`, and
+on this tab, the standalone Storage tab's own `giveItemToStorage` and `fillItemToStorage` checking the same
+thing, and every read-side total in `baseInventory`, the standalone Storage tab's `listStorage`, and
 `baseContainerSlots`) is computed as `volume_override × stack_size`, summed across rows.
 
 An earlier version of this code stored `volume_override` as the stack's **total** volume
@@ -725,23 +744,74 @@ row's `volume_override` from the current `runtime/data/admin-items.json` catalog
 ID" text field.** Found during manual UI review of #347: the original plain text input required already
 knowing the exact template id or exact in-game name, offered no way to discover what is actually in the
 catalog, and did not filter anything as the operator typed — typing was just raw text sent straight to the
-server on submit. Search and the results list are name-only: the catalog id (e.g. `"Oil"` for the in-game
-"Fuel Cell") is a backend concept the operator never needs to see or type, and Give/Fill both submit the
-selected item's real `itemId` under the hood regardless. Give and Fill share one combobox instance (see
-"Give and Fill share one item picker..." above), filtered to `FILLABLE_GROUPS` client-side in both modes,
-matching the server's own `resolveFillableCatalogItem()` check, so the picker never even offers an item the
-server would reject.
+server on submit. Give and Fill share one combobox instance (see "Give and Fill share one item picker..."
+above), filtered to `FILLABLE_GROUPS` client-side in both modes, matching the server's own
+`resolveFillableCatalogItem()` check, so the picker never even offers an item the server would reject. Both
+submit the selected item's `itemId`.
+
+The Storage tab uses the same picker over the whole catalog (it replaced the "Item name or ID" field there, which
+returns only while the item list cannot be loaded, see below), so `POST /api/storage/{storageId}/give-item` and
+`fill-item` receive an `itemId` from the picker; the routes accept a name as before. The picker works like this on
+both tabs:
+
+- Search matches every typed word against name, category and catalog id. The exact name comes first, then names
+  that start with the text, the exact id, other name or category matches, and last the matches that needed the id.
+  The list says when it is cut off. An id the catalog lists under more than one name shows one row, under the first
+  name, and is found by any of them (the words of one search have to fit the same name).
+- A row shows its catalog id when the id was needed to find it, or when two items share a name and category. The
+  Storage confirmation always names the id.
+- The list follows the typing after a short pause (150 ms), and Enter or an arrow key acts on the text already in
+  the box. Result pictures load as they come into view.
+- The list says while it is loading. A failed load offers **Try again**, and is also retried when the field is
+  focused or clicked.
+- The list closes when focus leaves the picker. Screen readers are told which result is highlighted and what the
+  status line says.
+- The field has a row to itself, so item names are readable (on Bases it previously shrank to the width of an
+  item picture).
+
+On the Storage tab only:
+
+- **Give Item** and **Fill Container** stay disabled until a result is chosen, and say so while the box holds text
+  that chose nothing (while the item list can be loaded).
+- While the item list cannot be loaded, an **Item name or ID** field appears above the picker. Give Item and Fill
+  Container then send its text as `itemName`, which the route resolves as a name or an id, and the confirmation shows
+  the typed text. The page does not know the item's volume then, so the confirmation says nothing about it. The field
+  goes away once the list loads.
+- Giving a chosen item whose volume the console does not know asks for confirmation with a warning that it blocks later
+  gives and fills of known-volume items in that container.
+- The result of a give or fill is shown under the controls of the container it was done to: highlighted when only
+  part was delivered, as an error when it failed.
+- Building unlock tokens (except the Developer Storage Container's) and the four direct event cosmetics are not in
+  the item list, so they cannot be chosen. The old text field accepted them, and the route still does, by id or
+  name.
+
+The Storage page is in the menu for every role holding `storage:read`. It shows the item search, Give
+Item and Fill Container only to a role holding `storage:mutate`, and Apply Fills only to one holding
+`server:restart-service`. With the default policies a moderator can browse containers and export them, and
+cannot change them. The item search itself needs `admin:items:read`; for a role without it the list cannot be
+loaded, and giving and filling use the typed field.
 
 ## Why Give/Fill do not require a stopped map
 
 **Neither Give/Fill nor Delete require a stopped map** (see "Deletion, Give, and Fill do not require a
 stopped map" above for why deletion's requirement changed 2026-08-19) — but the underlying reasoning for
 Give/Fill specifically predates
-that change and still holds independently: **Give and Fill only ever insert a brand-new `dune.items` row**,
-and inserting a new row cannot conflict with, overwrite, or be raced by whatever the live game engine is
-doing with the *existing* rows in that same inventory. There is nothing running-map state can invalidate
-about a row that did not exist a moment ago — this was true even back when Delete still required a stopped
-map, which is why Give/Fill never gated on map state in the first place.
+that change and still holds independently: **Give and Fill only ever insert a brand-new `dune.items` row**.
+Inserting a row does not change or overwrite the existing rows of that inventory, which is why Give/Fill never
+gated on map state, even while Delete still required a stopped map.
+
+**A new row can still collide on its slot.** The running engine does not see a console-inserted row until the next
+restart, so an item moved or picked up in game can take the same `position_index`, and one of the two rows is then
+left unclaimed at that restart. This was confirmed live:
+[`INC-2026-08-19-GIVE-FILL-POSITION-INDEX-COLLISION`](../incidents/INC-2026-08-19-GIVE-FILL-POSITION-INDEX-COLLISION.md).
+Give claims the highest free slots to make it less likely; Fill claims the lowest. Since an item that does not
+stack takes one row per unit (2026-11-27), one operation can occupy many slots, which raises the chance:
+
+- Storage Give into a nearly full box takes every remaining high slot.
+- A database grant to a player claims the lowest free slots of the backpack, where the game also places the next
+  pickups. Such a grant also reaches online players, for example a grade 1-5 item without augments.
+
+Giving into a container nobody is using, or to an offline player, avoids the collision.
 
 The tradeoff this creates: a given/filled item is **not visible in-game until the Survival server
 restarts** — the game engine only claims newly-inserted `dune.items` rows at process startup (incident

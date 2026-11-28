@@ -1,31 +1,9 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-
-const adminItemsCache = new Map();
+import { loadItemCatalog } from "./itemGameData.js";
 
 function loadAdminItemsCatalog(repoRoot) {
-  const file = resolve(repoRoot, "runtime/data/admin-items.json");
-  let stat;
-  try {
-    stat = statSync(file, { bigint: true });
-  } catch {
-    const items = JSON.parse(readFileSync(file, "utf8"));
-    const byId = new Map(items.map((item) => [String(item?.id || ""), item]));
-    return { items, byId };
-  }
-  const stamp = `${stat.ino}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.size}`;
-  const cached = adminItemsCache.get(file);
-  if (cached && cached.stamp === stamp) return cached;
-  const items = JSON.parse(readFileSync(file, "utf8"));
-  const byId = new Map();
-  for (const item of items) {
-    const id = String(item?.id || "");
-    if (id && !byId.has(id)) byId.set(id, item);
-  }
-  const entry = { stamp, items, byId };
-  if (adminItemsCache.size > 16) adminItemsCache.clear();
-  adminItemsCache.set(file, entry);
-  return entry;
+  return loadItemCatalog(resolve(repoRoot, "runtime/data/admin-items.json"));
 }
 
 const FILLABLE_GROUPS = new Set(["refined_resource", "component", "raw_resource"]);
@@ -106,8 +84,9 @@ export function resolveFillableCatalogItem(repoRoot, query = {}) {
   // growing, some entries' catalogued volume may not have been individually
   // confirmed in-game the way MelangeSpice's was (see
   // docs/incidents/INC-2026-08-19-VOLUME-OVERRIDE-DOUBLE-MULTIPLIED.md).
-  const volume = Number(resolved.volume) || resolveItemVolume(repoRoot, resolved.itemId);
-  if (!(volume > 0)) {
+  // Only a curated volume counts: the callers store it in volume_override, which
+  // never takes a game data value.
+  if (!(curatedItemVolume(repoRoot, resolved.itemId) > 0)) {
     throw new Error(`Item ${resolved.itemId} is missing catalogued volume data and cannot be given or filled into a volume-tracked container.`);
   }
   return resolved;
@@ -121,6 +100,14 @@ export function resolveItemVolume(repoRoot, templateId) {
   const { byId } = loadAdminItemsCatalog(repoRoot);
   const match = byId.get(String(templateId || ""));
   return Number(match?.volume) || 0;
+}
+
+// The volume admin-items.json itself gives this exact id, else 0: never a game
+// data value. Storage Give passes it on, and only it is stored in
+// volume_override.
+export function curatedItemVolume(repoRoot, templateId) {
+  const { curatedById } = loadAdminItemsCatalog(repoRoot);
+  return Number(curatedById.get(String(templateId || ""))?.volume) || 0;
 }
 
 // Per-item max stack size the game engine itself enforces. Curated
